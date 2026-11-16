@@ -1881,29 +1881,28 @@ def _runtime(fn):
         fn()
     except RuntimeError as e:
         raise age.CouldNotLook(str(e))
-def _valerr(fn):
-    try:
-        return fn()
-    except ValueError as e:
-        raise age.CouldNotLook(str(e))
 def c_reviewed_files():
-    # reviewed_files (REQ-SUP-001-AC16): rows of exactly file, ruling and body-sha256 (64 lowercase hex); a file that is not an object, a missing or non-list list, a bad row or field, a repeated file and a repeated JSON key are refused (ValueError), never "nothing ruled"
+    # reviewed_files (REQ-SUP-001-AC16): an absent list is no rows (nothing is ruled); anything else malformed is refused (RuntimeError): a file that is not an object, invalid JSON, a list that is not a list, a bad row or field, a bad hash, a repeated file, a repeated JSON key
+    load = lambda f, req=True: _runtime(lambda: age.load_reviewed_files(f, req))
     f = os.path.join(tmp, "rf.json"); open(f, "w").write("{}")
-    refuse("reviewed_files {} (no list)", lambda: _valerr(lambda: age.load_reviewed_files(f, True)))
+    assert not accepts("reviewed_files {} (no rows)", lambda: load(f))
     open(f, "w").write('{"reviewed_files": [{}]}')
-    refuse("reviewed_files [{}] (a row with no field)", lambda: _valerr(lambda: age.load_reviewed_files(f, True)))
+    refuse("reviewed_files [{}] (a row with no field)", lambda: load(f))
     h = "a" * 64
     ok = {"file": "bin/x.sh", "ruling": "reviewed", "body-sha256": h}
-    for body in ("[]", "null", "not json", '{"reviewed_files": 5}', '{"reviewed_files": {}}', '{"reviewed_files": [5]}', '{"reviewed_files": [[]]}',
+    for body in ("[]", "null", "5", "not json", '{"reviewed_files": 5}', '{"reviewed_files": {}}', '{"reviewed_files": null}', '{"reviewed_files": [5]}', '{"reviewed_files": [[]]}',
                  json.dumps({"reviewed_files": [dict(ok, key="x")]}), json.dumps({"reviewed_files": [{"file": "bin/x.sh", "ruling": "r"}]}),
-                 json.dumps({"reviewed_files": [dict(ok, ruling="")]}), json.dumps({"reviewed_files": [dict(ok, file=7)]}),
+                 json.dumps({"reviewed_files": [dict(ok, ruling="")]}), json.dumps({"reviewed_files": [dict(ok, file="")]}),
+                 json.dumps({"reviewed_files": [dict(ok, file=7)]}), json.dumps({"reviewed_files": [dict(ok, ruling=7)]}),
                  json.dumps({"reviewed_files": [dict(ok, **{"body-sha256": "A" * 64})]}), json.dumps({"reviewed_files": [dict(ok, **{"body-sha256": "a" * 63})]}),
                  json.dumps({"reviewed_files": [ok, dict(ok, ruling="again")]}),
                  '{"reviewed_files": [], "reviewed_files": []}'):
-        open(f, "w").write(body); refuse(("reviewed_files", body), lambda: _valerr(lambda: age.load_reviewed_files(f, True)))
+        open(f, "w").write(body); refuse(("reviewed_files", body), lambda: load(f))
     open(f, "w").write(json.dumps({"reviewed_files": [ok]}))
-    assert accepts("reviewed_files one good row", lambda: _valerr(lambda: age.load_reviewed_files(f, True)))
-    assert not accepts("reviewed_files missing file, not required", lambda: age.load_reviewed_files(os.path.join(tmp, "absent-rf.json"), False))
+    assert accepts("reviewed_files one good row", lambda: load(f))
+    absent = os.path.join(tmp, "absent-rf.json")
+    refuse("reviewed_files missing file, required", lambda: load(absent, True))
+    assert not accepts("reviewed_files missing file, not required", lambda: load(absent, False))
 def c_gh_json_raw():
     for body in ("null", "not json"):
         gh({"api": body}); refuse(("gh_json", body), lambda: net._gh_json("repos/x", need=()))
