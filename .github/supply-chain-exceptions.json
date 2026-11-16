@@ -233,42 +233,42 @@
       "form": "a local reusable workflow call",
       "key": "f4f32af697ab6c09c1ccd6d0a5e9e01b3325add6c5c4c79c5a0d536b1df3f9fd",
       "line": "f4f32af697ab6c09c1ccd6d0a5e9e01b3325add6c5c4c79c5a0d536b1df3f9fd",
-      "ruling": "local reusable workflow call; inputs reviewed in the PR that added them; advisor ruling Oct 14"
+      "ruling": "local reusable workflow call; inputs reviewed in the PR that added them"
     },
     {
       "file": ".github/workflows/scan.yml",
       "form": "a local reusable workflow call",
       "key": "50dda8fb78f4161221853f26cdf04889868ea032561686c51dace4fb8380193f",
       "line": "50dda8fb78f4161221853f26cdf04889868ea032561686c51dace4fb8380193f",
-      "ruling": "local reusable workflow call; inputs reviewed in the PR that added them; advisor ruling Oct 14"
+      "ruling": "local reusable workflow call; inputs reviewed in the PR that added them"
     },
     {
       "file": ".github/workflows/release.yml",
       "form": "a local reusable workflow call",
       "key": "6ad5a49fad2db1816e35d1520fabea64d69cf90ef1e4083153ba251967190aa5",
       "line": "6ad5a49fad2db1816e35d1520fabea64d69cf90ef1e4083153ba251967190aa5",
-      "ruling": "local reusable workflow call; inputs reviewed in the PR that added them; advisor ruling Oct 14"
+      "ruling": "local reusable workflow call; inputs reviewed in the PR that added them"
     },
     {
       "file": "bin/refresh-inputs-test.sh",
       "form": "a download",
       "key": "99057ac9634caaa646bb8cc9a98c2964199e00a63063ae02e08b96bdb544d596",
       "line": "99057ac9634caaa646bb8cc9a98c2964199e00a63063ae02e08b96bdb544d596",
-      "ruling": "text, not a command: the one line of the refresh test that names the fetch tool, a printf -v of a constant word; every other line of the suite uses the variable; handoff 0432"
+      "ruling": "text, not a command: the one line of the refresh test that names the fetch tool, a printf -v of a constant word; every other line of the suite uses the variable"
     },
     {
       "file": "bin/refresh-inputs.sh",
       "form": "a download",
       "key": "26a5a54c945cc5c970b1cef963189599c19aecbbdcde47efa806d1a93b7a073c",
       "line": "94a55f0539c5ddd3f26ba667b6f7750d592fc7af407bd3578b85616caa2f34c6",
-      "ruling": "live fetch, owner ratified (Oct 9 rule 48 / Oct 15 exception 2): the live package index download (one per run) in bin/refresh-inputs.sh; one curl with fixed flags and one https://packages.wolfi.dev operand; the fetched bytes are verified against the lock checksums or the pinned and archived Wolfi key before use"
+      "ruling": "live fetch from the Wolfi package host: the live package index download (one per run) in bin/refresh-inputs.sh; one curl with fixed flags and one https://packages.wolfi.dev operand; the fetched bytes are verified against the lock checksums or the pinned and archived Wolfi key before use"
     },
     {
       "file": "bin/refresh-inputs.sh",
       "form": "a download",
       "key": "37b5b58e137deed9a347cabe279ad987c5c4cb3cd044515862b8f606adec8a8d",
       "line": "a0bb5343d7024d3efc65996ba905f9ceb1e29e4327006543726b192feb6cfff6",
-      "ruling": "live fetch, owner ratified (Oct 9 rule 48 / Oct 15 exception 2): the per-package download in bin/refresh-inputs.sh; one curl with fixed flags and one https://packages.wolfi.dev operand; the fetched bytes are verified against the lock checksums or the pinned and archived Wolfi key before use"
+      "ruling": "live fetch from the Wolfi package host: the per-package download in bin/refresh-inputs.sh; one curl with fixed flags and one https://packages.wolfi.dev operand; the fetched bytes are verified against the lock checksums or the pinned and archived Wolfi key before use"
     },
     {
       "file": "bin/refresh-inputs.sh",
@@ -276,7 +276,7 @@
       "key": "90d3436c2e7e40c9fa82f5f090b7268ec8275db601fb196821051f5aee448301",
       "line": "d793285ee57677f99a8a6d0dba7d38a8c6de084b71c27dc2c33134f72688cf86",
       "count": 4,
-      "ruling": "live fetch, owner ratified (Oct 9 rule 48 / Oct 15 exception 2): the signing-key fetch (four copies of the same line: key-check, archive-key-check, bootstrap, refresh) in bin/refresh-inputs.sh; one curl with fixed flags and one https://packages.wolfi.dev operand; the fetched bytes are verified against the lock checksums or the pinned and archived Wolfi key before use"
+      "ruling": "live fetch from the Wolfi package host: the signing-key fetch (four copies of the same line: key-check, archive-key-check, bootstrap, refresh) in bin/refresh-inputs.sh; one curl with fixed flags and one https://packages.wolfi.dev operand; the fetched bytes are verified against the lock checksums or the pinned and archived Wolfi key before use"
     },
     {
       "file": "bin/persona-uat-agent-test.sh",
@@ -1782,7 +1782,7 @@
       "form": "a system package install",
       "key": "eded5f3db207afcfd2e650f2024c7738c9984b0d1d7cc67c79a76bcea9fdcea4",
       "line": "eded5f3db207afcfd2e650f2024c7738c9984b0d1d7cc67c79a76bcea9fdcea4",
-      "ruling": "build-container install, advisor reading Oct 19: test-only build container, never shipped; base image pinned by digest; the only thing built (strace) comes from a checksum-verified tarball; packages are build tools"
+      "ruling": "build-container install, test-only: build container, never shipped; base image pinned by digest; the only thing built (strace) comes from a checksum-verified tarball; packages are build tools"
     }
   ]
 }
