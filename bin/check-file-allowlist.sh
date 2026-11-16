@@ -42,7 +42,7 @@ ALLOW_PATTERNS=(
   '^\.github/dependabot\.yml$'
   '^\.github/PULL_REQUEST_TEMPLATE\.md$'
   # Policy lists: the single sources of truth for the required-check set
-  # and the scanner set, consumed by the auto-merge guard and the release
+  # and the scanner set, read by the release
   # workflows.
   '^\.github/policy/[A-Za-z0-9._-]+\.json$'
   '^\.github/policy/allowed_signers$'
