@@ -94,6 +94,30 @@ check "unreadable release-only file = exit 2"          2 "release-only" "$w/matc
 check "release-only file not JSON = exit 2"            2 "release-only" "$w/match.json" "$list" "$w/ro-garbage.json"
 check "release-only file without the array = exit 2"   2 "release-only" "$w/match.json" "$list" "$w/ro-nolist.json"
 
+# g3: with the release-only file given, the guard also compares the scope of every ruleset entry with the scope pinned
+# in the script, so a pull request cannot move a ruleset check between push and pull_request. The ruleset fixture is
+# rebuilt from each edited list, so only the scope comparison can object.
+scoped() { # name jq-filter: an edited copy of the committed list, and a ruleset response that matches it
+  jq "$2" "$list" > "$w/g3-$1-list.json"
+  jq '[{"type":"required_status_checks","parameters":{"required_status_checks":
+       [.required_checks[] | {context, integration_id}]}}]' "$w/g3-$1-list.json" > "$w/g3-$1-rules.json"
+}
+scoped flipped  '(.required_checks[] | select(.context=="test") | .scope) = "pull_request"'
+scoped flipped2 '(.required_checks[] | select(.context=="pin-age") | .scope) = "push"'
+scoped missing  'del(.required_checks[] | select(.context=="lint") | .scope)'
+scoped added    '.required_checks += [{"context":"surprise","integration_id":15368,"scope":"push"}]'
+check "g3-ruleset check moved from push to pull_request is drift" 1 '^[-+] .*"context":"test".*"scope":"pull_request"' \
+  "$w/g3-flipped-rules.json" "$w/g3-flipped-list.json" "$ro"
+check "g3-ruleset check moved from pull_request to push is drift" 1 '^[-+] .*"context":"pin-age".*"scope":"push"' \
+  "$w/g3-flipped2-rules.json" "$w/g3-flipped2-list.json" "$ro"
+check "g3-ruleset entry without a scope is drift"                1 '^[-+] .*"context":"lint"' \
+  "$w/g3-missing-rules.json" "$w/g3-missing-list.json" "$ro"
+check "g3-added ruleset entry is drift"                          1 '^[-+] .*"context":"surprise"' \
+  "$w/g3-added-rules.json" "$w/g3-added-list.json" "$ro"
+check "g3-the real list passes the scope comparison"             0 "release-only list match" "$w/match.json" "$list" "$ro"
+check "g3-without the second argument no scope is compared"      0 "match \([0-9]+ checks" \
+  "$w/g3-flipped-rules.json" "$w/g3-flipped-list.json"
+
 # REQ-REL-013-AC2: the pin is main's copy of the guard, so a head that edits the file is still red; the wiring runs
 # the script fetched from main, not the tree's bin/ copy
 mkdir -p "$w/main" "$w/head/.github/policy"
@@ -173,7 +197,7 @@ t("job steps are checkout, fetch, run, drift-issue in that order (got %s)" % kin
 f = by.get("fetch", {}).get("run", "")
 t("fetch step: set -euo pipefail, gh api of main's guard into a file under RUNNER_TEMP, then [ -s ] on it",
   bool(re.search(r"^set -euo pipefail$", f, re.M))
-  and bool(re.search(r'gh api "repos/\$\{GITHUB_REPOSITORY\}/contents/bin/required-check-guard\.sh\?ref=main"', f))
+  and bool(re.search(r'gh api "repos/\$\{GITHUB_REPOSITORY\}/contents/bin/required-check-guard\.sh\?ref=refs/heads/main"', f))
   and bool(re.search(r"> " + T, f)) and bool(re.search(r"^\[ -s " + T + r" \]$", f, re.M)))
 r = [l.strip() for l in by.get("run", {}).get("run", "").splitlines() if l.strip() and not l.strip().startswith("#")]
 t("run step: one line, bash on a file under RUNNER_TEMP over the two policy files (got %s)" % r,
@@ -187,6 +211,9 @@ t("no step of the job sources a file or uses a local action",
   and not any(s.get("uses", "").startswith("./") for s in steps))
 d = by.get("drift-issue", {}).get("run", "")
 t("drift step runs the guard fetched into RUNNER_TEMP", bool(re.search(r"bash " + T, d)))
+reads = [m for x in runs for m in re.findall(r"\?ref=[^\s\"']+", x)]
+t("g3-every read of main in the job names refs/heads/main (got %s)" % reads,
+  len(reads) >= 2 and set(reads) == {"?ref=refs/heads/main"})
 t("the guard's fetch path occurs in exactly one step of the job",
   sum("contents/bin/required-check-guard.sh" in json.dumps(s) for s in steps) == 1)
 al = [s for s in wf["jobs"]["allowlist"]["steps"] if "required-check-guard-test.sh" in json.dumps(s)]

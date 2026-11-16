@@ -1864,6 +1864,8 @@ case_ c02-arith-inner-run      bad "$(rb 'x=$(( $(docker run alpine) + 1 ))')"
 case_ c02-workspace-script     bad "$(rb 'bash "${GITHUB_WORKSPACE}/ci-image.sh"')" "printf 'docker run alpine\\n' > ci-image.sh"
 case_ c02-main-copy-bad        bad "$(rb 'gh api "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=main" --jq .content | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" "mkdir -p bin; printf 'docker run alpine\\n' > bin/g.sh"
 case_ c02-main-copy-ok         ok  "$(rb 'gh api "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=main" --jq .content | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" "mkdir -p bin; printf 'docker run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > bin/g.sh"
+case_ g3-refs-heads-main-copy-bad        bad "$(rb 'gh api "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=refs/heads/main" --jq .content | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" "mkdir -p bin; printf 'docker run alpine\\n' > bin/g.sh"
+case_ g3-refs-heads-main-copy-ok         ok  "$(rb 'gh api "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=refs/heads/main" --jq .content | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" "mkdir -p bin; printf 'docker run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > bin/g.sh"
 case_ c02-foreign-heredoc-ok   ok  "$(rb "python3 - <<'PY'
           import os
           os.system('docker run alpine')
@@ -2879,6 +2881,10 @@ $(co "          ref: $BASE_REF
 # --- coverage cases (the 100% gate): branches of the readers that no workflow of this repository exercises
 case_ cov-main-copy-in-a-for-loop-ok ok "$(rb 'for f in bin/g.sh; do
           gh api "repos/${GITHUB_REPOSITORY}/contents/${f}?ref=main" --jq .content | base64 -d > "${RUNNER_TEMP}/g.sh"
+          done
+          bash "${RUNNER_TEMP}/g.sh"')" "mkdir -p bin; printf 'docker run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > bin/g.sh"
+case_ g3-refs-heads-main-copy-in-a-for-loop-ok ok "$(rb 'for f in bin/g.sh; do
+          gh api "repos/${GITHUB_REPOSITORY}/contents/${f}?ref=refs/heads/main" --jq .content | base64 -d > "${RUNNER_TEMP}/g.sh"
           done
           bash "${RUNNER_TEMP}/g.sh"')" "mkdir -p bin; printf 'docker run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > bin/g.sh"
 case_ cov-another-language-script-run-directly-ok ok "$(rb './bin/t')" "mkdir -p bin; printf '#!/usr/bin/env python3\\nprint(1)\\n' > bin/t; chmod +x bin/t"
