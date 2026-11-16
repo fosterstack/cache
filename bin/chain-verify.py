@@ -1939,6 +1939,14 @@ def cmd_key_ref_check(a):
         release_key_algorithm_guard("key-ref-check", a.aws)
 
 
+def cmd_sign_record(a):
+    """Sign one staged Witness payload with the release key (the one signing function), write the record and its entries."""
+    release_key_ref_check("sign-record")
+    answer = release_key_algorithm_guard("sign-record", a.aws)
+    signing_config = os.path.join(os.path.dirname(os.path.abspath(a.template)), "cosign-signing-config.json")
+    kms_sign(a.payload, a.out, signing_config, a.aws, a.public_key, answer=answer)
+
+
 # the files Sign writes into its output folder: on a refusal exactly these, and the folder Sign made, are removed
 OWN_FILES = ("provenance.bundle.json", "provenance.json", "provenance.rekor.json", "DRY-RUN")
 
@@ -2540,6 +2548,12 @@ def build_parser():
         which = s.add_mutually_exclusive_group(required=True)
         which.add_argument("--template")   # the committed release-policy template: the per-tag policy is made here from GITHUB_REF
         which.add_argument("--policy")     # a finished policy (the dry run's policy.json)
+    sg = sub.add_parser("sign-record")
+    sg.add_argument("--payload", required=True)      # the staged statement, signed byte for byte
+    sg.add_argument("--out", required=True)          # the record to write; its Rekor entries file is written beside it
+    sg.add_argument("--template", required=True)     # the release policy template: the signing config sits beside it
+    sg.add_argument("--aws", required=True)          # the aws CLI the KA-0 guard asks and kms-sign runs
+    sg.add_argument("--public-key", required=True)   # the release public key (PEM) kms-sign compares with the KMS key
     # W2: the job's RELEASE_KMS_KEY_REF is the release key's reference; --algorithm-guard (KA-0) also asks the key's
     # algorithm list, through the aws CLI that --aws names
     kc = sub.add_parser("key-ref-check")
@@ -2650,6 +2664,8 @@ def main(argv):
             cmd_kms_sign(a)
         elif a.cmd == "bundle-check":
             cmd_bundle_check(a)
+        elif a.cmd == "sign-record":
+            cmd_sign_record(a)
         elif a.cmd == "key-ref-check":
             cmd_key_ref_check(a)
         elif a.cmd == "sign-records":
