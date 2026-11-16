@@ -1701,7 +1701,7 @@ requirements:
       - id: REQ-DEP-001-AC2
         given: an open Dependabot pull request into main with no verdict on its head yet, whatever its updates are (patch, minor, major, flagged) and whoever pushed commits onto it
         when: the reviewer runs
-        then: "it is a candidate, and for it the reviewer gathers, with no model involved: the pull request's commits, each one GitHub does not report as Dependabot's own (author dependabot[bot], committed and signed by GitHub, one parent) marked so; the whole diff of that exact head commit against main, read from GitHub by the commit's full id, never cut (a diff over the readers' limit, or one that names a changed binary file, whose bytes a diff does not carry, gives no bundle and no verdict; only while the vendor check is on main's required-check list, a file under vendor/ is given by its header line and a count of the lines not shown); and, for every update, the upstream release notes for every version between old and new and every line in our workflows and modules that uses the dependency; a read of the commits, release notes or usage that fails is labeled unavailable in the bundle and is an error (no verdict, retried), never \"none found\"; when the pull request's commits no longer end at that commit, nothing is gathered and nothing is judged"
+        then: "it is a candidate, and for it the reviewer gathers, with no model involved: the pull request's commits, each one GitHub does not report as Dependabot's own (author dependabot[bot], committed and signed by GitHub, one parent) marked so; the whole diff of that exact head commit against main, read from GitHub by the commit's full id, never cut (a diff over the readers' limit, or one that names a changed binary file, whose bytes a diff does not carry, gives no bundle and no verdict; a file under vendor/ is given by its header line and a count of the lines not shown); and, for every update, the upstream release notes for every version between old and new and every line in our workflows and modules that uses the dependency; a read of the commits, release notes or usage that fails is labeled unavailable in the bundle and is an error (no verdict, retried), never \"none found\"; when the pull request's commits no longer end at that commit, nothing is gathered and nothing is judged"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC3
@@ -1713,7 +1713,7 @@ requirements:
       - id: REQ-DEP-001-AC4
         given: both readers' findings
         when: the reviewer decides
-        then: "the decision is mechanical: no \"breaks us\" from either reader, with the required-check guard matching, arms squash auto-merge, which merges only once every required check is green; any \"breaks us\" from either reader holds the PR, even when the other reader errored, with one issue carrying the readers' findings and the fix, which is ccode's; a reader error with no \"breaks us\" leaves no verdict and is retried next hour"
+        then: "the decision is mechanical: no \"breaks us\" from either reader, arms squash auto-merge, which merges only once every required check is green; any \"breaks us\" from either reader holds the PR, even when the other reader errored, with one issue carrying the readers' findings and the fix, which is ccode's; a reader error with no \"breaks us\" leaves no verdict and is retried next hour"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC5
@@ -1771,35 +1771,10 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC14
-        given: "the five files that decide the reviewer's verdict, as a run checked them out: bin/dependabot-reviewer.py, .github/policy/dependabot-reviewer-prompt.txt, .github/workflows/dependabot-reviewer.yml, .github/policy/required-checks.json and bin/required-check-guard.sh; their version is the sha256 of the output of sha256sum over them in that order (64 lower-case hex digits), so each file has its own boundary; one script, bin/dependabot-reviewer-version.sh, holds the list and computes it, and a file it cannot read fails it"
+        given: "the four files that decide the reviewer's verdict, as a run checked them out: bin/dependabot-reviewer.py, .github/policy/dependabot-reviewer-prompt.txt, .github/workflows/dependabot-reviewer.yml, .github/policy/required-checks.json; their version is the sha256 of the output of sha256sum over them in that order (64 lower-case hex digits), so each file has its own boundary; one script, bin/dependabot-reviewer-version.sh, holds the list and computes it, and a file it cannot read fails it"
         when: the reviewer publishes a verdict, whatever its conclusion (success carried from an earlier head, neutral for a forced or unfinished review, success, failure), and when it, the auto-merge workflow or the review gate's judge reads a verdict
-        then: "every check the reviewer publishes carries its version as the check run's external_id; a reader counts a success only where a verdict is needed, and then only when its external_id is the version printed by bin/dependabot-reviewer-version.sh on main now (the reviewer reads its own checkout, the auto-merge workflow fetches main's copy of the script and then the files it lists through the contents API, and runs the script with the folder of those files as its argument, the judge reads the checkout of main), so a change to any of the five makes every earlier success not count; a success with another external_id, or with none, is no success: for the reviewer it is no verdict (the head is read as a head with none is, the success is never carried to a new head, the newest check run still decides, so a new success with the current version replaces it), for the judge it is a verdict that does not pass; a failure or neutral verdict counts whatever its external_id; no time is read from GitHub and no workflow-change time decides anything; a version that cannot be computed stops the step that needs it before any verdict is published (no verdict at all, not a neutral), and gives the judge its record rule; every reader of a head's check runs (the reviewer, the auto-merge workflow, the judge, the gate's own check read by the reviewer and by the gate's sweep) asks for 100 runs a page and fails closed, as a read that failed, when it gets 100 runs, a full page that GitHub may have cut (fewer than 100 is the whole answer under the filter it asked; the judge exits 3 on it); a reader that wants the newest run per check name keeps GitHub's latest-per-name list, the others read all runs; the auto-merge workflow reads the verdict first and the version only for a success of a major, a flagged or an unparsed bump, which needs a verdict; a plain patch or minor reads no version, needs no verdict, and its step says so, armed or not, unless the reviewer failed its head, which the step says and turns off any arm over; when the verdict cannot be read it turns off the head's auto-merge before it fails; a version that cannot be read there is no verdict, and so is an empty file list or an empty version after a read that succeeded: the step turns the auto-merge off and fails"
+        then: "every check the reviewer publishes carries its version as the check run's external_id; a reader counts a success only where a verdict is needed, and then only when its external_id is the version printed by bin/dependabot-reviewer-version.sh on main now (the reviewer reads its own checkout, the auto-merge workflow fetches main's copy of the script and then the files it lists through the contents API, and runs the script with the folder of those files as its argument, the judge reads the checkout of main), so a change to any of the four makes every earlier success not count; a success with another external_id, or with none, is no success: for the reviewer it is no verdict (the head is read as a head with none is, the success is never carried to a new head, the newest check run still decides, so a new success with the current version replaces it), for the judge it is a verdict that does not pass; a failure or neutral verdict counts whatever its external_id; no time is read from GitHub and no workflow-change time decides anything; a version that cannot be computed stops the step that needs it before any verdict is published (no verdict at all, not a neutral), and gives the judge its record rule; every reader of a head's check runs (the reviewer, the auto-merge workflow, the judge, the gate's own check read by the reviewer and by the gate's sweep) asks for 100 runs a page and fails closed, as a read that failed, when it gets 100 runs, a full page that GitHub may have cut (fewer than 100 is the whole answer under the filter it asked; the judge exits 3 on it); a reader that wants the newest run per check name keeps GitHub's latest-per-name list, the others read all runs; the auto-merge workflow reads the verdict first and the version only for a success of a major, a flagged or an unparsed bump, which needs a verdict; a plain patch or minor reads no version, needs no verdict, and its step says so, armed or not, unless the reviewer failed its head, which the step says and turns off any arm over; when the verdict cannot be read it turns off the head's auto-merge before it fails; a version that cannot be read there is no verdict, and so is an empty file list or an empty version after a read that succeeded: the step turns the auto-merge off and fails"
         verification: { method: unit, release_blocking: false }
-        status: approved
-
-  - id: REQ-DEP-002
-    title: The required-check guard runs everywhere
-    statement: >
-      The ruleset on main and the committed required-check list shall be
-      compared on every pull request and every push to main, so drift is red
-      the day it happens, and a refusal shall open one issue.
-    source: [bin/required-check-guard.sh, .github/policy/required-checks.json, .github/workflows/ci.yml]
-    tier: community
-    introduced: v0.3.0
-    origin: the release manager's approval (Sep 29 2026), "also approved"
-    confidence: implementation-only
-    acceptance_criteria:
-      - id: REQ-DEP-002-AC1
-        given: any pull request and any push to main
-        when: hygiene runs
-        then: the required-check guard compares main's ruleset with .github/policy/required-checks.json, contexts and integration IDs; any difference fails, and an unreadable side fails, never passes
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-DEP-002-AC2
-        given: the guard refusing main's list
-        when: hygiene runs
-        then: it opens, or updates, one "required-check drift" issue
-        verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
   - id: REQ-DEP-003
@@ -1817,7 +1792,7 @@ requirements:
       - id: REQ-DEP-003-AC1
         given: a Dependabot patch or minor pull request
         when: the auto-merge job runs
-        then: it gets squash auto-merge armed only after the required-check guard matches, so it merges only when every required check is green; a major is left to the reviewer; the reviewer leaves that arm on while it reads the bump, and an arm its act step turned off because the review did not finish is put back (REQ-DEP-001-AC12)
+        then: it gets squash auto-merge armed, so it merges only when every required check is green; a major is left to the reviewer; the reviewer leaves that arm on while it reads the bump, and an arm its act step turned off because the review did not finish is put back (REQ-DEP-001-AC12)
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-DEP-003-AC2
@@ -1834,12 +1809,12 @@ requirements:
         status: approved
 
   - id: REQ-DEP-004
-    title: A held bump or drift dispatches the fixer
+    title: A held bump dispatches the fixer
     statement: >
-      A held Dependabot bump, or a required-check drift issue, shall send one
-      generic dispatch to the agent repository so an agent fixes our side; a
-      failed dispatch shall be a warning and never undo the hold.
-    source: [bin/dispatch-fixer.sh, .github/workflows/dependabot-reviewer.yml, .github/workflows/ci.yml]
+      A held Dependabot bump shall send one generic dispatch to the agent
+      repository so an agent fixes our side; a failed dispatch shall be a
+      warning and never undo the hold.
+    source: [bin/dispatch-fixer.sh, .github/workflows/dependabot-reviewer.yml]
     tier: community
     introduced: v0.3.0
     origin: the release manager's approval (Sep 29 2026), the cache side
@@ -1851,385 +1826,13 @@ requirements:
         then: it sends one fix-held-bump dispatch to ops naming the issue, the pull request and the repository; a merge never dispatches; a failed or impossible dispatch is a warning and the hold stands
         verification: { method: unit, release_blocking: false }
         status: approved
-      - id: REQ-DEP-004-AC2
-        given: a required-check drift issue opened by the guard
-        when: hygiene has seen it
-        then: the fixer is dispatched (one fix-required-check-drift dispatch to ops naming the issue), and dispatching never fails the job
-        verification: { method: unit, release_blocking: false }
-        status: approved
-
-  - id: REQ-REL-008
-    title: The workflow set is consolidated to the approved 23 files
-    statement: >
-      The repository's workflows shall be consolidated from 32 files to the 23 the release manager approved (Oct 2), each merge
-      keeping every required check's name, top-level placement and events, and no new workflow file added without the
-      release manager's approval.
-    source: [.github/workflows/go-freshness.yml, .github/workflows/ci.yml]
-    tier: community
-    introduced: v0.3.0
-    origin: workflow consolidation (maintainers approved Oct 2)
-    confidence: implementation-only
-    acceptance_criteria:
-      - id: REQ-REL-008-AC1
-        given: "the four consolidation pull requests have landed"
-        when: "the workflow directory is listed"
-        then: "it holds exactly the 25 approved files (maintainers approved amendment, Oct 2: dependabot-auto-merge.yml stays its own file; supply-chain.yml added by REQ-SUP-001, the release manager approved Oct 5, new-file amendment Oct 3)"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-008-AC2
-        given: "a job moved into another workflow file"
-        when: "it runs"
-        then: "its check name, top-level placement and triggering events are unchanged, and no required job gains a condition that could skip it on a pull request"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-008-AC3
-        given: "the mutation job, merged into go-freshness.yml"
-        when: "the schedules fire or the workflow is dispatched"
-        then: "the mutation job runs weekly on its own schedule and the freshness check daily on its own, each guarded by the schedule that fired; a dispatch runs both; mutation.yml is gone and the docs link points to go-freshness.yml"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-
-  - id: REQ-REL-009
-    title: Automatic patch releases
-    statement: >
-      Fix-only changes on main shall be released automatically as vX.Y.(Z+1): cut at once for a critical or high fix,
-      otherwise at most once a day, signed keylessly by release.yml's own identity, run through the full release chain,
-      with generated notes, VEX updated, floating tags moved by the release manager's rule, and a failed stage abandoned without
-      retry. Minor and major releases stay the release manager's.
-    source: [.github/workflows/release.yml, .github/workflows/stage-admission.yml]
-    tier: community
-    introduced: v0.3.0
-    origin: automatic patch releases (maintainers approved Oct 2, with the floating-tags amendment)
-    confidence: implementation-only
-    notes: >
-      AC14 (origin: review Oct 11, an engineering AC): the refusals protect the release manager's sentence in AC8 and leave AC8's text untouched. No line is exempt (reviewer
-      decision Oct 11, option A, replacing the round-9 VEX-section exemption): the refusals apply to every line of the
-      changelog inputs and a generated tag's notes, a '### VEX' section's lines included. To keep the generator's own notes
-      readable back (notes, then the tag, the changelog's notes and later the history), _lit's quoted form writes '<' and
-      '&' as \u003c and \u0026 (the same JSON string, as a hyphen before four more is written \u002d), so no printed VEX
-      value holds a refused form; a reader sees the JSON string (a statement named <b>x shows "\u003cb>x" in its code
-      span); the value is redacted as text before it is encoded (an escape ends in a letter or digit and would erase the
-      word boundary the redactor reads: '<google', '&o1'), and a statement whose CVE name or @id redaction changes is
-      named by its position. A VEX value (a CVE name, an @id, a product or subcomponent @id or identifier, a field name)
-      that holds a redaction-marker form ('<redacted>' or '(redacted)' in any case, as written, Markdown backslash-escaped,
-      JSON-escaped or as HTML character references, each read once) is refused before any redaction, naming the document,
-      the statement and the field (exit 2, no notes, no patch); a value is never converted into the marker (reviewer narrow
-      cut, Oct 12). Exotic nested spellings of the marker in a VEX field (percent-encoded, fullwidth, nested or mixed
-      escapes) are not decoded; the refusal covers the forms our printer and readers recognise (reviewer cut, Oct 12, automated review of PR #300). notes() checks its whole text, and every line, a VEX line too, is printed and read back by the one function
-      _clean_free (a VEX line holding the redaction marker is written in the escape-whole-line form). Each line of a
-      multi-line source value is checked before the value is made one line, and the whole go.mod line a Go fix's version
-      is read from. go.mod is read by a strict parser of its grammar (Go's modfile lexer: '//' comments, 'verb (' ... ')'
-      blocks): the versions and the line judged come from one parse of the require directives only (never a comment,
-      replace or exclude line), and anything the parser does not read (a '/* */' comment, a quoted string, a control or
-      other space character, a module required twice, a require that is not a path and a semantic version, an unclosed
-      block) is refused, naming go.mod:line; Go is not on the decide job's PATH, so the parser is in the script. Versions
-      are read as golang.org/x/mod/semver reads them (vMAJOR.MINOR.PATCH[-PRERELEASE][+BUILD], ASCII digits, no leading
-      zero, no empty identifier), the go directive as a Go release version (1.21, 1.21.0, 1.21rc1), and every supported
-      directive in its own shape (module, toolchain, require, exclude, replace, retract, godebug, tool, ignore); the name
-      'stdlib' is reserved for the toolchain and refused in any directive, and a stdlib fix is compared with 'go' + the go
-      directive's version. Documented limit (reviewer, Oct 11): a quoted path, which Go accepts, is refused (fail closed):
-      the parser reads the go.mod forms the repository's go.mod files use. A fix record is judged on the scan match that produced it (the
-      first match HEAD fixes, variants sorted, document order: the one fixed_findings prints from). The collision check
-      (5) is one set across every published line (fix, VEX and behavior); a fix record is named by its scan file and key
-      path; in the readers (a tag's notes, the changelog's notes, the history) two '- ' lines of one release block that
-      publish the same line once cleaned as published ('- gpt' and '- claude'; a marker line and its escaped spelling) are
-      refused, both named by their source lines; the same line in two release blocks is not a collision. In a generated patch tag (release tagger, gitsign signature last, heading naming the tag) a '-----BEGIN '
-      anywhere before that last signature is refused (exit 2, the line named); any other tag exits 1 as before. Beyond
-      the four forms, a free-text line holding the redaction marker that continues the line above it (neither blank nor a
-      heading) is refused in tag notes and changelog inputs (a construct spanning lines could hide the marker); --published (every v* tag message and CHANGELOG.md) is not a source and is not checked for '-----BEGIN '
-      (each tag message carries its signature block). 'Letter' after '<' is any Unicode letter. For a value inside a
-      JSON scan file the message names the file and the JSON key path instead of a line. 'Already published' is decided
-      by whole line, never substring: an entry counts as published only when a whole line of the published text equals
-      its published line, both compared without trailing whitespace (git's tag-message cleanup strips trailing
-      whitespace; leading and interior whitespace stay significant). tag-notes exits 2 on a refused form like notes and
-      changelog. The code reads the reference-definition shape also after any list or quote markers and any indentation,
-      and refuses a '[' label left open at the line end (a definition can open inside a list item; wider than
-      CommonMark, fail closed). No published text ever held a redaction marker form other than the current one (no CHANGELOG.md on main,
-      no v* tag message holds 'redacted'), so the marker handling is the escape-whole-line rule only.
-    acceptance_criteria:
-      - id: REQ-REL-009-AC1
-        given: "the commits on main since the latest release tag"
-        when: "release.yml's decide job classifies them"
-        then: "each commit is fix-class (only dependency version pins in go.mod/go.sum with no new module, base-image digest pins, or the VEX and suppression files), neutral (non-executable data only: docs/, requirements/ and test-evidence/ data and the reviewed .github files; an executable test never counts — decided Oct 3) or not patch-clean (anything else, unless its merged PR carries the label patch-fix); a patch is cut only when no commit is not patch-clean; otherwise nothing is cut and the standing issue \"auditor: main is not patch-clean\" is opened or updated with the commits and why"
-        verification: { method: unit, release_blocking: false }
-        status: approved
-      - id: REQ-REL-009-AC2
-        given: "a patch is cut"
-        when: "its tag is chosen"
-        then: "it is vX.Y.(Z+1) after the latest vX.Y.Z: a real semantic version with no build number or suffix; CI never creates a minor or major tag"
-        verification: { method: unit, release_blocking: false }
-        status: approved
-      - id: REQ-REL-009-AC3
-        given: "a push to main that removes a critical or high finding present in the latest release, on a patch-clean main"
-        when: "release.yml runs on that push"
-        then: "it cuts the patch in that run"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-009-AC4
-        given: "the daily schedule, main ahead of the latest tag in shipped bytes and patch-clean"
-        when: "release.yml runs"
-        then: "it cuts one patch that day; it never cuts a second patch the same day except for a critical or high fix"
-        verification: { method: unit, release_blocking: false }
-        status: approved
-      - id: REQ-REL-009-AC5
-        given: "a patch tag"
-        when: "CI creates it"
-        then: "it is signed keylessly with release.yml's own OIDC identity on main (gitsign); no signing key is stored anywhere"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-009-AC6
-        given: "a release tag"
-        when: "source admission verifies it"
-        then: "it accepts the release manager's SSH signature (allowed-signers) for any tag, and the release.yml-on-main identity for patch tags only; any other signer, or that identity on a minor or major tag, is refused"
-        verification: { method: unit, release_blocking: false }
-        status: approved
-      - id: REQ-REL-009-AC7
-        given: "a patch tag"
-        when: "the release runs"
-        then: "it runs the full chain (admission, build, assembly, reproducibility, scans, acceptance, authorization, promotion) and lands on GHCR and the Docker Hub mirror with identical digests"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-009-AC8
-        given: "a patch release"
-        when: "its notes are generated"
-        then: "they list per fix the CVE, package, old and new version, severity and affected image variants, each VEX statement added or changed, and a no-behavior-change line — or, when docs/next-release-notes.md lists changes the release manager or the reviewer judged unable to affect supported clients (each citing the review that judged it), those changes under Behavior changes; they are posted on the GitHub release and in the changelog, and name no vendor or model"
-        verification: { method: unit, release_blocking: false }
-        status: approved
-      - id: REQ-REL-009-AC9
-        given: "a patch that fixes CVEs"
-        when: "it is released"
-        then: "the VEX statements for those CVEs change to fixed in that version, and the customer suppression files regenerate with the release"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-009-AC10
-        given: "a stage of a patch release"
-        when: "it fails"
-        then: "one issue is opened, that attempt is abandoned with no retry, the next daily run tries again once the cause is fixed, and the release manager is told as information"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-009-AC11
-        given: "a CI patch release"
-        when: "it is published"
-        then: "it moves :X.Y to itself every time and moves :X and :latest only when it is the highest released version, on GHCR and the Docker Hub mirror alike, by digest"
-        verification: { method: unit, release_blocking: false }
-        status: approved
-      - id: REQ-REL-009-AC12
-        given: "a PR the automation labels patch-fix"
-        when: "the label is applied"
-        then: "the records of both reviews of that PR say no behavior change; otherwise only the release manager applies it, or the change waits for a minor release"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-009-AC13
-        given: "a CI-signed patch tag vX.Y.Z (maintainers approved amendment, Oct 2: which approved ACs a CI patch uses)"
-        when: "decide considers cutting it, and source admission admits it"
-        then: "it uses the latest release-manager-approved ACs baseline of its own X.Y line, only when requirements/requirements.yaml is byte-for-byte unchanged since that baseline (same requirements hash); if anything changed, no automatic patch is cut and it waits for the release manager; admission records which baseline it used; release-manager-signed tags keep needing their own approved baseline"
-        verification: { method: unit, release_blocking: false }
-        status: approved
-      - id: REQ-REL-009-AC14
-        given: "the notes sources of a patch release: the fix records the release scans and go.mod give, the entries of docs/next-release-notes.md, and the changelog inputs (the notes file the changelog step is handed and the existing docs/quality/releases/CHANGELOG.md)"
-        when: "the notes are generated (patch-decide notes) or the changelog is written (patch-decide changelog)"
-        then: "a source is refused outright, never decoded, escaped or rewritten, when any line of it holds (1) a '<' followed by a letter, '/', '!' or '?'; (2) the shape of a Markdown link reference definition: up to three spaces, '[', a label, ']' and ':'; (3) a character reference: '&#' digits ';', '&#x' or '&#X' hex digits ';', or '&' a letter, letters or digits and ';'; or (4) the text '-----BEGIN '; and (5) two entries whose published lines are the same line are refused before any entry is dropped as already published or cleared from docs/next-release-notes.md; the refusal message names the file and line of each offending source line (both, for a collision); on a refusal the command exits 2 and writes nothing, so no patch tag is cut (notes) or no changelog PR is opened (changelog)"
-        verification: { method: unit, release_blocking: false }
-        status: approved
-
-  - id: REQ-REL-010
-    title: Our OpenVEX is attached to each published image index for Docker Scout
-    statement: >
-      The final image index that Sign signs and Release publishes shall carry our OpenVEX as attestation children, one per
-      platform, and nothing after Sign shall change any digest. Maintainers approved Oct 3: "Docker main path as attestation!!!!!
-      We want that and we tell users it's the easiest path for seeing scanner omit findings that are just noise." Maintainers
-      approved Oct 7: every change to our published VEX cuts an automatic patch release.
-    source: [bin/vex-index.py, .github/workflows/stage-build.yml]
-    tier: community
-    introduced: v0.3.0
-    origin: ACs accepted at review, Oct 16 2026, as the reviewer's reading of the maintainers' Oct 3 and Oct 7 decisions (their own words are quoted in the statement; the ACs state what it takes to meet them)
-    confidence: implementation-only
-    acceptance_criteria:
-      - id: REQ-REL-010-AC1
-        given: "Build's image layouts and the tag's .vex/ OpenVEX file"
-        when: "Build writes digests.json"
-        then: "each published index (production and fips) has exactly one attestation child per platform, carrying that file's content in the form Docker Scout applies: the same OpenVEX document, except that in each statement a product that names the attested image (its purl) and lists subcomponents is replaced by those subcomponents (the vulnerable packages; the image is the in-toto statement's subject), in order and once each, and any other product is unchanged; the in-toto statement holds that document as JSON in its canonical serialization, so a re-serialization of the file with the same content gives the same index, and naming that platform's digest, and a missing, malformed or non-OpenVEX input stops Build"
-        verification: { method: unit, release_blocking: false }
-        status: approved
-      - id: REQ-REL-010-AC2
-        given: "the same inputs"
-        when: "Build and Rebuild each make the final index"
-        then: "the two are byte-identical (Rebuild's comparison covers it)"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-010-AC3
-        given: "the final index"
-        when: "its attestation children are removed"
-        then: "every platform image and the index's other entries are byte-identical to what Build made without them"
-        verification: { method: unit, release_blocking: false }
-        status: approved
-      - id: REQ-REL-010-AC4
-        given: "Sign's digest list"
-        when: "Release publishes"
-        then: "the digest customers pull equals the digest the signature, provenance and release manifest name, and no step after Sign attaches, adds or changes an attestation (an attempt is refused)"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-010-AC5
-        given: "a changed OpenVEX for an already published version"
-        when: "the pipeline runs"
-        then: "it makes no change to that version's image; the change reaches images only through the next automatic patch release"
-        verification: { method: unit, release_blocking: false }
-        status: approved
-      - id: REQ-REL-010-AC6
-        given: "the published final index"
-        when: "Docker Scout scans it by tag and by exact digest with our author"
-        then: "it applies our VEX; the customer guide makes the Scout claim only after this has passed on our real image"
-        verification: { method: acceptance-release-artifact, release_blocking: false }
-        status: approved
-  - id: REQ-REL-011
-    title: A job that holds a credential never compiles, and each build is its own job
-    statement: >
-      A workflow job that holds a credential (a secret, an environment, an
-      id-token or packages write grant) shall not build or compile anything,
-      and no job shall run two builds: on GitHub-hosted runners the separate
-      job is the isolation unit, each job a fresh virtual machine. Maintainers,
-      Oct 21 2026:
-      "the signer and the builder need hardware isolation and the builds in
-      general need hardware isolation ... the best github actions can do for
-      that, assuming we use github hosted runers, is to use separate jobs in
-      the workflow." The rule: a job that holds the signing key or any
-      publish credential never receives a build output other than the exact
-      artifacts it signs or publishes; the Rebuild comparison runs in a job
-      with no secrets and no publish permission; builds are isolated from
-      each other the same way, each build its own job.
-    source: [.github/workflows/auditor.yml, .github/workflows/go-freshness.yml, bin/job-isolation-test.sh]
-    tier: community
-    introduced: v0.3.0
-    origin: maintainer approval Oct 21 2026 (signer and builder never share a machine)
-    confidence: implementation-only
-    notes: |
-      Four jobs of the release chain on main (stage-build, stage-image, stage-promote, stage-reproducibility) still break AC1 and are listed exclusions in bin/job-isolation-test.sh with their reason: the chain-v030 landing (cache#514) replaces those files. The exclusion list shrinks to nothing then.
-      A tool that publishes no release binary (govulncheck) is built in its own job that holds no credential and reaches the credential-holding job as an artifact whose sha256 equals the build job's output.
-    acceptance_criteria:
-      - id: REQ-REL-011-AC1
-        given: "any workflow job in the repository that holds a credential: a secrets.* reference, an environment, a permissions grant of id-token: write or packages: write"
-        when: "bin/job-isolation-test.sh judges every workflow file"
-        then: "none of the job's steps compiles or builds (go install, go build, goreleaser, docker build or buildx build, melange or apko build, make, cargo, npm run build); a tool the job needs is installed through bin/install-scanner.sh as a checksum-pinned release binary, and govulncheck, which has no release binary, is built in its own job with no credential and handed to auditor.yml's audit job as an artifact whose sha256 the audit job compares with the build job's output before it runs; the only jobs that may break this are the four listed release-chain exclusions, each with its reason, and a mutated copy of a workflow that adds a build to a credential-holding job fails the test"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-011-AC2
-        given: "any workflow job in the repository"
-        when: "bin/job-isolation-test.sh judges every workflow file"
-        then: "the job has at most one build step (a second compile step in the same job fails), the one listed exclusion being stage-build's predicate step that only names goreleaser; each build is its own job"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-
-  - id: REQ-REL-012
-    title: A pull request into the release carries a passed-audit record for its exact head
-    statement: >
-      A pull request into the release carries a passed-audit record for its exact head, or it cannot merge (release
-      process decision 6, maintainers approved Oct 23 2026:
-      "once we agree on this if it can be coded it should be"). The release is main. The record is the branch
-      audit/<head sha>: one commit whose only parent is that head, verified by GitHub, authored by a writer named in
-      .github/policy/audit-writers.json of the base checkout, adding only the file audit-record, which is the record
-      itself. Nothing is stored in the pull request's own files, and a new push changes the head sha, so an earlier
-      record no longer applies. The verdict is part of the
-      existing auditor-review-gate (agent-review-gate.yml): main's copy of the judge runs over the head, so a pull request
-      cannot edit or skip it, and a retarget re-runs it.
-      For a pull request Dependabot opened the Dependabot reviewer is the review: no record is written for it, and
-      the same judge passes its head on the reviewer's success (AC9 to AC12).
-    source: [.github/workflows/agent-review-gate.yml, bin/audit-record-judge.sh, bin/audit-record.py, .github/policy/audit-writers.json]
-    tier: community
-    introduced: v0.3.0
-    origin: release process decision 6 (Oct 23 2026); the Dependabot exception, Nov 11 2026
-    confidence: implementation-only
-    notes: >
-      No new required check: auditor-review-gate is not required per pull request on main (the owner took it off the
-      ruleset on Nov 12 2026; release-only-checks.json still has release admission require it), so a missing record
-      blocks the box merger's clearance, not GitHub's merge button. It therefore lands only after the writer (a later
-      pull request) and the dispatch that calls it exist, on the landing day, together with the ruleset rule that only
-      the writer creates branches under audit/** (the release manager's step). The record commit adds one file,
-      audit-record, because the API can only make a commit that changes something.
-      The Dependabot rule (AC9 to AC12) changes only the judge and the record writer. The gate workflow, its check
-      name and the required checks are unchanged. Without a passing record, a Dependabot head passes only on the
-      reviewer's success on that head, or, with no verdict of its own, as a clean merge of main into a head that passes
-      this way.
-    acceptance_criteria:
-      - id: REQ-REL-012-AC1
-        given: "a pull request whose base is main and that Dependabot did not open (AC9 to AC12 have those), and the head sha it has now"
-        when: "the verdict job of agent-review-gate.yml (and its scheduled sweep) judges it with bin/audit-record-judge.sh and bin/audit-record.py of the default branch"
-        then: "it passes only if the branch audit/<head sha> exists and holds one commit whose only parent is that head, that GitHub verified, that a writer named in .github/policy/audit-writers.json of the default branch authored (login and numeric id, a bot) and that the writer or GitHub itself committed, with the fixed message audit record, adding exactly the one file audit-record; otherwise the auditor-review-gate fails; since the owner took the gate off the ruleset (Nov 12 2026) the record no longer blocks GitHub's merge, and the box merger merges only after the review seats and the cleared row"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-012-AC2
-        given: "a record that is missing, for another head, stale (a parent that is not the head, two parents, none), adding another file or none or two, with another message, not verified, authored by anyone but a named writer (another login, another id, not a bot, unknown), committed by anyone but a named writer or GitHub itself, or any answer that is malformed, or a GitHub API error, or a writers policy that is missing or malformed, or a head sha that is not 40 lower-case hex, or an empty base"
-        when: "the judge decides"
-        then: "it fails closed and says why (an API error says it is one); no doubt passes"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-012-AC3
-        given: "a pull request whose base is not main"
-        when: "the judge runs"
-        then: "it passes without reading any record (the release is main; a section merging into a feature branch is audited by the process, not by this gate)"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-012-AC4
-        given: "the verdict job and the sweep of agent-review-gate.yml"
-        when: "the auditor matrix runs them as written with stand-ins for the checks"
-        then: "each calls the passed-audit record judge, publishes success only when it and the four other checks all exit 0, and runs main's copy of the judge and of the writers policy over the pull request's head as data (the existing rules of that workflow: a retarget re-runs it, the pull request cannot edit or skip it)"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-012-AC5
-        given: "a workflow dispatch of agent-review-gate.yml with a pull request number and a head sha, sent by bin/audit-record-request.sh (which the automation runs once the pull request's review has cleared: it checks the pull request is open into main at exactly that head and requests nothing otherwise; the ops runner's --cleared step may call it)"
-        when: "the record job runs"
-        then: "it takes nothing else from the pull request, writes nothing unless the actor who dispatched it is a dispatcher named in the policy file (anyone with write access can start a workflow; only a named login can vouch for a review), and re-reads the pull request and writes nothing unless it is open, into main, with exactly that head; it leaves a record that already passes alone; otherwise it makes ONE signed commit on audit/<head sha> parented on that head, with the fixed message, adding the file audit-record, through the committed signed-commit CLI with an App token that holds contents write and pull requests read and nothing else, and judges what it wrote with the review gate's own judge; the signed-commit guard allows the branch audit/<sha> only on top of that same sha and no other audit/ name"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-012-AC6
-        given: "a pull request whose review-gate verdict is an old failure (older than six hours) and whose head now has a record branch"
-        when: "the scheduled sweep runs"
-        then: "it judges the head again and publishes the verdict, like a recent failure; an old failure whose head has no record branch is left alone, as before. The sweep's existing bound applies: it reads the 200 open pull requests into main that gh lists first, as it always has, and a pull request beyond them is judged by its own run or by a later push"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-012-AC7
-        given: "a release tag that reaches source admission and is not a patch tag (a vX.Y.0 tag or a release candidate), whose signature the earlier admission step verified"
-        when: "the whole-release audit step of stage-admission.yml runs main's copy of the judge and of the writers policy over it"
-        then: "admission continues only if the tagged commit has the same passed-audit record as a pull request into main (the branch audit/<tagged sha>) AND the release manager's signed tag message carries exactly one line Audit-approved: <the record commit's sha>, naming that very record; a missing, stale, forged, unverified or differently-approved record, an ambiguous or missing approval line, or a GitHub API error stops admission; a patch tag (vX.Y.Z with Z of 1 or more) needs neither"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-012-AC8
-        given: "a dispatch of the record job with the word release as the pull request and a commit sha"
-        when: "the writer's prepare script runs"
-        then: "a whole-release record is written only for a commit that main contains (main is identical to it or ahead of it) and only for a named dispatcher, with the same signed commit on audit/<sha> as for a pull request; bin/audit-record-request.sh makes the request after the same check"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-012-AC9
-        given: "a head with no passing record that GitHub names as the head of exactly one open pull request, which Dependabot opened into main (the pull request's user is dependabot[bot], id 49699333, a bot) from a dependabot/ branch of the repository itself, and a well-formed writers policy on the default branch"
-        when: "the judge runs (main's copy, in the verdict job and the sweep, which hold the head's commits as git objects and check none of the head out)"
-        then: "it passes without a record on the Dependabot reviewer's success and nothing else: the newest dependabot-reviewer check run that an audit writer's App (an App whose bot account is listed under writers in .github/policy/audit-writers.json) put on the head (all runs read, not only GitHub's latest) is completed with the conclusion success and an external_id equal to the version of the reviewer's files in the checked-out main (REQ-DEP-001-AC14; a success with another external_id, or none, refuses); or the head has no such check run and is a clean merge of main into the head before it and nothing more (two parents, the first the head before it, the second a commit of the checked-out main, its tree the one git makes of merging the two), and that parent passes in the same way, at most 50 such merges back; a read of GitHub that fails, or a full page of 100 (which GitHub may have cut), is no verdict and the judge exits 3; the verdict job and the sweep hold the read scope of each endpoint the judge reads there: contents: read for the record branch and its commit, checks: read and pull-requests: read; the record job keeps contents: read, uses the App token and fails closed."
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-012-AC10
-        given: "a dispatch of the record job for an open pull request into main that Dependabot opened (its user is dependabot[bot], id 49699333, a bot) from a dependabot/ branch of the repository itself"
-        when: "the writer's prepare script runs"
-        then: "it refuses and writes nothing, whatever the reviewer says of the head. Any other pull request is recorded as before, including one Dependabot opened from another branch or from a fork. A passed-audit record on the exact head also passes the gate, even on a head the reviewer failed."
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-012-AC11
-        given: "a head with no passing record that GitHub names as the head of exactly one open pull request, which Dependabot opened into main (the pull request's user is dependabot[bot], id 49699333, a bot) from a dependabot/ branch of the repository itself, and a well-formed writers policy on the default branch"
-        when: "the judge runs (main's copy, in the verdict job and the sweep, which hold the head's commits as git objects and check none of the head out)"
-        then: "a head that does not pass as AC9 says is refused, saying why: no verdict on the head (or, for a clean merge of main, on the head before it, and so on back), on a patch as on a major; a newest verdict that is a failure, neutral, any other conclusion, or unfinished; a verdict that cannot be read (for example a check entry with a missing or empty check name or App slug, which is the App's short name); a head that carries a commit or a change of its own after the passed head. A GitHub API error is reported as an API error, not as a refusal, and the judge exits 3."
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-012-AC12
-        given: "a head with no passing record"
-        when: "the judge runs (main's copy, in the verdict job and the sweep, which hold the head's commits as git objects and check none of the head out)"
-        then: "the record rule stands, as for every other pull request, when another open pull request has the same head, when GitHub's page of pull requests holds an entry whose state cannot be read or an open entry whose head sha cannot be read, when Dependabot did not open it (another author, id or account type, a branch not under dependabot/, a fork, another base, closed, another head), or when the writers policy is missing or malformed; in that last case GitHub is not asked whose head it is. The judge's release mode, which stage-admission.yml runs, never asks whose head it is."
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
 
   - id: REQ-REL-013
     title: Release admission requires the checks the ruleset does not list
     statement: >
       Release admission and the patch release's ready step shall require the checks of
-      .github/policy/release-only-checks.json together with those of required-checks.json, and a change to that list
-      shall be red on every pull request.
-    source: [.github/policy/release-only-checks.json, bin/required-check-guard.sh, .github/workflows/ci.yml, .github/workflows/stage-admission.yml, .github/workflows/release.yml]
+      .github/policy/release-only-checks.json together with those of required-checks.json.
+    source: [.github/policy/release-only-checks.json, .github/workflows/stage-admission.yml, .github/workflows/release.yml]
     tier: community
     introduced: v0.3.0
     origin: the owner's trim of the ruleset (Nov 12 2026)
@@ -2242,15 +1845,6 @@ requirements:
           each reads required-checks.json and release-only-checks.json on its own, and refuses unless that file is an object whose required_checks is a non-empty array;
           a missing, empty, null or malformed file never lowers the requirement, whatever the other file holds;
           the requirement is the two lists together
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-013-AC2
-        given: a pull request or a push to main whose release-only-checks.json is not the eight entries pinned in bin/required-check-guard.sh on main
-        when: the required-check guard runs
-        then: >-
-          the guard fails and prints each entry that differs;
-          each entry is compared whole: its context, its integration_id and its scope;
-          the pin is main's copy of the guard, so a change to the file, the judge and the guard in one pull request is still red
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-013-AC3
@@ -2267,8 +1861,7 @@ requirements:
         when: it judges the head
         then: >-
           it refuses a carriage return, a next-line (U+0085), a line separator (U+2028) or a paragraph separator (U+2029) anywhere in ci.yml, because YAML ends a line at each of them and the judge does not;
-          on the landing path too it requires the required-check-guard job and the top-level keys to be byte for byte those of the landing commit's own ci.yml, with only the checkout's digest and version comment free;
-          it requires the guard suite's step (bash bin/required-check-guard-test.sh) in the allowlist job as it requires that job's other pinned steps
+          on the landing path too it requires the top-level keys to be byte for byte those of the landing commit's own ci.yml, with only the checkout's digest and version comment free
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
