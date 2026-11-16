@@ -57,7 +57,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "d14a2a949b158f3845d8971aa5b03b0e5dd23620cb25367df667a6085bd0914b",
+      "sha256": "3ecbad1caa071954b6bdbcbec73124748ddb75cd398b110eb837e8ece3351540",
       "tools": [
         "make",
         "at",
@@ -1470,7 +1470,7 @@
     },
     {
       "path": "bin/check-guide-plan.py",
-      "sha256": "cc05bc34dff6b98cc112d4f531ca543a81bb79d927addd315b0884bbcea7bef3",
+      "sha256": "0e3fd0236fab9b9981af8a7af251e68f9ae6f9d1982a30830117997a8f956528",
       "tools": [
         "at",
         "command",
@@ -1630,7 +1630,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-verify: the tag, the release policy, then Build's, Sign's, Rebuild's and Check's records in rule 69's order (REQ-CHAIN-007-AC4); no secret or token is bound to this step",
-      "sha256": "c57edb304580f9b34bceb22cbd09e8b82fc4b4d59ec4aa7836f5304b774e3b04",
+      "sha256": "5cc278c309d83c7838a4c400de608d50a1511fd3796c7e586947f522dfba330a",
       "exceptions": [
         {
           "rule": "deny",
