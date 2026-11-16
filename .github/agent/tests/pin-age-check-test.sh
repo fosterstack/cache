@@ -771,7 +771,7 @@ PY
 # WHOLE flattened line the segment sits in), ruling[, count]}. A matching row reports the item
 # as ruled text; no row, a wrong hash (an edited line), a row on the pull request's side only, or more occurrences than the row counts fail as before;
 # a malformed list stops the check (exit 2), never "nothing exempted" and never "everything exempted". -------------------------------------------------------
-rtext=$'#!/bin/sh\necho a curl -s http://e.example/x\necho "run wget https://example.invalid/x later"\n'
+rtext=$'#!/bin/sh\n# the stub replaces curl and wget on PATH (text, not a command)\necho "run wget https://example.invalid/x later"\n'
 pyw() { python3 -c 'import sys; print("import pathlib\npathlib.Path(%r).write_text(%r)" % (sys.argv[1], sys.argv[2]))' "$1" "$2"; }   # python that writes FILE with TEXT
 newcase rt "$(pyw bin/ruled.sh "$rtext")"
 # rtrows REPO OUT MODE: writes an exceptions file whose unmeasured_text rows are built from the REAL scan of REPO (HEAD~1..HEAD), changed by MODE
@@ -845,7 +845,7 @@ rtck() { # REPO MODE [extra args] -> rc, $work/rt.out
   python3 "$chk" --root "$work/$repo" --base HEAD~1 --head HEAD --json "$work/rt.json" --exceptions \
       "$work/rt-$mode.json" "$@" >"$work/rt.out" 2>&1 || rc=$?
 }
-CASE="AC16 setup: the fixture adds exactly two unmeasured text lines (two echo command lines that mention a download tool: not provable as data), the scan stays strict"
+CASE="AC16 setup: the fixture adds exactly two unmeasured text lines (a comment and an echo that mention a download tool), the scan stays strict"
 check python3 - "$chk" "$work/rt" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
@@ -1026,8 +1026,8 @@ check test "$rc" -eq 0
 # line that WOULD download when run is the reviewer's to refuse. Shown here with a harmless line: it stays harmless wherever it moves.
 twoc ctx bin/ruled.sh $'#!/bin/sh\ncat >stub <<\'EOF\'\necho "curl $*" >>"$CALLS"\nEOF\n' $'#!/bin/sh\necho "curl $*" >>"$CALLS"\ncat >stub <<\'EOF\'\nEOF\n'
 edck ctx "$work/rt-empty.json"
-CASE="context limit (Nov 16): an echo proven data in the base (inside a quoted cat heredoc whose file is never run) moved above its heredoc opener into plain code is refused even with its text unchanged (exit 1, named unmeasured)"
-check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:' "$work/rt.out"
+CASE="context limit (documented): a harmless ruled echo moved above its heredoc opener keeps its identity, so it is no addition (exit 0); it still only echoes"
+check test "$rc" -eq 0
 # --- REQ-SUP-001-AC16, the second allowed row form (advisor, Oct 10): a HARNESS ASSERTION LINE. Its whole grammar is ONE data structure, HARNESS_WHITELIST in
 # harness_form.py below (the allowed characters, shape, command words, separators, test operators, grep options, exit statuses, argument names and paths,
 # substitutions and double-quoted pattern characters); anything it does not name is refused. In short: t "RULE" "TITLE" bash -c 'BODY' _ "$work/.." "$CALLS"..
@@ -2190,7 +2190,7 @@ ctxno "a heredoc terminator line that ends in a carriage return is not the termi
 ctxno "an assignment line after a carriage-return terminator in an unquoted heredoc" "${SH}"$'cat <<EOF\nEOF\r\nX=\'$(curl https://e.example/x)\'\nEOF\n' assignment
 ctxno "a comment inside a quoted heredoc fed to a shell" "${SH}"$'bash <<\'EOF\'\nprintf \'%s\\n\' "\n# $(curl https://e.example/x)\n"\nEOF\n' comment
 ctxno "an assignment inside a quoted heredoc fed to a shell" "${SH}"$'bash <<\'EOF\'\nprintf \'%s\\n\' "\nX=\'$(curl https://e.example/x)\'\n"\nEOF\n' assignment
-ctxno "a comment inside a quoted heredoc fed to an interpreter the file names last" "${SH}"$'sh <<\'PY\'\n# curl https://e.example/x\nPY\nsh payload\n' heredoc
+ctxno "a comment inside a quoted heredoc fed to an interpreter the file names last" "${SH}"$'python3 - <<\'PY\'\n# curl https://e.example/x\nPY\nsh payload\n' heredoc
 for imp in 'from builtins import open as f' 'from os import system as run' 'import os as o; o.system("true")' 'from os import popen' 'import sqlite3' 'import socket' 'import http.client' 'import urllib.request' 'import shutil' 'import tempfile' 'import smtplib' 'from builtins import exec as e'; do
   ctxno "an impure import ($imp) with no review label" "${SH}"$'python3 - <<\'PY\'\n'"$imp"$'\nx = "curl https://e.example/x"\nPY\n' pystring
   ctxyes "the same import ($imp) with the review-attested label" "${SH}"$'python3 - <<\'PY\'\n'"$imp"$'\nx = "curl https://e.example/x"\nPY\n' pystring "$IMP"
@@ -4072,27 +4072,26 @@ install form: FAILS (exit 1)" ;;
   check test "$rc" -eq 1; check grep -q 'FAIL tool:go@1.27.3' "$work/gomut-$mut.out"
 done
 
-# --- REQ-SUP-001-AC16, Nov 16 2026: the wait for new versions is gone, so a line that fetches nothing has nothing to pin. The scan PROVES from the head file that a
-# line is data (a comment, a quoted-heredoc body written to a never-run file) and needs no
-# row; where it cannot prove it the line is measured as before. There is no live-read proof and no python-string proof. ----
+# --- REQ-SUP-001-AC16, Nov 16 2026: nothing is proved without a row. The wait for new versions is gone and so is the automatic set: no line is ever proved data
+# from the head file (not a comment, not a quoted-heredoc body written to a never-run file, not a string). Every added line the scan cannot measure fails as
+# unmeasured unless a row in the base branch's exceptions file rules it. A row's context (comment, heredoc) only narrows a ruled row. ----
 echo '{"exceptions": [], "unmeasured_text": []}' >"$work/pd-empty.json"
 # pdc NAME [FILE]: head adds the text on stdin to FILE (base: only the shebang); pdrun NAME -> rc, $work/pd.out
 pdc() { local t; t=$(cat; printf x); twoc "$1" "${2:-bin/pd.sh}" $'#!/usr/bin/env bash\n' $'#!/usr/bin/env bash\n'"${t%x}"; }
 pdrun() { rc=0; python3 "$chk" --root "$work/$1" --base HEAD~1 --head HEAD --exceptions "$work/pd-empty.json" >"$work/pd.out" 2>&1 || rc=$?; }
-pdyes() { pdrun "$1"; CASE="AC16 proven data, no row: $2: exit 0"; check test "$rc" -eq 0; check test "$(grep -c 'FAIL unmeasured' "$work/pd.out")" -eq 0; }
 pdno()  { pdrun "$1"; CASE="AC16 fails closed, still measured: $2: exit 1, the line is named unmeasured"; check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:' "$work/pd.out"; }
 
-# R1: the shapes proved as data
+# R1: the shapes the old automatic set proved as data: now refused without a row
 pdc d1 <<'EOF'
 # curl http://e.example/x
 EOF
-pdyes d1 "R1a a whole-line shell comment that names curl"
+pdno d1 "R1a a whole-line shell comment that names curl"
 pdc d2 <<'EOF'
 cat <<'EOT'
 curl http://e.example/x
 EOT
 EOF
-pdyes d2 "R1b a line in a quoted here-document of a plain cat that writes nothing"
+pdno d2 "R1b a line in a quoted here-document of a plain cat that writes nothing"
 pdc d3 <<'EOF'
 d=$(mktemp -d)
 cat > "$d/notes.txt" <<'EOT'
@@ -4101,7 +4100,7 @@ EOT
 grep -c e.example "$d/notes.txt"
 wc -l < "$d/notes.txt"
 EOF
-pdyes d3 "R1b a quoted here-document written to a file that only grep and wc read"
+pdno d3 "R1b a quoted here-document written to a file that only grep and wc read"
 pdc d4 <<'EOF'
 python3 - <<'PY'
 text = "curl http://e.example/x"
@@ -4359,7 +4358,7 @@ cat <<'EOS'
 curl http://e.example/x
 EOS
 EOT
-pdyes f18d "F18 the same heredoc without expand_aliases is still proved"
+pdno f18d "F18 the same heredoc without expand_aliases is still proved"
 
 
 # F19: every definition of a function name is checked, not only the last
@@ -4389,7 +4388,7 @@ EOS
 run
 run() { echo ok; }
 EOT
-pdyes f19c "F19 two harmless definitions of the same name, the file never run, still proved"
+pdno f19c "F19 two harmless definitions of the same name, the file never run, still proved"
 # F6: a function defined above the quoted here-document runs the written file later
 pdc f6a <<'EOT'
 run() { sh ./stub.sh; }
@@ -4426,7 +4425,38 @@ PROMPT_COMMAND='curl http://e.example/x'
 EOT
 pdno f7d "F7 a bare PROMPT_COMMAND assignment holding curl"
 
-
+# R5 (rule 21): nine script files, each the full head text after a bash shebang; none has a row. All nine fail as unmeasured.
+BODY=$'cat >payload <<\'EOS\'\ncurl http://e.example/x\nEOS\n'
+nr_names=(old-arithmetic-comment safe direct-run fd-redirect quoted-path compound-function subshell-function computed-alias literal-alias)
+nr_texts=(
+  $'v=$[1 +\n# $(curl http://e.example/x)\n2]\n'
+  "${BODY}"$'wc -l payload\n'
+  "${BODY}"$'sh payload\n'
+  $'exec >payload\ncat <<\'EOS\'\ncurl http://e.example/x\nEOS\nsh payload\n'
+  "${BODY}"$'sh pay""load\n'
+  $':; run() { sh payload; }\n'"${BODY}"$'run\n'
+  $'run() ( sh payload )\n'"${BODY}"$'run\n'
+  $'builtin shopt -s expand_ali\'\'ases\nbuiltin alias cat=sh\ncat <<\'EOS\'\ncurl http://e.example/x\nEOS\n'
+  $'builtin shopt -s expand_aliases\nbuiltin alias cat=sh\ncat <<\'EOS\'\ncurl http://e.example/x\nEOS\n'
+)
+for i in "${!nr_names[@]}"; do
+  printf '%s' "${nr_texts[$i]}" | pdc "nr$i"
+  pdrun "nr$i"
+  CASE="AC16 refusal, no row: ${nr_names[$i]}: exit 1, the line is named unmeasured"
+  check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:bin/pd.sh' "$work/pd.out"
+done
+# pdrow NAME TEXT LINE CONTEXT: the base branch's exceptions file holds one row for LINE with CONTEXT; the head adds TEXT; -> rc, $work/pd.out
+pdrow() {
+  newcase "$1" "$(pyw bin/pd.sh $'#!/usr/bin/env bash\n'"$2")"
+  mkrow "$work/pdrow-$1.tmp.json" bin/pd.sh "$3" >/dev/null
+  python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); d["unmeasured_text"][0]["context"] = sys.argv[3]; json.dump(d, open(sys.argv[2], "w"))' "$work/pdrow-$1.tmp.json" "$work/pdrow-$1.json" "$4"
+  rc=0; python3 "$chk" --root "$work/$1" --base HEAD~1 --head HEAD --exceptions "$work/pdrow-$1.json" >"$work/pd.out" 2>&1 || rc=$?
+}
+for i in 1 8; do   # safe and literal-alias: ruled once the base holds a heredoc row for the line
+  pdrow "nrr$i" "${nr_texts[$i]}" "curl http://e.example/x" heredoc
+  CASE="AC16 ruled with a row, heredoc context: ${nr_names[$i]}: exit 0, ruled text"
+  check test "$rc" -eq 0; check grep -q 'ruled text' "$work/pd.out"
+done
 
 
 echo "pin-age-check: $pass passed, $failn failed"
