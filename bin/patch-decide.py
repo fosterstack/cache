@@ -20,7 +20,7 @@ with the floating-tags amendment; advisor read-backs 0051/0055/0056; REQ-REL-009
                           image no longer reports); unknown or unreadable never counts as removed.
   floating                amendment: :X.Y always; :X and :latest only when this is the highest released version.
 """
-import argparse, html, json, os, re, subprocess, sys, unicodedata
+import argparse, fnmatch, html, json, os, re, subprocess, sys, unicodedata
 FIX_EXACT = {".snyk", "osv-scanner.toml"}
 FIX_PREFIX = (".vex/", ".auditor/")
 NEUTRAL_PREFIX = (".github/", "docs/", "requirements/", "test-evidence/")
@@ -1129,11 +1129,59 @@ def _scope(req):
     return "push" if s is None or s is False else s      # identity, not ==: scope 0 is not push (Codex #159 r2, B6)
 
 
-def ready(required, check_runs):
+ADMISSION = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".github", "workflows", "stage-admission.yml")
+QUALIFYING_EVENTS = ("schedule", "workflow_dispatch")
+
+
+def admission_table(path=ADMISSION):
+    """[(fnmatch pattern, workflow file)] from the case arms of stage-admission.yml's required-check step, the one table
+    admission binds a context to its file by. An arm with no `want=` (the closing `*`) binds nothing."""
+    arms, inside = [], False
+    for line in open(path):
+        if 'case "$ctx" in' in line:
+            inside = True
+        elif inside and line.strip() == "esac":
+            break
+        elif inside:
+            m = re.match(r"\s*(.+?)\) want=(\S+) ;;", line)
+            if m:
+                arms += [(pat.strip().replace('"', ""), m.group(2)) for pat in m.group(1).split("|")]
+    return arms
+
+
+def _bound_file(context, table):
+    for pattern, workflow in table:
+        if fnmatch.fnmatchcase(context, pattern):
+            return workflow
+    return None
+
+
+def _evidence(req, mine, table, sha):
+    """"ok", "wait" or "red" for one required check. A release-only check counts only from the run admission accepts: its
+    file's workflow, a schedule or workflow_dispatch run, on the tagged commit; the latest such run decides."""
+    workflow = _bound_file(req["context"], table) if req.get("release_only") else None
+    if workflow is None:
+        if any(r.get("status") == "completed" and r.get("conclusion") == "success" for r in mine):
+            return "ok"
+        return "wait" if not mine or any(r.get("status") != "completed" for r in mine) else "red"
+    mine = sorted(mine, key=lambda r: r.get("id", 0))
+    qualifying = [r for r in mine if r.get("path") == ".github/workflows/" + workflow
+                  and r.get("event") in QUALIFYING_EVENTS and sha in (None, r.get("head_sha"))]
+    if qualifying:
+        latest = qualifying[-1]
+        if latest.get("status") != "completed":
+            return "wait"
+        return "ok" if latest.get("conclusion") == "success" else "red"
+    return "wait" if not mine or any(r.get("status") != "completed" for r in mine) else "red"
+
+
+def ready(required, check_runs, sha=None, table=None):
     """(verdict, why) for the tagged commit's push-scoped required checks, judged as source admission judges them
-    (stage-admission.yml): a check counts only as a success from its pinned app. "ready": every one has one. "wait": none
+    (stage-admission.yml): a check counts only as a success from its pinned app, and a release-only one only from the run
+    admission accepts (see _evidence). "ready": every one has one. "wait": none
     is red with nothing left to run (a run is missing, queued or in progress). "no": a check finished without success and
     no run of it is still pending. pull_request-scoped checks are admission's to read on the merged PR head."""
+    table = admission_table() if table is None else table
     waiting, red = [], []
     reqs = required.get("required_checks") if isinstance(required, dict) else None
     # a policy admission would reject is never ready (Codex #159 r1, B6): admission fails on these
@@ -1148,11 +1196,10 @@ def ready(required, check_runs):
         if _scope(req) != "push":
             continue
         mine = [r for r in check_runs if r.get("name") == req["context"] and r.get("app_id") == req["integration_id"]]
-        if any(r.get("status") == "completed" and r.get("conclusion") == "success" for r in mine):
-            continue
-        if not mine or any(r.get("status") != "completed" for r in mine):
+        verdict = _evidence(req, mine, table, sha)
+        if verdict == "wait":
             waiting.append(req["context"])
-        else:
+        elif verdict == "red":
             red.append(req["context"])
     if red and not waiting:
         return "no", "not green on the tagged commit: " + ", ".join(red)
@@ -1417,7 +1464,9 @@ def main(argv=None):
     d.add_argument("--out", required=True)
     k = sub.add_parser("ready")
     k.add_argument("--required", required=True, help=".github/policy/required-checks.json")
-    k.add_argument("--check-runs", required=True, help="JSON list of the commit's check runs {name, status, conclusion, app_id}")
+    k.add_argument("--check-runs", required=True,
+                   help="JSON list of the commit's check runs {name, status, conclusion, app_id, id, path, event, head_sha}")
+    k.add_argument("--sha", help="the tagged commit: a release-only check counts only from a run on it")
     r = sub.add_parser("removed")
     r.add_argument("--release-grype", required=True, action="append", help="one per scanned release image")
     r.add_argument("--gomod", required=True)
@@ -1500,7 +1549,7 @@ def main(argv=None):
                 fh.write(new_nn)
         return 0
     if a.cmd == "ready":
-        verdict, why = ready(json.load(open(a.required)), json.load(open(a.check_runs)))
+        verdict, why = ready(json.load(open(a.required)), json.load(open(a.check_runs)), a.sha)
         print(verdict, _clean(why))
         return 0
     if a.cmd == "removed":
