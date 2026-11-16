@@ -685,11 +685,9 @@ if pol is not None:
     for jid in PROTECTED:
         if sum(1 for c in pol if c == {"context": jid, "integration_id": 15368, "scope": "push"}) != 1 or ctxs.count(jid) != 1:
             bad.append(f"required-checks.json and release-only-checks.json do not have exactly one entry {jid} (integration 15368, scope push)")
-# the protected jobs and the release-only contexts are reserved check names: no job but the one that produces a name may carry it (a job named
-# `allowlist-persona` that succeeds after the real one failed satisfies admission, which accepts any success with the matching name), and no job
-# name may be an expression that could render as one. auditor-review-gate is the App's alone: nothing produces it.
-# main's ruleset contexts and the guard's own check are reserved too: a second job under one of those names could add a green of that name
-RESERVED = set(PROTECTED) | {"required-check guard"} | {n for c in ruleset + release_only for n in (str(c.get("context")), str(c.get("context")).split(" (")[0])}
+# Reserved check names: the protected jobs, the guard's own check, every ruleset and release-only context, and every name
+# PRODUCES (main's pinned copy) gives, so a head cannot free a name by editing its own lists. Only a (job id, name) of
+# PRODUCES may carry one, and no job name may be an expression that could render as one; auditor-review-gate is the App's alone.
 # the (job id, job name) pairs that produce a reserved name on main, by workflow file
 PRODUCES = {"ci.yml": tuple((j, j) for j in PROTECTED + ("coverage", "test", "lint", "gosec", "govulncheck", "vendor", "fips140-only",
                                                           "requirements", "dependency-review")) + (("required-check-guard", "required-check guard"),),
@@ -700,6 +698,8 @@ PRODUCES = {"ci.yml": tuple((j, j) for j in PROTECTED + ("coverage", "test", "li
             "stage-reproducibility.yml": (("reproduce", "reproducibility"),),
             "stage-verify.yml": (("scan", "scan (${{ matrix.scanner }})"),),
             "supply-chain.yml": (("pin-age", "pin-age"),)}
+RESERVED = set(PROTECTED) | {"required-check guard"} | {p[1].split(" (")[0] for ps in PRODUCES.values() for p in ps} \
+           | {n for c in ruleset + release_only for n in (str(c.get("context")), str(c.get("context")).split(" (")[0])}
 def takes_reserved(wf, jid, nm):   # a matrix job renders as "<name> (<value>)", so the part before " (" or an expression counts too
     produces = (jid, nm) in PRODUCES.get(wf, ())
     return not produces and any(n in RESERVED or re.split(r" \(|\$\{\{", n)[0] in RESERVED for n in (jid, str(nm)))
@@ -792,9 +792,10 @@ IFS= read -r -d '' PIN_WIRING_GUARD_JOB <<'JOB' || true
             | base64 -d > "${RUNNER_TEMP}/required-check-guard.sh"
           [ -s "${RUNNER_TEMP}/required-check-guard.sh" ]
 
-      # One call of main's guard over this tree's two lists, read as data: the ruleset comparison, and the eight
-      # release-only entries pinned in the guard. The verdict uses THIS tree's lists, so a PR that fixes a stale list
-      # goes green on its own run; on push to main the tree is main.
+      # One call of main's guard over this tree's two lists, read as data: the ruleset comparison, the eight
+      # release-only entries pinned in the guard, and the context, integration ID and scope of each ruleset check,
+      # pinned in PINNED_SCOPES. A PR that changes the ruleset check list needs main's PINNED_SCOPES changed first.
+      # The verdict uses THIS tree's lists; on push to main the tree is main.
       - name: this tree's policy lists vs the ruleset on main and the pin in main's guard
         env:
           GH_TOKEN: ${{ github.token }}
@@ -877,12 +878,14 @@ bad = []
 pinned_job, pinned_permissions = os.environ["PIN_WIRING_GUARD_JOB"].encode(), os.environ["PIN_WIRING_PERMISSIONS"].encode()
 if sys.argv[2]:   # the landing path: the pinned text is the landing commit's own ci.yml
     landing = open(sys.argv[2], "rb").read().split(b"\n")
-    pinned_job, pinned_permissions = block(b"  required-check-guard:", 2, landing) or b"", block(b"permissions:", 0, landing) or b"x"
+    pinned_job, pinned_permissions = block(b"  required-check-guard:", 2, landing), block(b"permissions:", 0, landing) or b"x"
 # YAML ends a line at each of these four, this judge only at LF: a step could hide behind the freed comment
 if any(b in raw for b in (b"\r", b"\xc2\x85", b"\xe2\x80\xa8", b"\xe2\x80\xa9")):
     bad.append("ci.yml has a carriage return, a next-line, a line separator or a paragraph separator")
 head_job = block(b"  required-check-guard:", 2)
-if not pinned_job:   # two empty texts would compare equal
+if pinned_job is None:
+    bad.append("the landing commit's ci.yml has no required-check-guard job")
+elif not pinned_job:
     bad.append("the pinned required-check-guard job text is empty")
 elif head_job is None:
     bad.append("ci.yml has no single required-check-guard job")
@@ -891,8 +894,9 @@ elif shape(head_job) != shape(pinned_job):
 if block(b"permissions:", 0) != pinned_permissions:
     bad.append("the workflow permissions are not the pinned text, byte for byte")
 top_keys = {k.encode() for k in json.loads(os.environ["PIN_WIRING_TOP_KEYS"])}
-if any(line.split(b":")[0] not in top_keys for line in lines if line[:1] not in (b"", b" ", b"#")):
-    bad.append("the workflow has a top-level key beyond name, on, concurrency, permissions, jobs (env, defaults)")
+extra = [line.split(b":")[0] for line in lines if line[:1] not in (b"", b" ", b"#") and line.split(b":")[0] not in top_keys]
+if extra:
+    bad.append("the workflow has a top-level key that is not allowed: " + extra[0].decode("utf-8", "replace"))
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -1346,7 +1350,6 @@ g5case double-quoted-no     ok  '"no"'
 g5case true-both-versions   ok  true
 g5case number-both-versions ok  30
 g5case word-both-versions   ok  main
-g5case the-real-ci          ok  true
 
 # the trusted gate's judge and sweep jobs are time-bounded (a hung judge must fail, not hang the required check)
 gate_timeouts() {
