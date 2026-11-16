@@ -322,7 +322,7 @@ jobs:
         run: |
           set -euo pipefail
           tok=$(curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-                  "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://api.anthropic.com" | jq -r .value)
+                  --url "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://api.anthropic.com" -o - | jq -r .value)
           [ -n "$tok" ] && [ "$tok" != "null" ] || { echo "::error::no identity token"; exit 1; }
           echo "::add-mask::$tok"
           printf '%s' "$tok" > "$RUNNER_TEMP/identity-token"
@@ -398,7 +398,7 @@ jobs:
           mint() {
             local tok
             tok=$(curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-                    "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://api.anthropic.com" | jq -r .value) || return 1
+                    --url "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://api.anthropic.com" -o - | jq -r .value) || return 1
             [ -n "$tok" ] && [ "$tok" != "null" ] || return 1
             echo "::add-mask::$tok"
             printf '%s' "$tok" > "$ANTHROPIC_IDENTITY_TOKEN_FILE"
