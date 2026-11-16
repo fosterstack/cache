@@ -632,7 +632,7 @@ for jid, want_steps in SPLIT_STEPS.items():
             bad.append(f"the {jid} steps are not exactly the judged list ({'; '.join(why)})")
 # the required-check policy (release admission reads it): required-checks.json (the ruleset's list) and release-only-checks.json (admission's extra
 # list) are each a readable JSON object whose required_checks is a list of objects; together they have unique contexts and exactly one correct entry
-# (integration 15368, scope push) for each protected job. Anything unreadable or malformed is refused (fail closed). The seven release-only entries
+# (integration 15368, scope push) for each protected job. Anything unreadable or malformed is refused (fail closed). The eight release-only entries
 # are pinned whole in bin/required-check-guard.sh, not here.
 PROTECTED = ("allowlist",) + tuple(SPLIT_STEPS)
 def read_checks(env_name):
@@ -837,7 +837,7 @@ bad = []
 pinned_job, pinned_permissions = os.environ["PIN_WIRING_GUARD_JOB"].encode(), os.environ["PIN_WIRING_PERMISSIONS"].encode()
 if sys.argv[2]:   # the landing path: the pinned text is the landing commit's own ci.yml
     landing = open(sys.argv[2], "rb").read().split(b"\n")
-    pinned_job, pinned_permissions = block(b"  required-check-guard:", 2, landing) or b"", block(b"permissions:", 0, landing) or b"x"
+    pinned_job, pinned_permissions = block(b"  required-check-guard:", 2, landing) or b"x", block(b"permissions:", 0, landing) or b"x"
 # YAML ends a line at each of these four, this judge only at LF: a step could hide behind the freed comment
 if any(b in raw for b in (b"\r", b"\xc2\x85", b"\xe2\x80\xa8", b"\xe2\x80\xa9")):
     bad.append("ci.yml has a carriage return, a next-line, a line separator or a paragraph separator")
@@ -876,8 +876,8 @@ if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
   landing="$here/.github/agent/tests/pin-wiring-landing.sh"
   [ -f "$landing" ] || { printf '%s\nno landing judge at %s\n' "$main_out" "$landing"; exit 1; }
   # the landing form's guard job and top-level keys are judged against the landing commit's own ci.yml, read as a git object
-  if land_out=$(bash "$landing" 2>&1 && git show "$LANDING_COMMIT:.github/workflows/ci.yml" > "$work/landing-ci.yml" \
-                  && bytes_judge "$work/head-ci.yml" "$work/landing-ci.yml"); then exit 0; fi
+  if land_out=$({ bash "$landing" && git show "$LANDING_COMMIT:.github/workflows/ci.yml" > "$work/landing-ci.yml" \
+                  && bytes_judge "$work/head-ci.yml" "$work/landing-ci.yml"; } 2>&1); then exit 0; fi
   printf '%s\nthe landing form also refuses it: %s\n' "$main_out" "$land_out"
   exit 1
 fi
