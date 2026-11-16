@@ -169,7 +169,7 @@ def verify_job(j):
         elif u.startswith("actions/download-artifact@"):
             kinds.append("down"); w = s.get("with") or {}
             if not PIN.match(u.split(" ")[0]) or w.get("name") not in DOWN or set(w) != {"name", "path"} or re.match(r"^(bin|\.github|\.|/|\.\.)(/|$)", w.get("path", ".")):
-                bad.append("verify job: download-artifact must be digest-pinned, name in the allowlist, an explicit path outside bin/ and .github/: %s" % w)
+                bad.append("verify job: download-artifact must be digest-pinned, name in the allowlist, an explicit path outside bin/ and .github/ (a signed apk record or rapk record comes from this run only: no run-id, token or repository): %s" % w)
         elif u.startswith("actions/upload-artifact@"):
             kinds.append("up"); w = s.get("with") or {}
             if not PIN.match(u.split(" ")[0]) or w.get("name") not in UP:
@@ -205,7 +205,7 @@ def verify_job(j):
         bad.append("verify job: its one upload must be exactly name witness-release-verify, path witness-release-verify and if-no-files-found error (the Witness record of release-verify; a missing record fails the job; the release job's own upload is witness-release): %s" % upl)
     got = sorted((((x.get("with") or {}).get("name")), ((x.get("with") or {}).get("path"))) for x in j.get("steps") or [] if str(x.get("uses", "")).startswith("actions/download-artifact@"))
     if got != sorted(VERIFY_PAIRS.items()):
-        bad.append("verify job: its downloads must be exactly these fourteen artifact/path pairs (with the signed rapk and apk record downloads), each once and spelled exactly (the action trims whitespace from a path, so nothing else may reach the uploaded directory): %s" % got)
+        bad.append("verify job: its downloads must be exactly these fourteen artifact/path pairs (with the two signed rapk record downloads and the two signed apk record downloads), each once and spelled exactly (the action trims whitespace from a path, so nothing else may reach the uploaded directory): %s" % got)
     if has_expression(j.get("steps")):
         bad.append("verify job: no step may hold an expression (${{ }}): a protected step carries no expression and no explicit credential binding; the checkout action's default token use and Witness's identity token are token uses that no expression or binding in these steps accounts for")
     return bad
@@ -296,7 +296,7 @@ def stage(path):
         elif u.startswith("actions/download-artifact@"):
             kinds.append("down"); w = s.get("with") or {}
             if not PIN.match(u.split(" ")[0]) or w.get("name") not in DOWN or set(w) != {"name", "path"} or w.get("path", ".") != w.get("path", ".").strip() or re.match(r"^(bin|\.github|\.|/|\.\.)(/|$)", w.get("path", ".").strip()):
-                bad.append("download-artifact must be digest-pinned, name in %s, an explicit path with no surrounding whitespace (the action trims it) outside bin/ and .github/: %s" % (sorted(DOWN), w))
+                bad.append("download-artifact must be digest-pinned (a signed apk record or rapk record comes from this run only: no run-id, token or repository), name in %s, an explicit path with no surrounding whitespace (the action trims it) outside bin/ and .github/: %s" % (sorted(DOWN), w))
         elif u.startswith("actions/upload-artifact@"):
             kinds.append("up"); w = s.get("with") or {}
             if not PIN.match(u.split(" ")[0]) or w.get("name") not in UP:
@@ -328,7 +328,7 @@ def stage(path):
     dl = {(x.get("with") or {}).get("name"): (x.get("with") or {}).get("path") for x in j.get("steps") or [] if str(x.get("uses", "")).startswith("actions/download-artifact@")}
     rgot = sorted((((x.get("with") or {}).get("name")), ((x.get("with") or {}).get("path"))) for x in j.get("steps") or [] if str(x.get("uses", "")).startswith("actions/download-artifact@"))
     if rgot != sorted(RELEASE_PAIRS.items()):
-        bad.append("the release job: its downloads must be exactly these eighteen artifact/path pairs (with the signed rapk and apk record downloads), each once and spelled exactly (the action trims whitespace from a path, and the job's upload holds the Witness record directories): %s" % rgot)
+        bad.append("the release job: its downloads must be exactly these eighteen artifact/path pairs (with the two signed rapk record downloads and the two signed apk record downloads), each once and spelled exactly (the action trims whitespace from a path, and the job's upload holds the Witness record directories): %s" % rgot)
     if dl.get("signed-witness-check") != "witness-check":
         bad.append("artifact signed-witness-check must be downloaded to witness-check, got %r" % dl.get("signed-witness-check"))
     if dl.get("admission-baseline") != "witness-build":
