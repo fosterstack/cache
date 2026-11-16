@@ -528,6 +528,18 @@ printf '# guide\n\n```sh\ncosign verify <IMAGE_REF>; true\n```\n' > "$work/gl11/
 printf '[{"command": "cosign verify <IMAGE_REF>; true", %s}]\n' "$R" > "$work/gl11/docs/verify-release.cannot-run.json"
 expect caught "AC7 a cannot-run entry the shared judge rejects (a verify form, then '; true') is refused" \
   "; true" guidelist "$work/gl11/docs/verify-release.md"
+# the shared judge's rejection is final, whether it is a split rejection or a policy rejection; a reason never overrides it
+for n in 12 13 14; do mkdir -p "$work/gl$n/docs"; done
+GA='cosign verify <IMAGE_REF> --key release.rsa.pub; true'
+GB='cosign verify <IMAGE_REF>'
+GC='cosign verify <IMAGE_REF> --key release.rsa.pub'
+glw() { printf '# guide\n\n```sh\n%s\n```\n' "$2" > "$work/$1/docs/verify-release.md"
+  python3 -c 'import json,sys; json.dump([{"command": sys.argv[1], "reason": "needs the image in a registry; run right after publishing"}], open(sys.argv[2], "w"))' "$2" "$work/$1/docs/verify-release.cannot-run.json"; }
+glw gl12 "$GA"; glw gl13 "$GB"; glw gl14 "$GC"
+expect caught "AC7 row 14 a verify form with a key flag then '; true' is refused by the shared judge" "refused by the shared judge" guidelist "$work/gl12/docs/verify-release.md"
+expect caught "AC7 row 14 a verify form the judge rejects on policy only (no key flag) is refused by the shared judge" "refused by the shared judge" guidelist "$work/gl13/docs/verify-release.md"
+expect caught "AC7 row 14 the policy rejection carries the judge's own reason" "it needs exactly one key flag whose value is release.rsa.pub" guidelist "$work/gl13/docs/verify-release.md"
+expect ok "AC7 row 14 a verify form the judge accepts (with the key flag) passes" "" guidelist "$work/gl14/docs/verify-release.md"
 # ---- AC10: the old acceptance stages --------------------------------------------------------------------------------
 mkdir -p "$work/r/.github/workflows"; cp "$work/release.yml" "$work/r/.github/workflows/release.yml"
 expect ok "fixture: none of the old acceptance stages and no call to them" "" removed "$work/r"
@@ -710,7 +722,7 @@ else
   bad "AC2 witnessed-local.sh exit $rc, ran the script under: $(grep -o -- ' -- .*' "$fw/args" 2> /dev/null)"
 fi
 
-EXPECT=314
+EXPECT=318
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
