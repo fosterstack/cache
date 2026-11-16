@@ -949,6 +949,80 @@ for why, repo, user, tok in (("another registry path", "a/b/c", "u", "t"), ("a d
         got = "refused"
     check("registry sweep refuses %s" % why, got == "refused", got)
 
+# hub_private: nothing is pushed unless the registry proves the repository private (the authenticated read answers 200, the anonymous read is refused)
+class HubFake:
+    def __init__(self, auth_token=200, auth_list=200, anon_token=200, anon_list=401, anon_body=b'{"name": "x", "tags": ["a"]}'):
+        self.calls, self.cfg, self.anon_body = [], dict(auth_token=auth_token, auth_list=auth_list, anon_token=anon_token, anon_list=anon_list), anon_body
+    def __call__(self, req, timeout=None):
+        m, u, a = req.get_method(), req.full_url, req.get_header("Authorization")
+        self.calls.append((m, u, a))
+        anon = a is None
+        if u.startswith("https://auth.docker.io/token?"):
+            st = self.cfg["anon_token" if anon else "auth_token"]
+            if st != 200: raise urllib.error.HTTPError(u, st, "x", {}, io.BytesIO(b""))
+            return RegResp(b'{"token": "reg-%s"}' % (b"anon" if anon else b"auth"))
+        if urllib.parse.urlsplit(u).path == "/v2/%s/tags/list" % REPO_:
+            if a not in (None, "Bearer reg-auth", "Bearer reg-anon"): raise urllib.error.HTTPError(u, 401, "x", {}, io.BytesIO(b""))
+            st = self.cfg["anon_list" if a != "Bearer reg-auth" else "auth_list"]
+            if st != 200: raise urllib.error.HTTPError(u, st, "x", {}, io.BytesIO(b""))
+            return RegResp(self.anon_body if a != "Bearer reg-auth" else b'{"name": "x", "tags": ["a"]}')
+        raise urllib.error.HTTPError(u, 404, "unexpected %s" % u, {}, io.BytesIO(b""))
+def hub_priv(h, user="test-user", tok="push-tok"):
+    try:
+        L.hub_private(REPO_, user, tok, h); return "returned", ""
+    except (urllib.error.HTTPError, RuntimeError, ValueError) as e:
+        return "raised", str(e)
+h = HubFake()
+got, msg = hub_priv(h)
+check("hub_private: an authenticated read of the tag list that answers 200 and an anonymous read that is refused with 401 return normally (private)", got == "returned", (got, msg))
+check("hub_private: only the token service and the registry's tag list of the repository are called, the authenticated token request carries Basic auth and the anonymous one carries no Authorization header",
+      all(urllib.parse.urlsplit(c[1]).hostname in ("auth.docker.io", "registry-1.docker.io") for c in h.calls) and all(c[0] == "GET" for c in h.calls)
+      and any(c[1].startswith("https://auth.docker.io/token?") and c[2] == "Basic " + base64.b64encode(b"test-user:push-tok").decode() for c in h.calls)
+      and any(c[1].startswith("https://auth.docker.io/token?") and c[2] is None for c in h.calls)
+      and any(urllib.parse.urlsplit(c[1]).path == "/v2/%s/tags/list" % REPO_ and c[2] == "Bearer reg-auth" for c in h.calls), [(c[0], c[1][-40:], c[2]) for c in h.calls])
+for why, anon in (("an anonymous token request refused with 401", dict(anon_token=401)), ("an anonymous token request refused with 403", dict(anon_token=403)),
+                  ("an anonymous tag list refused with 401", dict(anon_list=401)), ("an anonymous tag list refused with 403", dict(anon_list=403)), ("an anonymous tag list answered 404", dict(anon_list=404))):
+    got, msg = hub_priv(HubFake(**anon))
+    check("hub_private: %s counts as private" % why, got == "returned", (got, msg))
+got, msg = hub_priv(HubFake(anon_list=200))
+check("hub_private: an anonymous tag list that answers 200 is a public repository and raises with a message that says so", got == "raised" and "public" in msg.lower(), (got, msg))
+got, msg = hub_priv(HubFake(anon_list=200, anon_body=b'{"name": "x", "tags": null}'))
+check("hub_private: an anonymous 200 with an empty tag list is still public", got == "raised" and "public" in msg.lower(), (got, msg))
+for why, cfg in (("a token request refused with 401 for the login", dict(auth_token=401)), ("a token request refused with 403 for the login", dict(auth_token=403)),
+                 ("a tag list refused with 401 for the login", dict(auth_list=401)), ("a tag list refused with 403 for the login", dict(auth_list=403)),
+                 ("a tag list answered 404 for the login", dict(auth_list=404)), ("a tag list answered 500 for the login", dict(auth_list=500)),
+                 ("an anonymous tag list answered 500", dict(anon_list=500)), ("an anonymous tag list answered 502", dict(anon_list=502)),
+                 ("an anonymous token request answered 500", dict(anon_token=500))):
+    got, msg = hub_priv(HubFake(**cfg))
+    check("hub_private raises on %s (never read as public or private)" % why, got == "raised", (got, msg))
+    check("hub_private: the message for %s holds neither the user's token nor a registry token" % why, "push-tok" not in msg and "reg-auth" not in msg and "reg-anon" not in msg, msg)
+got, msg = hub_priv(HubFake(anon_list=200), tok="s3cr3t-token-value")
+check("hub_private: the user's token is not in the message of a public repository", got == "raised" and "s3cr3t-token-value" not in msg, (got, msg))
+got, msg = hub_priv(HubFake(auth_list=401), tok="s3cr3t-token-value")
+check("hub_private: the user's token is not in the message of a refused login", got == "raised" and "s3cr3t-token-value" not in msg, (got, msg))
+for why, user, tok in (("no user", "", "push-tok"), ("no token", "test-user", ""), ("no credential", "", "")):
+    got, msg = hub_priv(HubFake(), user, tok)
+    check("hub_private raises with %s (a repository is never proven private without the login)" % why, got == "raised", (got, msg))
+for why, repo in (("another registry path", "a/b/c"), ("a dot-dot", "../x"), ("no slash", "cache")):
+    try:
+        L.hub_private(repo, "u", "t", HubFake()); got = "accepted"
+    except ValueError:
+        got = "refused"
+    check("hub_private refuses %s as a repository name" % why, got == "refused", got)
+check("hub_private: the shell calls the command with the repository only, the user and the token come from the environment",
+      'hub-private --repository "$DH_REPO"' in open(os.path.join(root, "bin/vex-live-run.sh")).read())
+_priv, _real = [], L.hub_private
+L.hub_private = lambda repo, user, tok, opener=None: _priv.append((repo, user, tok))
+_saved = {k: os.environ.get(k) for k in ("DOCKERHUB_USERNAME", "DOCKERHUB_TEST_USERNAME", "DOCKERHUB_TEST_PUSH_TOKEN", "DOCKERHUB_SCOUT_TOKEN")}
+os.environ.update(DOCKERHUB_USERNAME="scout-user-sentinel", DOCKERHUB_TEST_USERNAME="test-user-sentinel", DOCKERHUB_TEST_PUSH_TOKEN="push-sentinel", DOCKERHUB_SCOUT_TOKEN="scout-sentinel")
+try:
+    _rc = L.main(["hub-private", "--repository", "ns/name"])
+finally:
+    L.hub_private = _real
+    for k, v in _saved.items():
+        os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+check("hub-private (the command): checks with DOCKERHUB_TEST_USERNAME and DOCKERHUB_TEST_PUSH_TOKEN, never the Scout user or token", _rc == 0 and _priv == [("ns/name", "test-user-sentinel", "push-sentinel")], (_rc, _priv))
+
 # scout-delta: the informational probe of the Build layout (never a verdict)
 def gl(*ids): return {"vulnerabilities": [{"identifiers": [{"value": i}], "location": {"dependency": {"package": {"name": "p"}, "version": "1"}}} for i in ids]}
 with tempfile.TemporaryDirectory() as t:
@@ -1147,12 +1221,12 @@ case "$*" in
   "logout "*) echo "SCOUT-LOGOUT" >> "$RUNNER_TEMP/events.log" ;;
   *"scout cves"*) echo "SCAN-ENV push-env=${DOCKERHUB_TEST_PUSH_TOKEN:+set}" >> "$RUNNER_TEMP/events.log"; n=$(grep -c "scout cves" "$RUNNER_TEMP/docker.log"); cat "$RUNNER_TEMP/scout-$n.json" ;;
   *) exit 0 ;; esac'''
-    # Docker Hub's repository API, stubbed: the visibility answer is the only thing the leg reads from it (PANEL:94, nothing is pushed anywhere public)
-    HUB_PRIVATE = '{"is_private": true}'
-    def hub_curl(answer):
-        call = 'echo "curl-call $*" >> "$RUNNER_TEMP/events.log"; '
-        return call + ("exit 22" if answer is None else "printf '%s' '" + answer + "'")
-    def leg(reports, env=None, mode="rc", extra="", hub=HUB_PRIVATE, curl=None):
+    # the visibility check is the command `python3 .../vex-live-test.py hub-private --repository NS/NAME`, stubbed: every other python3 call runs the real one
+    HUB_PRIVATE = "ok"
+    def hub_py(answer):
+        call = ('case "$*" in *hub-private*) echo "hub-private-call $*" >> "$RUNNER_TEMP/events.log"; ' + ('exit 1' if answer is None else 'exit 0') + ' ;; esac; ')
+        return call + 'exec /usr/bin/python3 "$@"'
+    def leg(reports, env=None, mode="rc", extra="", hub=HUB_PRIVATE, py=None):
         files = "".join("printf %%s '%s' > \"$RUNNER_TEMP/scout-%d.json\"; " % (r, i + 1) for i, r in enumerate(reports))
         body = (files + 'export PUSHED_LOG="$RUNNER_TEMP/p"; : > "$PUSHED_LOG"; MODE=%s; tag=v0.3.0-rc1; ' % mode
                 + 'FIXTURE_SRC=docker.io/library/debian@%s; FIX=%s; RUN=live-1-1; CVE=%s; ' % (fx_man, fx_man, LEG_CVE)
@@ -1160,7 +1234,7 @@ case "$*" in
                 + extra + "scout_leg && echo leg-rc=0 || echo leg-rc=$?; echo \"push-tok-after=${DOCKERHUB_TEST_PUSH_TOKEN-UNSET} scout-tok-after=${DOCKERHUB_SCOUT_TOKEN-UNSET}\"; cat \"$RUNNER_TEMP/crane.log\" \"$RUNNER_TEMP/docker.log\" \"$PUSHED_LOG\" \"$RUNNER_TEMP/guide.log\" 2>/dev/null || true; echo =EVENTS=; cat \"$RUNNER_TEMP/events.log\"")
         e = dict(ENV_OK, FIXTURE_LAYOUT_SRC=fx_src, CANDIDATE_DIR=os.path.join(lt, "cand"))
         e.update(env or {})
-        return sh(body, {"crane": CRANE, "docker": SCOUT, "curl": curl or hub_curl(hub)}, e)
+        return sh(body, {"crane": CRANE, "docker": SCOUT, "python3": py or hub_py(None if hub is None else hub)}, e)
     OK_FIX = [gl_report(LEG_CVE, "CVE-A", OURS_CVE), gl_report("CVE-A", OURS_CVE)]
     OK_PROD = [gl_report("CVE-B", OURS_CVE), gl_report("CVE-B")]
     rc, out = leg(["{}", "{}"] + OK_FIX + OK_PROD)    # the first two answers belong to the informational probe of the Build layout (an unreadable report there is information)
@@ -1242,36 +1316,22 @@ case "$*" in
           "leg-rc=0" in out and any("registry://ghcr.io/fosterstack/cache:0.3.0" in l for l in sc) and any("registry://ghcr.io/fosterstack/cache@" + prod_man in l for l in sc)
           and not any(l.startswith("scout cves --format gitlab oci-dir://") for l in sc), (rc, sc, out[-300:]))
 
-    # the Docker Hub repository must be private before the first push (PANEL:94): visibility is read from the API; anything but is_private true refuses
+    # the Docker Hub repository must be proven private by the hub-private command before the first push (PANEL:94)
     rc, out = leg(["{}", "{}"] + OK_FIX + OK_PROD)
     ev = out.split("=EVENTS=\n", 1)[1].split("\n") if "=EVENTS=" in out else []
     first_push = next((i for i, l in enumerate(ev) if l.startswith(("crane push", "crane copy"))), None)
-    seen_curl = [i for i, l in enumerate(ev) if l.startswith("curl-call")]
-    check("scout leg: with is_private true it reads the repository from Docker Hub's API before its first push, and proceeds",
-          "leg-rc=0" in out and seen_curl and first_push is not None and seen_curl[0] < first_push
-          and any("fosterstack-live/cache-live-test" in ev[i] and "hub.docker.com" in ev[i] for i in seen_curl), (rc, ev[:6], out[-200:]))
-    for why, answer in (("is_private false", '{"is_private": false}'), ("an answer without is_private", '{"name": "cache-live-test"}'),
-                        ("an answer that is not JSON", "<html>502</html>"), ("an empty answer", "")):
-        rc, out = leg(["{}", "{}"] + OK_FIX + OK_PROD, hub=answer)
-        check("scout leg refuses to push when the API says %s: non-zero, and no crane push, copy or journal line" % why,
-              "leg-rc=0" not in out and "leg-rc=" in out and "crane push" not in out and "crane copy" not in out and "live-1-1" not in out, (rc, out[-300:]))
+    seen_hub = [i for i, l in enumerate(ev) if l.startswith("hub-private-call")]
+    check("scout leg: when the hub-private command succeeds the leg proceeds, and the call comes before the first crane push",
+          "leg-rc=0" in out and seen_hub and first_push is not None and seen_hub[0] < first_push, (rc, ev[:6], out[-200:]))
+    check("scout leg: the hub-private call is made once with the repository and holds neither the token nor the user on its command line",
+          len(seen_hub) == 1 and "--repository fosterstack-live/cache-live-test" in ev[seen_hub[0]]
+          and not any(w in ev[seen_hub[0]] for w in ("push-tok", "scout-tok", "hubtest-user", "hubuser-secret")), [ev[i] for i in seen_hub])
+    check("scout leg: the hub-private call has --repository as its only option",
+          len(seen_hub) == 1 and [w for w in ev[seen_hub[0]].split() if w.startswith("--")] == ["--repository"]
+          and ev[seen_hub[0]].split()[-3:-1] == ["hub-private", "--repository"], [ev[i] for i in seen_hub])
     rc, out = leg(["{}", "{}"] + OK_FIX + OK_PROD, hub=None)
-    check("scout leg refuses to push when the API call itself fails", "leg-rc=0" not in out and "crane push" not in out and "crane copy" not in out, (rc, out[-300:]))
-    # a private repository answers 404 to an anonymous call: the visibility is asked with the job's token (on
-    # stdin as `-` or `@-`, in a header or config file, or in an argument), so what curl receives, by any of
-    # those ways, holds one of the job's Docker Hub tokens
-    SEEN_CURL = (
-        'echo "curl-call $*" >> "$RUNNER_TEMP/events.log"; seen="$*"; '
-        'for a in "$@"; do f=${a#@}; [ -f "$f" ] && seen="$seen $(cat "$f")"; done; '
-        'for a in "$@"; do case "$a" in -|@-) seen="$seen $(timeout 2 cat 2> /dev/null || true)" ;; esac; done; '
-        'echo "curl-seen $(printf %s "$seen" | tr "\\n" " ")" >> "$RUNNER_TEMP/events.log"; '
-        'printf \'%s\' \'{"is_private": true}\'')
-    rc, out = leg(["{}", "{}"] + OK_FIX + OK_PROD, curl=SEEN_CURL)
-    ev = out.split("=EVENTS=\n", 1)[1].split("\n") if "=EVENTS=" in out else []
-    seen_tok = [l for l in ev if l.startswith("curl-seen ") and ("push-tok" in l or "scout-tok" in l)]
-    check("scout leg: the Docker Hub visibility call carries the job's token (an anonymous call cannot see a "
-          "private repository)", "leg-rc=0" in out and any(l.startswith("curl-seen ") for l in ev) and seen_tok,
-          (rc, [l for l in ev if l.startswith("curl")][:4]))
+    check("scout leg refuses to push when the hub-private command fails: non-zero, and no crane push, copy or journal line",
+          "leg-rc=0" not in out and "leg-rc=" in out and "crane push" not in out and "crane copy" not in out and "live-1-1" not in out and "hub-private-call" in out, (rc, out[-300:]))
 
 # --- review rulings (s2-rows-P456, rows 85-86): sourcing runs nothing; one journal_push needing PUSHED_LOG; one root; a private Docker Hub repository
 def run_script(args, env, stubs, body=None):   # body: sourced with the stubs on PATH; else the script is executed; the stub calls come back as a list
