@@ -1757,7 +1757,7 @@ requirements:
       - id: REQ-DEP-001-AC4
         given: both readers' findings
         when: the reviewer decides
-        then: "the decision is mechanical: no \"breaks us\" from either reader, with the required-check guard matching, arms squash auto-merge, which merges only once every required check is green; any \"breaks us\" from either reader holds the PR, even when the other reader errored, with one issue carrying the readers' findings and the fix, which is ccode's; a reader error with no \"breaks us\" leaves no verdict and is retried next hour"
+        then: "the decision is mechanical: no \"breaks us\" from either reader arms squash auto-merge, which merges only once every required check is green; any \"breaks us\" from either reader holds the PR, even when the other reader errored, with one issue carrying the readers' findings and the fix, which is ccode's; a reader error with no \"breaks us\" leaves no verdict and is retried next hour"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC5
@@ -1803,11 +1803,13 @@ requirements:
       The ruleset on main and the committed required-check list shall be
       compared on every pull request and every push to main, so drift is red
       the day it happens, and a refusal shall open one issue.
-    source: [bin/required-check-guard.sh, .github/policy/required-checks.json, .github/workflows/ci.yml]
+    source: [.github/policy/required-checks.json, .github/workflows/ci.yml]
     tier: community
     introduced: v0.3.0
     origin: the release manager's approval (Sep 29 2026), "also approved"
     confidence: implementation-only
+    deprecated: true
+    deprecated_reason: The required-check guard and its drift issue were removed from the chain-v030 release branch (Nov 16 2026); GitHub's ruleset is the only list that gates merges. The committed list stays for release admission, and AC3 still holds for it.
     acceptance_criteria:
       - id: REQ-DEP-002-AC1
         given: any pull request and any push to main
@@ -1826,7 +1828,7 @@ requirements:
       - id: REQ-DEP-002-AC3
         given: the committed list .github/policy/required-checks.json and the jobs of .github/workflows/ci.yml
         when: the list is read
-        then: it names the job vendor once with scope push and the job marker-gate once with scope pull_request, each with integration ID 15368 (GitHub Actions), and ci.yml has a job of each name; the ruleset on main follows only by the owner's change in the GitHub UI, and until then the guard of AC1 is red, which is the stated failure mode
+        then: it names the job vendor once with scope push and the job marker-gate once with scope pull_request, each with integration ID 15368 (GitHub Actions), and ci.yml has a job of each name; the ruleset on main follows only by the owner's change in the GitHub UI
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
@@ -1844,7 +1846,7 @@ requirements:
       - id: REQ-DEP-003-AC1
         given: a Dependabot patch or minor pull request
         when: the auto-merge job runs
-        then: it gets squash auto-merge armed only after the required-check guard matches, so it merges only when every required check is green; a major is left to the reviewer
+        then: it gets squash auto-merge armed, so it merges only when every required check is green; a major is left to the reviewer
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-DEP-003-AC2
@@ -1872,7 +1874,7 @@ requirements:
     origin: the release manager's approval (Sep 29 2026), the cache side
     confidence: implementation-only
     deprecated: true
-    deprecated_reason: The fixer dispatch was removed from the repository (bin/dispatch-fixer.sh and the drift-fixer-dispatch job are gone); a held bump and a drift issue now stay as the issue the guard opened.
+    deprecated_reason: The fixer dispatch was removed from the repository (bin/dispatch-fixer.sh and the drift-fixer-dispatch job are gone); a held bump stays as its issue, and the required-check drift issue is gone with the guard.
     acceptance_criteria:
       - id: REQ-DEP-004-AC1
         given: a completed hold
@@ -1916,7 +1918,7 @@ requirements:
       - id: REQ-DEP-005-AC3
         given: the review gate (auditor-review-gate)
         when: the merge queue tests a group
-        then: its verdict for the queue's head commit is decided by the default branch's copy of the gate, never by a copy from the group or a pull request, and is posted when the queue starts its CI run; it reads the queue's commits as git objects and runs nothing of them, and only when the queue branch it fetches ends at the head commit of the event; it demands a two-parent merge for every group commit (the queue's merge method must be MERGE; a squash or rebase queue fails every group; its grouping must be ALLGREEN, so that every entry's own run must pass, and the required-check guard fails when a merge_queue rule on main says otherwise) and the passed-audit record for the exact head of every pull request in the group; main's pin, allowlist (given the queue ref), pin-wiring and scanner judges pass over the queue head; it fails, never passes, when any of these cannot be read or does not hold; no scheduled job judges the queue's refs, and the pull request publisher and the scheduled sweep post nothing on a head that is the tip of a live queue branch, so a pull request cannot replace the queue's verdict; a verdict that is not posted leaves the check absent and the queue ejects the group; and the App token is held only by a separate job that publishes the verdict on the queue's head
+        then: its verdict for the queue's head commit is decided by the default branch's copy of the gate, never by a copy from the group or a pull request, and is posted when the queue starts its CI run; it reads the queue's commits as git objects and runs nothing of them, and only when the queue branch it fetches ends at the head commit of the event; it demands a two-parent merge for every group commit (the queue's merge method must be MERGE; a squash or rebase queue fails every group; its grouping must be ALLGREEN, so that every entry's own run must pass) and the passed-audit record for the exact head of every pull request in the group; main's pin, allowlist (given the queue ref), pin-wiring and scanner judges pass over the queue head; it fails, never passes, when any of these cannot be read or does not hold; no scheduled job judges the queue's refs, and the pull request publisher and the scheduled sweep post nothing on a head that is the tip of a live queue branch, so a pull request cannot replace the queue's verdict; a verdict that is not posted leaves the check absent and the queue ejects the group; and the App token is held only by a separate job that publishes the verdict on the queue's head
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
@@ -5077,7 +5079,7 @@ requirements:
       - id: REQ-CI-005-AC5
         given: "the committed ci.yml and floors file (Fable ruling on cache#695: PR 2 of the wrap left eight suites in `all`, PR 3 migrated five of them)"
         when: "the floor check of the workflow run (`suite-guard-run.py all`) is asked which floored suites it runs itself, because no trusted counting step runs them"
-        then: "it runs exactly these three, and each suite runs this many times in a workflow run, its plain steps plus the one run of `all`: required-check-guard-test.sh (2 runs: its job holds a `permissions:` block, so it is not a plain job and its step cannot be a counting step; advisor Oct 24, AC1 unchanged) and marker-gate-test.sh (1 run) and pin-audit-go-major-test.sh (1 run), the last two known-red by design: no step of their own, run only by `all`. Every other floored suite is counted by its own step and runs once. The count is of the steps of ci.yml; a suite that another suite runs inside itself (the matrix suite's variant harness) is not counted here"
+        then: "it runs exactly these three, and each suite runs this many times in a workflow run, its plain steps plus the one run of `all`: required-check-guard-test.sh (1 run: no step of its own; it now holds only the merge queue's wiring cases, and keeps its name because a suite floor cannot be dropped) and marker-gate-test.sh (1 run) and pin-audit-go-major-test.sh (1 run), the last two known-red by design: no step of their own, run only by `all`. Every other floored suite is counted by its own step and runs once. The count is of the steps of ci.yml; a suite that another suite runs inside itself (the matrix suite's variant harness) is not counted here"
         verification: { method: unit, release_blocking: false }
         status: approved
 
