@@ -817,6 +817,11 @@ runeach fail "feature/x" "reviewer-version near-miss refused" \
   "bin/dependabot-reviewer-version.py" "bin/Dependabot-Reviewer-Version.sh" \
   "bin/sub/dependabot-reviewer-version.sh" "bin/dependabot-reviewer-version.sh "
 
+# main must admit every file it tracks, or the push check on main fails on its own files
+run pass main "the suite that judges admission evidence is admitted" bin/admission-evidence-test.sh
+mapfile -t tracked < <(git ls-files)
+run pass main "every tracked file of the repo is admitted on main" "${tracked[@]}"
+
 # Deferred (not admitted until the PR that adds them): the vendored tree.
 
 echo "----"
