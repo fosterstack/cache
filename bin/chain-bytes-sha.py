@@ -33,7 +33,7 @@ import sys
 
 MARKER = ".github/policy/rc-proof.json"
 SCRIPTS = ".github/policy/chain-scripts.json"
-# the build inputs the chain's builds read and no workflow or script names
+# the build inputs the chain's builds read and no workflow or listed file names
 BUILD_INPUTS = ("build/sealed-env.json", "build/archive.json", "build/melange.yaml", "build/apko.yaml",
                 "build/locks/fips-module.txt")
 RC_TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+")
