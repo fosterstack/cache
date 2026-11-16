@@ -167,7 +167,8 @@ def _package_key(sid):
     s = urllib.parse.unquote(str(sid)).split("?", 1)[0].split("#", 1)[0]
     s = s[4:].split("/", 1)[-1] if s.startswith("pkg:") else s
     name, _, ver = s.rpartition("@") if "@" in s else (s, "", "")
-    return (name.rsplit("/", 1)[-1].lower(), ver)
+    name = name.rsplit("/", 1)[-1].lower()
+    return (name, stdlib_version("golang", name, ver))
 
 
 def superseded(statements):
