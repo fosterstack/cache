@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-009-AC6, REQ-REL-009-AC13
+# proves: REQ-REL-009-AC6, REQ-REL-009-AC13, REQ-REL-013-AC1
 # Which signer source admission accepts for a release tag (automatic patch releases rule 3; advisor 0057): the owner's
 # SSH signature (allowed-signers) on any tag; the release.yml-on-main gitsign identity on a PATCH tag only (vX.Y.Z,
 # Z >= 1, the previous patch vX.Y.(Z-1) already released); an unsigned tag, any other signature format, an ambiguous
@@ -344,5 +344,13 @@ case_ baselines-from-commit bad "B = [s for s in S if 'APPROVED' in s.get('name'
 case_ any-signer-baselines bad "B = [s for s in S if 'APPROVED' in s.get('name','')][0]; B['run'] = B['run'].replace('--allowed-signers /tmp/policy/allowed_signers', '--allowed-signers allowed_signers')"
 case_ copy-unchecked      bad "B = [s for s in S if 'APPROVED' in s.get('name','')][0]; B['run'] = B['run'].replace('cmp -s', 'true')"
 case_ no-refuse-default  bad "sig['run'] = sig['run'].replace('*) echo \"::error::', '*) echo \"::notice::')"
+# REQ-REL-013-AC1: the step's real text against a fixture origin/main: each policy file must be an object with a
+# non-empty required_checks, or the step refuses and leaves no shorter merged list behind
+out=$(python3 "$root/bin/policy-merge-harness.py" \
+  "$root" stage-admission.yml "fetch policy from protected main" policy/required-checks.json "admission policy merge") && rc=0 || rc=$?
+echo "$out"
+nfail=$(grep -c '^FAIL' <<< "$out" || true)
+pass=$((pass + $(grep -c '^PASS' <<< "$out" || true))); failn=$((failn + nfail))
+[ "$rc" = 0 ] || [ "$nfail" != 0 ] || { failn=$((failn+1)); echo "FAIL policy merge cases did not finish"; }
 echo "admission-tag-signer wiring: $pass passed, $failn failed"
 [ "$failn" = 0 ]

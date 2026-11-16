@@ -113,6 +113,7 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
+# 158: + ^bin/policy-merge-harness\.py$ (the policy merge harness of the required-checks repair);
 # 156: - the pattern of the removed supply-chain observer program (the wait for new versions is gone); 157: +
 # ^bin/audit-record(\.py|-(judge|prepare|request|test)\.sh)$ (REQ-REL-012, the audit record writer); 156: +
 # ^bin/vendor-provenance-records\.py$ (REQ-VEND-001-AC15, the records step); 155: + ^bin/job-isolation-test\.sh$
@@ -123,7 +124,7 @@ ALLOWED_MENTIONS = {
 # 151: + the six bin/persona-uat* patterns (REQ-UAT-001); 145: + ^bin/vendor-provenance-test\.sh$ (REQ-VEND-001); 144:
 # + ^vendor/ subtree (REQ-VEND-001); 143: main's 139 (+ ^bin/scan-no-workflow-call-test\.sh$, REQ-SCAN-015) +
 # build-apk-helper.py, build/sealed-env.json (v0.3.0 region), bin/suite-guard*.sh, test-evidence/suite-floors.json
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 157, 6
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 158, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -175,7 +176,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # patterns (PR 2b-2c); + the scout-older-versions pattern (advisor 0520); + the six bin/persona-uat* patterns
 # (REQ-UAT-001); ruling D: the ^vendor/ pattern admits a dot-leading final file name; + the REQ-SCAN-015 scanner
 # guard, the REQ-TEST-001 suite guard patterns outside the v0.3.0 region, the REQ-VEND-001 ^vendor/ subtree pattern
-PINNED_SHA256 = "eefae88f93018c740bfddc43dfbd3b9cc2123abadcc9d62961f488d482374d06"
+PINNED_SHA256 = "0a9beb7c7427223be63dfd76b0ec25d4010642e734f9b7d1afbdf4a0fefb5017"
 if rstart and rend:
     import hashlib
     _b = _rawlines
