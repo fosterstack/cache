@@ -405,7 +405,9 @@ def fetch(month, edit=None, today=None, release_list=RELEASES, real_verifier=Fal
     out = os.path.join(tmp, "work")
     p = subprocess.run(["bash", os.path.join(env["REPO_DIR"], "bin/evidence-letter-fetch.sh"), month, out], cwd=env["REPO_DIR"], env=env,
                        capture_output=True, text=True)
-    got = sorted(os.listdir(out + "/rel")) if os.path.isdir(out + "/rel") else []
+    # every final release from v0.3.0 on is verified (its list and manifest are fetched) before its date is read, so rel/ holds a folder for each of them;
+    # the releases the fetch took for the letter are the ones whose files were fetched in full (digests.json is one of them)
+    got = sorted(d for d in os.listdir(out + "/rel") if os.path.isfile(out + "/rel/%s/digests.json" % d)) if os.path.isdir(out + "/rel") else []
     return p, got, open(os.path.join(tmp, "log")).read().splitlines(), out, fix
 
 
@@ -465,7 +467,7 @@ check("F1 5: each fetched release gets its own policy made for its tag, never fo
       and sum("policy make" in l and "--tag v0.4.0" in l for l in log) == 1
       and not any("policy make" in l and "--ref" in l for l in log), log)
 check("F1 9: the list is verified with the key of the policy that check-list then gets (the key the manifest holds)",
-      log.count(key_of(log)) == 2 and log.count("key-file: -----BEGIN PUBLIC KEY-----") == 2
+      log.count(key_of(log)) == 4 and log.count("key-file: -----BEGIN PUBLIC KEY-----") == 4
       and all(any("check-list --policy " in l and "/rel/%s/policy.json" % t in l for l in log)
               for t in ("v0.3.1", "v0.4.0")), log)
 check("AC10: the Check records are verified with the same command Release runs, under a policy made for the tag",
@@ -898,8 +900,10 @@ def window_manifest(valid_from, valid_to):
         openssl("pkey", "-in", keys + "/win.key", "-pubout", "-out", keys + "/win.pub")
         pub = open(keys + "/win.pub").read()
         der = openssl("pkey", "-pubin", "-in", keys + "/win.pub", "-outform", "DER")
-        body = json.dumps({"public_key": pub, "key_id": sha(der), "valid_from": valid_from, "valid_to": valid_to},
-                          sort_keys=True, indent=1).encode() + b"\n"
+        m = {"public_key": pub, "key_id": sha(der), "valid_from": valid_from}
+        if valid_to is not None:      # an open-ended window leaves the field out; "valid_to": null is not a valid value
+            m["valid_to"] = valid_to
+        body = json.dumps(m, sort_keys=True, indent=1).encode() + b"\n"
         open(keys + "/win-m.json", "wb").write(body)
         sig = openssl("dgst", "-sha256", "-sign", keys + "/root.key", keys + "/win-m.json")
         open(os.path.join(tmp, "old-line"), "w").write(pub.splitlines()[1])
