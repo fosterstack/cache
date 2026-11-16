@@ -634,13 +634,25 @@ for jid, want_steps in SPLIT_STEPS.items():
 # the required-check policy (release admission reads it): required-checks.json (the ruleset's list) and release-only-checks.json (admission's extra
 # list) are each a readable JSON object whose required_checks is a list of objects; together they have unique contexts and exactly one correct entry
 # (integration 15368, scope push) for each protected job. Anything unreadable or malformed is refused (fail closed). The release-only entries
-# are not judged here.
+# must be the eight pinned below, whole.
 PROTECTED = ("allowlist",) + tuple(SPLIT_STEPS)
 def read_checks(env_name):
     checks = json.load(open(os.environ[env_name]))["required_checks"]
     if not isinstance(checks, list) or not all(isinstance(c, dict) for c in checks):
         raise ValueError("required_checks is not a list of objects")
     return checks
+# the eight checks release admission requires and the ruleset does not list, whole (REQ-REL-013-AC2): main's copy of this judge
+# holds the pin, so a pull request cannot move the list it is judged by
+PINNED_RELEASE_ONLY = [
+    {"context": "acceptance-gradle", "integration_id": 15368, "scope": "push"},
+    {"context": "acceptance-maven (1.2.0)", "integration_id": 15368, "scope": "push"},
+    {"context": "acceptance-maven (1.2.3)", "integration_id": 15368, "scope": "push"},
+    {"context": "allowlist-chain", "integration_id": 15368, "scope": "push"},
+    {"context": "allowlist-persona", "integration_id": 15368, "scope": "push"},
+    {"context": "allowlist-pins-auditor", "integration_id": 15368, "scope": "push"},
+    {"context": "auditor-review-gate", "integration_id": 5054756, "scope": "pull_request"},
+    {"context": "coverage", "integration_id": 15368, "scope": "push"},
+]
 release_only = []
 try:
     ruleset = read_checks("PIN_WIRING_POLICY_FILE")
@@ -649,7 +661,14 @@ try:
 except (OSError, ValueError, KeyError, TypeError) as e:
     pol = None
     bad.append(f"required-checks.json or release-only-checks.json is unreadable or malformed ({type(e).__name__})")
+def entry_key(c):
+    return json.dumps(c, sort_keys=True)
 if pol is not None:
+    pinned, have = {entry_key(c) for c in PINNED_RELEASE_ONLY}, {entry_key(c) for c in release_only}
+    for key in sorted(have - pinned):
+        bad.append(f"release-only-checks.json has an entry the judge does not pin: {key}")
+    for key in sorted(pinned - have):
+        bad.append(f"release-only-checks.json lacks the pinned entry: {key}")
     ctxs = [c.get("context") for c in pol]
     for dup in sorted({c for c in ctxs if ctxs.count(c) > 1}, key=str):
         bad.append(f"required-checks.json and release-only-checks.json list the context {dup} more than once")
@@ -659,7 +678,7 @@ if pol is not None:
 # the protected jobs and the release-only contexts are reserved check names: no job but the one that produces a name may carry it (a job named
 # `allowlist-persona` that succeeds after the real one failed satisfies admission, which accepts any success with the matching name), and no job
 # name may be an expression that could render as one. auditor-review-gate is the App's alone: nothing produces it.
-RESERVED = set(PROTECTED) | {n for c in release_only for n in (str(c.get("context")), str(c.get("context")).split(" (")[0])}
+RESERVED = set(PROTECTED) | {n for c in PINNED_RELEASE_ONLY for n in (c["context"], c["context"].split(" (")[0])}
 PRODUCES = {"ci.yml": PROTECTED + ("coverage",), "acceptance.yml": ("acceptance-gradle", "acceptance-maven")}
 def takes_reserved(wf, jid, nm):   # a matrix job renders as "<name> (<value>)", so the part before " (" or an expression counts too
     produces = jid in PRODUCES.get(wf, ()) and nm == jid
@@ -777,10 +796,10 @@ LANDING_COMMIT=6a36b066b38cc9820be4db2f516057026df30b99   # chain-v030's commit;
 if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
   git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/ci.yml" > "$work/head-ci.yml" || { echo "pin-wiring: no ci.yml at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
   git show "${PIN_WIRING_JUDGE_GIT}:.github/policy/required-checks.json" > "$work/head-policy.json" || { echo "pin-wiring: no required-checks.json at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
-  # the landing form (chain-v030) has no release-only list: a commit without one is judged with an empty list
+  # only the landing form (chain-v030) has no release-only list: main's form refuses a commit without one (the judge
+  # reads the file that is not there and says so)
   git show "${PIN_WIRING_JUDGE_GIT}:.github/policy/release-only-checks.json" > "$work/head-release-only.json" \
-    2> /dev/null \
-    || echo '{"required_checks": []}' > "$work/head-release-only.json"
+    2> /dev/null || rm -f "$work/head-release-only.json"
   mkdir -p "$work/head-wf"
   for wf in $(git ls-tree --name-only "${PIN_WIRING_JUDGE_GIT}" .github/workflows/ | sed 's|.*/||'); do   # every workflow of the commit, as git objects
     git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/$wf" > "$work/head-wf/$wf" || { echo "pin-wiring: cannot read workflow $wf" >&2; exit 1; }
@@ -1367,7 +1386,10 @@ if w in ("required", "both"): req["required_checks"].append(dict(e))
 json.dump(req, open(sys.argv[2] + "-required.json", "w")); json.dump(rel, open(sys.argv[2] + "-release.json", "w"))
 PY
 }
-for pa in "release ok" "required ok" "neither bad" "both bad" "bad-id bad" "bad-scope bad" "bad-ctx bad"; do
+# "required" is bad: REQ-REL-013-AC2 pins the release-only list itself (the eight entries, whole), so the entry cannot
+# move to the ruleset list (required-checks.json) unless the judge's pin changes on main; the head's release-only
+# list then lacks a pinned entry and is refused.
+for pa in "release ok" "required bad" "neither bad" "both bad" "bad-id bad" "bad-scope bad" "bad-ctx bad"; do
   set -- $pa; pol_pa "$1" "$1"
   if out=$(PIN_WIRING_POLICY_FILE="$work/pol-pa-$1-required.json" PIN_WIRING_RELEASE_ONLY_FILE="$work/pol-pa-$1-release.json" \
        judge "$here/.github/workflows/ci.yml"); then got=ok; else got=bad; fi
