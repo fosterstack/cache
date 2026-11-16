@@ -327,6 +327,35 @@ for runs, want, why in [
     got = P.ready(REQ, runs)
     check("ready: %s -> %s" % (why, want), got[0] == want, got)
 check("ready: names what it waits on", "scan" in P.ready(REQ, [run("test")])[1])
+
+# A promotion or release-only check counts only from the workflow file that produces it, from a schedule or workflow_dispatch run,
+# on the tagged commit: the rule stage-admission applies, read from one table (a tag-push run is never the evidence)
+TAGGED = "1" * 40
+def prun(name, path, event, conclusion="success", head_sha=TAGGED):
+    return dict(run(name, conclusion=conclusion), path=".github/workflows/" + path, event=event, head_sha=head_sha)
+def one(ctx):
+    return {"required_checks": [{"context": ctx, "integration_id": 15368, "scope": "push", "release_only": True}]}
+check("ready: a scan success from scan.yml's dispatch run on the tagged commit -> ready",
+      P.ready(one("scan"), [prun("scan", "scan.yml", "workflow_dispatch")])[0] == "ready", P.ready(one("scan"), [prun("scan", "scan.yml", "workflow_dispatch")]))
+check("ready: a scan success from scan.yml's schedule run on the tagged commit -> ready",
+      P.ready(one("scan"), [prun("scan", "scan.yml", "schedule")])[0] == "ready", P.ready(one("scan"), [prun("scan", "scan.yml", "schedule")]))
+check("ready: a scan success from ci.yml, the wrong file -> no",
+      P.ready(one("scan"), [prun("scan", "ci.yml", "workflow_dispatch")])[0] == "no", P.ready(one("scan"), [prun("scan", "ci.yml", "workflow_dispatch")]))
+check("ready: a scan success from scan.yml's tag-push run -> no",
+      P.ready(one("scan"), [prun("scan", "scan.yml", "push")])[0] == "no", P.ready(one("scan"), [prun("scan", "scan.yml", "push")]))
+check("ready: an analyze (go) success from codeql.yml's push-to-main run -> no",
+      P.ready(one("analyze (go)"), [prun("analyze (go)", "codeql.yml", "push")])[0] == "no", P.ready(one("analyze (go)"), [prun("analyze (go)", "codeql.yml", "push")]))
+# every context in admission's own table: its file is accepted and another file is not
+adm_text = open(os.path.join(os.path.dirname(sys.argv[1]), "..", ".github/workflows/stage-admission.yml")).read()
+for contexts_, file_ in re.findall(r"^\s*(\S.*?)\) want=(\S+) ;;", adm_text, re.M):
+    for ctx_ in contexts_.split("|"):
+        ctx_ = ctx_.strip('"')
+        if ctx_.endswith("*"):
+            ctx_ = ctx_.rstrip('*" ') + " acceptance-gradle"   # the table's glob "acceptance / "*, one concrete context
+        got_ok = P.ready(one(ctx_), [prun(ctx_, file_, "workflow_dispatch")])
+        got_bad = P.ready(one(ctx_), [prun(ctx_, "ci.yml", "workflow_dispatch")])
+        check("ready: %r is accepted from %s, the file in admission's table, and not from ci.yml" % (ctx_, file_),
+              got_ok[0] == "ready" and got_bad[0] == "no", (got_ok, got_bad))
 pol = os.path.join(repo, "req.json"); json.dump(REQ, open(pol, "w"))
 cr = os.path.join(repo, "runs.json"); json.dump([run("test"), run("scan")], open(cr, "w"))
 import io, contextlib
