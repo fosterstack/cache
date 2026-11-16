@@ -747,7 +747,7 @@ check("AC9: if the bundle cannot be removed the one line says so",
 SIGNED_DEC3 = calendar.timegm((2026, 12, 3, 12, 0, 0))
 
 
-def present(pages, today="2026-12-10", old_manifest=None, without=None, signed=SIGNED_DEC3, published=None, promise=True, **extra):
+def present(pages, today="2026-12-10", old_manifest=None, without=None, signed=SIGNED_DEC3, published=None, promise=True, current=None, entries=None, **extra):
     """pages: [[(tag, draft, [asset name, or (name, 'norekor')])]]; every asset gets an id from 500 and a body.
     A release with a letter bundle also gets the key manifest and its signature (today's, or old_manifest's),
     except the asset named by without. signed: the unix time the letter was signed, which the bundle's Rekor integratedTime
@@ -767,6 +767,8 @@ def present(pages, today="2026-12-10", old_manifest=None, without=None, signed=S
                 entry = '{"integratedTime":"%s"%s,"inclusionProof":{"logIndex":"1"}}' % (
                     signed, ',"inclusionPromise":{"signedEntryTimestamp":"c2V0"}' if promise else "")
                 tlog = "[]" if kind == "norekor" else "[{}]" if signed is None else "[%s]" % entry
+                if entries is not None and kind != "norekor":     # entries: the integratedTimes of several Rekor entries
+                    tlog = "[%s]" % ",".join(entry.replace('"integratedTime":"%s"' % signed, '"integratedTime":"%s"' % t) for t in entries)
                 body = "a letter\n"
                 if name.endswith(".bundle"):
                     body = '{"verificationMaterial":{"tlogEntries":%s}}' % tlog
@@ -788,6 +790,8 @@ def present(pages, today="2026-12-10", old_manifest=None, without=None, signed=S
                 rels[-1]["published_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(signed))
         out.append(rels)
     json.dump(out, open(os.path.join(fix, "pages.json"), "w"))
+    if current is not None:       # current(tmp) installs the repository's own (current) key manifest before the run
+        current(tmp)
     script = os.path.join(env["REPO_DIR"], "bin/evidence-letter-present.sh")
     p = subprocess.run(["bash", script], cwd=env["REPO_DIR"], env=env, capture_output=True, text=True)
     return p, open(os.path.join(tmp, "log")).read().splitlines()
@@ -1052,6 +1056,44 @@ check("S2 row 6b: a bundle with an inclusion proof but no inclusionPromise is re
       one_line(pr) and "inclusionPromise" in pr.stderr and verifies(lr) == 0, (pr.returncode, pr.stderr, lr))
 pr, lr = present([[V4]])
 check("S2 row 6b: the control, a bundle with the inclusionPromise passes", pr.returncode == 0 and verifies(lr) == 1, (pr.stderr, lr))
+
+
+# F7 P1 / R5: the key of a copy is looked up in the CURRENT manifest (the repository's root-signed one); a revoked_at
+# at or before now there fails the copy even when the manifest on the release is older and carries none
+def current_manifest(revoked_at, same_key=True):
+    """A function of the sandbox folder: commits a root-signed current manifest into the sandbox repo. same_key: it is
+    the key of old_key_manifest() (the attached one); otherwise the sandbox's own release key. revoked_at is added."""
+    def install(tmp):
+        keys = os.path.join(tmp, "keys")
+        pol = os.path.join(tmp, "repo/.github/policy")
+        src = keys + "/old-m.json" if same_key else pol + "/release-key-manifest.json"
+        m = json.loads(open(src, "rb").read())
+        m["revoked_at"] = revoked_at
+        body = json.dumps(m, sort_keys=True, indent=1).encode() + b"\n"
+        open(keys + "/cur-m.json", "wb").write(body)
+        sig = openssl("dgst", "-sha256", "-sign", keys + "/root.key", keys + "/cur-m.json")
+        open(pol + "/release-key-manifest.json", "wb").write(body)
+        open(pol + "/release-key-manifest.sig", "w").write(base64.b64encode(sig).decode() + "\n")
+    return install
+
+
+pr, lr = present([[V4]], old_manifest=old_key_manifest(), current=current_manifest("2026-12-05T00:00:00Z"))
+check("F7 P1 a1: the current manifest revokes the key (past revoked_at) that the older attached manifest lists without "
+      "revoked_at: one line, nothing verified", one_line(pr) and pr.returncode == 1 and verifies(lr) == 0, (pr.stderr, lr))
+pr, lr = present([[V4]], old_manifest=old_key_manifest(), current=current_manifest("2027-06-01T00:00:00Z"))
+check("F7 P1 a2: a revoked_at in the future in the current manifest does not revoke yet: passes",
+      pr.returncode == 0 and verifies(lr) == 1, (pr.stderr, lr))
+pr, lr = present([[V4]], old_manifest=old_key_manifest(), current=current_manifest("2026-12-05T00:00:00Z", same_key=False))
+check("F7 P1 a3: a current manifest of another key_id, revoked, does not touch this key: passes",
+      pr.returncode == 0 and verifies(lr) == 1, (pr.stderr, lr))
+# F7 R5: exactly one transparency-log entry, whose integratedTime decides the key window
+pr, lr = present([[V4]], entries=[SIGNED_DEC3, SIGNED_DEC3])
+check("F7 R5 b2: a bundle with two Rekor entries fails in one line, nothing verified",
+      one_line(pr) and pr.returncode == 1 and verifies(lr) == 0, (pr.stderr, lr))
+pr, lr = present([[V4]], old_manifest=window_manifest("2026-11-01T00:00:00Z", "2026-12-05T00:00:00Z"),
+                 entries=[SIGNED_DEC3, SIGNED_DEC3 + 5 * 86400])
+check("F7 R5 b3: two entries, the first inside the key window and the second outside it: fails, not passed on entry 0",
+      one_line(pr) and pr.returncode == 1 and verifies(lr) == 0, (pr.stderr, lr))
 print("%d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
