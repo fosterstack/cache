@@ -43,7 +43,7 @@ key_policy() {
   signed=$(jq -r '.verificationMaterial.tlogEntries[0].integratedTime // empty' "$dir/$md.bundle" 2> /dev/null) || signed=
   [[ "$signed" =~ ^[0-9]+$ ]] || { echo "the bundle holds no readable Rekor time: no signed date"; return 1; }
   # the checks of chain-verify.py check_manifest (root signature, closed fields, RSA-4096, key_id, window, no revocation) at that time
-  cp .github/policy/release-key-root.pub "$dir/release-key-root.pub"
+  cat .github/policy/release-key-root.pub > "$dir/release-key-root.pub"
   refusal=$(python3 -I bin/chain-verify.py manifest-at --dir "$dir" --at "$signed" 2>&1 > /dev/null) ||
     { echo "the key manifest is refused: ${refusal#refused at manifest: }"; return 1; }
   jq '{release_key: {public_key: .public_key}}' "$dir/release-key-manifest.json" > "$dir/policy.json"
