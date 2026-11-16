@@ -2198,7 +2198,7 @@
       ],
       "signs": false,
       "reason": "the sandbox wall probe of the dry run: six test-only recipes (build/probe) through the sealed melange call, judged by melange's exit status; signs, uploads and publishes nothing",
-      "sha256": "036a78a40b0ad428fc1d55d5ef5d23af609e2c4fa33c3f7de69f3e0bf20a1d5b"
+      "sha256": "a38924b14b80dd5cf60c5121a3c1984c7cbee7dda8cc34b4a2c058a5d75948ab"
     },
     {
       "path": "bin/net-probe.py",
