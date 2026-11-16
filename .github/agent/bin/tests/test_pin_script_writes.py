@@ -75,13 +75,52 @@ class ScriptWrites(unittest.TestCase):
         self.assertIn(name, out)
 
     def test_script_writing_a_startup_hook_name_to_github_env_is_refused(self):
-        self.refused('echo "BASH_ENV=/tmp/hook" >> "$GITHUB_ENV"', "BASH_ENV")
+        self.refused('echo "BASH_ENV=x" >> "$GITHUB_ENV"', "BASH_ENV")
 
     def test_script_writing_github_path_is_refused(self):
-        self.refused('echo "/tmp/bin" >> "$GITHUB_PATH"', "GITHUB_PATH")
+        self.refused('echo "bin" >> "$GITHUB_PATH"', "GITHUB_PATH")
 
     def test_script_writing_an_unrelated_name_to_github_env_is_accepted(self):
         code, out = self.check('echo "REF=x" >> "$GITHUB_ENV"')
+        self.assertEqual(code, 0, out)
+        self.assertIn(" 0 finding(s)", out)
+
+
+    def split(self, step, script, job_env=""):
+        """Check a tree whose one step (YAML lines `step`) runs a script holding `script`."""
+        wf = ("on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n" + job_env
+              + "    steps:\n      - " + step + "\n")
+        d = repo({".github/workflows/w.yml": wf, "bin/setup.sh": "#!/usr/bin/env bash\n" + script + "\n",
+                  **GATE_PROGRAMS})
+        self.addCleanup(shutil.rmtree, d)
+        return run([d])
+
+    def split_refused(self, step, script, job_env=""):
+        code, out = self.split(step, script, job_env)
+        self.assertEqual(code, 1, out)
+        self.assertNotIn(" 0 finding(s)", out)
+        self.assertIn("build", out)
+        self.assertIn("step 1", out)
+        self.assertIn("CURL_HOME", out)
+
+    def test_route_in_run_text_and_name_in_script_is_refused(self):
+        self.split_refused("run: OUT=\"$GITHUB_ENV\" bash ./bin/setup.sh",
+                           'echo "CURL_HOME=x" >> "$OUT"')
+
+    def test_route_in_step_env_and_name_in_script_is_refused(self):
+        self.split_refused("run: bash ./bin/setup.sh\n        env: {OUT: '${{ github.env }}'}",
+                           'echo "CURL_HOME=x" >> "$OUT"')
+
+    def test_route_in_job_env_and_name_in_script_is_refused(self):
+        self.split_refused("run: bash ./bin/setup.sh", 'echo "CURL_HOME=x" >> "$OUT"',
+                           "    env: {OUT: '${{ github.env }}'}\n")
+
+    def test_name_in_step_env_and_route_in_script_is_refused(self):
+        self.split_refused("run: bash ./bin/setup.sh\n        env: {N: CURL_HOME}",
+                           'echo "$N=x" >> "$GITHUB_ENV"')
+
+    def test_route_in_run_text_and_unrelated_name_in_script_is_accepted(self):
+        code, out = self.split("run: OUT=\"$GITHUB_ENV\" bash ./bin/setup.sh", 'echo "REF=x" >> "$OUT"')
         self.assertEqual(code, 0, out)
         self.assertIn(" 0 finding(s)", out)
 
