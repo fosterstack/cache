@@ -2317,7 +2317,7 @@ _BASE_WRITE = r"(?<![\w.-])(?:sed\s+-\w*i|perl\s+-\w*i|awk\s+-i|cp|mv|ln|install
 
 def _resolve_script(path, text, entries, bases=()):
     """A script path as a committed file: relative (./x), under $GITHUB_WORKSPACE, or a COPY that a real
-    `git show <ref>:<file> > <dir>/<name>` or `gh api repos/${GITHUB_REPOSITORY}/contents/<file>?ref=main` command of the
+    `git show <ref>:<file> > <dir>/<name>` or `gh api repos/${GITHUB_REPOSITORY}/contents/<file>?ref=main` (or `?ref=refs/heads/main`) command of the
     job writes (main's copy of a reviewed script; Codex #164 r2, C02: an echo of the words, another repository, or a second
     write of the copy do not count). <dir> is $RUNNER_TEMP or a directory under /tmp, and the write may be in another step
     of the job than the run (main's own stage-admission.yml writes /tmp/policy/<name> in one step and runs it in the next;
@@ -2362,11 +2362,12 @@ def _resolve_script(path, text, entries, bases=()):
                         return None      # something else writes the copy (sed -i, cp, mv, tee ...): it is not main's committed bytes
                 return g.group(2)
         if toks[:2] == ["gh", "api"]:
-            g = re.search(r"\"?repos/\$\{?GITHUB_REPOSITORY\}?/contents/([^\"?\s]+)\?ref=(?:refs/heads/)?main\"?", chunk)
+            # ?ref=main and ?ref=refs/heads/main end there: ?ref=mainline and ?ref=main&ref=x name another ref
+            g = re.search(r"\"?repos/\$\{?GITHUB_REPOSITORY\}?/contents/([^\"?\s]+)\?ref=(?:refs/heads/)?main(?=[\"\s]|$)\"?", chunk)
             if not g:
                 continue
             want = g.group(1)
-            if re.fullmatch(r"\$\{?f\}?", want):          # for f in <committed files>; do gh api …/${f}?ref=main
+            if re.fullmatch(r"\$\{?f\}?", want):          # for f in <committed files>; do gh api …/${f}?ref=main (or ?ref=refs/heads/main)
                 lists = re.findall(r"\bfor\s+f\s+in\s+([^;\n]*?)\s*;\s*do\b", text)
                 cands = [x for lst in lists for x in lst.split() if _base(x) == base and entries.get(x) == "file"]
                 if len(cands) == 1:
@@ -2812,7 +2813,7 @@ DOWNLOAD_EXCLUSIONS = {
         "command substitution that jq reads; it writes no file " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
     (".github/workflows/dependabot-reviewer.yml", "review", 8,
-     "ed79b6846c1729e3ffd034f935b130636b5c32502c6daa191323e0ac1c11398a"): (
+     "7715c5f9c0f4409f535728b25d9e505f3f709b200f850da10ac21b224e69e274"): (
         "the same identity-token request inside the decision loop's token refresh: "
         "stdout into a command substitution that jq reads, no file written " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
