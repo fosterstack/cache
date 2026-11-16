@@ -799,9 +799,9 @@ def listed(path, root):
 NS_ROOTS = ("bin/build-stage-*.sh", "bin/witnessed-local.sh", "bin/archive-pull.sh", "bin/install-host-bwrap.py",
             # what the run: lines of stage-build.yml and stage-reproducibility.yml start, bar NS_SKIP
             "bin/chain-hostile-step.sh", "bin/chain-sandbox-probe.sh", "bin/rebuild-records-digests.sh")
-# The last two are only named by bin/dependabot-reviewer-version.sh, whose hash covers them; no stage starts them.
-NS_SKIP = ("bin/install-scanner.sh", "bin/install-build-tools.sh", "bin/required-check-guard.sh",
-           "bin/dependabot-reviewer.py")
+NS_SKIP = ("bin/install-scanner.sh", "bin/install-build-tools.sh")
+# Only named by bin/dependabot-reviewer-version.sh, whose hash covers them; no stage starts them.
+NS_NAMED_ONLY = ("bin/required-check-guard.sh", "bin/dependabot-reviewer.py")
 # The freeze job's script starts go of the tagged tree. It is no root of the closure; a closure file that names it or
 # lists
 # it in `runs` is a finding (ns_closure), and stage() lets only the freeze job run it.
@@ -848,7 +848,7 @@ def ns_closure(root):
     seen, bad = [], []
     while todo:
         p = todo.pop()
-        if p in seen or p in NS_SKIP:
+        if p in seen or p in NS_SKIP or p in NS_NAMED_ONLY:
             continue
         seen.append(p)
         if p not in rows:
@@ -902,9 +902,9 @@ NS_SHA = {
     "bin/apk-tool.py": "af5dd18f53439e2198e1a2eb1c372bb2fef153836b4b8c76d68aea81254b93e7",
     "bin/archive-pull.sh": "f7f07098d60b94ba22d8f355b95336303b9c4bd1d10a94c5d1952774ae22dfd3",
     "bin/archive-verify.py": "0dd011c43a4c0afc4543afbcede9f43849b9ea3f54a91432fe5aaa2768000e31",
-    "bin/audit-record-judge.sh": "1e682fdcf7becf915e9e7b7b4d23cbe9de462c13e6674819cf0b4582e211d485",
-    "bin/audit-record.py": "69c2d5599256c69d82ccf5ccc80994626f49401cd50c8ea87818bf9cc55f771e",
-    "bin/build-admit.py": "5ad6446bfd6a64d2a040fa267de90508e3dfc199963547c15a1adb24927e1a45",
+    "bin/audit-record-judge.sh": "5c3740b8be3b26bc1b368a625d24fd2b12e25bc02a7cdb845d32d2a07b3f48be",
+    "bin/audit-record.py": "1d8b7498035687cd8c2c9507f8f1e7db06fd99ca83682f8200c47443f91e893f",
+    "bin/build-admit.py": "4abf69e1df32e30f6a472b65c7671e230eb7266919a5d12214de18e0bf683b79",
     "bin/build-apk-helper.py": "2ad751350705c16e69a88699123ca8e18766a5cf9c0e8d08521b10646713eab4",
     "bin/build-archives.py": "8a2f8998521cf83e941221169051dbfa4903c31e5866fe0fb62896d186751a77",
     "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
@@ -1363,6 +1363,19 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         '  release|snapshot) ;;',
         '  *) echo "::error::mode must be release or snapshot" >&2; exit 1 ;;',
         'esac',
+    ],
+    'bin/dependabot-reviewer-version.sh': [
+        'set -euo pipefail',
+        'files=(',
+        '  bin/dependabot-reviewer.py',
+        '  .github/policy/dependabot-reviewer-prompt.txt',
+        '  .github/workflows/dependabot-reviewer.yml',
+        '  .github/policy/required-checks.json',
+        '  bin/required-check-guard.sh',
+        ')',
+        'if [ "${1:-}" = --files ]; then printf \'%s\\n\' "${files[@]}"; exit 0; fi',
+        'cd "${1:-.}"',
+        'sha256sum "${files[@]}" | sha256sum | cut -d\' \' -f1',
     ],
 }
 
