@@ -191,6 +191,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 .github/agent/bin/check-action-pins.py --verify-tags .
+      - name: required-check guard regressions (offline fixtures)
+        run: bash bin/required-check-guard-test.sh
 
       # The suites the changed files need (REQ-CI-001-AC4): bin/select-tests.sh prints them, one command per line, from
       # .github/policy/test-paths.json; a changed path that map does not name fails the step, so a new directory needs an entry.
@@ -279,15 +281,26 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: guard regressions (offline fixtures)
-        run: bash bin/required-check-guard-test.sh
-
-      # The verdict uses THIS tree's list, so a PR that fixes a stale list goes green on
-      # its own run; on push to main the tree is main.
-      - name: the ruleset on main vs this tree's required-checks.json
+      # Main's guard, fetched and never taken from this tree: nothing of the checkout runs in this job, so a pull
+      # request cannot reach the verdict. The guard's own regressions run in the allowlist job.
+      - name: fetch main's guard
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash bin/required-check-guard.sh .github/policy/required-checks.json
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/contents/bin/required-check-guard.sh?ref=main" --jq '.content' \
+            | base64 -d > "${RUNNER_TEMP}/required-check-guard.sh"
+          [ -s "${RUNNER_TEMP}/required-check-guard.sh" ]
+
+      # One call of main's guard over this tree's two lists, read as data: the ruleset comparison, and the eight
+      # release-only entries pinned in the guard. The verdict uses THIS tree's lists, so a PR that fixes a stale list
+      # goes green on its own run; on push to main the tree is main.
+      - name: this tree's policy lists vs the ruleset on main and the pin in main's guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          bash "${RUNNER_TEMP}/required-check-guard.sh"
+          .github/policy/required-checks.json .github/policy/release-only-checks.json
 
       # The issue tracks drift ON MAIN (main's list vs the ruleset), whichever run sees it
       # first; one open issue, updated in place, never duplicated. Best effort: a
@@ -303,7 +316,8 @@ jobs:
           set +e -uo pipefail   # the runner starts bash with -e; the guard's refusal is data here
           gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=main" \
             --jq '.content' | base64 -d > "${RUNNER_TEMP}/main-required-checks.json" || exit 0
-          out=$(bash bin/required-check-guard.sh "${RUNNER_TEMP}/main-required-checks.json" 2>&1) && rc=0 || rc=$?
+          out=$(bash "${RUNNER_TEMP}/required-check-guard.sh" \
+                  "${RUNNER_TEMP}/main-required-checks.json" 2>&1) && rc=0 || rc=$?
           # Drift (1), or a ruleset that enforces nothing at all (a refusal, not a read error).
           if [ "$rc" -ne 1 ] && ! grep -q "NO required status checks" <<<"$out"; then
             echo "main's list vs the ruleset: rc ${rc} — no drift issue to open"; exit 0

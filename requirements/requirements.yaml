@@ -2271,13 +2271,82 @@ requirements:
       - id: REQ-CI-001-AC7
         given: "a release-candidate tag reaching stage-admission.yml, and the promotion_checks list in .github/policy/required-checks.json (the contexts of the full suite, with their scope)"
         when: "admission reads the checks of the exact tagged commit"
-        then: "it continues only if every context in promotion_checks has a successful run on that commit, and that run comes from the one workflow file that produces the context (analyze (go) from codeql.yml, reproducibility and scan from scan.yml, every other context from full-suite.yml; a check run of the same name from any other workflow, or one that no workflow run backs, does not count); a missing, red, older-commit or wrong-source run stops admission and names the context; no promotion context's name is produced by a job of ci.yml or by two jobs of one workflow; a promotion context counts only from the job of its one bound workflow file, and a job of the same name in another file (release.yml's acceptance and reproducibility) may exist and never counts, since stage-admission refuses it by path; and each of those workflows (full-suite.yml, scan.yml, codeql.yml) triggers on a schedule, on workflow_dispatch or on a push to main, so a successful run on a commit can exist before its release-candidate tag is pushed, and a run started by the tag push alone is too late"
+        then: "it continues only if every context in promotion_checks has a successful run on that commit, and that run comes from the one workflow file that produces the context (analyze (go) from codeql.yml, reproducibility and scan from scan.yml, every other context from full-suite.yml; a check run of the same name from any other workflow, or one that no workflow run backs, does not count); a missing, red, older-commit or wrong-source run stops admission and names the context; no promotion context's name is produced by a job of ci.yml or by two jobs of one workflow; a promotion context counts only from the job of its one bound workflow file, and a job of the same name in another file (release.yml's acceptance and reproducibility) may exist and never counts, since stage-admission refuses it by path; and each of those workflows (full-suite.yml, scan.yml, codeql.yml) can run on a schedule or on workflow_dispatch before the tag is pushed, so a successful run on a commit can exist before its release-candidate tag, and a run started by the tag push alone is too late; full-suite.yml has no push and no pull_request trigger"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-CI-001-AC8
         given: "a pull request into main, and the job auditor-review-gate of agent-review-gate.yml"
         when: "the workflows run on the pull_request event"
         then: "the job still runs and judges a Dependabot pull request as before (docs/ratify/2026-11-11-dependabot-reviewer-only.md rule 4), but it is not a required context: .github/policy/required-checks.json does not list it in required_checks or promotion_checks"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+
+  - id: REQ-REL-013
+    title: Release admission requires the checks the ruleset does not list
+    statement: >
+      Release admission and the patch release's ready step shall require the checks of
+      .github/policy/release-only-checks.json together with those of required-checks.json, and a change to that list
+      shall be red on every pull request.
+    source: [.github/policy/release-only-checks.json, bin/required-check-guard.sh, .github/workflows/ci.yml, .github/workflows/stage-admission.yml, .github/workflows/release.yml]
+    tier: community
+    introduced: v0.3.0
+    origin: the owner's trim of the ruleset (Nov 12 2026)
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-REL-013-AC1
+        given: the contexts the owner took off the ruleset on Nov 12 2026 (allowlist-persona, allowlist-chain, allowlist-pins-auditor, acceptance / acceptance-gradle, acceptance / acceptance-maven (1.2.0), acceptance / acceptance-maven (1.2.3), coverage, auditor-review-gate), which release admission still requires green
+        when: stage admission and the patch release's ready step read the required checks from main
+        then: >-
+          each reads required-checks.json and release-only-checks.json on its own, and refuses unless that file is an object whose required_checks is a non-empty array;
+          a missing, empty, null or malformed file never lowers the requirement, whatever the other file holds;
+          the requirement is the two lists together
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-013-AC2
+        given: a pull request or a push to main whose release-only-checks.json is not the eight entries pinned in bin/required-check-guard.sh on main
+        when: the required-check guard runs
+        then: >-
+          the guard fails and prints each entry that differs;
+          each entry is compared whole: its context, its integration_id and its scope;
+          the pin is main's copy of the guard, so a change to the file, the judge and the guard in one pull request is still red
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-013-AC3
+        given: a head whose workflows are judged by the pin-wiring judge
+        when: it judges the head
+        then: >-
+          it refuses a head with no release-only-checks.json (the landing form is judged by its own copy);
+          it refuses any job other than the one that produces a reserved name when that job carries the name;
+          the reserved names are the eight above, each by job id, by literal name and by a name with an expression in it;
+          a reserved name that stage-admission.yml binds to a producing workflow file (its table of contexts and files, read by the judge from that file) is not refused for a name with an expression that could render it, since admission refuses a check run of that name from any other file; the literal name and the job id stay refused, and a reserved name outside the table (auditor-review-gate) stays judged for expressions
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-013-AC4
+        given: a head whose ci.yml the pin-wiring judge reads as bytes
+        when: it judges the head
+        then: >-
+          it refuses a carriage return, a next-line (U+0085), a line separator (U+2028) or a paragraph separator (U+2029) anywhere in ci.yml, because YAML ends a line at each of them and the judge does not;
+          on the landing path too it requires the required-check-guard job and the top-level keys to be byte for byte those of the landing commit's own ci.yml, with only the checkout's digest and version comment free;
+          it requires the guard suite's step (bash bin/required-check-guard-test.sh) in the allowlist job as it requires that job's other pinned steps
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+
+      - id: REQ-REL-013-AC5
+        given: a push-scoped promotion or release-only context, and the table of stage-admission.yml that binds each context to its one producing workflow file (allowlist-persona, allowlist-chain, allowlist-pins-auditor, coverage, fips140-only and every context that begins "acceptance / " to full-suite.yml; analyze (go) to codeql.yml; reproducibility and scan to scan.yml)
+        when: admission reads the checks of the exact tagged commit
+        then: >-
+          a successful check run of that name counts only when its workflow run has that file's path, so a run of main-candidate-rescan.yml, release.yml or ci.yml with the same name never counts;
+          a push-scoped context that the table does not name stops admission, naming the context, whatever runs exist for it
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-013-AC6
+        given: the patch job of release.yml, a cut decided for the head of its branch, and full-suite.yml, which makes the release-only contexts and runs only on a schedule, workflow_dispatch and workflow_call
+        when: the job waits for the tagged commit's required checks and the head has no run of full-suite.yml
+        then: >-
+          the job starts full-suite.yml once on its branch with workflow_dispatch and then waits in the same bounded wait; a head that already has a run of it, whatever its state, starts nothing;
+          if the branch has moved on, the run is on another commit and the result is no cut;
+          the permission actions: write is held by that job alone, and no job of release.yml has it otherwise;
+          full-suite.yml never gains a push or pull_request trigger
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
@@ -2916,7 +2985,7 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC26
-        given: "(reviewer reading, Oct 17) a pull request that adds one of the nineteen script lines the checker pins by file and by the sha256 of the whole line: the line of bin/release-assets.sh that downloads the assets of our own release (verified against our signature, failing closed); the line of bin/acceptance-k8s.sh that pulls and tags the client image pinned by digest (the word curl is the image name, not a download); and the fourteen request lines to the cache under test on localhost in bin/acceptance-gradle.sh, bin/acceptance-gradle-capped.sh, bin/acceptance-maven.sh and bin/acceptance-maven-capped.sh (they fetch no software); and the three fetches of the Go toolchain tarball or of go.dev's published checksum list in bin/install-scanner.sh and bin/go-bump-open-pr.sh (each in the shape the Go ruling of AC23 accepts, the tarball checked against its pinned sum or go.dev's list before use); and a row in the base branch's .github/supply-chain-exceptions.json list unmeasured_text for that line whose ruling text begins with the pinned-fetch exception string PINNED_FETCH_RULING in the pin-age checker"
+        given: "a pull request that adds one of the nineteen script lines the checker pins by file and by the sha256 of the whole line: the line of bin/release-assets.sh that downloads the assets of our own release (verified against our signature, failing closed); the line of bin/acceptance-k8s.sh that pulls and tags the client image pinned by digest (the word curl is the image name, not a download); and the fourteen request lines to the cache under test on localhost in bin/acceptance-gradle.sh, bin/acceptance-gradle-capped.sh, bin/acceptance-maven.sh and bin/acceptance-maven-capped.sh (they fetch no software); and the three fetches of the Go toolchain tarball or of go.dev's published checksum list in bin/install-scanner.sh and bin/go-bump-open-pr.sh (each in the shape the Go exception of AC23 accepts, the tarball checked against its pinned sum or go.dev's list before use); and a row in the base branch's .github/supply-chain-exceptions.json list unmeasured_text for that line whose ruling text begins with the pinned-fetch exception string PINNED_FETCH_RULING in the pin-age checker"
         when: "pin-age runs"
         then: "the line is ruled text exactly as under AC20 (the row binds file, form, key and the whole line); the same text in any other file, any edit of the line (one character, a tab for a space, a carriage return), a second copy of it that differs only in whitespace, a link named like the file, and that ruling prefix on any other line (of the same file or another) rules nothing, so the nineteen lines are the only lines this ruling allows. A new script that names the vendored folder is refused unless its exact path is listed in the checker; six paths that name it legitimately (the govulncheck vendor-mode tests and checks) are listed, and a seventh file still fails"
         verification: { method: ci-workflow, release_blocking: false }

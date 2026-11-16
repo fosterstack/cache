@@ -53,6 +53,7 @@ jobs:
     environment: agent          # the App's secrets live here (main only)
     permissions:
       contents: read
+      actions: write            # start full-suite.yml on the head when it has no run (REQ-REL-013-AC6)
       checks: read              # wait for the tagged commit's required checks (advisor 0063)
       id-token: write           # gitsign signs with this workflow's own OIDC identity (no key)
       issues: write             # the standing "main is not patch-clean" issue
@@ -214,11 +215,25 @@ jobs:
           set -euo pipefail
           # the same query admission makes (filter=latest), against the same policy: protected main's, never the
           # checked-out commit's (Codex #159 r1, B6; pin pass B01/B02) — so "ready" here is what admission will see
+          # The release-only contexts come from full-suite.yml, which has no push trigger: a head the nightly has not run on has no
+          # run, so start one, once. If the branch moves on, the run is on another commit and the wait ends in no cut.
+          runs=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/full-suite.yml/runs?head_sha=${GITHUB_SHA}" --jq .total_count)
+          if [ "$runs" = 0 ]; then
+            gh workflow run full-suite.yml --ref "$GITHUB_REF_NAME"
+          fi
           end=$((SECONDS + 3600))
           while [ "$SECONDS" -lt "$end" ]; do
             # re-read each time: a policy change on main during the wait applies, as it will at admission (pin pass B02)
             git fetch -q --no-tags origin main
-            git show origin/main:.github/policy/required-checks.json > "$RUNNER_TEMP/required-checks.json"
+            git show origin/main:.github/policy/required-checks.json > "$RUNNER_TEMP/ruleset-checks.json"
+            git show origin/main:.github/policy/release-only-checks.json > "$RUNNER_TEMP/release-only-checks.json"
+            for f in ruleset-checks release-only-checks; do
+              jq -en '[inputs | type == "object" and (.required_checks | type) == "array"
+                and (.required_checks | length) > 0] | length > 0 and all' "$RUNNER_TEMP/$f.json" > /dev/null \
+                || { echo "::error::$f.json is missing, empty or malformed"; exit 1; }
+            done
+            jq -s '{required_checks: (map(.required_checks) | add)}' \
+              "$RUNNER_TEMP/ruleset-checks.json" "$RUNNER_TEMP/release-only-checks.json" > "$RUNNER_TEMP/required-checks.json"
             gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?filter=latest&per_page=100" --paginate \
               --jq '[.check_runs[] | {name, status, conclusion, app_id: .app.id}]' | jq -s 'add // []' > "$RUNNER_TEMP/runs.json"
             v=$(python3 bin/patch-decide.py ready --required "$RUNNER_TEMP/required-checks.json" --check-runs "$RUNNER_TEMP/runs.json")

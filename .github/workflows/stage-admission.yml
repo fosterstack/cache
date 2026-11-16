@@ -116,7 +116,21 @@ jobs:
           mkdir -p /tmp/policy
           git show origin/main:.github/policy/allowed_signers      > /tmp/policy/allowed_signers
           git show origin/main:.github/policy/github-web-flow.gpg  > /tmp/policy/github-web-flow.gpg
-          git show origin/main:.github/policy/required-checks.json > /tmp/policy/required-checks.json
+          git show origin/main:.github/policy/required-checks.json > /tmp/policy/ruleset-checks.json
+          git show origin/main:.github/policy/release-only-checks.json > /tmp/policy/release-only-checks.json
+          # admission requires the ruleset's checks and the release-only ones; each file must hold a list itself
+          for f in ruleset-checks release-only-checks; do
+            jq -en '[inputs | type == "object" and (.required_checks | type) == "array"
+              and (.required_checks | length) > 0] | length > 0 and all' "/tmp/policy/$f.json" > /dev/null \
+              || { echo "::error::$f.json is missing, empty or malformed"; exit 1; }
+          done
+          # a release-candidate tag also needs the full suite's promotion_checks, which only the ruleset file holds
+          jq -e '(.promotion_checks | type) == "array" and (.promotion_checks | length) > 0' "/tmp/policy/ruleset-checks.json" > /dev/null \
+            || { echo "::error::ruleset-checks.json has no promotion_checks"; exit 1; }
+          jq -s '{required_checks: ((.[0].required_checks | map(. + {release_only: false})) + (.[1].required_checks | map(. + {release_only: true}))),
+                  promotion_checks: .[0].promotion_checks}' \
+            "/tmp/policy/ruleset-checks.json" "/tmp/policy/release-only-checks.json" \
+            > "/tmp/policy/required-checks.json"
           # automatic patch releases (REQ-REL-009-AC6): the signer route and the pinned gitsign installer, from main too
           git show origin/main:bin/admission-tag-signer.py        > /tmp/policy/admission-tag-signer.py
           git show origin/main:bin/install-scanner.sh             > /tmp/policy/install-scanner.sh
@@ -254,7 +268,7 @@ jobs:
           fi
 
           # A release-candidate tag (-rc.N) is the promotion: the full suite's promotion_checks must be green on the tagged commit too (REQ-CI-001-AC7).
-          # A promotion context counts only from the workflow file that produces it: the check run's workflow run must have that path.
+          # A promotion or release-only context counts only from the workflow file that produces it: the check run's workflow run must have that path.
           rc=0; case "${GITHUB_REF_NAME}" in *-rc.*) rc=1 ;; esac
           jq -c --argjson rc "$rc" '.required_checks[], (if $rc == 1 then (.promotion_checks[] | .promotion = true) else empty end)' /tmp/policy/required-checks.json | while read -r req; do
             ctx=$(jq -r '.context' <<<"$req")
@@ -263,11 +277,12 @@ jobs:
             case "$scope" in
               push)
                 want=
-                if [ "$(jq -r '.promotion // false' <<<"$req")" = true ]; then
+                if [ "$(jq -r '(.promotion // false) or (.release_only // false)' <<<"$req")" = true ]; then
                   case "$ctx" in
                     "analyze (go)") want=codeql.yml ;;
                     reproducibility|scan) want=scan.yml ;;
-                    *) want=full-suite.yml ;;
+                    allowlist-persona|allowlist-chain|allowlist-pins-auditor|coverage|fips140-only|"acceptance / "*) want=full-suite.yml ;;
+                    *) echo "::error::required check '${ctx}' has no producing workflow file in the admission table" >&2; exit 1 ;;
                   esac
                 fi
                 hit=

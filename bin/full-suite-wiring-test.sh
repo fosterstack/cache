@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# proves: REQ-CI-001-AC1, REQ-CI-001-AC4, REQ-CI-001-AC5, REQ-CI-001-AC6, REQ-CI-001-AC7
+# proves: REQ-CI-001-AC1, REQ-CI-001-AC4, REQ-CI-001-AC5, REQ-CI-001-AC6, REQ-CI-001-AC7, REQ-REL-013-AC5
 # Quick checks on each pull request, the full suite at promotion (REQ-CI-001; owner, Nov 10 2026), offline. Reads the real workflows and
 # .github/policy/required-checks.json as data and judges each against the English; every judge is also run over mutated copies, each of which
 # must be caught:
 #   AC1  the required list is exactly seven contexts (auditor-review-gate, gosec and dependency-review not among them,
 #        and no job makes gosec or dependency-review), none of them skippable by a job-level condition;
-#        the promotion list holds the eleven of the full suite
+#        the promotion list holds the four of fips140-only, analyze (go), reproducibility and scan
 #   AC4  ci.yml's test job vets, builds and tests only the changed packages (no -race, no fips settings); its allowlist job writes the suites
 #        bin/select-tests.sh selects to a file and a step output, runs the single-file ones through the committed script bin/run-selected-tests.sh
 #        (one plain line each, run here in a scratch tree), runs the single-file suites of the agent folder in the next step with the same plain
@@ -41,17 +41,18 @@ POLICY = json.load(open(os.path.join(root, ".github/policy/required-checks.json"
 # each required context comes from the policy file; the six named here are the ones every case may name, the seventh is taken from the policy
 SIX = ["test", "lint", "requirements", "allowlist", "govulncheck", "pin-age"]
 REQUIRED = [e["context"] for e in POLICY["required_checks"]]
-PROMOTION = ["coverage", "fips140-only", "analyze (go)", "allowlist-persona", "allowlist-chain",
-             "allowlist-pins-auditor",
-             "acceptance / acceptance-gradle", "acceptance / acceptance-maven (1.2.0)",
-             "acceptance / acceptance-maven (1.2.3)", "reproducibility", "scan"]
+PROMOTION = ["fips140-only", "analyze (go)", "reproducibility", "scan"]
+# the other contexts of the full suite are release-only: eight entries, auditor-review-gate being the App's pull_request one
+RELEASE_ONLY = json.load(open(os.path.join(root, ".github/policy/release-only-checks.json")))["required_checks"]
+FULL_SUITE_ONLY = ["coverage", "allowlist-persona", "allowlist-chain", "allowlist-pins-auditor", "acceptance / acceptance-gradle",
+                   "acceptance / acceptance-maven (1.2.0)", "acceptance / acceptance-maven (1.2.3)"]
 # deleted from the repository (docs/ratify/2026-11-13-ci-trim-keeps-codeql.md)
 REMOVED = ["gosec", "dependency-review"]
 # the three paths that make every package run are the ones REQ-CI-001-AC4's text names
 EVERY = re.search(r"every package when (\S+), (\S+) or (\S+) changed", open(os.path.join(root, "requirements/requirements.yaml")).read()).groups()
 def job_stub(name): return {"name": name, "runs-on": "ubuntu-latest", "steps": []}
 def pol_entry(ctx, scope="push"): return {"context": ctx, "integration_id": 15368, "scope": scope}
-GONE = PROMOTION + REMOVED + ["acceptance-gradle", "acceptance-maven"]
+GONE = PROMOTION + FULL_SUITE_ONLY + REMOVED + ["acceptance-gradle", "acceptance-maven"]
 def base(ctx): return ctx.split(" (")[0]
 def mutated(doc, fn):
     d = copy.deepcopy(doc); fn(d); return d
@@ -81,7 +82,7 @@ def policy_problems(doc):
     rc_names, pc_names = [e.get("context") for e in rc], [e.get("context") for e in pc]
     if sorted(rc_names) != sorted(REQUIRED) or len(set(rc_names)) != 7 or not set(SIX) <= set(rc_names):
         bad.append("required_checks are not exactly the seven: %s" % rc_names)
-    if sorted(pc_names) != sorted(PROMOTION): bad.append("promotion_checks are not exactly the eleven: %s" % pc_names)
+    if sorted(pc_names) != sorted(PROMOTION): bad.append("promotion_checks are not exactly the four: %s" % pc_names)
     for key, lst in (("required_checks", rc), ("promotion_checks", pc)):
         if any(isinstance(e, dict) and e.get("context") == "auditor-review-gate" for e in lst): bad.append("auditor-review-gate is listed in %s (REQ-CI-001-AC8)" % key)
     for key, lst in (("required_checks", rc), ("promotion_checks", pc)):
@@ -92,8 +93,10 @@ def policy_problems(doc):
         if isinstance(e, dict) and e.get("scope") != "push": bad.append("promotion check %r is not push-scoped (admission reads the exact tagged commit)" % e.get("context"))
     if set(doc) - {"comment", "required_checks", "promotion_checks"}: bad.append("unknown keys: %s" % sorted(set(doc) - {"comment", "required_checks", "promotion_checks"}))
     return bad
-verdict("required-checks.json: seven required contexts, eleven promotion contexts, the entry shape of today",
+verdict("required-checks.json: seven required contexts, four promotion contexts, the entry shape of today",
         policy_problems(POLICY), True)
+verdict("release-only-checks.json: the seven full-suite contexts and the App's auditor-review-gate",
+        [] if sorted(e["context"] for e in RELEASE_ONLY) == sorted(FULL_SUITE_ONLY + ["auditor-review-gate"]) else ["release-only contexts: %s" % [e["context"] for e in RELEASE_ONLY]], True)
 mutants("required-checks.json", policy_problems, POLICY, [
     ("gosec back in required_checks", lambda d: d["required_checks"].append({"context": "gosec", "integration_id": 15368, "scope": "push"})),
     ("dependency-review back in required_checks",
@@ -105,7 +108,7 @@ mutants("required-checks.json", policy_problems, POLICY, [
     ("auditor-review-gate added to promotion_checks", lambda d: d["promotion_checks"].append({"context": "auditor-review-gate", "integration_id": 15368, "scope": "push"})),
     ("no promotion_checks", lambda d: d.pop("promotion_checks")),
     ("scan dropped from promotion_checks", lambda d: d.__setitem__("promotion_checks", [e for e in d["promotion_checks"] if e["context"] != "scan"])),
-    ("acceptance / acceptance-maven (1.2.3) dropped", lambda d: d.__setitem__("promotion_checks", [e for e in d["promotion_checks"] if e["context"] != "acceptance / acceptance-maven (1.2.3)"])),
+    ("fips140-only dropped from promotion_checks", lambda d: d.__setitem__("promotion_checks", [e for e in d["promotion_checks"] if e["context"] != "fips140-only"])),
     ("an extra promotion context", lambda d: d["promotion_checks"].append({"context": "extra", "integration_id": 15368, "scope": "push"})),
     ("dependency-review in promotion_checks", lambda d: d["promotion_checks"].append({"context": "dependency-review", "integration_id": 15368, "scope": "push"})),
     ("a promotion entry with another app", lambda d: d["promotion_checks"][0].__setitem__("integration_id", 1)),
@@ -337,6 +340,7 @@ def allowlist_static(job):
         if g.get("name") != GUARD_NAME: bad.append("the scanner guard step is not named %r" % GUARD_NAME)
         if any(k in g for k in ("if", "continue-on-error", "shell", "env")): bad.append("the scanner guard step is conditional or weakened: " + ", ".join(k for k in ("if", "continue-on-error", "shell", "env") if k in g))
     for s, r in runs(job):
+        if s.get("name") == "required-check guard regressions (offline fixtures)" and r.strip() == "bash bin/required-check-guard-test.sh": continue   # main's own step
         if s not in sel + ss + guards + suite_steps(job) + literal_steps(job) and TESTSH.search(r): bad.append("step %r runs a suite directly instead of through the selection" % s.get("name"))
     return bad
 def run_step(step, extra_env, ctx, cwd, job=None):
@@ -701,6 +705,7 @@ mutants("ci.yml", ci_problems, ci, [
     ("the script given another file than the one written", lambda d: runner_edit(d, lambda s: s.__setitem__("run", re.sub(r"(run-selected-tests\.sh\s+).*", r"\1/nonexistent", s["run"])))),
     ("the script given no file", lambda d: runner_edit(d, lambda s: s.__setitem__("run", "bash bin/run-selected-tests.sh"))),
     ("the script step before the select step", lambda d: d["jobs"]["allowlist"]["steps"].insert(0, d["jobs"]["allowlist"]["steps"].pop(next(i for i, s in enumerate(d["jobs"]["allowlist"]["steps"]) if RUNNER in (s.get("run") or ""))))),
+    ("the guard regressions step running another suite", lambda d: [st.__setitem__("run", "bash bin/branch-sweep-test.sh") for st in d["jobs"]["allowlist"]["steps"] if st.get("name") == "required-check guard regressions (offline fixtures)"]),
     ("a suite run directly in the allowlist job", lambda d: add_step(d, "allowlist", {"name": "direct", "run": "bash bin/branch-sweep-test.sh"})),
     ("an auditor suite run directly", lambda d: add_step(d, "allowlist", {"name": "direct", "run": "bash " + AGENT + "tests/auditor-matrix-test.sh"})),
     ("the scanner guard step gone", lambda d: d["jobs"]["allowlist"].__setitem__("steps", [s for s in d["jobs"]["allowlist"]["steps"] if (s.get("run") or "").strip() != GUARD])),
@@ -1018,7 +1023,8 @@ def admission(policy, mutate=None, tag="v0.3.0-rc.1", script=None, paths=None, n
             runs_by_sha[sha].append({"name": ctx, "conclusion": "success", "app": {"id": e["integration_id"]},
                                      "id": n[0], "head_sha": sha, "details_url": url})
             if ctx not in no_run:
-                workflow_runs[run_id] = ".github/workflows/" + (paths or {}).get(ctx, source_of(policy, key, ctx))
+                own = "full-suite.yml" if e.get("release_only") else source_of(policy, key, ctx)
+                workflow_runs[run_id] = ".github/workflows/" + (paths or {}).get(ctx, own)
     for run_id, path in workflow_runs.items():
         json.dump({"id": run_id, "path": path}, open(d + "/fx/repos_o_r_actions_runs_%d.json" % run_id, "w"))
     if mutate: mutate(runs_by_sha)
@@ -1032,6 +1038,8 @@ def admission(policy, mutate=None, tag="v0.3.0-rc.1", script=None, paths=None, n
 def entry(c, scope="push", app=15368): return {"context": c, "integration_id": app, "scope": scope}
 SYN = {"required_checks": [entry("test"), entry("lint"), entry("pin-age", "pull_request")],
        "promotion_checks": [entry("coverage"), entry("acceptance / acceptance-maven (1.2.0)"), entry("scan")]}
+# REQ-REL-013-AC5: the release-only contexts, tagged as stage-admission merges them, beside the committed promotion list
+POLICY_RO = {"required_checks": [dict(e, release_only=True) for e in RELEASE_ONLY], "promotion_checks": POLICY["promotion_checks"]}
 if len(hit) == 1:
     rc, out = admission(SYN); check("admission: a release candidate whose required and promotion checks are all green on the tagged commit is admitted", rc == 0, (rc, out[-300:]))
     rc, out = admission(POLICY)
@@ -1059,22 +1067,39 @@ if len(hit) == 1:
     for c, wrong in (("scan", "full-suite.yml"), ("reproducibility", "full-suite.yml"), ("analyze (go)", "scan.yml"),
                      ("coverage", "codeql.yml"), ("acceptance / acceptance-gradle", "scan.yml")):
         stopped("%r backed by a run of %s, not its own workflow file" % (c, wrong), c,
-                admission(POLICY, paths={c: wrong}))
+                admission(POLICY_RO, paths={c: wrong}))
     # release.yml also has jobs of these names (acceptance, reproducibility): they never count, stage-admission refuses them by path
     for c in ("reproducibility", "acceptance / acceptance-gradle"):
         stopped("%r backed by a run of release.yml, a job of the same name in another workflow file" % c, c,
-                admission(POLICY, paths={c: "release.yml"}))
+                admission(POLICY_RO, paths={c: "release.yml"}))
     for c in ("coverage", "scan"):
-        stopped("%r whose check run points at no workflow run" % c, c, admission(POLICY, no_details=(c,)))
-        stopped("%r whose workflow run cannot be read" % c, c, admission(POLICY, no_run=(c,)))
+        stopped("%r whose check run points at no workflow run" % c, c, admission(POLICY_RO, no_details=(c,)))
+        stopped("%r whose workflow run cannot be read" % c, c, admission(POLICY_RO, no_run=(c,)))
     def on_pr_head(ctx):
         def move(R):
             R[P] += [dict(r, head_sha=P) for r in R[T] if r["name"] == ctx]
             R[T][:] = [r for r in R[T] if r["name"] != ctx]
         return move
     stopped("'coverage' green only on the merged pull request's head, not the tagged commit", "coverage",
-            admission(POLICY, on_pr_head("coverage")))
+            admission(POLICY_RO, on_pr_head("coverage")))
     rc, out = admission(SYN, tag="v0.3.0-rc.2", mutate=drop("scan")); check("admission: the second candidate of a line is held to the same rule", rc != 0 and "scan" in out, (rc, out[-200:]))
+    pushed = [e["context"] for e in RELEASE_ONLY if e["scope"] == "push"]
+    rc, out = admission(POLICY_RO); check("admission: every release-only and promotion context green, each from its own file, is admitted", rc == 0, (rc, out[-300:]))
+    for c in pushed:
+        wrong = "release.yml" if c.startswith("acceptance / ") else "ci.yml"
+        for other in ("main-candidate-rescan.yml", wrong):
+            stopped("the release-only check %r backed by a run of %s" % (c, other), c, admission(POLICY_RO, paths={c: other}))
+        rc, out = admission(POLICY_RO, paths={c: "full-suite.yml"}); check("admission: the release-only check %r backed by full-suite.yml is admitted" % c, rc == 0, (rc, out[-300:]))
+    rc, out = admission(POLICY_RO, paths={"fips140-only": "full-suite.yml"}); check("admission: 'fips140-only' backed by full-suite.yml is admitted", rc == 0, (rc, out[-300:]))
+    # a push-scoped context the table does not name fails closed, whatever runs exist for it
+    unbound_ro = {"required_checks": POLICY_RO["required_checks"] + [dict(entry("zz-unbound"), release_only=True)], "promotion_checks": POLICY["promotion_checks"]}
+    stopped("the release-only check 'zz-unbound', which the table does not name, with a green run of full-suite.yml", "zz-unbound",
+            admission(unbound_ro, paths={"zz-unbound": "full-suite.yml"}))
+    unbound_pr = dict(POLICY_RO, promotion_checks=POLICY["promotion_checks"] + [entry("zz-unbound")])
+    stopped("the promotion check 'zz-unbound', which the table does not name, with a green run of full-suite.yml", "zz-unbound",
+            admission(unbound_pr, paths={"zz-unbound": "full-suite.yml"}))
+    for c, own in (("analyze (go)", "codeql.yml"), ("reproducibility", "scan.yml"), ("scan", "scan.yml")):
+        rc, out = admission(POLICY_RO, paths={c: own}); check("admission: %r backed by %s is admitted" % (c, own), rc == 0, (rc, out[-300:]))
 else:
     check("admission cases not run: the step is missing", False)
 print("full-suite-wiring: %d passed, %d failed" % (passed, failed))

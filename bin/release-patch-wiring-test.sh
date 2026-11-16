@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-009-AC3, REQ-REL-009-AC5, REQ-REL-009-AC8, REQ-REL-009-AC10, REQ-REL-009-AC13
+# proves: REQ-REL-009-AC3, REQ-REL-009-AC5, REQ-REL-009-AC8, REQ-REL-009-AC10, REQ-REL-009-AC13, REQ-REL-013-AC1, REQ-REL-013-AC6
 # Automatic patch releases in release.yml (owner RATIFIED Oct 2; advisor 0051/0055/0056/0057), PR B:
 # - push to main and a daily schedule run ONLY the decide job; the release chain starts only on a v* tag (admission is
 #   guarded to tags, every other stage needs it);
@@ -40,8 +40,8 @@ if dec.get("concurrency") != {"group": "patch-decide", "cancel-in-progress": "fa
     bad.append("decide runs are not serialized (a push and the daily run could both cut)")
 if dec.get("environment") != "agent":
     bad.append("decide is not in the main-only agent environment")
-if dec.get("permissions") != {"contents": "read", "checks": "read", "id-token": "write", "issues": "write"}:
-    bad.append("decide's own token is not contents read + checks read + id-token + issues: %s" % dec.get("permissions"))
+if dec.get("permissions") != {"contents": "read", "actions": "write", "checks": "read", "id-token": "write", "issues": "write"}:
+    bad.append("decide's own token is not contents read + actions write + checks read + id-token + issues: %s" % dec.get("permissions"))
 if d.get("concurrency"):
     bad.append("a workflow-level concurrency group would serialize the tag chain with decide (it must be decide's own)")
 steps = dec.get("steps") or []
@@ -550,5 +550,81 @@ print("ok" if not bad else "; ".join(bad))
 PY
 )
 if [ "$issue_out" = ok ]; then pass=$((pass+1)); echo "PASS standing-issue-one-body-whole-entries → ok"; else failn=$((failn+1)); echo "FAIL standing-issue-one-body-whole-entries ($issue_out)"; fi
+# REQ-REL-013-AC1: the step's real text against a fixture origin/main: each policy file must be an object with a
+# non-empty required_checks, or the step refuses and leaves no shorter merged list behind
+out=$(python3 "$root/bin/policy-merge-harness.py" \
+  "$root" release.yml "wait for the tagged commit's required checks" tmp/required-checks.json "ready policy merge") && rc=0 || rc=$?
+echo "$out"
+nfail=$(grep -c '^FAIL' <<< "$out" || true)
+pass=$((pass + $(grep -c '^PASS' <<< "$out" || true))); failn=$((failn + nfail))
+[ "$rc" = 0 ] || [ "$nfail" != 0 ] || { failn=$((failn+1)); echo "FAIL policy merge cases did not finish"; }
+# REQ-REL-013-AC6: the step's real text against a stand-in gh that logs each call and answers the run count of full-suite.yml
+# for the head. No run: one dispatch on the branch, then the loop goes on. Any run, whatever its state: no dispatch.
+dispatch_out=$(WF="$root/.github/workflows/release.yml" W="$work" python3 - <<'PY'
+import os, shutil, subprocess, tempfile, yaml
+d = yaml.load(open(os.environ["WF"]), Loader=yaml.BaseLoader)
+step = next(s for s in d["jobs"]["decide"]["steps"] if "wait for the tagged commit's required checks" in s.get("name", ""))
+pol = os.environ["WF"].rsplit("/workflows/", 1)[0] + "/policy"
+GH = """#!/bin/bash
+echo "$*" >> "$GH_LOG"
+case "$*" in
+  *workflows/full-suite.yml/runs*) if [[ "$*" == *--jq* ]]; then echo "$RUNS"; else echo "{\\"total_count\\": $RUNS}"; fi ;;
+  *check-runs*) echo '[]' ;;
+esac
+exit 0
+"""
+def run(runs):
+    w = tempfile.mkdtemp(dir=os.environ["W"])
+    seed, origin, clone, stub = w + "/seed", w + "/origin.git", w + "/clone", w + "/stub"
+    os.makedirs(seed + "/.github/policy"); os.makedirs(seed + "/bin"); os.makedirs(stub); os.makedirs(w + "/tmp")
+    for f in os.listdir(pol):
+        shutil.copy(pol + "/" + f, seed + "/.github/policy/" + f)
+    shutil.copy(os.environ["WF"].rsplit("/.github/", 1)[0] + "/bin/patch-decide.py", seed + "/bin/patch-decide.py")
+    g = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", origin], check=True)
+    for cmd in (["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-qm", "c"], ["push", "-q", origin, "main"]):
+        subprocess.run(g + cmd, cwd=seed, check=True)
+    subprocess.run(["git", "clone", "-q", origin, clone], check=True)
+    open(stub + "/gh", "w").write(GH)
+    open(stub + "/sleep", "w").write("#!/bin/bash\necho slept >> \"$GH_LOG\"\nexit 99\n")
+    for x in ("gh", "sleep"):
+        os.chmod(stub + "/" + x, 0o755)
+    env = dict(os.environ, PATH=stub + ":" + os.environ["PATH"], RUNNER_TEMP=w + "/tmp", GH_TOKEN="x", GH_LOG=w + "/log", RUNS=str(runs),
+               GITHUB_REPOSITORY="o/r", GITHUB_SHA="0" * 40, GITHUB_REF_NAME="main", GITHUB_OUTPUT=w + "/out")
+    subprocess.run(["bash", "-c", step["run"]], cwd=clone, env=env, capture_output=True, text=True, timeout=60)
+    log = open(w + "/log").read().splitlines() if os.path.exists(w + "/log") else []
+    shutil.rmtree(w)
+    return log
+bad = []
+log = run(0)
+starts = [l for l in log if l.startswith("workflow run")]
+if len(starts) != 1 or "full-suite.yml" not in starts[0] or "--ref main" not in starts[0]:
+    bad.append("no run of full-suite.yml for the head: want one dispatch on main, got %s" % starts)
+if not any("check-runs" in l for l in log) or "slept" not in log:
+    bad.append("the wait loop did not go on after the dispatch: %s" % log)
+for state in ("in progress", "red", "green"):
+    log = run(1)   # a run in any state counts one
+    if any(l.startswith("workflow run") for l in log):
+        bad.append("a head with a run (%s) started full-suite.yml again: %s" % (state, log))
+print("; ".join(bad) or "ok")
+PY
+)
+if [ "$dispatch_out" = ok ]; then pass=$((pass+1)); echo "PASS patch-dispatches-full-suite-once-when-no-run → ok"; else failn=$((failn+1)); echo "FAIL patch-dispatches-full-suite-once-when-no-run ($dispatch_out)"; fi
+# the permission actions: write is held by decide alone, at job level; no other job and not the workflow
+perm_out=$(WF="$root/.github/workflows/release.yml" python3 - <<'PY'
+import os, yaml
+d = yaml.load(open(os.environ["WF"]), Loader=yaml.BaseLoader)
+bad = []
+def has_write(perms):
+    return isinstance(perms, dict) and perms.get("actions") == "write" or perms == "write-all"
+if (d["jobs"]["decide"].get("permissions") or {}).get("actions") != "write":
+    bad.append("decide has no actions: write")
+if has_write(d.get("permissions")):
+    bad.append("the workflow level has actions: write")
+bad += ["job %s has actions: write" % k for k, j in d["jobs"].items() if k != "decide" and has_write(j.get("permissions"))]
+print("; ".join(bad) or "ok")
+PY
+)
+if [ "$perm_out" = ok ]; then pass=$((pass+1)); echo "PASS actions-write-held-by-decide-alone → ok"; else failn=$((failn+1)); echo "FAIL actions-write-held-by-decide-alone ($perm_out)"; fi
 echo "release-patch-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
