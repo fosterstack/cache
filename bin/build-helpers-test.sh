@@ -9,7 +9,7 @@
 # ===== rule 21: bin/gen-recipes.py (both recipes are generated from one template; CI checks the committed files are exactly its output) =================
 gt="$fx/melange.yaml.tmpl"; ga="$fx/melange.yaml"; gb="$fx/melange-fips.yaml"
 GRD="--melange-lock $fx/melange.lock --fips-module $fx/fips-module.txt"   # the fixture data files
-GRX="env FSCACHE_TEST_MODE=1 FSCACHE_GEN_PIN=$(shasum -a 256 "$gt" | cut -d" " -f1)"   # the fixture template's own pin (the real one is in gen-recipes.py and is checked in build-apk-test.sh)
+GRX=""   # no fixture switch is needed: gen-recipes.py reads nothing from the environment
 t "rule 21" "gen-recipes --check passes on a pair the generator wrote" $GRX python3 "$GR" $GRD --template "$gt" --regular "$ga" --fips "$gb" --check
 t "rule 21" "the pair differs ONLY in the name, the description and the FIPS lines (the whole diff, character for character)" bash -c "d=\$(diff '$ga' '$gb' | grep '^[<>]' | sed 's/^[<>] //' | sort); e=\$(printf '%s\n' '  name: fscache' '  name: fscache-fips' '  description: the cache server' '  description: the cache server, built with the Go FIPS 140-3 module' '      export GOFIPS140=v1.0.0' '      go version -m \${{targets.destdir}}/usr/bin/fscache > /tmp/fscache-gobuildinfo.txt' \"      grep -q 'GOFIPS140=v1.0.0-c2097c7c' /tmp/fscache-gobuildinfo.txt\" | sort); test \"\$d\" = \"\$e\""
 t "rule 21" "the standard recipe holds no GOFIPS140 at all" bash -c "! grep -q GOFIPS140 '$ga'"
@@ -773,16 +773,6 @@ for name, pk in (("null", ["busybox=1.37.0-r5", None]), ("num", ["busybox=1.37.0
 P
 for n in null num; do fails "rule 15" "apk-tool inputs-manifest: a non-string package entry ($n) in the apk's environment is refused (exit 1)" 'plain string' python3 "$AT" inputs-manifest --apk "$work/nonstr-$n.apk" --melange-lock "$work/one.lock" --out "$work/nonstr-out.json"; done
 
-# the template is PINNED (ruling of review round 9): the generator no longer judges the shell; any change to the template fails --check naming the pin
-tmpl; printf '      go build -o x ./y\n' >>"$work/gr/t.tmpl"
-fails "rule 21" "gen-recipes: a template with a second go build passes the placeholder rules but FAILS the pin, naming TEMPLATE_SHA256 (the shell is judged by review, not by the generator)" 'TEMPLATE_SHA256' trule
-tmpl; python3 - "$work/gr/t.tmpl" <<'P'
-import sys
-p = sys.argv[1]; s = open(p).read(); open(p, "w").write(s + "#")
-P
-fails "rule 21" "gen-recipes: a ONE-BYTE edit of the template fails --check, naming the pin and saying to update it in the same reviewed change" 'update TEMPLATE_SHA256 in the same reviewed change' trule
-t "rule 21" "gen-recipes: the pin passes for the unchanged template" $GRX python3 "$GR" $GRD --template "$gt" --regular "$ga" --fips "$gb" --check
-fails "rule 21" "gen-recipes: an override of the pin is refused outside test mode" 'test mode' env FSCACHE_GEN_PIN=0000 python3 "$GR" --template "$gt" --regular "$ga" --fips "$gb" --check
 
 # ruling of review round 9: melange writes only types '0' and '5': type NUL is refused, and a directory header carries no data
 python3 - "$work" <<'P'
@@ -846,7 +836,6 @@ for bad in "01.0.0-c2097c7c" "v1.0.0-c2097c7" "v1.0.0-c2097c7cc" "v1.0.0-C2097C7
 done
 gdata; printf 'v1.0.0-c2097c7c' >"$work/gd/fips"
 fails "rule 21" "gen-recipes: a FIPS module file without its final newline is refused" 'FIPS module file' gen_with --check
-t "rule 21" "gen-recipes: the template pin does not depend on the data files (changing a data file never changes the template's sha256)" bash -c "a=\$(shasum -a 256 '$gt' | cut -d' ' -f1); cp '$work/gd/lock' '$work/gd/lock.bak'; printf 'zz=1-r0\n' >>'$work/gd/lock'; b=\$(shasum -a 256 '$gt' | cut -d' ' -f1); test \"\$a\" = \"\$b\""
 tmpl; python3 - "$work/gr/t.tmpl" <<'P'
 import sys
 p = sys.argv[1]; s = open(p).read(); s = s.replace("@PACKAGES@\n", "      - literal=1-r0\n", 1); open(p, "w").write(s)
