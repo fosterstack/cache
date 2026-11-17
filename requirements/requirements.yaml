@@ -5269,7 +5269,7 @@ requirements:
       is not the file name of its PATH. The floors only rise as before.
     acceptance_criteria:
       - id: REQ-CI-005-AC1
-        given: "a suite named in the floors file and a counting step that is the whole run text of a step with no key but name and run, in a job with no key but name, runs-on and steps (so no if, needs, strategy or continue-on-error can skip it), whose PATH is the one file of that name"
+        given: "a suite named in the floors file and a counting step that is the whole run text of a step with no key but name and run, in a job with no key but name, runs-on and steps (so no needs, strategy or continue-on-error can skip it), and no `if` but exactly `github.event_name == 'push'` (a job that runs on push to main only, REQ-REL-014), whose PATH is the one file of that name"
         when: "the floor check of the workflow run (`suite-guard-run.py all`) runs"
         then: "the suite is not run again by it; the suite ran once, in its own step, which required exit 0 and a case count at or above its floor; any other suite is still run by `all`, and a counting line that is not the whole of its step is refused"
         verification: { method: unit, release_blocking: false }
