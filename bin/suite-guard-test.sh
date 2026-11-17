@@ -56,6 +56,8 @@ printf 'a note: an old run said pass=999 fail=0\npass=55 fail=0\nsee 888 passed 
 printf 'case 3 expects 777 passed, 0 failed\nx: 53 passed, 0 failed\nthe next run may print 666 passed\n' > "$work/l12"
 expect 0 "count: a look-alike line before or after a pass=N summary is not the count" "55" -- count "$work/l11"
 expect 0 "count: a look-alike line before or after a N passed summary is not the count" "53" -- count "$work/l12"
+printf 'x: 40 passed, 0 failed\nx act step: 44 passed, 0 failed\n' > "$work/l13"
+expect 0 "count: a summary line whose label has several words is the count (dependabot-reviewer act step)" "44" -- count "$work/l13"
 
 # ---- floor: a suite below its committed floor, or unlisted, fails ---------------------------------------------------------------
 printf '{"suite-a": 50, "suite-b": 10}\n' > "$work/floors.json"
@@ -318,7 +320,7 @@ out=$(cwall) && rc=0 || rc=$?; if [ "$rc" != 0 ] && ! grep -q Traceback <<< "$ou
 cwf "" "bash bin/a-test.sh"
 out=$(cwall) || true; if ! grep -q 'x: 60 passed' <<< "$out" && grep -q 'a-test.sh: count 60' <<< "$out"; then ok "REQ-CI-005-AC1 all: the suites it runs are counted, their own output is not reprinted"; else bad "all echoes suites: ${out:0:200}"; fi
 
-EXPECT=122
+EXPECT=123
 echo "suite-guard: $pass passed, $failn failed"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT"; exit 1; fi
 [ "$failn" = 0 ]
