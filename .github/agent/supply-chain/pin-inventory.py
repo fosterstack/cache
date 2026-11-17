@@ -41,7 +41,7 @@ INSTALLER_INPUTS = {
 }
 # NOT here, on purpose (rule 1, amendment 2): actions/setup-go's go-version and go.mod's toolchain line; the standard library ships in our binary.
 _GO_INSTALL = re.compile(r"\bgo\s+install\b([^\n;&|]*)")
-_GO_TARGET = re.compile(r"(?<![\w.\-/@])((?:\$\{var\}|[\w.\-/])+)@((?:\$\{\{expression\}\}|\$\{var\}|[\w.\-+()<>=]|\$(?!\{\{))+)")
+_GO_TARGET = re.compile(r"(?<![\w.\-/@])((?:\$\{var\}|[\w.\-/])+)@((?:[<>]=?(?=v?\d))?(?:\$\{\{expression\}\}|\$\{var\}|[\w.\-+()]|\$(?!\{\{))+)")
 _QUOTE = re.compile(r"\\(.)|['\"]", re.S)
 _GH_DOWNLOAD = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/download/(v?)((?:\$\{\{expression\}\}|\$\{var\}|[\w.+()-]|\$(?!\{\{))+)/([^\s/'\x22?#;|&]+)")
 _GH_LATEST = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/latest/download/")
@@ -636,7 +636,7 @@ def _step_items(node, out, labels):
     if isinstance(run, str):
         run = _cap(_hide(re.sub(r"\\\n\s*", " ", run)))  # a backslash continuation is one command; an expression becomes a placeholder before any pattern can cut it
         for m in list(_GO_INSTALL.finditer(run)) + list(_GO_RUN_GET.finditer(run)):
-            args = _QUOTE.sub(r"\1", m.group(1))      # the shell's quote removal: 'x@>=1' and "x@latest" read as x@>=1 and x@latest
+            args = _QUOTE.sub(r"\1", re.sub(r"\\[nt]", " ", m.group(1)))      # the shell's quote removal: 'x@>=1' and "x@latest" read as x@>=1 and x@latest; a literal \n in a script's embedded text ends the word
             for t in _GO_TARGET.finditer(args):
                 out.append(Item("gotool", t.group(1), t.group(2)))
             for tok in args.split():
