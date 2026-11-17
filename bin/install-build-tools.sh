@@ -6,7 +6,7 @@
 # The release archive for this machine (Linux, amd64 or arm64) is fetched from the project's GitHub release by exact
 # version, its sha256 is compared with the pin below BEFORE anything is unpacked, and only then is the one binary
 # extracted. A mismatch installs nothing. No container image is used, so there is no image digest to pin.
-# Both versions were public for more than 7 days when pinned (supply-chain rule REQ-SUP-001); the pin-age check measures them.
+# Both versions are named by their exact release address and checksum below (supply-chain rule REQ-SUP-001); the pin scan names them when they move.
 # Each tool and arch has ONE literal download line below (REQ-SUP-001-AC18): the exact release address, its version and the sha256 it
 # is verified against are written there and nowhere else. To move a pin: change the version (in the address and in `pinned`) and the
 # sha256 of every line of that tool together, from the release's checksums.txt.

@@ -6,7 +6,7 @@
 #   sigstore-trust.json          STAYS   read by bin/chain-verify.py; it pins rekor.pub by sha256 and holds nothing else about Sigstore
 #   cosign-signing-config.json   STAYS   read by the cosign calls (bin/release-*.sh); it names Rekor v1 and no certificate authority,
 #                                        no sign-in service and no timestamp authority, so cosign asks for none of them
-#   fulcio-chain.pem             GOES    nothing reads it: the pin-age check no longer verifies signatures itself
+#   fulcio-chain.pem             GOES    no reader is left: the release chain does not read it and the pin-age check no longer verifies image signatures
 #   tsa-chain.pem                GOES    the Rekor entry carries the integrated time; no kept reader needs a timestamp authority
 # It reads the committed policy files and the code that names them; it opens no network connection.
 set -euo pipefail
