@@ -1166,6 +1166,17 @@ def _reach(paths, rows):
         if isinstance(r, list): todo += [q for q in r if isinstance(q, str)]
     return seen
 
+def tag_job_errors(jobs):
+    """One job, one judge: job sign-tag of stage-sign.yml is judged by sign_tag_errors of bin/chain-tag-jobs-judge.py (the judge of
+    bin/chain-tag-jobs-test.sh). Never a skip: a judge that cannot be loaded is an error."""
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("chain_tag_jobs_judge", os.path.join(os.path.dirname(os.path.abspath(__file__)), "chain-tag-jobs-judge.py"))
+        m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+        return ["stage-sign.yml job sign-tag: the tag jobs judge (bin/chain-tag-jobs-judge.py) refuses: " + x for x in m.sign_tag_errors(jobs)]
+    except Exception as e:
+        return ["stage-sign.yml job sign-tag: the tag jobs judge (bin/chain-tag-jobs-judge.py) failed (%s: %s)" % (type(e).__name__, e)]
+
 def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
     """(errors, listed paths run) for a parsed stage workflow file (YAML via the caller). The grammar is FINITE over keys:
     workflow, job and step keys come from closed sets; step `uses` from a closed list; env names from a closed set; the run
@@ -1196,6 +1207,9 @@ def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
         errs += _runner_errors(pre, j)
         if closed and (full, jn) in PLACE_PERMS and j.get("permissions") != PLACE_PERMS[(full, jn)]:
             errs.append("%s: job %s must hold exactly the permissions %s, found %s" % (full, jn, PLACE_PERMS[(full, jn)], j.get("permissions")))
+        if full == ".github/workflows/stage-sign.yml" and jn == "sign-tag":     # its steps are judged by the tag jobs judge, not by the steps below
+            errs += tag_job_errors(d["jobs"])
+            continue
         for s in (j.get("steps") or []):
             pin = pins.get((full, jn, s.get("id"))) if isinstance(s.get("id"), str) else None
             if pin is not None:
