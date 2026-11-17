@@ -178,6 +178,7 @@ Outside this check, each a documented exclusion with its reason (row 78):
 
 usage: check-action-pins.py [--verify-tags] [--git <commit>] [repo-root]
 """
+import collections
 import csv
 import hashlib
 import json
@@ -3257,7 +3258,7 @@ def step_texts(steps, outer=""):
         texts = []
         if isinstance(step, yaml.MappingNode):
             for k, v in step.value:
-                if isinstance(k, yaml.ScalarNode) and k.value in ("run", "with", "env"):
+                if key_of(k) in ("run", "with", "env"):
                     values = [w for _, w in v.value] if isinstance(v, yaml.MappingNode) else [v]
                     texts += [w.value for w in values if isinstance(w, yaml.ScalarNode)]
         yield "\n".join(texts + [outer])
@@ -3280,15 +3281,73 @@ def steps_context(doc):
     return found
 
 
+# `A_1` matches; `1A` and `A-B` do not
+_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# `echo() {` and `function printf {` match; `echo hello` does not
+_REDEFINES = re.compile(r"(?<![A-Za-z0-9_./-])(?:echo|printf)\s*\(\s*\)"
+                        r"|\bfunction\s+(?:echo|printf)\b|\balias\s+(?:echo|printf)=")
+_ENV_FILE = (["$GITHUB_ENV"], ["${GITHUB_ENV}"])
+# `exportVariable('NAME', v)` matches; `exportVariable(n, v)` and `notexportVariable('NAME', v)` do not
+_EXPORT_CALL = re.compile(r"\bexportVariable\(\s*(['\"])([A-Za-z_][A-Za-z0-9_]*)\1\s*,")
+# `::set-env name=NAME::` matches; `::set-env name=${{ inputs.n }}::` does not
+_SET_ENV = re.compile(r"::set-env\s+name=([A-Za-z_][A-Za-z0-9_]*)::")
+
+
+def _arguments(words):
+    """The arguments of a command's words after its name, without its one redirection; None when two words start with `>`,
+    since a quoted `>` word looks like a redirection once the quotes are off."""
+    if sum(bool(re.match(r"[0-9]*>", w)) for w in words[1:]) != 1:
+        return None
+    args, rest = [], iter(words[1:])
+    for w in rest:
+        if re.fullmatch(r"[0-9]*>>?", w):
+            next(rest, None)
+        elif not re.match(r"[0-9]*>", w):
+            args.append(w)
+    return args
+
+
+def _echoed_env_name(command):
+    """NAME of the one record `echo NAME=value >> "$GITHUB_ENV"` (printf too); None for any other use of the file."""
+    words = _tokens(command)
+    if words[:1] not in (["echo"], ["printf"]) or _redirect_targets(command) not in _ENV_FILE \
+            or len(_ENV_ROUTE.findall(command)) != 1:
+        return None
+    args = _arguments(words)
+    if not args or any("\n" in a for a in args) or (words[0] == "echo" and len(args) != 1):
+        return None
+    first = args[0].removesuffix("\\n")
+    if words[0] == "printf" and "%" in first.replace("%s", ""):
+        return None
+    name = first.partition("=")[0]
+    return name if "=" in first and _NAME.fullmatch(name) and "\\" not in first else None
+
+
+def env_writes(text):
+    """[(name, route)] for the env-file writes of a text whose name is literal: the three plain forms."""
+    writes = [] if _REDEFINES.search(text) else \
+        [(name, "GITHUB_ENV") for c in _split_commands(text) if (name := _echoed_env_name(c))]
+    joined = re.sub(r"\\\n", "", text)    # forms (2) and (3) are read from the text the route count reads
+    writes += [(m.group(2), "exportVariable") for m in _EXPORT_CALL.finditer(joined)]
+    return writes + [(m.group(1), "::set-env") for m in _SET_ENV.finditer(joined)]
+
+
 def step_write_findings(where, text):
-    """The findings for one text a step runs: a startup-hook name set through an env route, or a PATH route."""
+    """The findings for one text a step runs: a startup-hook name set through an env route, a PATH route, or an env route
+    whose name is not literal text."""
     names = re.compile(r"(?<![A-Za-z0-9_])(?:(?:" + "|".join(STARTUP_HOOK_ENV) + r")(?![A-Za-z0-9_])|BASH_FUNC_)")
     found = []
+    writes = env_writes(text)             # read as written: bash keeps a backslash-newline inside single quotes
+    text = re.sub(r"\\\n", "", text)
+    unread = collections.Counter(_ENV_ROUTE.findall(text))
+    unread.subtract(route for _, route in writes)
     if path := _PATH_ROUTE.search(text):
         found.append(f"{where}: uses {path.group()}, which changes PATH for later steps; refused")
-    if (route := _ENV_ROUTE.search(text)) and (name := names.search(text)):
+    if (route := _ENV_ROUTE.search(text)) and (name := names.search(text + "\n" + "\n".join(n for n, _ in writes))):
         found.append(f"{where}: sets {name.group()} through {route.group()}, which changes what later programs load or "
                      f"where they connect; refused")
+    if route := next((r for r, left in unread.items() if left > 0), None):
+        found.append(f"{where}: writes through {route}, and the name it sets cannot be read as literal text; refused")
     return found
 
 
@@ -3336,9 +3395,9 @@ def check_file(tree, rel, pins, bad):
                                                                or k.value.startswith("BASH_FUNC_")):
                             bad.append(f"{rel}: a mapping sets {k.value}, which changes what later programs "
                                        f"load or where they connect; refused")
-                        if isinstance(k, yaml.ScalarNode) and k.value == "steps" and isinstance(v, yaml.SequenceNode):
+                        if key_of(k) == "steps" and isinstance(v, yaml.SequenceNode):
                             check_step_writes(rel, v, bad, *context.get(id(v), ("", "")), mores)
-                        if isinstance(k, yaml.ScalarNode) and k.value == "env" and not isinstance(v, yaml.MappingNode):
+                        if key_of(k) == "env" and not isinstance(v, yaml.MappingNode):
                             bad.append(f"{rel}: an env that is not a literal mapping hides the names it sets; refused")
                         stack.append(v)
                 elif isinstance(n, yaml.SequenceNode):
