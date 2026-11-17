@@ -101,7 +101,9 @@ gosha=$(sed -n 's/^sha=//p' "$tmp/recipe.facts")
   || { echo "build-apk.sh: the Go archive $goarch_dir has no $gofile" \
     "(rule 12: Go comes from the archive)" >&2; exit 2; }
 [ -x "$SHA256SUM" ] || { echo "build-apk.sh: sha256sum is not installed at $SHA256SUM" >&2; exit 1; }
-got=$("$SHA256SUM" "$goarch_dir/$gofile" | cut -d' ' -f1)
+# hash the copy that melange will use, so the archive cannot change between the check and the use
+mkdir -p "$tmp/cache"; cp "$goarch_dir/$gofile" "$tmp/cache/go-archive"
+got=$("$SHA256SUM" "$tmp/cache/go-archive" | cut -d' ' -f1)
 [ "$got" = "$gosha" ] \
   || { echo "build-apk.sh: sha256 checksum of $gofile ($got) differs from the recipe's pin ($gosha)" >&2; exit 2; }
 
@@ -121,7 +123,7 @@ rendered=$rdir/$(basename "$recipe")
 sed "s/@VERSION@/$apkver/g" "$recipe" >"$rendered"
 
 # ---- 3. pre-seed Go ----
-mkdir -p "$tmp/cache"; cp "$goarch_dir/$gofile" "$tmp/cache/sha256:$gosha"
+mv "$tmp/cache/go-archive" "$tmp/cache/sha256:$gosha"
 
 # ---- 4. the sealed call ----
 # tree-exclude begin

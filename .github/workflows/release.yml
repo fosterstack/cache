@@ -177,10 +177,10 @@ jobs:
           path: rec-apk/ubuntu-24.04-arm
       - name: build under Witness
         if: ${{ inputs.mode != 'snapshot' }}
-        run: bash bin/witnessed-local.sh build bin/build-stage-assemble.sh
+        run: bash bin/witnessed-local.sh build bin/build-stage-assemble.sh apk
       - name: snapshot-build under Witness
         if: ${{ inputs.mode == 'snapshot' }}
-        run: bash bin/witnessed-local.sh snapshot-build bin/build-stage-snapshot-assemble.sh
+        run: bash bin/witnessed-local.sh snapshot-build bin/build-stage-assemble.sh snapshot-apk
       - id: digests
         name: expose digests.json as the job output
         run: echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"
@@ -435,10 +435,10 @@ jobs:
         run: bash bin/rebuild-records-digests.sh --check rec-digests/ubuntu-24.04/rebuild-records.json rec-digests/ubuntu-24.04-arm/rebuild-records.json
       - name: rebuild under Witness
         if: ${{ inputs.mode != 'snapshot' }}
-        run: bash bin/witnessed-local.sh rebuild bin/build-stage-rebuild-assemble.sh
+        run: bash bin/witnessed-local.sh rebuild bin/build-stage-assemble.sh rapk
       - name: snapshot-rebuild under Witness
         if: ${{ inputs.mode == 'snapshot' }}
-        run: bash bin/witnessed-local.sh snapshot-rebuild bin/build-stage-snapshot-rebuild-assemble.sh
+        run: bash bin/witnessed-local.sh snapshot-rebuild bin/build-stage-assemble.sh snapshot-rapk
       - id: records
         name: expose the record digests as the job output
         if: ${{ inputs.mode != 'snapshot' }}
