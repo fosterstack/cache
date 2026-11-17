@@ -303,8 +303,8 @@
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
-      "key": "169c8064f2a0ee992d4e876aadfa68f98aedaacaa0105b959c99d703e41a68ab",
-      "line": "169c8064f2a0ee992d4e876aadfa68f98aedaacaa0105b959c99d703e41a68ab",
+      "key": "91c6d2a898f2db2bb724e0b31ff1a6fe75b31c1e4ea1f4fd76be406064857ae5",
+      "line": "91c6d2a898f2db2bb724e0b31ff1a6fe75b31c1e4ea1f4fd76be406064857ae5",
       "ruling": "text, not a command: a comment in the test; nothing runs it"
     },
     {
@@ -324,8 +324,8 @@
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a git clone or remote fetch",
-      "key": "b9ed461c6dfbc2c8b3e7ef050d9d386b7215c8f4360f0d8b8d111bf064866079",
-      "line": "b9ed461c6dfbc2c8b3e7ef050d9d386b7215c8f4360f0d8b8d111bf064866079",
+      "key": "cb433c05b4ad71f6129fb2e730a316771a44c262e53d207985b9dd4f91586848",
+      "line": "cb433c05b4ad71f6129fb2e730a316771a44c262e53d207985b9dd4f91586848",
       "ruling": "text, not a command: a comment in the test; nothing runs it"
     },
     {
@@ -338,8 +338,8 @@
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
-      "key": "a2db3ff5964d60c1803defe5ef6d907372f4e55b03e8cae3f13d8a784e94c5f5",
-      "line": "7b92a4da2b4d628ac68cdacdddfc45868196f4c67cf2402c124bf25fab75272e",
+      "key": "aeebb917617a450cdd26676390433a732076cb04dc808480aefa54f5e1aa6516",
+      "line": "cd8d0afda71dc057a9cbafb838d4b62993448492fa9d3634721f3b4a7dcc952c",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc; the program does not execute it"
     },
     {
@@ -836,22 +836,22 @@
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
-      "key": "e28579c8ca5077379e428a954ba20b8e581c69b618858d52626c1e2fd56602ed",
-      "line": "c4c62cf0143e49af84acb64d68687ccfdee682fe6d84743cf849894e7e2e1b65",
+      "key": "87a6ed1c60c2c18d81a3fc1d081b7f7f4bc402d7709b54a2ea8905d50a77c5ae",
+      "line": "34a34e926dbc4460100e0910e60f913770fc57de3a7a1dfd0be8213be3b5c175",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc; the program does not execute it"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "56b6152555e0f4cffd289bccd7e7eb323fc64c4f454b3043b26c31275cd66e24",
-      "line": "c4c62cf0143e49af84acb64d68687ccfdee682fe6d84743cf849894e7e2e1b65",
+      "line": "34a34e926dbc4460100e0910e60f913770fc57de3a7a1dfd0be8213be3b5c175",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc; the program does not execute it"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
-      "key": "f930f5ac8ccadf7e283e51807c60d51a25bb3633780cd3c52a46452056b7799d",
-      "line": "c4c62cf0143e49af84acb64d68687ccfdee682fe6d84743cf849894e7e2e1b65",
+      "key": "a20a723b07b2e5f7cd029cf929af07c48017e7117bb192068e24f7dbb7d3e4e3",
+      "line": "34a34e926dbc4460100e0910e60f913770fc57de3a7a1dfd0be8213be3b5c175",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc; the program does not execute it"
     },
     {
@@ -871,8 +871,8 @@
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
-      "key": "7df972a7d29678272b56e74930ceb4f8e410192b46237c82ecef29ea80a93de2",
-      "line": "c692f6037cff40fe2f12bcf0b3bc9c616d9a5b0941d2a1c35b9e93962ad6047d",
+      "key": "87c4889d0de371663791e299f0d642477146abe865d9c71d3f7c731eaa304ae9",
+      "line": "bf16934cc4332817dd50f5684d59638e435eb78fc0e562227bf93dc32bac4eff",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc; the program does not execute it"
     },
     {
@@ -927,15 +927,15 @@
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
-      "key": "faca0c713d0452c17d9a6a39dc2e933441527818a81e115be2ced8b28509534c",
-      "line": "92b3d892532a9e863b6c1988c8f2b1b5b35fe198ebe4d8f818bc30000730b55f",
+      "key": "7624f9d906395d9952b3477329bb410629c94616a3dd042e578e850539109c45",
+      "line": "bfe76857925c7a3b657784daea6f270a035020b8570b4d83d77fbbb000f992e6",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc; that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "31485b14f69c16638bae8731237f435f124e7fcbc0b1bd82abd975fcc08d5f04",
-      "line": "18711709e6b76954b124c9dbd5ddc067538473e72a4a1c93117fd7c66f86bee4",
+      "line": "e1098866cc60276586630fdc0ebb628ff2900d3ba435e510e5093f070615409f",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc; that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review"
     },
     {
@@ -1096,7 +1096,7 @@
       "file": "bin/persona-uat-wiring-test.sh",
       "form": "a download",
       "key": "3598de50185c5d93f1364896d68c63c9ab62745a38366b251c7b4f6681ada0ea",
-      "line": "a7ec75ac7c5348fb1d3a40d954f0b64b9c1cad993557f52107a6bce4da24af34",
+      "line": "b4b1ef8b9c5b46f558306cf1b19e8a9294d4bab3d791ffd374b8bdb5153d8cb5",
       "ruling": "text, not a command: a comment in the test; nothing runs it"
     },
     {
@@ -1109,15 +1109,15 @@
     {
       "file": "bin/persona-uat-wiring-test.sh",
       "form": "a download",
-      "key": "86a2dc3f8369ec75c3865544d2f9d038b48262ea082f2c2e5e3ff8260951f4f3",
-      "line": "86a2dc3f8369ec75c3865544d2f9d038b48262ea082f2c2e5e3ff8260951f4f3",
+      "key": "199defa448ec0b610a12e788a951a0d34abea9e4eef2bf4760e933cd8b9a7670",
+      "line": "199defa448ec0b610a12e788a951a0d34abea9e4eef2bf4760e933cd8b9a7670",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc; that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review"
     },
     {
       "file": "bin/persona-uat-wiring-test.sh",
       "form": "a download",
-      "key": "a9ce6d7d241d6a20ba00468e1198a9f8d3a790b03bfd6b2f8bf022c5b7199798",
-      "line": "a9ce6d7d241d6a20ba00468e1198a9f8d3a790b03bfd6b2f8bf022c5b7199798",
+      "key": "a3a3b4543f69300fb9a9dfcfb9fc03a7fe8fadb13ffa3e8325bd15043615666b",
+      "line": "a3a3b4543f69300fb9a9dfcfb9fc03a7fe8fadb13ffa3e8325bd15043615666b",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc; that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review"
     },
     {
@@ -1297,27 +1297,6 @@
     },
     {
       "file": "bin/chain-check-scripts-test.sh",
-      "form": "a download",
-      "key": "4808c379e5a5443128785f55cea0079477dcecb8cae0845e90df84a1b6f333a4",
-      "line": "4808c379e5a5443128785f55cea0079477dcecb8cae0845e90df84a1b6f333a4",
-      "ruling": "text, not a command: a comment in the script; nothing runs it"
-    },
-    {
-      "file": "bin/chain-check-scripts-test.sh",
-      "form": "a download",
-      "key": "26b3cee8af41ed931a9799b93c8a88221bfb36537c37592208d411f765981da8",
-      "line": "26b3cee8af41ed931a9799b93c8a88221bfb36537c37592208d411f765981da8",
-      "ruling": "text, not a command: a comment in the script; nothing runs it"
-    },
-    {
-      "file": "bin/chain-check-scripts-test.sh",
-      "form": "a download",
-      "key": "dcbc74d8453fd62b7878d419c352604675e05c12c23a9d2bdd8441e0785e3e87",
-      "line": "84c16b84df32069fbb13dc2aa6afa16ef4968b5d4cbcbb35bda408cf27be4087",
-      "ruling": "text, not a command: a comment in the script; nothing runs it"
-    },
-    {
-      "file": "bin/chain-check-scripts-test.sh",
       "form": "a gh release or extension download",
       "key": "987bafbc711ea170f3927f4ce7ed570637c12d32c3cb6b6c13f7cb631453d1bb",
       "line": "987bafbc711ea170f3927f4ce7ed570637c12d32c3cb6b6c13f7cb631453d1bb",
@@ -1386,20 +1365,6 @@
       "form": "a download",
       "key": "9e1af07f505797af60428ffec85122dfdf1aa7f30ee064b9eb9bca1de036baac",
       "line": "df68b8cde5dc3f789540d4cb7e0858f395f5c588eb4623bd175ec6747e8cb49a",
-      "ruling": "text, not a command: a comment in the script; nothing runs it"
-    },
-    {
-      "file": "bin/loopback-get-test.sh",
-      "form": "a download",
-      "key": "3302e4d5832444de5760f72a1d85a9a4e3a8f1b5a000edf748de33fb080946a3",
-      "line": "659dc68d9000455ee439546337aebf54a82276f80cfcac0274f427ddd5c15d40",
-      "ruling": "text, not a command: a comment in the script; nothing runs it"
-    },
-    {
-      "file": "bin/loopback-get-test.sh",
-      "form": "a download",
-      "key": "5ab5f46b653cada0287a938f20d95a121d6c55b627e761556c8e6b786e277ac2",
-      "line": "659dc68d9000455ee439546337aebf54a82276f80cfcac0274f427ddd5c15d40",
       "ruling": "text, not a command: a comment in the script; nothing runs it"
     },
     {

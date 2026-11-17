@@ -329,20 +329,6 @@ _DATA_CONSUMERS = frozenset("cat grep egrep fgrep sort head tail wc cut tr diff 
 _DEF_FUNC = re.compile(r"^[ \t]*(?:function[ \t]+([A-Za-z_][\w.-]*)|([A-Za-z_][\w.-]*)[ \t]*\([ \t]*\))", re.M)
 
 
-def _norm_word(w):
-    """A versioned interpreter (python3.11, perl5.36, ruby3.2, bash5, sh.exe) is the interpreter."""
-    b = re.sub(r"(?:\.exe)?$", "", w)
-    b = re.sub(r"[\d.]+$", "", b)
-    for cand in (w, b, re.sub(r"\d+$", "", b)):
-        if cand in _INTERP_WORDS:
-            return cand
-    return w
-
-
-def _words(text):
-    return [_norm_word(w) for w in re.findall(r"[A-Za-z_][\w.+-]*|(?<![\w.])\.(?=\s)", text.replace("/", " "))]
-
-
 def _unquote(raw):
     """Shell quote removal of one word (single quotes literal, double quotes with a backslash only before dollar, backtick, double quote and backslash, a backslash escapes the next character): the text bash compares a heredoc terminator with."""
     out, i = [], 0
@@ -488,19 +474,6 @@ def _func_bodies(lines):
             k += 1
         out[name] = out[name] + "\n" + "\n".join(body) if name in out else "\n".join(body)    # every definition counts, not only the last
     return out
-
-
-def _runs_input(words, funcs, seen=None):
-    """True when any of `words` is, or (through the functions the file defines, to any depth) calls, an interpreter, a shell or a command that runs or moves a file."""
-    seen = seen if seen is not None else set()
-    for w in words:
-        if w in _INTERP_WORDS or w in _USE_WORDS:
-            return True
-        if w in funcs and w not in seen:
-            seen.add(w)
-            if _runs_input(_words(funcs[w]), funcs, seen):
-                return True
-    return False
 
 
 def _plain_value(s):
