@@ -179,6 +179,8 @@ ALLOW_PATTERNS=(
   '^bin/(un)?pack-govulncheck\.sh$'
   '^bin/check-records-digests\.sh$'
   '^bin/check-(guide-plan|osv-db|image-platforms|bind|osv-vex)\.py$'
+  '^bin/guide-judge-test\.sh$'
+  '^bin/guide_plan_judge\.py$'
   '^bin/acceptance-(gradle|gradle-capped|maven|maven-capped|egress|k8s|serve)\.sh$'
   '^bin/acceptance-k8s-(manifests|smoke)\.py$'
   '^bin/chain-check-(scripts|wiring)-test\.sh$'
@@ -191,7 +193,7 @@ ALLOW_PATTERNS=(
   # The marker-only pull request gate (REQ-CHAIN-001-AC6, slice 4b-6): the script and its suite.
   '^bin/marker-(pr-gate\.py|gate-test\.sh)$'
   # Release (PR 4): the six Witness-step scripts and the post-publish planner, the crane pin test, and the Release wiring and script tests with their judge.
-  '^bin/release-(verify|apks|compare|publish|sign|stage|assets|postverify)\.sh$'
+  '^bin/release-(verify|apks|compare|publish|sign|signatures|stage|assets|postverify)\.sh$'
   '^bin/release-(postverify|metadata|layout|compare)\.py$'
   '^bin/chain-(install-crane|release-scripts|release-wiring|release-metadata)-test\.sh$'
   '^bin/chain-release-shape\.py$'

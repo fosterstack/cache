@@ -64,7 +64,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "2de75e08e4a6ad24c6b0a10a05d242b9379009c655c6af1daf4c94e9663d4c2e",
+      "sha256": "74155ac98f179e347cdfa397a20a1ebd28d631efcafbd7a8d0ddce117ab1e6a9",
       "tools": [
         "make",
         "at",
@@ -149,7 +149,7 @@
     },
     {
       "path": "bin/chain-hostile-step.sh",
-      "sha256": "1f2adc9dffff576748641d93d2321b2b983c4deb77edfea48ba212ee55a11b44",
+      "sha256": "c21890f9b96910a61c6dbe4dc644e0d823c46d8d258ca74fbb28f9d6c4c78b6a",
       "tools": [
         "at",
         "bash",
@@ -205,13 +205,6 @@
           "line_sha256": "d2cca5b3b4c50877d07c7fdbd80d8dcfdfdf576e222faa9ff4586af9fd7b49c7",
           "count": 1,
           "why": "a line the data-opener default deny cannot read as code: a comment, a message, a nested substitution (live code in double quotes around single-quoted text), a generated-source printf or a shell continuation holding quoted text with $( or backticks; it is not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454 round 9, every waived line is comment, message or ordinary nested-substitution code)"
-        },
-        {
-          "rule": "deny",
-          "line": "      printf 'pubkey-sha256: %s\\n' \"$(openssl pkey -in \"$f\" -pubout -outform DER 2> /dev/null | sha256sum | cut -d' ' -f1)\"",
-          "line_sha256": "93d8816bf74e4d05ea714f5bcf2eda7b3c093f362d887f3d6839b1efe06da25b",
-          "count": 1,
-          "why": "a line the data-opener default deny cannot read as code: a comment, a message, a nested substitution (live code in double quotes around single-quoted text), a generated-source printf or a shell continuation holding quoted text with $( or backticks; it is not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454 round 9, every waived line is comment, message or ordinary nested-substitution code)"
         }
       ]
     },
@@ -234,7 +227,7 @@
     },
     {
       "path": "bin/chain_hostile.py",
-      "sha256": "fb476b3e1a546263c9de35689bddac82be7f91c8f977655dee973b144702fb7b",
+      "sha256": "2bfc791820bc71ed5294b3e0f042e72aecac8279b4cd3932e6008720f274b631",
       "tools": [
         "at"
       ],
@@ -244,7 +237,7 @@
     },
     {
       "path": "bin/chain-bytes-sha.py",
-      "sha256": "6161971874a9834baf7266f210cb63da208d67c520b3d56cdcb355a02e690b91",
+      "sha256": "88e9c767a77dd8a42513eb87e7369109864b5f5765cd4464bd676ca7a3f4fb13",
       "tools": [
         "at",
         "git"
@@ -297,7 +290,7 @@
       "runs": [],
       "signs": false,
       "reason": "turns each image's built OCI index into the final index that carries the release's OpenVEX as attestation children, and moves the image's digest file with it (REQ-REL-010-AC1); no network code, standard library only",
-      "sha256": "3306a83ca4704a9069b44a72bc853d2d9f0c2e668a5454f6b07e0bd52bfbfe3d"
+      "sha256": "c8e3b57e1c813647410f39e1ba9a7d041290339efd0845dfe3c9295357dbe023"
     },
     {
       "path": "bin/witnessed.sh",
@@ -409,7 +402,7 @@
       ],
       "signs": "other",
       "reason": "Sign's signing step for the building jobs' and the Check jobs' Witness records (REQ-CHAIN-005-AC4, REQ-REL-011-AC1; handoff 0713): for each payload that chain-verify.py sign-records has already checked and staged, signs the payload with the release KMS key through the one signing function (bin/chain-verify.py sign-record, which checks RELEASE_KMS_KEY_REF and keeps the Rekor entry beside the record), each call run by bin/with-aws-token.sh with a fresh identity token that is removed when the call ends, copies the data files unchanged, then verifies every signed record against the release key; builds nothing and runs no Witness",
-      "sha256": "42eeef9bbeb1a49b89227578ff7be9e679e8a35e7ee97ec9826087d6c56cc318",
+      "sha256": "f807f28c0117a6950876269289f894d8b096a556cf303550e734d14ade9da2e8",
       "reads_env": [
         "AWS_ROLE_ARN",
         "AWS_REGION",
@@ -604,7 +597,7 @@
       ],
       "signs": false,
       "reason": "gate 7 (REQ-REL-012-AC7): the judge's decision over data the wrapper fetched (the record, the writers policy, the tag object) and main's accepted-items.json, the fourth input; reads and decides, signs and writes nothing",
-      "sha256": "cdb08337676fc95a5ca7770f641359d69bab9f68998173d4e6c718c7520cf4bc"
+      "sha256": "275049741718951ca6bbaf27c1c6b1be80a6cc27ddc99baf1375732ea22adf46"
     },
     {
       "path": "bin/build-freeze.sh",
@@ -696,7 +689,7 @@
       ],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "4d02cfe8da7c98eba2d9cc78f36bcafe6ccdad87639e9a1d04b701e23588d20e"
+      "sha256": "a787fc1acdffa6d5670eca13881a0777dccdf13987b9b97fe4b4cbd52a5efe99"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
@@ -777,7 +770,7 @@
       "runs": [],
       "signs": "other",
       "reason": "the tag-signature route and the owner baselines (policy read from origin/main by bin/build-admit.py); names git verify-tag, verifies and signs nothing",
-      "sha256": "4f9ea6b8214cc0f8ac3d4b8202edc90b24fbb4e949bf86802afef89fa769c9e7"
+      "sha256": "45e54a9fc335893bd7c3378ed6a3196484a9dab1c362b38d3a28478024d9dad9"
     },
     {
       "path": "bin/build-stage-refuse-mode.sh",
@@ -798,7 +791,7 @@
     },
     {
       "path": "bin/check-stage.sh",
-      "sha256": "34d873b931d5d67789643114af9a81b1a8d5e1ba24b212a176c1fb8d2f0af0e7",
+      "sha256": "a5e8ffd77bb76cd6ddb13fc561d0daf833300374b73f41f3e6387dd2a8eb648d",
       "tools": [
         "bash",
         "make",
@@ -819,7 +812,7 @@
     },
     {
       "path": "bin/check-govulncheck.py",
-      "sha256": "79c4dd3a911d3063721bf27d41bd7fc67253a22976df9d290144c4bc8ebf7898",
+      "sha256": "0618c6d0676e458405f053f7fc1ba4c251088342f783452b3899c77d795d630f",
       "tools": [
         "env",
         "go",
@@ -838,7 +831,7 @@
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "fc0300fd53f7bcf2376d4759217e59512495dcd3500aabf84f925d2ffd7b6dea",
+      "sha256": "ce97351fbccce6c3993d717a295fec0b6e273ab535853f581134438d25e4320e",
       "tools": [
         "bash",
         "find",
@@ -881,13 +874,6 @@
         },
         {
           "rule": "deny",
-          "line": "[ -n \"$ver\" ] && [ \"$got\" = \"$(sed \"s/VER/$ver/\" <<< \"$want\" | sort)\" ] \\",
-          "line_sha256": "1a348019a0c22b103b5c8a0678a1875564bdb3bc083a3592b5728293a294989d",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
           "line": "[ -z \"${CHECK_SCAN_NOW+x}\" ] || fail \"CHECK_SCAN_NOW is defined in the environment: the database age is judged by the runner's clock, which no variable can change\"",
           "line_sha256": "2ae0c195e21d2471ef18a310f97cc1229add47c0aeda6b64cad761bdda07bc7b",
           "count": 1,
@@ -913,13 +899,6 @@
           "line_sha256": "99605e4749c17588361408279d11f42de45e6a04308f759148ab4efc15f19005",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) or an assignment on this line holds arithmetic $(( ... )) next to a bracket: it is arithmetic, not a subscript (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 452, every waived line is real arithmetic)"
-        },
-        {
-          "rule": "deny",
-          "line": "  case \"${f,,}\" in *darwin*|*windows*) fail \"a darwin or windows file exists in $archives ($(basename \"$f\")): REQ-PLAT-001 ships Linux only\" ;; esac",
-          "line_sha256": "c48e01c93cc8d1767c5710b51b6a5db9ac6ce9a1befb18a655904b162574154a",
-          "count": 1,
-          "why": "a comment, echo or case line holding ( ... ${ } as plain text: it is a message or a pattern, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is comment, message or case-pattern text)"
         },
         {
           "rule": "deny",
@@ -1508,22 +1487,49 @@
     },
     {
       "path": "bin/check-guide-plan.py",
-      "sha256": "b423e7d6634e9c4bfc0abaf4912fcff11aebebde961e37e36d925881ef53cbbe",
+      "sha256": "5fddc30de1ac669468a8adf1ae21b1e818016e48a8845d4159f6ec8bb1db2f40",
       "tools": [
         "at",
         "command",
         "gh",
+        "jq",
         "sh"
       ],
       "runs": [
-        "bin/check-guide.sh"
+        "bin/check-guide.sh",
+        "bin/guide_plan_judge.py"
       ],
       "signs": false,
       "reason": "the planner of bin/check-guide.sh: reads the customer guide and the cannot-run list, judges and substitutes every command (REQ-CHAIN-006-AC7)"
     },
     {
+      "path": "bin/guide_plan_judge.py",
+      "sha256": "b92689fb7e7b92f48bb8e71c9653d13ad5a68de9a50daeedfd60db5da51986c9",
+      "tools": [
+        "bash",
+        "command",
+        "cosign",
+        "go",
+        "jq",
+        "sh"
+      ],
+      "runs": [
+        "bin/check-guide-plan.py",
+        "bin/release-postverify.py"
+      ],
+      "signs": false,
+      "reason": "imported by check-guide-plan.py and release-postverify.py: the one judge of a customer-guide command (REQ-CHAIN-006-AC7, REQ-CHAIN-007-AC20); it runs nothing; the listed words are the commands of a guide command it judges (prose and strings), which the text scan over-reports",
+      "env_mentions": [
+        {
+          "name": "ENV",
+          "text": "m.group(1) == \"ENV\"",
+          "why": "REQ-CHAIN-007-AC20: the jq filter grammar REFUSES the variable named ENV (a jq-only command may not read the environment); the literal is the refusal test, and no environment is read or set"
+        }
+      ]
+    },
+    {
       "path": "bin/check-osv-db.py",
-      "sha256": "5c76cb9a4fb513345d2db6eb0cd80f50aa7e5b1a13640c2c167336729a8cebcd",
+      "sha256": "af99f51c46d0d70cd43acdf2505d1f593fff214cd0815e3a50aad289e6c84028",
       "tools": [],
       "runs": [
         "bin/check-scan.sh"
@@ -1641,21 +1647,28 @@
       ],
       "signs": false,
       "reason": "Release, step release-verify: the tag, the release policy, then Build's, Sign's, Rebuild's and Check's records in rule 69's order (REQ-CHAIN-007-AC4); no secret or token is bound to this step",
-      "sha256": "63bffd20c9eec377f7ef9c97e4adc0e1c35d93f84c4e7b072c33eb8f1f8017e9",
+      "sha256": "e839f3b7262a65e7a0116ce9abb537becfd136dc341ea43c89f0e194c5f28169",
       "exceptions": [
         {
           "rule": "deny",
-          "line": "[[ \"${GITHUB_REF_NAME:-}\" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+(-rc[0-9]+)?$ ]] || { echo \"refused at tag: ${GITHUB_REF_NAME:-} is not vX.Y.Z or vX.Y.Z-rcN\" >&2; exit 1; }",
-          "line_sha256": "8f8d116d24c40ce326b31d13a270a361609939c249925e03a44b3051b3c4cb99",
+          "line": "[[ \"${GITHUB_REF_NAME:-}\" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+(-rc[0-9]+)?$ ]] || \\",
+          "line_sha256": "65e7078a08799424e6b095c5bd2be6343afdcf8ffaff4d4a0b703ab2b7c922fb",
           "count": 1,
-          "why": "the refusal message must read `refused at tag` (rule 71: the failure names its stage); `at` is a word of that message, not a command"
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; reviewed with the change of this script)"
         },
         {
           "rule": "deny",
-          "line": "python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag \"$GITHUB_REF_NAME\" --out policy.json",
-          "line_sha256": "194f38d74199cb9899bafa324fbe3e35ebe8ae2971be586b82dfb43433e6c5f4",
+          "line": "  { echo \"refused at tag: ${GITHUB_REF_NAME:-} is not vX.Y.Z or vX.Y.Z-rcN\" >&2; exit 1; }",
+          "line_sha256": "c69e531edae0d754dc725503db23290745454f11569b78e4951575e49518bc39",
           "count": 1,
-          "why": "`make` is the chain-verify.py subcommand `policy make` (rule 57: the policy is made for the tag), not the make program"
+          "why": "the refusal message must read `refused at <stage>` (the failure names its stage); `at` is a word of that message, not a command;"
+        },
+        {
+          "rule": "deny",
+          "line": "python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json \\",
+          "line_sha256": "62c523f22fe960b40295e7df705580aa2a48169b563f44b639fcb00612dc96d0",
+          "count": 1,
+          "why": "`make` is the chain-verify.py subcommand `policy make` (the policy is made for the tag), not the make program"
         }
       ]
     },
@@ -1668,11 +1681,12 @@
       ],
       "runs": [
         "bin/apk-tool.py",
+        "bin/release-postverify.py",
         "bin/release-sign-apks.sh"
       ],
       "signs": false,
-      "reason": "Release, step release-apks: checks the four apks against the digests Build attested, then calls cache's bin/release-sign-apks.sh with Sign's signatures (release-signed/apks; it holds no key; comparing them with Rebuild's is bin/release-compare.sh's job) and copies each signed apk with its Rekor bundle (REQ-CHAIN-007-AC6); no key file exists and no stored secret is read",
-      "sha256": "5f0843528895c57d13db50305f971612774a0cbdfa8ff0aecf74657a282ef25c",
+      "reason": "Release, step release-apks: checks the four apks against the digests Build attested, runs bin/release-postverify.py --before-publish (the guide's provenance commands on a staged copy, before anything is published), then calls cache's bin/release-sign-apks.sh with Sign's signatures (release-signed/apks; it holds no key; comparing them with Rebuild's is bin/release-compare.sh's job) and copies each signed apk with its Rekor bundle (REQ-CHAIN-007-AC6); no key file exists and no stored secret is read",
+      "sha256": "125a83de53037b892779fef0d68ec00fdf3f6a163deb22d658ad75fe18f87284",
       "reads_env": [],
       "exceptions": [
         {
@@ -1787,7 +1801,7 @@
       ],
       "signs": false,
       "reason": "Release, run by release-postverify: gathers the evidence the GitHub release will carry in release-upload/ and copies it to release-published/; no credential, no gh call (B-F22)",
-      "sha256": "38cb354f5682153c1dbc16fd0b849aa93579856cf800e0dd19711deb1520bafb",
+      "sha256": "0dccca0123e4b37f262402cb36268249a60e9c4401d7969180ef139663170884",
       "reads_env": [],
       "exceptions": [
         {
@@ -1845,7 +1859,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-assets: creates the GitHub release after release-postverify has passed, only with --verify-tag, and attaches release-upload/ (REQ-CHAIN-007-AC9)",
-      "sha256": "9f3cd158cec58f91d339ae0f3fe9988e6584742b8572d6fef6a705d4d53f43a3",
+      "sha256": "449263f748389232fa43a396dea0c9ea1188b6130cfe8367646f53002a3a7c73",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -1900,41 +1914,12 @@
         "just"
       ],
       "runs": [
-        "bin/chain-verify.py"
+        "bin/chain-verify.py",
+        "bin/guide_plan_judge.py"
       ],
       "signs": false,
       "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports; the judged verify pipes run without a shell (run_pipe); load_verifier compiles and runs (exec) the sha256-checked bytes of bin/chain-verify.py as a module, to call its bundle_certificate_why on the bundles a listed command names",
-      "sha256": "a60cfe1b566e72caaf84319c47930978881acf76266e900de42298e90adbde81",
-      "exceptions": [
-        {
-          "rule": "deny",
-          "line": "            return \"a # outside quotes (a shell comment would hide what follows from this check and not from bash)\"",
-          "line_sha256": "4f0ed76b7e3308c8638ba6e3ed8d151699a3f12ba6fb7f3f220b2db554f3dd21",
-          "count": 1,
-          "why": "the text of an answer of the command judge, unchanged from before this pair (owner rule 6: the judge answers the same on 11759 commands); it names the shell the check guards against and runs nothing"
-        },
-        {
-          "rule": "deny",
-          "line": "            return \"a newline outside quotes (bash runs what follows as another command)\"",
-          "line_sha256": "ec500fdb894446743911ba889f98f65e95ee666f8d3ed91280d3b3688979895e",
-          "count": 2,
-          "why": "the text of an answer of the command judge, unchanged from before this pair (owner rule 6: the judge answers the same on 11759 commands); it names the shell the check guards against and runs nothing"
-        },
-        {
-          "rule": "deny",
-          "line": "        # A backslash before a newline or CR is refused first: shlex keeps that newline in the next word, bash removes",
-          "line_sha256": "4187b4aac0472556c3601c4a0a242c00f3cd15bb9886d648c07df651a3d53a5e",
-          "count": 1,
-          "why": "a comment of the quote walk that says why a backslash before a newline is refused first (shlex keeps the newline, bash removes it); it names the shell the check guards against and runs nothing"
-        }
-      ],
-      "env_mentions": [
-        {
-          "name": "ENV",
-          "text": "m.group(1) == \"ENV\"",
-          "why": "REQ-CHAIN-007-AC20: the jq filter grammar REFUSES the variable named ENV (a jq-only command may not read the environment); the literal is the refusal test, and no environment is read or set"
-        }
-      ]
+      "sha256": "335bf675f94a3d1d43f5c9e32477e14bb15f4c500bb3df4a1890c480ef4ee607"
     },
     {
       "path": "bin/release-metadata.py",
@@ -1944,7 +1929,7 @@
       "runs": [],
       "signs": false,
       "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files and the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
-      "sha256": "1ec07a4081b97f401351ac6713fe42bd240503db3f471239e4062756b9cbbb3a"
+      "sha256": "f480866ccf3c82c080ef3b848d149167ab1f88b7a127f08120263e6848c34a0e"
     },
     {
       "path": "bin/vex-forms.py",
@@ -1953,10 +1938,12 @@
         "aws",
         "gcloud"
       ],
-      "runs": [],
+      "runs": [
+        "bin/inspector-gate.py"
+      ],
       "signs": false,
       "reason": "the VEX in three forms: the CSAF and inspector-filters files from the one OpenVEX file and the image digests (REQ-SCAN-010; a stdlib version the build does not ship is left out); offline; run by release-sign.sh; the listed words at, aws and gcloud are prose and the guide commands it prints for customers, never run here",
-      "sha256": "c3c23b7ae961c98806fe50acae53201a01402c86768241ef7c77c120b784ef6e",
+      "sha256": "fe6ab6747062ed42d998c91b28e14290f2f415c04b5ede5e93b240cce2f62343",
       "exceptions": [
         {
           "rule": "deny",
@@ -2005,7 +1992,7 @@
     },
     {
       "path": "bin/check-artifacts.sh",
-      "sha256": "6a40993c22bf4ab912f3eaea4f6412fe381c5b4d889a1e6e74ba55c59e22e6ac",
+      "sha256": "ebc1c7f769b21ac26f5e70478db4feb5a1b7b31cda2d040953ab5712d95f435e",
       "tools": [
         "at",
         "curl",
@@ -2039,13 +2026,6 @@
           "line_sha256": "68441c2c86a64fda99911aeb674d1c322c2d2e17a7f943b1e0e107ebdca53c5b",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "    [ \"${#found[@]}\" = 1 ] || fail \"the Linux $a archive of $n is missing or not unique in $archives\"",
-          "line_sha256": "ffa64d6fb077b354e7d898758f1af225085aad344350cb7f0b06c5bb577a28d7",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
       ]
     },
@@ -2061,15 +2041,12 @@
     },
     {
       "path": "bin/check-phase-arm64.sh",
-      "sha256": "6065475e20aac72ccd9ab6f0845e29fe7dc4a67c9dab194cfcdf33a5e8cb2711",
+      "sha256": "91d3d0420e934f6d9d4c57c9f491d02dbbd975c9ed8d1400e8f3420cbb2e2c30",
       "tools": [
-        "bash",
-        "make",
-        "python3"
+        "bash"
       ],
       "runs": [
-        "bin/chain-verify.py",
-        "bin/check-artifacts.sh"
+        "bin/check-stage.sh"
       ],
       "signs": false,
       "reason": "the thin target of the check-arm64 job's arm64 step: one line into the artifact checks for linux/arm64 (REQ-CHAIN-006-AC17)"
@@ -2096,7 +2073,7 @@
     },
     {
       "path": "bin/rescan-statement.py",
-      "sha256": "a3c377081c3b9da75332da19655ebbd951f953d5184674a53699a99a147685fd",
+      "sha256": "32f56308cf19d01fdf9f91b87ce5cbff53c81476356807b84dff73c7e1e161ae",
       "tools": [
         "at",
         "gh",
@@ -2139,7 +2116,7 @@
     },
     {
       "path": "bin/inspector-gate.py",
-      "sha256": "e5b8bac028df65ce51c245f6be523ba8a057ec2135ea0c2679aae17ae464ea54",
+      "sha256": "983c6300fc93bf6ee09a6b08c7599e5128451e34b2b63c6e7f564ce4147b39e6",
       "tools": [
         "at",
         "python3"
@@ -2243,7 +2220,7 @@
       ],
       "signs": false,
       "reason": "the sandbox wall probe of the dry run: six test-only recipes (build/probe) through the sealed melange call, judged by melange's exit status; signs, uploads and publishes nothing",
-      "sha256": "e4c6ba43332bb6d8eeae7b9342fb585298c4b71da2c0e34658872d68436e9618"
+      "sha256": "9fa97f930da63ab30780b474111b1652fe51057fd1fe712821dc8c0dcc3a2a11"
     },
     {
       "path": "bin/net-probe.py",
@@ -2649,11 +2626,12 @@
     },
     {
       "path": "bin/release-compare.sh",
-      "sha256": "aace40444a381c6b091f4d4b3594c262f027334989f21a32f8c4093c25b87ea3",
+      "sha256": "e3482006ecc633b702f398003da73749392fd2ea0c307a0da3f5012448b50e97",
       "tools": [
         "python3"
       ],
       "runs": [
+        "bin/apk-tool.py",
         "bin/release-compare.py"
       ],
       "signs": false,
@@ -2661,7 +2639,7 @@
     },
     {
       "path": "bin/release-compare.py",
-      "sha256": "4f7f8c241643cbee959d8b8f7e5059491c3488d4ea529752f2cf109545a2e6c9",
+      "sha256": "77f20e35802a4f048f895fa69f54ccbe094f618848f7a4c7704b9223a5686da6",
       "tools": [
         "make"
       ],
@@ -2696,7 +2674,7 @@
     },
     {
       "path": "bin/check-records-digests.sh",
-      "sha256": "c688699f949e46cfe8e4613754161f519e4b12c3dadb7b8f791097159a3feb49",
+      "sha256": "8cd3d20e2e09c52dd5182dec56b51a29b54af6f46bb0f841b13121408cb2b769",
       "tools": [
         "basename",
         "jq",
@@ -2766,7 +2744,7 @@
       "reason": "Sign job, release signatures: the detached KMS signatures of the release (bin/chain-verify.py kms-sign through bin/with-aws-token.sh, one Rekor entry each, made here and shipped to Release) over the image payloads, the release manifest attestations, the SBOMs, lock files, policy, vendor evidence, dependency list, checksums, release-files.sha256 and the apks control streams (REQ-CHAIN-007-AC8); it makes the blobs it signs from Build verified outputs; the Release job holds no key. `bash` is the command that starts with-aws-token.sh",
       "reads_env": [],
       "path": "bin/release-signatures.sh",
-      "sha256": "1eadc8399d659a03d2def55cd78635716c752ef613faecfe1095eb9e8f3db234",
+      "sha256": "6caa2219f76da78727ef97243070eabe65595e73b89447f957a873a4804da72b",
       "exceptions": [
         {
           "rule": "deny",

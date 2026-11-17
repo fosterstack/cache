@@ -30,7 +30,7 @@ done
 for f in release-key-manifest.json release-key-manifest.sig; do
   [ -f ".github/policy/$f" ] && [ ! -L ".github/policy/$f" ] || { echo "release-stage: .github/policy/$f is missing: the signed key manifest is attached to every release" >&2; exit 1; }
 done
-python3 bin/release-metadata.py bind-archives --version "${rel#v}" --digests witness-build/digests.json --dist dist
+python3 -I -B bin/release-metadata.py bind-archives --version "${rel#v}" --digests witness-build/digests.json --dist dist
 rm -rf release-upload
 mkdir release-upload
 # Everything attached comes from an explicit inventory, and a release name has exactly one origin (round 1 F4): a second file under a name already
@@ -74,6 +74,6 @@ for n in scanners acceptance runtime arm64; do
   stage "witness-check/witness-$n/$n-collection.json" "$n-collection.json"
   stage "witness-check/witness-$n/$n-collection.rekor.json" "$n-collection.rekor.json"
 done
-python3 bin/release-metadata.py gate --dir release-upload
+python3 -I -B bin/release-metadata.py gate --dir release-upload
 rm -rf release-published
 cp -r release-upload release-published

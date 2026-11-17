@@ -1354,6 +1354,7 @@ mappings:
   - ac: REQ-CHAIN-006-AC7
     evidence:
       - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+      - { type: shell-test, ref: "bin/guide-judge-test.sh" }
   - ac: REQ-CHAIN-006-AC8
     evidence:
       - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
@@ -1439,6 +1440,7 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
       - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
+      - { type: shell-test, ref: "bin/guide-judge-test.sh" }
   - ac: REQ-CHAIN-007-AC15
     evidence:
       - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }

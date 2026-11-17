@@ -32,6 +32,8 @@ for row in $runners; do
     cp "${files[0]}" "release-apks-build/$arch/"
   done
 done
+# The guide's provenance commands run on a staged copy before anything is published (this job holds the verifier).
+python3 -I -B bin/release-postverify.py --before-publish
 bash bin/release-sign-apks.sh --build-dir release-apks-build --signatures release-signed/apks
 for row in $runners; do
   runner="${row%%:*}"

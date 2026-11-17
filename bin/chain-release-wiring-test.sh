@@ -52,6 +52,12 @@ REG = {"DOCKERHUB_USERNAME": "${{ secrets.DOCKERHUB_USERNAME }}", "DOCKERHUB_TOK
 VDOWN = ("signed-witness-build", "digests", "items", "signed-witness-rebuild", "signed-witness-check", "check-results", "provenance", "apk-compare")      # what release-verify reads: the records and Check's govulncheck stream
 VPATH = {"signed-witness-build": "witness-build", "digests": "witness-build", "items": "witness-build", "signed-witness-rebuild": "witness-rebuild", "signed-witness-check": "witness-check", "check-results": "check-results", "provenance": "provenance", "apk-compare": "apk-compare"}
 def vdowns(): return "".join(dn(n, VPATH[n]) for n in VDOWN) + dn("admission-baseline", "witness-build") + dn("signed-witness-check-arm64", "witness-check/witness-arm64")      # the pairs of the real stage file
+# ROW 1: verify and release also download the two signed rapk records (records, never apks), for apk-compare --rapk
+RAPK = ("signed-witness-rapk-ubuntu-24.04", "signed-witness-rapk-ubuntu-24.04-arm")
+# ROW 2: verify and release also download Build's two signed apk records, each as its own same-run artifact, for apk-compare --build-apk
+BAPK = ("signed-witness-apk-ubuntu-24.04", "signed-witness-apk-ubuntu-24.04-arm")
+_vd = vdowns
+def vdowns(): return _vd() + "".join(dn(n, n[len("signed-"):]) for n in RAPK) + "".join(dn(n, n[len("signed-"):]) for n in BAPK)
 RC_COND = "    if: ${{ !contains(github.ref_name, '-') }}\n"
 # REQ-CHAIN-007-AC1 (signer and builder never share a machine): THREE jobs. `compare` holds contents read ONLY
 # (no id-token, no environment,
@@ -136,9 +142,13 @@ V = ['[[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+(-rc[0-9]+)?$ ]] ||
      "python3 -I -B bin/chain-verify.py stage-start --stage release --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json",
      "python3 -I -B bin/chain-verify.py bind-items --policy policy.json --record witness-build/build-collection.json --items witness-build/items.json",
      "python3 -I -B bin/chain-verify.py bind-items --policy policy.json --record witness-build/build-collection.json --items witness-build/admission-baseline.json --product admission-baseline.json",
-     "python3 -I -B bin/chain-verify.py stage-start --stage release --previous sign --record provenance/provenance.json --digests witness-build/digests.json --policy policy.json --rekor-stub provenance/provenance.rekor.json",
+     "python3 -I -B bin/chain-verify.py stage-start --stage release --previous sign --record provenance/provenance.json --digests witness-build/digests.json --policy policy.json --rekor-entries provenance/provenance.rekor.json",
      "python3 -I -B bin/chain-verify.py stage-start --stage release --previous rebuild --record witness-rebuild/rebuild-collection.json --digests witness-build/digests.json --policy policy.json",
-     "python3 -I -B bin/chain-verify.py apk-compare --file apk-compare/apk-compare.json --digests witness-build/digests.json",
+     "python3 -I -B bin/chain-verify.py apk-compare --policy policy.json --record witness-rebuild/rebuild-collection.json --file apk-compare/apk-compare.json --digests witness-build/digests.json"
+     " --rapk witness-rapk-ubuntu-24.04/rapk-collection.json"
+     " --rapk witness-rapk-ubuntu-24.04-arm/rapk-collection.json"
+     " --build-apk witness-apk-ubuntu-24.04/apk-collection.json"
+     " --build-apk witness-apk-ubuntu-24.04-arm/apk-collection.json",
      "python3 -I -B bin/chain-verify.py check-list --policy policy.json --digests witness-build/digests.json --dir witness-check",
      # the govulncheck stream Release hands the evidence step is a product of Check's scanners record, bound
      # under Check's identity
@@ -149,7 +159,7 @@ os.makedirs(w + "/s/bin", exist_ok=True); os.makedirs(w + "/s/.github/policy", e
 BODY = {
  "release-verify": "set -euo pipefail\npython3 bin/chain-verify.py verify --stage build\n",
  "release-compare": "set -euo pipefail\npython3 -I -B bin/release-compare.py\n",
- "release-apks": 'set -euo pipefail\npython3 -I -B bin/apk-tool.py digest apks/a.apk\nbash bin/release-sign-apks.sh --build-dir b --signatures release-signed/apks\n',
+ "release-apks": 'set -euo pipefail\npython3 -I -B bin/apk-tool.py digest apks/a.apk\npython3 -I -B bin/release-postverify.py --before-publish\nbash bin/release-sign-apks.sh --build-dir b --signatures release-signed/apks\n',
  "release-publish": 'set -euo pipefail\npython3 bin/release-layout.py images/x "$digest"\ncrane copy "src@$digest" "dst:$tag"\ncrane digest "dst:$tag" | jq -R .\n',
  "release-sign": 'set -euo pipefail\npython3 -I -B bin/chain-verify.py bundle-check --bundle b --digest d --public-key build/keys/release.rsa.pub --signing-config c\ncosign login ghcr.io -u x --password-stdin <<< "$GH_TOKEN"\ncosign attach signature --payload p --signature s --rekor-response r "ghcr.io/x@$digest"\ncosign verify --key build/keys/release.rsa.pub "ghcr.io/x@$digest"\njq . policy.bundle\n',
  "release-signatures": 'set -euo pipefail\ndate=$(git log -1 --format=%ct "$GITHUB_SHA")\npython3 -I -B bin/vendor-provenance.py evidence --out evidence\nbash bin/with-aws-token.sh kms-sign --digest d --out s --bundle b\njq . policy.bundle\n',
@@ -157,7 +167,7 @@ BODY = {
  "release-postverify": 'set -euo pipefail\nbash bin/release-stage.sh\npython3 -I bin/release-postverify.py\n',
  "release-assets": 'set -euo pipefail\ngh release create "$GITHUB_REF_NAME" --verify-tag\ngh release upload "$GITHUB_REF_NAME" release-upload/*.json\ngh release download "$GITHUB_REF_NAME" -D release-published\npython3 bin/release-metadata.py gate --dir release-published --same-as release-upload\n',
 }
-ROWS = {"release-verify": (["python3"], False, ["bin/chain-verify.py"]), "release-compare": (["python3"], False, ["bin/release-compare.py"]), "release-apks": (["bash", "jq", "python3"], False, ["bin/apk-tool.py", "bin/release-sign-apks.sh"]),
+ROWS = {"release-verify": (["python3"], False, ["bin/chain-verify.py"]), "release-compare": (["python3"], False, ["bin/apk-tool.py", "bin/release-compare.py"]), "release-apks": (["bash", "jq", "python3"], False, ["bin/apk-tool.py", "bin/release-postverify.py", "bin/release-sign-apks.sh"]),
         "release-publish": (["crane", "jq", "python3", "trap"], False, ["bin/release-layout.py"]), "release-sign": (["cosign", "git", "jq", "python3", "sha256sum", "trap"], False, ["bin/chain-verify.py"]),
         "release-signatures": (["bash", "git", "jq", "python3", "sha256sum", "trap"], "other", ["bin/chain-verify.py", "bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py", "bin/apk-tool.py", "bin/with-aws-token.sh"]),
         "release-assets": (["gh", "python3"], False, ["bin/release-metadata.py"]), "release-stage": (["python3"], False, ["bin/release-metadata.py"]),
@@ -168,7 +178,7 @@ for n, b in BODY.items():
     t, s, r = ROWS[n]
     rows.append({"path": f"bin/{n}.sh", "sha256": hashlib.sha256(open(f"{w}/s/bin/{n}.sh", "rb").read()).hexdigest(), "tools": t, "signs": s, "runs": r, "reason": "fixture"})
 open(w + "/s/bin/release-postverify.py", "w").write("import subprocess\n")
-rows.append({"path": "bin/release-postverify.py", "sha256": hashlib.sha256(open(w + "/s/bin/release-postverify.py", "rb").read()).hexdigest(), "tools": ["at", "command", "cosign", "exec", "gh", "jq", "just"], "signs": False, "runs": ["bin/chain-verify.py"], "reason": "fixture"})
+rows.append({"path": "bin/release-postverify.py", "sha256": hashlib.sha256(open(w + "/s/bin/release-postverify.py", "rb").read()).hexdigest(), "tools": ["at", "command", "cosign", "exec", "gh", "jq", "just"], "signs": False, "runs": ["bin/chain-verify.py", "bin/guide_plan_judge.py"], "reason": "fixture"})
 open(w + "/s/bin/release-compare.py", "w").write("import sys\n")
 rows.append({"path": "bin/release-compare.py", "sha256": hashlib.sha256(open(w + "/s/bin/release-compare.py", "rb").read()).hexdigest(), "tools": ["make"], "signs": False, "runs": ["bin/apk-tool.py", "bin/chain-verify.py"], "reason": "fixture"})
 open(w + "/s/bin/release-layout.py", "w").write("import sys\n")
@@ -335,6 +345,34 @@ m c_upopt   '=          name: apk-compare\n          path: apk-compare\n        
 m r_rapk    'name: dist\n          path: dist'                'name: rapk-ubuntu-24.04\n          path: rapks/ubuntu-24.04' 'download'  "SIGNER the release job downloads a rapk (Rebuild's apks reach the signer)"
 m v_nocmp   '=      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: apk-compare\n          path: apk-compare\n' '' 'download'  "SIGNER the verify job does not download the comparison result (the first occurrence: release-verify would have nothing to read)"
 m r_nocmp   '(name: apk-compare\n          path: apk-compare\n.*?)      - uses: [^\n]*\n        with:\n          name: apk-compare\n          path: apk-compare\n' '\1' 'download'  "SIGNER the release job does not download the comparison result"
+# ROW 1: verify and release download the signed rapk records (records, never apks)
+DW='actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2'
+D1="      - uses: $DW\n        with:\n          name: "
+N1='signed-witness-rapk-ubuntu-24.04\n          path: witness-rapk-ubuntu-24.04\n'
+N2='signed-witness-rapk-ubuntu-24.04-arm\n          path: witness-rapk-ubuntu-24.04-arm\n'
+m v_norapk "(  verify:.*?)$D1$N1" '\1' 'signed rapk record' \
+  "ROW1 the verify job lacks the amd64 signed rapk record"
+m v_norapk_arm "(  verify:.*?)$D1$N2" '\1' 'signed rapk record' \
+  "ROW1 the verify job lacks the arm64 signed rapk record"
+m r_norapk "(  release:.*?)$D1$N1" '\1' 'signed rapk record' \
+  "ROW1 the release job lacks the amd64 signed rapk record"
+m r_norapk_arm "(  release:.*?)$D1$N2" '\1' 'signed rapk record' \
+  "ROW1 the release job lacks the arm64 signed rapk record"
+# ROW 2: verify and release download Build's signed apk records, each its own artifact into its own folder (same run: no run-id, token or repository)
+M1='signed-witness-apk-ubuntu-24.04\n          path: witness-apk-ubuntu-24.04\n'
+M2='signed-witness-apk-ubuntu-24.04-arm\n          path: witness-apk-ubuntu-24.04-arm\n'
+m v_nobapk "(  verify:.*?)$D1$M1" '\1' 'apk record' \
+  "ROW2 the verify job lacks the amd64 signed Build apk record"
+m v_nobapk_arm "(  verify:.*?)$D1$M2" '\1' 'apk record' \
+  "ROW2 the verify job lacks the arm64 signed Build apk record"
+m r_nobapk "(  release:.*?)$D1$M1" '\1' 'apk record' \
+  "ROW2 the release job lacks the amd64 signed Build apk record"
+m r_nobapk_arm "(  release:.*?)$D1$M2" '\1' 'apk record' \
+  "ROW2 the release job lacks the arm64 signed Build apk record"
+m v_bapk_runid "(  verify:.*?$D1$M1)" '\1          run-id: 1\n' 'apk record' \
+  "ROW2 the verify job downloads Build's apk record from another run"
+m r_bapk_token "(  release:.*?$D1$M2)" '\1          github-token: x\n' 'apk record' \
+  "ROW2 the release job downloads Build's apk record with a token"
 m s_rnorv    '=      - name: release-verify\n        run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n' '' 'exactly' "AC1 (Astra R6) the release job's first witnessed step is not release-verify (no re-run before the credentials)"
 # the steps between the first and last Witness step are Witness steps and nothing else, and an install never
 # comes after the first four
@@ -523,13 +561,31 @@ vm v_gvrec   'witness-check/witness-scanners/scanners-collection.json' 'witness-
 vm v_gvfile  '--file check-results/govulncheck.json' '--file check-results/scan-results.json'                            'not the pinned form' "G bind-check names another file than govulncheck.json"
 vm v_gvdig   '--digests witness-build/digests.json --file' '--file'                                                    'not the pinned form' "G the stream bound without Build's digest list"
 vm v_gvfirst 'python3 -I -B bin/chain-verify.py check-list[^\n]*\n(python3 -I -B bin/chain-verify.py bind-check[^\n]*\n)' '\1python3 -I -B bin/chain-verify.py check-list --policy policy.json --digests witness-build/digests.json --dir witness-check\n' 'not the pinned form' "G the stream bound before Check's records are listed (rule 69's order)"
+# ROW 1: apk-compare takes the two signed rapk records (--rapk), never Rebuild's unsigned digests.json alone
+R0=' --rapk witness-rapk-ubuntu-24.04'; RA="$R0/rapk-collection.json"; RB="$R0-arm/rapk-collection.json"
+vm v_rapk_none "$RA$RB" '' 'not the pinned form' \
+  "ROW1 apk-compare without the signed rapk records (unsigned digests.json alone)"
+vm v_rapk_one "$RB" '' 'not the pinned form' \
+  "ROW1 apk-compare with one signed rapk record"
+vm v_rapk_apks 'witness-rapk-ubuntu-24.04/rapk-collection.json' 'rapks/ubuntu-24.04' 'not the pinned form' \
+  "ROW1 --rapk names an apk tree"
+# ROW 2: apk-compare takes Build's two signed apk records (--build-apk), one per runner
+B0=' --build-apk witness-apk-ubuntu-24.04'; BA="$B0/apk-collection.json"; BB="$B0-arm/apk-collection.json"
+vm v_bapk_none "$BA$BB" '' 'not the pinned form' \
+  "ROW2 apk-compare without Build's signed apk records"
+vm v_bapk_one "$BB" '' 'not the pinned form' \
+  "ROW2 apk-compare with one signed Build apk record"
+vm v_bapk_apks 'witness-apk-ubuntu-24.04/apk-collection.json' 'apks/ubuntu-24.04' 'not the pinned form' \
+  "ROW2 --build-apk names an apk tree"
+vm v_bapk_twice "$BB" "$BA" 'not the pinned form' \
+  "ROW2 --build-apk names the amd64 record twice"
 vm v_nobind  'python3 -I -B bin/chain-verify.py bind-items[^\n]*\n' ''                                                      'commands'           "AC16 items.json is not bound to Build's record"
 vm v_noitems '--items witness-build/items.json'              ''                                                       'not the pinned form' "AC16 bind-items without the items file"
 vm v_noadm   'python3 -I -B bin/chain-verify.py bind-items[^\n]*admission-baseline[^\n]*\n' ''                                    'commands'           "AC19 admission's baseline file is not bound to Build's record"
 vm v_adm_prod ' --product admission-baseline.json'            ''                                                       'not the pinned form' "AC19 the baseline file bound as items.json (no --product: it would never match the items product)"
 vm v_adm_other '--items witness-build/admission-baseline.json' '--items witness-build/items.json'                      'not the pinned form' "AC19 the baseline bind names another file than admission-baseline.json"
-vm v_norek   ' --rekor-stub provenance/provenance.rekor.json' ''                                                      'not the pinned form' "AC4 Sign's provenance without its Rekor entry"
-vm v_order   'python3 -I -B bin/chain-verify.py stage-start --stage release --previous sign[^\n]*\n(python3 -I -B bin/chain-verify.py stage-start --stage release --previous rebuild[^\n]*\n)' '\1python3 -I -B bin/chain-verify.py stage-start --stage release --previous sign --record provenance/provenance.json --digests witness-build/digests.json --policy policy.json --rekor-stub provenance/provenance.rekor.json\n' 'not the pinned form' "AC4 the records verified in another order"
+vm v_norek   ' --rekor-entries provenance/provenance.rekor.json' ''                                                      'not the pinned form' "AC4 Sign's provenance without its Rekor entry"
+vm v_order   'python3 -I -B bin/chain-verify.py stage-start --stage release --previous sign[^\n]*\n(python3 -I -B bin/chain-verify.py stage-start --stage release --previous rebuild[^\n]*\n)' '\1python3 -I -B bin/chain-verify.py stage-start --stage release --previous sign --record provenance/provenance.json --digests witness-build/digests.json --policy policy.json --rekor-entries provenance/provenance.rekor.json\n' 'not the pinned form' "AC4 the records verified in another order"
 vm v_dig     '--digests witness-build/digests.json --policy policy.json\npython3 -I -B bin/chain-verify.py bind-items' '--policy policy.json\npython3 -I -B bin/chain-verify.py bind-items' 'not the pinned form' "AC4 a record verified without the digest list"
 vm v_true    '--digests witness-build/digests.json --dir witness-check' '--digests witness-build/digests.json --dir witness-check || true' 'not the pinned form' "AC4 a failed check swallowed"
 vm v_waive   '\n\Z'                                          '\n[ -n "${SKIP_VERIFY:-}" ] && exit 0\n'                  'commands'           "AC4 a switch that skips the verification"
@@ -673,6 +729,21 @@ expect ok "the real credentials reach only the steps that need them" "" credenti
 expect ok "nothing outside the release job holds packages write or a credential" "" others "$root"
 expect ok "the real release.yml: the release job needs exactly check, sign and sign-rebuild, no skip, no tag" "" graph "$root/.github/workflows/release.yml"
 expect ok "the real bin/release-verify.sh verifies in rule 69's order" "" verify "$root/bin/release-verify.sh"
+# ROW 2, the real files: both jobs download both signed apk records; release-verify.sh passes them to apk-compare
+python3 - "$root/.github/workflows/stage-promote.yml" "$root/bin/release-verify.sh" <<'PY' && ok "ROW2 the real verify and release jobs download Build's two signed apk records, and release-verify.sh passes them as --build-apk" || bad "ROW2 the real files do not wire Build's signed apk records"
+import sys, yaml
+wf = yaml.safe_load(open(sys.argv[1]))
+for job in ("verify", "release"):
+    got = {(s["with"]["name"], s["with"]["path"]): s["with"] for s in wf["jobs"][job]["steps"] if "download-artifact" in s.get("uses", "")}
+    for r in ("ubuntu-24.04", "ubuntu-24.04-arm"):
+        k = ("signed-witness-apk-" + r, "witness-apk-" + r)
+        assert k in got, (job, k)
+        assert set(got[k]) == {"name", "path"}, (job, got[k])
+t = open(sys.argv[2]).read()
+for r in ("ubuntu-24.04", "ubuntu-24.04-arm"):
+    assert " --build-apk witness-apk-%s/apk-collection.json" % r in t, r
+assert t.count("--build-apk") == 2
+PY
 for n in release-verify release-apks release-publish release-sign release-signatures release-assets release-postverify; do
   expect ok "the real bin/$n.sh is plain" "" scan "$root/bin/$n.sh" "$root/.github/policy/chain-scripts.json"
 done
@@ -919,7 +990,7 @@ if [ "$mj" = "action.yml:(action)" ] && ! grep -qxF "$mj" <<< "$ALLOWED_AWS_JOBS
 else
   bad "mutant: the aws CLI install in a local composite action was not found by the scan ($mj)"
 fi
-EXPECT=407
+EXPECT=425
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
