@@ -80,7 +80,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "4dce850bb3080b874670ccfd31a316bcfd5e1838d38843caf61c4d063996b46b",
+      "sha256": "70d27b32b84b3724a2a477d7f144629de98b6e8852ae6324cbc4bec99712825b",
       "tools": [
         "at",
         "aws",
@@ -524,7 +524,7 @@
       ],
       "signs": "other",
       "reason": "verifies (never makes) the owner's SSH signature of a release tag and calls gh for GET-only reads",
-      "sha256": "30cbf81b2640ca8f14d70e9b33d1954fc0db0709f23c6fd1de60a2534ab3a3e2",
+      "sha256": "5a3f8c332d08602b8ed93588a88dadbd6749b365342e5aec637a85ec9cd5b88b",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -1552,7 +1552,7 @@
     },
     {
       "path": "bin/acceptance-serve.sh",
-      "sha256": "547e713afc32797e9783a9780f1b9d98cce9dd6c8fc8c35f47232b9dfe52de8d",
+      "sha256": "b21e03305b37de5a5e01b5f75dd0f3ad7713582467dec0d32426a4c81a468f0a",
       "tools": [
         "curl",
         "docker",

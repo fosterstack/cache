@@ -131,8 +131,8 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 230 allow patterns: chain-v030 plus the 0710 and KMS-signing rows; read from the run of this test
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 230, 6
+# 232 allow patterns: chain-v030 plus the 0710 and KMS-signing rows plus ^bin/policy-merge-harness\.py$, ^bin/dependabot-reviewer-version\.sh$ and ^\.github/policy/fulcio-chain\.pem$, minus tag_observer.py (main); read from the run of this test
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 232, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -180,7 +180,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
 # the script text outside the v0.3.0 region; history is in git
-PINNED_SHA256 = "0379c15f62517ec9eb7660df70512e7340e1729597f743addc45f92ba3977c1c"
+PINNED_SHA256 = "607a2b6488104c8ee4efce23f6a4a26e7a0c3f4c6b35a1b3403520f1c9a9387e"
 if rstart and rend:
     import hashlib
     _b = _rawlines

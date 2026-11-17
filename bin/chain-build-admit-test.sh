@@ -1151,6 +1151,6 @@ wf_fprs=$(gpg --batch --show-keys --with-colons "$root/.github/policy/github-web
 TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # a skipped or added case fails the suite
-EXPECT_TOTAL=205
+EXPECT_TOTAL=211
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
