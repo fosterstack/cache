@@ -818,11 +818,12 @@ PY
 }
 
 # every file of the commit's workflows folder, whichever form the head takes: the landing judge never calls _refuse
-refuse_all() { python3 - "$@" <<'PY'
+refuse_all() { python3 - "$1" <<'PY'
 import os, sys, yaml
 exec(os.environ["PIN_WIRING_REFUSE_PY"])
 bad = []
-for _f in sys.argv[1:]:
+for _name in sorted(os.listdir(sys.argv[1])):   # the listing the judges' own loops use: dotfiles included
+    _f = os.path.join(sys.argv[1], _name)
     try:
         _why = _refuse(open(_f).read())
     except Exception as e:
@@ -897,7 +898,7 @@ if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
   # pin-wiring-landing.sh in the same mode over the same commit. A head that fits neither is refused with both findings.
   export PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" PIN_WIRING_POLICY_FILE="$work/head-policy.json"
   export PIN_WIRING_RELEASE_ONLY_FILE="$work/head-release-only.json"
-  refuse_out=$(refuse_all "$work"/head-wf/*) || { printf '%s\n' "$refuse_out"; exit 1; }
+  refuse_out=$(refuse_all "$work/head-wf") || { printf '%s\n' "$refuse_out"; exit 1; }
   if main_out=$(judge "$work/head-ci.yml" && bytes_judge "$work/head-ci.yml"); then exit 0; fi
   landing="$here/.github/agent/tests/pin-wiring-landing.sh"
   [ -f "$landing" ] || { printf '%s\nno landing judge at %s\n' "$main_out" "$landing"; exit 1; }
@@ -1818,6 +1819,7 @@ else
   lcase persona-step-removed                   bad "$J['allowlist-persona']['steps'].pop()"
   lcase pins-auditor-step-removed              bad "$J['allowlist-pins-auditor']['steps'].pop()"
   lcase landing-form-extra-workflow-refused    bad "" "printf '%b' \"\$extra_wf\" > .github/workflows/zz-extra.yml"
+  lcase landing-form-hidden-workflow-refused   bad "" "printf '%b' \"\$extra_wf\" > .github/workflows/.zz-extra.yml"
   # main's own single-job allowlist-chain inside chain-v030's ci.yml fits neither form
   MAIN="m = yaml.load(open('$here/.github/workflows/ci.yml'), Loader=yaml.BaseLoader)"
   SINGLE="$MAIN; [$J.pop('allowlist-chain-%d' % k) for k in (1, 2, 3, 4)]; "
