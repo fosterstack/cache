@@ -7,11 +7,10 @@
 # Exit 0 only when every check holds; any refusal exits 1.
 set -uo pipefail
 
-# The merge queue must use the MERGE method, so that every group commit is a two-parent merge, and the grouping
-# ALLGREEN, so that every entry's own run must pass: each entry is judged in its own run (its allowlist change against
-# its first parent, under its own pull request's lane) and this judge sees only the head's. The queue settings are the
-# owner's; this constant only names what the judge expects, and bin/required-check-guard.sh fails when main's rule
-# says otherwise.
+# The merge queue must use the MERGE method, so that every group commit is a two-parent merge. Each entry is judged in
+# its own run (its allowlist change against its first parent, under its own pull request's lane) and this judge sees
+# only the head's. The queue's grouping is a ruleset setting the repository does not check. The queue settings are the
+# owner's; this constant only names what the judge expects.
 queue_merge_method=MERGE
 
 head=${1:-}
