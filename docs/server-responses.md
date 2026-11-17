@@ -1,6 +1,6 @@
 # What the server answers
 
-This page lists the HTTP status codes the cache returns and what each one means for a build client. A request to a cache path is counted in `fscache_http_requests_total` by method and status code once it passes authentication and the path check; 401, 403, and the 400 for an empty, `.` or `..` path segment are not counted. Requests to `/healthz`, `/metrics` and `/statusz` are not counted. It is read from the server code (`internal/server/server.go`, `internal/blobstore/blobstore.go`), not from the clients.
+This page lists the HTTP status codes the cache returns and what each one means for a build client. A request to a cache path is counted in `fscache_http_requests_total` by method and status code once it passes authentication and the path check; 401, 403, and the 400 for an empty, `.` or `..` path segment are not counted. Requests to `/healthz`, `/metrics` and `/statusz` are not counted.
 
 ## Cache requests
 
