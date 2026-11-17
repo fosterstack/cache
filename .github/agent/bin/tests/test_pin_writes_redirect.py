@@ -174,6 +174,16 @@ class FixEscapedGreaterAndRunnerFiles(unittest.TestCase):
         self.assertTrue(self.images("docker run alpine:latest\n"))
         self.assertEqual(self.images("echo \\\\>| docker run alpine:latest\n"), [])
 
+    # AC1 carry-over: an escape in an earlier command does not change how a later command's clobber redirect is read
+    def test_fix_escape_does_not_outlive_semicolon_command(self):
+        self.assertEqual(self.images("echo \\x;echo x>| docker run alpine:latest\n"), [])
+
+    def test_fix_escape_does_not_outlive_newline_command(self):
+        self.assertEqual(self.images("echo \\x\necho x>| docker run alpine:latest\n"), [])
+
+    def test_fix_escape_does_not_outlive_pipe_command(self):
+        self.assertEqual(self.images("echo \\x | echo x>| docker run alpine:latest\n"), [])
+
     # AC1 guard: a clobber redirect is still one redirection and is a write onto the committed file
     def test_fix_clobber_redirect_still_one_redirection(self):
         self.assertTrue(w("echo x >| %s\n" % REL))

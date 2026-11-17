@@ -857,7 +857,7 @@ def _split_commands(text):
         elif c == "|" and cur and cur[-1] == ">" and len(cur) != escaped:   # `>|` is a redirection that overrides noclobber, not a pipe
             cur.append(c)
         elif c in ";&|()\n":
-            out.append("".join(cur)); cur = []
+            out.append("".join(cur)); cur = []; escaped = -1
         else:
             cur.append(c)
         i += 1
