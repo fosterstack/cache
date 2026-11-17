@@ -128,6 +128,92 @@ class VariableSetByOtherForms(unittest.TestCase):
                               'cp payload "$out"\nbash scripts/build.sh')
         self.assertFalse(hits, out)
 
+    def scenario(self, setter, prefix="out=$RUNNER_TEMP/out"):
+        return self.hits('%s\n%s\ncp payload "$out"\nbash scripts/build.sh' % (prefix, setter))
+
+    # hole 1: a default or assign word that is nested, quoted or a substitution still sets the variable
+    def test_default_with_a_nested_quoted_or_substituted_word_makes_it_unknown(self):
+        forms = {
+            "nested colon": ": ${out:=${target}}",
+            "nested assign": ": ${out=${target}}",
+            "nested quoted": ': "${out:=${target}}"',
+            "substitution colon": ": ${out:=$(echo x)}",
+            "substitution assign": ": ${out=$(echo x)}",
+            "double quoted word": ': ${out:="a b"}',
+            "single quoted word": ": ${out:='a b'}",
+        }
+        for prefix in ("out=$RUNNER_TEMP/out", "if false; then out=$RUNNER_TEMP/out; fi"):
+            for name, setter in forms.items():
+                with self.subTest(setter=name, prefix=prefix):
+                    hits, out = self.scenario(setter, prefix)
+                    self.assertTrue(hits, out)
+
+    def test_control_without_the_nested_setter_is_accepted(self):
+        for prefix in ("out=$RUNNER_TEMP/out", "if false; then out=$RUNNER_TEMP/out; fi"):
+            with self.subTest(prefix=prefix):
+                hits, out = self.scenario(": ${target}", prefix)
+                self.assertFalse(hits, out)
+
+    # hole 2: a redirection glued to the setter token does not hide it
+    def test_redirection_glued_to_the_setter_does_not_hide_it(self):
+        forms = {
+            "printf -vout>": "printf -vout>/dev/null '%s' /inside",
+            "declare -n r=out>": "declare -n r=out>/dev/null; r=/inside",
+            "declare -n r=out> newline": "declare -n r=out>/dev/null\nr=/inside",
+            "read -rout>": "read -rout>/dev/null <<< /inside",
+            "mapfile -tout>": "mapfile -tout>/dev/null <<< /inside",
+            "readarray -tout>": "readarray -tout>/dev/null <<< /inside",
+            "printf -v out>": "printf -v out>/dev/null '%s' /inside",
+            "declare out=x>": "declare out=/inside>/dev/null",
+        }
+        for name, setter in forms.items():
+            with self.subTest(setter=name):
+                hits, out = self.scenario(setter)
+                self.assertTrue(hits, out)
+
+    def test_control_redirection_forms_that_do_not_name_the_variable_are_accepted(self):
+        forms = {
+            "printf -vother>": "printf -vother>/dev/null '%s' /inside",
+            "declare -n r=other>": "declare -n r=other>/dev/null; r=/inside",
+            "read -rother>": "read -rother>/dev/null <<< /inside",
+        }
+        for name, setter in forms.items():
+            with self.subTest(setter=name):
+                hits, out = self.scenario(setter)
+                self.assertFalse(hits, out)
+
+    # hole 3: the literal body of an eval or trap word counts like top level
+    def test_eval_or_trap_body_naming_the_variable_makes_it_unknown(self):
+        forms = {
+            "trap printf -vout": "trap 'printf -vout %s scripts/build.sh' DEBUG",
+            "trap printf -v out": "trap 'printf -v out %s scripts/build.sh' DEBUG",
+            "trap declare -n": "trap 'declare -n r=out; r=/inside' EXIT",
+            "trap read": "trap 'read out <<< /inside' EXIT",
+            "trap double quoted": 'trap "printf -v out %s /inside" EXIT',
+            "eval printf -v": "eval 'printf -v out %s /inside'",
+            "eval read": "eval 'read out <<< /inside'",
+            "eval double quoted": 'eval "printf -v out %s /inside"',
+            "eval declare -n": "eval 'declare -n r=out; r=/inside'",
+            "eval default": "eval ': ${out:=/inside}'",
+        }
+        for name, setter in forms.items():
+            with self.subTest(setter=name):
+                hits, out = self.scenario(setter)
+                self.assertTrue(hits, out)
+
+    def test_eval_or_trap_body_not_naming_the_variable_is_accepted(self):
+        forms = {
+            "trap echo": "trap 'echo hi' DEBUG",
+            "trap other printf -v": "trap 'printf -v other %s /inside' DEBUG",
+            "trap other nameref": "trap 'declare -n r=other; r=/inside' EXIT",
+            "eval echo": "eval 'echo hi'",
+            "eval other read": "eval 'read other <<< /inside'",
+        }
+        for name, setter in forms.items():
+            with self.subTest(setter=name):
+                hits, out = self.scenario(setter)
+                self.assertFalse(hits, out)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -678,8 +678,8 @@ DEFAULT_ASSIGNED = set()   # names a ${x:=word} or ${x=word} of the job's text m
 def _expand_defaults(text):
     """${x:-word} as word, ${x:=word} too. The names a `:=` or `=` form may set are kept in DEFAULT_ASSIGNED, read before
     the word replaces the form: the variable's value is then unknown (_set_by_setter)."""
+    DEFAULT_ASSIGNED.update(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*):?=", text))   # nested words too: PARAM_WORD cannot see them
     while True:   # each pass removes at least one ${...}: it ends
-        DEFAULT_ASSIGNED.update(m.group(1) for m in PARAM_WORD.finditer(text) if m.group(3) == "=")
         new = PARAM_WORD.sub(lambda m: m.group(4), text)
         if new == text:
             return new
@@ -2054,7 +2054,8 @@ def _set_by_setter(name, script):
     if re.search(arithmetic, words) or re.search(element, words):
         return True
     for command in _split_commands(script):
-        toks = _tokens(command)
+        body = _tokens(command)
+        toks = [re.sub(r"[<>].*", "", t, flags=re.S) for t in body]   # printf -vout>/dev/null: the redirection is no part of the name
         names_it = any(re.fullmatch(name + r"(?:\[[^]]*\])?\+?(?:=.*)?", t, re.S) for t in toks)
         if names_it and (any(SETTER_WORDS.fullmatch(t) for t in toks) or ("printf" in toks and "-v" in toks)):
             return True
@@ -2065,8 +2066,9 @@ def _set_by_setter(name, script):
         with_n = any(re.fullmatch(r"-[A-Za-z]*n[A-Za-z]*", t) for t in toks)
         if nameref and with_n and any(t in ("declare", "typeset", "local") for t in toks):
             return True
-        if ("eval" in toks or "trap" in toks) and any(re.search(word, t) for t in toks):
-            return True
+        if "eval" in toks or "trap" in toks:
+            if any(re.search(word, t) for t in toks) or any(_set_by_setter(name, t) for t in body if t not in ("eval", "trap")):
+                return True   # the literal body is read as a script: a setter form in it counts as at top level
     return False
 
 
