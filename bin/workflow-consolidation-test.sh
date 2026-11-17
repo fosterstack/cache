@@ -95,8 +95,8 @@ case_ guards-swapped           bad "a, b = $J['mutation']['if'], $J['check']['if
 # ---------------------------------------------------------------------------------------------------------------------
 # PR 2 of 4: ci.yml absorbs hygiene.yml, requirements.yml and dependency-review.yml (REQ-REL-008-AC2). Every moved job
 # keeps its exact check name, top-level placement, job permissions, environment, needs and condition; ci.yml's
-# top-level permissions stay read-only and its one concurrency block is the reviewed one (judge_conc); dependency-review runs only on pull requests (the
-# only scope it is required on); every required check in .github/policy/required-checks.json is still produced by a
+# top-level permissions stay read-only and its one concurrency block is the reviewed one (judge_conc); dependency-review runs only on push to main (its
+# scope in required-checks.json); every required check in .github/policy/required-checks.json is still produced by a
 # top-level job of a workflow on its scope's event. dependabot-auto-merge.yml does NOT move: its events
 # (pull_request only) differ from ci.yml's (advisor, 0051 check 3).
 judge_ci() { python3 - "$1" "$root" <<'PY'
@@ -104,20 +104,33 @@ import glob, json, os, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
+def runs(cond, event):   # REQ-REL-014: only github.event_name comparisons are decided; any other term may be true
+    if cond is None: return True
+    text = str(cond).strip()
+    if text.startswith("${{") and text.endswith("}}"): text = text[3:-2]
+    def term(t):
+        t = t.strip()
+        for op in ("==", "!="):
+            pre = "github.event_name " + op + " '"
+            if t.startswith(pre) and t.endswith("'"): return (t[len(pre):-1] == event) == (op == "==")
+        return True
+    return any(all(term(t) for t in alt.split("&&")) for alt in text.split("||"))
+ANY = object()   # REQ-REL-014: these jobs run on push to main only; the condition is judged below, not by its text
 MOVED = {   # job id -> (name, permissions, environment, needs, if) exactly as in the original file
-    "allowlist": ("allowlist", None, None, None, None),
-    "requirements": ("requirements", None, None, None, None),
-    "dependency-review": (None, {"contents": "read"}, None, None,
-                          "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}"),
+    "allowlist": ("allowlist", None, None, None, ANY),
+    "requirements": ("requirements", None, None, None, ANY),
+    "dependency-review": (None, {"contents": "read"}, None, None, ANY),
 }
 jobs = d.get("jobs") or {}
 for jid, (name, perms, env, needs, cond) in MOVED.items():
     j = jobs.get(jid)
     if j is None:
         bad.append("job %s is not in ci.yml" % jid); continue
-    got = (j.get("name"), j.get("permissions"), j.get("environment"), j.get("needs"), j.get("if"))
+    got = (j.get("name"), j.get("permissions"), j.get("environment"), j.get("needs"), ANY)
     if got != (name, perms, env, needs, cond):
-        bad.append("job %s changed: %s" % (jid, got))
+        bad.append("job %s changed: %s" % (jid, got[:4]))
+    if runs(j.get("if"), "pull_request") or runs(j.get("if"), "merge_group") or not runs(j.get("if"), "push"):
+        bad.append("job %s must run on push to main only, not on pull_request or merge_group: %s" % (jid, j.get("if")))
     if "uses" in j:
         bad.append("job %s is reached through uses: (its check would be renamed)" % jid)
 if d.get("permissions") != {"contents": "read", "pull-requests": "read"}:
@@ -148,7 +161,7 @@ for rc in json.load(open(os.path.join(root, ".github/policy/required-checks.json
     if rc["integration_id"] != 15368:
         continue                                    # the review gate's App check, published by the App, not a job
     if not any(n == rc["context"] or n.split(" (")[0] == rc["context"].split(" (")[0] for n in names) or \
-            not any(ev in evs for n, evs in names.items() if n == rc["context"] or n.split(" (")[0] == rc["context"].split(" (")[0]):
+            not any(ev in evs or "workflow_call" in evs for n, evs in names.items() if n == rc["context"] or n.split(" (")[0] == rc["context"].split(" (")[0]):   # REQ-REL-014: acceptance.yml is workflow_call only
         bad.append("required check %r is no longer produced on %s" % (rc["context"], ev))
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
@@ -273,7 +286,7 @@ d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
 on = d.get("on") or {}
-if on.get("push") != {"branches": ["main"]} or "pull_request" not in on or "workflow_call" not in on:
+if list(on) != ["workflow_call"]:    # REQ-REL-014: the only trigger is workflow_call (no push, pull_request or merge_group)
     bad.append("acceptance.yml's events changed: %s" % list(on))
 outs = (on.get("workflow_call") or {}).get("outputs") or {}
 if {k: v.get("value") for k, v in outs.items()} != {"gradle-results": "${{ jobs.acceptance-gradle.outputs.results }}",
@@ -294,7 +307,7 @@ for gone in ("acceptance-gradle.yml", "acceptance-maven.yml"):
     if os.path.exists(os.path.join(root, ".github/workflows", gone)):
         bad.append("%s still exists" % gone)
 rel = yaml.load(open(os.path.join(root, ".github/workflows/release.yml")), Loader=yaml.BaseLoader)["jobs"]
-# REQ-CHAIN-006-AC10 (PR 3): the release chain no longer calls acceptance.yml (Check runs the shared suite scripts itself); the workflow stays for the PR gate
+# REQ-CHAIN-006-AC10 (PR 3): the release chain no longer calls acceptance.yml (Check runs the shared suite scripts itself); the workflow stays as a reusable workflow
 calls = [j for j, v in rel.items() if "acceptance" in str(v.get("uses", ""))]
 if calls:
     bad.append("release.yml still calls an acceptance workflow (Check runs the suites): %s" % calls)
@@ -322,7 +335,9 @@ case_acc gradle-renamed        bad "d['jobs']['acceptance-gradle']['name'] = 'gr
 case_acc maven-matrix-cut      bad "d['jobs']['acceptance-maven']['strategy']['matrix']['extension-version'] = ['1.2.3']"
 case_acc env-at-top            bad "d['env'] = d['jobs']['acceptance-maven'].pop('env')"
 case_acc output-lost           bad "d['on']['workflow_call']['outputs'].pop('maven-results')"
-case_acc no-pr-trigger         bad "d['on'].pop('pull_request')"
+case_acc pr-trigger-back       bad "d['on']['pull_request'] = ''"
+case_acc push-trigger-back     bad "d['on']['push'] = {'branches': ['main']}"
+case_acc merge-group-back      bad "d['on']['merge_group'] = ''"
 
 # ---------------------------------------------------------------------------------------------------------------------
 # PR 5: release-chain-pr.yml -> scan.yml (REQ-REL-008-AC2; advisor read-back 0062). One build feeds both: scan's own
@@ -334,6 +349,17 @@ import os, subprocess, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
+def runs(cond, event):   # REQ-REL-014: only github.event_name comparisons are decided; any other term may be true
+    if cond is None: return True
+    text = str(cond).strip()
+    if text.startswith("${{") and text.endswith("}}"): text = text[3:-2]
+    def term(t):
+        t = t.strip()
+        for op in ("==", "!="):
+            pre = "github.event_name " + op + " '"
+            if t.startswith(pre) and t.endswith("'"): return (t[len(pre):-1] == event) == (op == "==")
+        return True
+    return any(all(term(t) for t in alt.split("&&")) for alt in text.split("||"))
 on = d.get("on") or {}
 # exactly: an unfiltered pull_request (no types, branches, paths filter), pushes to main and v* tags (Codex #162 pin, R78-B1)
 if on != {"pull_request": "", "merge_group": "", "push": {"branches": ["main"], "tags": ["v*"]}}:
@@ -357,12 +383,18 @@ if rb.get("uses") != "./.github/workflows/stage-reproducibility.yml" or rb.get("
 r = jobs.get("reproducibility") or {}
 # `if: always()` and nothing else: when `rebuild` FAILS, GitHub SKIPS a job that needs it, and branch protection counts a skipped required check as passing, so
 # the required check must run in every case and fail unless rebuild succeeded (the pattern of the `scan` aggregate below; step-8 B1, Opus)
-if r.get("name") != "reproducibility" or r.get("if") != "always()" or r.get("needs") != "rebuild":
-    bad.append("reproducibility must be named reproducibility, need rebuild and carry exactly `if: always()`: %s" % {k: r.get(k) for k in ("name", "if", "needs")})
+# REQ-REL-014: it runs on push to main only, so the condition adds the push test to `always()`
+cond = r.get("if")
+if r.get("name") != "reproducibility" or r.get("needs") != "rebuild" or "always()" not in str(cond) \
+        or runs(cond, "pull_request") or runs(cond, "merge_group") or not runs(cond, "push"):
+    bad.append("reproducibility must be named reproducibility, need rebuild and carry always() with a condition true on push only: %s" % {k: r.get(k) for k in ("name", "if", "needs")})
+rbc = rb.get("if")
+if runs(rbc, "pull_request") or runs(rbc, "merge_group") or not runs(rbc, "push"):
+    bad.append("rebuild must run on push to main only: %s" % rbc)
 if r.get("permissions") not in (None, {"contents": "read"}):
     bad.append("reproducibility's token is wider than contents read: %s" % r.get("permissions"))
 # fail closed (continue-on-error also hides a failure): the jobs the check rests on carry exactly the keys reviewed here
-KEYS = {"build": {"permissions", "uses", "with"}, "rebuild": {"needs", "permissions", "uses", "with"},
+KEYS = {"build": {"permissions", "uses", "with"}, "rebuild": {"needs", "if", "permissions", "uses", "with"},
         "reproducibility": {"name", "needs", "if", "runs-on", "steps"}}
 for j, keys in KEYS.items():
     if set(jobs.get(j) or {}) - keys:
@@ -428,6 +460,8 @@ case_scan rebuild-gone           bad "d['jobs'].pop('rebuild')"
 case_scan rebuild-ungated        bad "d['jobs']['rebuild'].pop('needs')"
 case_scan rebuild-coe            bad "d['jobs']['rebuild']['continue-on-error'] = 'true'"
 case_scan repro-skippable        bad "d['jobs']['reproducibility']['if'] = \"github.event_name == 'pull_request'\""
+case_scan repro-runs-on-prs      bad "d['jobs']['reproducibility']['if'] = 'always()'"
+case_scan rebuild-runs-on-prs    bad "d['jobs']['rebuild'].pop('if', None)"
 case_scan repro-if-removed       bad "d['jobs']['reproducibility'].pop('if')"
 case_scan repro-if-success       bad "d['jobs']['reproducibility']['if'] = \"\${{ success() }}\""
 case_scan repro-only-echoes      bad "d['jobs']['reproducibility']['steps'][0]['run'] = 'echo identical'"

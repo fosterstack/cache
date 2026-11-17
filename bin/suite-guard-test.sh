@@ -237,6 +237,14 @@ for label in "a job with an if" "a job that needs another" "a job with a strateg
   cwf "$k" "$CNT a-test.sh bin/a-test.sh"
   out=$(cwall) || true; if grep -q "a-test.sh: count [0-9]" <<< "$out"; then ok "REQ-CI-005-AC1 all: a suite counted only by a step of $label is still run here"; else bad "$label was trusted: ${out:0:200}"; fi
 done
+# REQ-REL-014: the jobs that carry the counting steps run on push to main only, so a job whose one extra key is the push-only condition is trusted; any other condition is not
+cwf $'    if: github.event_name == \'push\'\n' "$CNT a-test.sh bin/a-test.sh"
+out=$(cwall) && rc=0 || rc=$?
+if [ "$rc" = 0 ] && ! grep -q "a-test.sh: count [0-9]" <<< "$out" && grep -q 'a-test.sh: counted by its own step' <<< "$out"; then ok "REQ-CI-005-AC1 all: a suite counted by a step of a job that runs on push only (if: github.event_name == 'push') is not run again here"; else bad "push-only job not trusted: rc=$rc ${out:0:200}"; fi
+for cond in "github.event_name == 'pull_request'" "always()" "github.event_name == 'push' || always()"; do
+  cwf "    if: $cond"$'\n' "$CNT a-test.sh bin/a-test.sh"
+  out=$(cwall) || true; if grep -q "a-test.sh: count [0-9]" <<< "$out"; then ok "REQ-CI-005-AC1 all: a suite counted only by a step of a job with the condition '$cond' is still run here"; else bad "condition '$cond' was trusted: ${out:0:200}"; fi
+done
 for label in "if: false" "continue-on-error: true" "env: {A: b}" "shell: bash"; do
   cwf "" "$CNT a-test.sh bin/a-test.sh|$label"
   out=$(cwall) || true; if grep -q "a-test.sh: count [0-9]" <<< "$out"; then ok "REQ-CI-005-AC1 all: a counting step with '$label' is not trusted: its suite is still run here"; else bad "step with $label was trusted: ${out:0:200}"; fi
@@ -323,7 +331,7 @@ if [ "$txt" = "$(printf 'REQ-DEP-005-AC1 ok\nREQ-DEP-005-AC3 ok')" ]; then ok "R
 judge=$(find "$root/.github" -name queue-gate-judge.sh)
 if grep -q 'does not check' "$judge" && ! tr -d '#\n' < "$judge" | tr -s ' ' | grep -q 'the grouping ALLGREEN, so that'; then ok "REQ-DEP-005-AC3 queue-gate-judge.sh says the grouping is a setting it does not check"; else bad "queue-gate-judge.sh still claims the grouping ALLGREEN as a requirement"; fi
 
-EXPECT=120
+EXPECT=124
 echo "suite-guard: $pass passed, $failn failed"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT"; exit 1; fi
 [ "$failn" = 0 ]

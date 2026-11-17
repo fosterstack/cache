@@ -346,8 +346,8 @@ def judge(t):
         r.append(("C6", f"ci.yml's required allowlist job runs this test {len(me)} times, not once"))
     elif any(k in me[0] for k in ("if", "continue-on-error", "shell", "working-directory", "env")):
         r.append(("C6", "the step that runs this test has if / continue-on-error / shell / working-directory / env"))
-    elif (job or {}).get("if") or str((job or {}).get("continue-on-error", "false")).lower() != "false":
-        r.append(("C6", "the allowlist job has an if or continue-on-error"))
+    elif str((job or {}).get("if") or "github.event_name == 'push'").replace(" ", "") not in ("github.event_name=='push'", "${{github.event_name=='push'}}") or str((job or {}).get("continue-on-error", "false")).lower() != "false":
+        r.append(("C6", "the allowlist job has an if other than github.event_name == 'push' (REQ-REL-014), or continue-on-error"))
     # case 7: job-level `uses:` is a local workflow (read here) or a digest-pinned external one, and the job has no steps of its own
     for f, d in t["docs"].items():
         for jn, j in ((d or {}).get("jobs") or {}).items():

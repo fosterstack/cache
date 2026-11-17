@@ -341,7 +341,11 @@ if d.get("defaults"): fail("a workflow-level defaults block (a shell default can
 if d.get("env"): fail("a workflow-level env block (SHELLOPTS, BASH_ENV and the like change what a step runs)")
 ro = str(job.get("runs-on", ""))
 if ro not in ("ubuntu-latest", "ubuntu-24.04", "ubuntu-22.04"): fail("runs-on " + ro + " is not a GitHub-hosted ubuntu label")
-if set(job) - {"name", "runs-on", "permissions", "steps"}: fail("job keys beyond name, runs-on, permissions, steps: " + str(sorted(job)))
+# REQ-REL-014: the vendor job runs on push to main only: its one condition is true on push and false on pull_request and merge_group
+cond = str(job.get("if", "")).strip()
+if cond.startswith("${{") and cond.endswith("}}"): cond = cond[3:-2].strip()
+if cond != "github.event_name == 'push'": fail("the job's condition is not github.event_name == 'push': " + repr(job.get("if")))
+if set(job) - {"name", "runs-on", "permissions", "steps", "if"}: fail("job keys beyond name, runs-on, permissions, steps: " + str(sorted(job)))
 if job.get("permissions") != {"contents": "read"}: fail("permissions " + str(job.get("permissions")))
 steps = job.get("steps", [])
 runs = [s for s in steps if "run" in s]
@@ -384,19 +388,19 @@ mutate provenance-second-step 's = s.replace("        run: bash bin/vendor-check
 mutate trigger-branches 's = s.replace("  pull_request:\n", "  pull_request:\n    branches: [main]\n", 1)'
 mutate or-true 's = s.replace("run: bash bin/vendor-check.sh\n", "run: bash bin/vendor-check.sh || true\n", 1)'
 mutate echo-only 's = s.replace("run: bash bin/vendor-check.sh\n", "run: echo bin/vendor-check.sh\n", 1)'
-mutate coe-expression 's = s.replace("  vendor:\n    name: vendor\n", "  vendor:\n    name: vendor\n    continue-on-error: ${{ true }}\n", 1)'
-mutate job-if 's = s.replace("  vendor:\n    name: vendor\n", "  vendor:\n    name: vendor\n    if: github.actor != \x27dependabot[bot]\x27\n", 1)'
+mutate coe-expression 's = s.replace("  vendor:\n", "  vendor:\n    continue-on-error: ${{ true }}\n", 1)'
+mutate job-if 'import re; s = re.sub(r"(  vendor:\n(?:    .*\n)*?    if: ).*\n", "\\1github.actor != \x27dependabot[bot]\x27\n", s, count=1)'
 mutate step-if-always 's = s.replace("      - name: vendor/ is what go mod vendor regenerates\n", "      - name: vendor/ is what go mod vendor regenerates\n        if: ${{ !cancelled() && false }}\n", 1)'
-mutate job-env-goflags 's = s.replace("  vendor:\n    name: vendor\n", "  vendor:\n    name: vendor\n    env:\n      GOFLAGS: -mod=mod\n", 1)'
+mutate job-env-goflags 's = s.replace("  vendor:\n", "  vendor:\n    env:\n      GOFLAGS: -mod=mod\n", 1)'
 mutate shell-override 's = s.replace("        run: bash bin/vendor-check.sh\n", "        shell: bash {0}\n        run: bash bin/vendor-check.sh\n", 1)'
 mutate unpinned-action 's = s.replace("      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod", "      - uses: actions/setup-go@v7\n        with:\n          go-version-file: go.mod", 1)'
 mutate defaults-shell 's = s.replace("jobs:\n", "defaults:\n  run:\n    shell: \x27bash -c \"exit 0\" {0}\x27\njobs:\n", 1)'
-mutate job-renamed 's = s.replace("  vendor:\n    name: vendor\n", "  vendor:\n    name: vendor-skipped\n", 1)'
+mutate job-renamed 'import re; s = re.sub(r"(  vendor:\n(?:    .*\n)*?    name: )vendor\n", "\\1vendor-skipped\n", s, count=1)'
 mutate checkout-ref 's = s.replace("          fetch-depth: 0\n", "          fetch-depth: 0\n          ref: main\n", 1)'
 mutate checkout-repository 's = s.replace("          fetch-depth: 0\n", "          fetch-depth: 0\n          repository: o/r\n", 1)'
 mutate env-shellopts 's = s.replace("jobs:\n", "env:\n  SHELLOPTS: noexec\njobs:\n", 1)'
 mutate env-bash-env 's = s.replace("jobs:\n", "env:\n  BASH_ENV: /dev/null\njobs:\n", 1)'
-mutate runner-private 's = s.replace("  vendor:\n    name: vendor\n    runs-on: ubuntu-latest\n", "  vendor:\n    name: vendor\n    runs-on: ubuntu-private\n", 1)'
+mutate runner-private 'import re; s = re.sub(r"(  vendor:\n(?:    .*\n)*?    runs-on: )ubuntu-latest\n", "\\1ubuntu-private\n", s, count=1)'
 mutate extra-action 's = s.replace("      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n", "      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0\n        with:\n          script: |\n            require(\x27fs\x27).writeFileSync(\x27bin/vendor-check.sh\x27, \x27exit 0\x27)\n      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n", 1)'
 mutate shallow-checkout 's = s.replace("        with:\n          fetch-depth: 0\n", "", 1)'
 

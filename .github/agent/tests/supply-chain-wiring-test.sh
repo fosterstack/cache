@@ -6,7 +6,7 @@
 # can be the owner's required check without ever blocking an unrelated PR (AC4); the daily job may write issues and nothing else; the one job that re-runs
 # held PRs has actions: write and nothing else (AC6); REQ-SUP-001 is pipeline-only for automatic patches; CI runs the three tests. Read from the PARSED files:
 # the real files must pass and every mutation (made through the parsed document) must be rejected FOR THE REASON NAMED.
-#   .github/workflows/supply-chain.yml: jobs `pin-age` (pull_request, merge_group), `image-signatures` (pull_request),
+#   .github/workflows/supply-chain.yml: jobs `pin-age` (push to main, REQ-REL-014), `image-signatures` (pull_request),
 #   `daily-audit` (schedule), `rerun-held` (schedule), `evidence-letter-present` (schedule; the monthly evidence
 #   letter's daily presence check, read-only)
 set -euo pipefail
@@ -44,11 +44,8 @@ CANONICAL_RUNS = {
     'pin-age':
         'set -uo pipefail\n'
         'status=0\n'
-        "# a pull request is read at its own base and head; the merge queue at the queue's "
-        '(REQ-DEP-005-AC2);\n'
-        '# an empty one fails\n'
-        'BASE_SHA="${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"\n'
-        'HEAD_SHA="${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}"\n'
+        'BASE_SHA="${{ github.event.before }}"\n'
+        'HEAD_SHA="${{ github.sha }}"\n'
         ': "${BASE_SHA:?no base commit to compare: this check fails}" \\\n'
         '  "${HEAD_SHA:?no head commit to compare: this check fails}"\n'
         "# 540 s, then pin-audit.py's 600 s --base deadline (deadline_for): fits the 20-minute job; -v names a stop\n"
@@ -102,6 +99,18 @@ def fetches_pull_ref(run):
     return False
 
 
+def pin_age_runs(cond, event):   # only github.event_name comparisons are decided; any other term may be true
+    text = str(cond).strip() if cond is not None else "true"
+    if text.startswith("${{") and text.endswith("}}"): text = text[3:-2]
+    def term(t):
+        t = t.strip()
+        for op in ("==", "!="):
+            pre = "github.event_name " + op + " '"
+            if t.startswith(pre) and t.endswith("'"): return (t[len(pre):-1] == event) == (op == "==")
+        return True
+    return any(all(term(t) for t in alt.split("&&")) for alt in text.split("||"))
+
+
 def judge_wf(d, real=False):
     bad = []
     on = d.get("on", {})
@@ -110,6 +119,12 @@ def judge_wf(d, real=False):
     if "pull_request_target" in on or "workflow_run" in on:
         bad.append("a pull_request_target or workflow_run trigger (the PR check must run PR code only with a read-only token)")
     pr = on.get("pull_request")
+    # REQ-REL-014: pin-age runs on push to main (the commit before the push to the commit after it); pull_request stays only for
+    # the held check image-signatures; the merge queue no longer runs this workflow
+    if on.get("push") != {"branches": ["main"]}:
+        bad.append("the push trigger is not exactly branches: [main]")
+    if "merge_group" in on:
+        bad.append("a merge_group trigger (REQ-REL-014: no check of this workflow runs in the merge queue)")
     if "pull_request" not in on:
         bad.append("no pull_request trigger")
     elif pr and any(k in pr for k in ("paths", "paths-ignore", "branches", "branches-ignore", "types")):
@@ -130,8 +145,10 @@ def judge_wf(d, real=False):
         return bad
     # pin-age
     j = jobs["pin-age"]
-    if "if" in j or "needs" in j or "strategy" in j or "continue-on-error" in j or "environment" in j:
-        bad.append("pin-age has an if, needs, strategy, continue-on-error or environment: a required check must run on every PR and fail when it should")
+    if "needs" in j or "strategy" in j or "continue-on-error" in j or "environment" in j:
+        bad.append("pin-age has needs, strategy, continue-on-error or environment: a required check must run on every push and fail when it should")
+    if pin_age_runs(j.get("if"), "pull_request") or pin_age_runs(j.get("if"), "merge_group") or not pin_age_runs(j.get("if"), "push"):
+        bad.append(f"pin-age's job condition is not true on push and false on pull_request and merge_group ({j.get('if')!r})")
     if j.get("permissions") != {"contents": "read", "actions": "read", "checks": "read"}:
         bad.append(f"pin-age's permissions are not exactly contents: read + actions: read + checks: read (found {j.get('permissions')})")
     if int(str(j.get("timeout-minutes", "999"))) > 20:
@@ -151,9 +168,8 @@ def judge_wf(d, real=False):
         bad.append("pin-age does not take the exceptions from the BASE branch (trusted/): a pull request must not bring its own rulings")
     if "set -e" in runs or runs.count("|| status=1") != 2 or "exit $status" not in runs:
         bad.append("pin-age stops at the first failure: the age check and the advisory audit must both run, and the job fails if either did")
-    if ("${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}" not in runs
-            or "${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}" not in runs):
-        bad.append("pin-age does not compare the PR's base and head commits")
+    if "${{ github.event.before }}" not in runs or "${{ github.sha }}" not in runs:
+        bad.append("pin-age does not compare the push's base (the commit before it) and head (the commit after it)")
     # daily-audit
     j = jobs["daily-audit"]
     if j.get("permissions") != {"contents": "read", "issues": "write", "actions": "read"}:
@@ -256,10 +272,10 @@ def judge_wf(d, real=False):
                     or set(pw) != {"path", "fetch-depth", "persist-credentials"}):
                 bad.append(f"{jn}'s checkouts take inputs other than the ratified ones "
                            "(e.g. sparse-checkout would empty the trusted checker)")
-            # pin-age also runs in the merge queue (REQ-DEP-005-AC2); image-signatures is a pull_request check only
+            # pin-age reads a push: the trusted checker is the commit before it; image-signatures is a pull_request check only
             ref = "${{ github.event.pull_request.base.sha }}"
             if jn == "pin-age":
-                ref = "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"
+                ref = "${{ github.event.before }}"
             base_ok = (tw.get("ref") == ref and tw.get("path") == "trusted"
                        and str(tw.get("persist-credentials")).lower() == "false")
             if not base_ok:
@@ -271,7 +287,7 @@ def judge_wf(d, real=False):
                 bad.append(f"{jn}'s PR checkout is not the default (merge) ref at path pr, full depth, "
                            "persist-credentials false")
     # the check steps' commands are pinned EXACTLY: any other flag, an extra assignment, a duplicated argument, a changed order is a changed (rejected) workflow
-    norm = lambda t: "\n".join(l.strip() for l in str(t).strip().split("\n") if l.strip())
+    norm = lambda t: "\n".join(l.strip() for l in str(t).strip().split("\n") if l.strip() and not l.strip().startswith("#"))   # comments are not commands
     for jn, want in CANONICAL_RUNS.items():
         for st in jobs[jn].get("steps", []):
             r = str(st.get("run", ""))
@@ -279,13 +295,12 @@ def judge_wf(d, real=False):
                 bad.append(f"{jn}: the check step's commands differ from the ratified text (any added flag, assignment or duplicated argument is a change)")
     if re.search(r"secrets\s*\[", text):
         bad.append("the workflow indexes secrets[...]: no secrets anywhere")
-    PR_IF = "github.event_name == 'pull_request' || github.event_name == 'merge_group'"
     for name, jj in jobs.items():
         for st in jj.get("steps", []):
             # a step may not be skipped, tolerated or cut short: the only conditions are the ratified ones
             if "continue-on-error" in st:
                 bad.append(f"{name}: a step has continue-on-error: a failing check must fail the job")
-            allowed_if = PR_IF if name == "pin-age" else ("always()" if "upload-artifact" in str(st.get("uses", "")) else None)
+            allowed_if = ("always()" if "upload-artifact" in str(st.get("uses", "")) else None)
             if st.get("if") != allowed_if:
                 bad.append(f"{name}: a step has a condition ({st.get('if')!r}) other than the ratified one ({allowed_if!r}): it could skip the check")
             if "timeout-minutes" in st:
@@ -507,11 +522,17 @@ mut_wf("pull_request gets a branches filter", "has a filter", lambda d: d["on"].
 mut_wf("pull_request limited to types", "has a filter", lambda d: d["on"].update(pull_request={"types": ["opened"]}))
 mut_wf("a pull_request_target trigger", "pull_request_target", lambda d: d["on"].update(pull_request_target={}))
 mut_wf("a workflow_run trigger", "pull_request_target or workflow_run", lambda d: d["on"].update(workflow_run={"workflows": ["x"]}))
+mut_wf("pin-age also runs on pull requests", "pin-age's job condition", lambda d: J(d, "pin-age").update({"if": "github.event_name != 'schedule'"}))
+mut_wf("pin-age has no job condition", "pin-age's job condition", lambda d: J(d, "pin-age").pop("if", None))
+mut_wf("pin-age does not run on push", "pin-age's job condition", lambda d: J(d, "pin-age").update({"if": "github.event_name == 'pull_request'"}))
+mut_wf("no push trigger", "the push trigger is not exactly", lambda d: d["on"].pop("push", None))
+mut_wf("push to every branch", "the push trigger is not exactly", lambda d: d["on"].update(push={"branches": ["main", "x"]}))
+mut_wf("a merge_group trigger", "a merge_group trigger", lambda d: d["on"].update(merge_group={}))
 mut_wf("no pull_request trigger", "no pull_request trigger", lambda d: d["on"].pop("pull_request"))
 mut_wf("no schedule", "no single daily schedule", lambda d: d["on"].pop("schedule"))
-mut_wf("pin-age is skipped for bots", "pin-age has an if", lambda d: J(d, "pin-age").update({"if": "github.actor != 'dependabot[bot]'"}))
-mut_wf("pin-age needs another job", "pin-age has an if, needs", lambda d: J(d, "pin-age").update(needs=["daily-audit"]))
-mut_wf("pin-age is allowed to fail", "pin-age has an if, needs", lambda d: J(d, "pin-age").update({"continue-on-error": "true"}))
+mut_wf("pin-age is skipped for bots", "pin-age's job condition", lambda d: J(d, "pin-age").update({"if": "github.actor != 'dependabot[bot]'"}))
+mut_wf("pin-age needs another job", "pin-age has needs,", lambda d: J(d, "pin-age").update(needs=["daily-audit"]))
+mut_wf("pin-age is allowed to fail", "pin-age has needs,", lambda d: J(d, "pin-age").update({"continue-on-error": "true"}))
 mut_wf("pin-age can write", "pin-age's permissions are not exactly contents: read + actions: read + checks: read", lambda d: J(d, "pin-age")["permissions"].update(issues="write"))
 mut_wf("pin-age has actions write", "pin-age's permissions are not exactly contents: read + actions: read + checks: read", lambda d: J(d, "pin-age")["permissions"].update(actions="write"))
 mut_wf("pin-age has no timeout", "no bounded timeout-minutes", lambda d: J(d, "pin-age").pop("timeout-minutes"))
@@ -519,7 +540,7 @@ mut_wf("pin-age timeout above 20", "no bounded timeout-minutes", lambda d: J(d, 
 mut_wf("pin-age timeout far above", "no bounded timeout-minutes", lambda d: J(d, "pin-age").update({"timeout-minutes": 360}))
 mut_wf("pin-age never runs the age check", "does not run .github/agent/supply-chain/pin-age-check.py", lambda d: J(d, "pin-age").update(steps=[s for s in J(d, "pin-age")["steps"] if "pin-age-check" not in str(s.get("run", ""))]))
 mut_wf("pin-age never audits what moves", "does not run .github/agent/supply-chain/pin-audit.py", lambda d: J(d, "pin-age").update(steps=[s for s in J(d, "pin-age")["steps"] if "pin-audit" not in str(s.get("run", ""))]))
-mut_wf("pin-age compares the wrong commits", "does not compare the PR's base and head", lambda d: [s.update(run=s["run"].replace("github.event.pull_request.base.sha", "github.sha")) for s in J(d, "pin-age")["steps"] if "run" in s])
+mut_wf("pin-age compares the wrong commits", "does not compare the push's base", lambda d: [s.update(run=s["run"].replace("github.event.before", "github.sha")) for s in J(d, "pin-age")["steps"] if "run" in s])
 mut_wf("the PR's own checker runs", "does not run the BASE branch's checker", lambda d: [x.update(run=x["run"].replace("python3 trusted/.github/agent/supply-chain/pin-age-check.py", "python3 pr/.github/agent/supply-chain/pin-age-check.py")) for x in J(d, "pin-age")["steps"] if "run" in x])
 mut_wf("the audit runs from the PR's tree", "does not run the BASE branch's checker", lambda d: [x.update(run=x["run"].replace("python3 trusted/.github/agent/supply-chain/pin-audit.py", "python3 pr/.github/agent/supply-chain/pin-audit.py")) for x in J(d, "pin-age")["steps"] if "run" in x])
 mut_wf("a variable names the checker again", "does not run the BASE branch's checker", lambda d: [x.update(run="checker=trusted\n" + x["run"].replace("python3 trusted/.github/agent/supply-chain/pin-age-check.py", 'python3 "$checker/.github/agent/supply-chain/pin-age-check.py"')) for x in J(d, "pin-age")["steps"] if "run" in x])
@@ -571,10 +592,8 @@ def live_pin_age(age_exit=None, bound="1"):
     if len(steps) != 1 or steps[0].count(AGE) != 1:
         return "the step does not hold `timeout -v 540 ` exactly once"
     text = (steps[0].replace(AGE, f"timeout -v {bound} ")
-            .replace("${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}", "b")
-            .replace("${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}", "h")
-            .replace("${{ github.event.pull_request.base.sha }}", "b")
-            .replace("${{ github.event.pull_request.head.sha }}", "h"))
+            .replace("${{ github.event.before }}", "b")
+            .replace("${{ github.sha }}", "h"))
     with tempfile.TemporaryDirectory() as d:
         stub = os.path.join(d, "stub"); os.mkdir(stub)
         log = os.path.join(d, "log")
@@ -627,7 +646,7 @@ mut_wf("the daily condition gains && false", "not exactly the ratified one", lam
 mut_wf("the artifact path widens", "artifact path is not exactly", lambda d: [x["with"].update(path=".github/workflows") for x in J(d, "daily-audit")["steps"] if "upload-artifact" in str(x.get("uses", ""))])
 mut_wf("hidden files are uploaded", "uploads hidden files", lambda d: [x["with"].update({"include-hidden-files": "true"}) for x in J(d, "daily-audit")["steps"] if "upload-artifact" in str(x.get("uses", ""))])
 mut_wf("sparse-checkout empties the trusted checker", "checkouts take inputs other than", lambda d: [x["with"].update({"sparse-checkout": "bin"}) for x in J(d, "pin-age")["steps"] if str(x.get("uses", "")).startswith("actions/checkout") and x["with"].get("path") == "trusted"])
-mut_wf("a step between the checkouts and the check", "not exactly [trusted checkout", lambda d: J(d, "pin-age")["steps"].insert(2, {"if": "github.event_name == 'pull_request'", "run": 'find trusted -name "*.py" -exec cp /dev/null {} \\;'}))
+mut_wf("a step between the checkouts and the check", "not exactly [trusted checkout", lambda d: J(d, "pin-age")["steps"].insert(2, {"if": "github.event_name == 'push'", "run": 'find trusted -name "*.py" -exec cp /dev/null {} \\;'}))
 mut_wf("a secret is used", "uses secrets", lambda d: J(d, "daily-audit")["steps"][-1].setdefault("env", {}).update(X="${{ secrets.PAT }}"))
 mut_wf("an unpinned action", "is not pinned to a commit digest", lambda d: J(d, "pin-age")["steps"].insert(0, {"uses": "actions/checkout@v4"}))
 mut_wf("an action off the allowlist", "is not on the allowlist", lambda d: J(d, "pin-age")["steps"].insert(0, {"uses": "evil/action@" + "a" * 40}))

@@ -66,6 +66,19 @@ if isinstance(d, dict):
             if isinstance(_st_, dict) and isinstance(_st_.get("run"), str):
                 _st_["run"] = "\n".join(_unwrap_(l) for l in _st_["run"].split("\n"))
 bad = []
+def _runs_(cond, event):   # REQ-REL-014: only github.event_name comparisons are decided; any other term may be true
+    text = str(cond).strip() if cond is not None else "true"
+    if text.startswith("${{") and text.endswith("}}"): text = text[3:-2]
+    def term(t):
+        t = t.strip()
+        for op in ("==", "!="):
+            pre = "github.event_name " + op + " '"
+            if t.startswith(pre) and t.endswith("'"): return (t[len(pre):-1] == event) == (op == "==")
+        return True
+    return any(all(term(t) for t in alt.split("&&")) for alt in text.split("||"))
+def _push_only_(jid, cond):   # the allowlist jobs run on push to main only: true on push, false on pull_request and merge_group
+    if _runs_(cond, "pull_request") or _runs_(cond, "merge_group") or not _runs_(cond, "push"):
+        bad.append(f"the {jid} job's condition is not true on push and false on pull_request and merge_group (REQ-REL-014): {cond!r}")
 for k in sorted(set(d) - {"name", "on", "permissions", "jobs", "concurrency"}):
     bad.append(f"the workflow sets `{k}`")
 # the one reviewed concurrency block (advisor, Oct 22; cache#583): a pull request's FIRST run attempt of a head shares a group with the pull request's other first attempts, so a newer
@@ -104,8 +117,9 @@ if "defaults" in d:
 job = d.get("jobs", {}).get("allowlist", {})
 # the guard's job is exactly name / runs-on / steps: no `needs` (a skipped prerequisite skips the whole guard),
 # `if`, `timeout-minutes`, `permissions`, `strategy`, `concurrency`, `container`, `services`, `env`, `defaults`, ...
-for k in sorted(set(job) - {"name", "runs-on", "steps"}):
+for k in sorted(set(job) - {"name", "runs-on", "steps", "if"}):
     bad.append(f"the allowlist job has `{k}`")
+_push_only_("allowlist", job.get("if"))   # REQ-REL-014: the one extra key is the push-only condition
 if job.get("runs-on") != "ubuntu-latest":
     bad.append("the allowlist job does not run on exactly `ubuntu-latest` (GitHub-hosted)")
 want = {"bash .github/agent/tests/check-action-pins-test.sh", "python3 .github/agent/bin/check-action-pins.py --verify-tags .",
@@ -288,7 +302,7 @@ CHAIN_GATE = {
     "name": "allowlist-chain",
     "runs-on": "ubuntu-latest",
     "needs": CHAIN_SHARD_IDS,
-    "if": "${{ always() }}",
+    "if": "${{ always() && github.event_name == 'push' }}",   # REQ-REL-014: judged by _push_only_ and for always(), not by its text
     "steps": [{
         "name": "every shard of allowlist-chain succeeded (a failed, skipped, cancelled or missing result fails)",
         "env": {"R%d" % k: "${{ needs.allowlist-chain-%d.result }}" % k for k in range(1, 5)},
@@ -819,8 +833,9 @@ for jid, want_steps in SPLIT_STEPS.items():
             if not isinstance(sj, dict):
                 bad.append(f"the shard {k} of allowlist-chain is missing")
                 continue
-            for key in sorted(set(sj) - {"name", "runs-on", "steps"}):
+            for key in sorted(set(sj) - {"name", "runs-on", "steps", "if"}):
                 bad.append(f"the {k} job has `{key}`")
+            _push_only_(k, sj.get("if"))
             if sj.get("name") != k:
                 bad.append(f"the {k} job is not named `{k}`")
             if sj.get("runs-on") != "ubuntu-latest":
@@ -836,15 +851,21 @@ for jid, want_steps in SPLIT_STEPS.items():
             want_ = 1 + sum(1 for x_ in others if (x_.get("run") or "").strip() == r_)
             if have_ != want_:
                 bad.append(f"the step running `{r_}` appears {have_} times in the workflow, not {want_} (REQ-CI-001-AC1: exactly once across the shards, nowhere else)")
-        if _jobs_.get("allowlist-chain") != CHAIN_GATE:
+        _gate_ = dict(_jobs_.get("allowlist-chain") or {})
+        _cond_ = _gate_.pop("if", None)
+        _push_only_("allowlist-chain", _cond_)
+        if "always()" not in str(_cond_):
+            bad.append("the allowlist-chain gate's condition does not keep always() (a skipped shard must fail the gate)")
+        if _gate_ != {k_: v_ for k_, v_ in CHAIN_GATE.items() if k_ != "if"}:
             bad.append("the allowlist-chain gate job is not exactly the judged gate (REQ-CI-001-AC2: needs the four shards, always runs, no checkout, fails on anything but success)")
         continue
     sj = d.get("jobs", {}).get(jid)
     if not isinstance(sj, dict):
         bad.append(f"the job {jid} is missing")
         continue
-    for k in sorted(set(sj) - {"name", "runs-on", "steps"}):
+    for k in sorted(set(sj) - {"name", "runs-on", "steps", "if"}):
         bad.append(f"the {jid} job has `{k}`")
+    _push_only_(jid, sj.get("if"))
     if sj.get("name") != jid:
         bad.append(f"the {jid} job is not named `{jid}` (the required-check context)")
     if sj.get("runs-on") != "ubuntu-latest":
@@ -1222,6 +1243,10 @@ gitcase fetch-depth-at-a-commit   bad "$steps[0].pop('with')"
 
 case_ job-needs-skipped          bad "d['jobs']['skip_guard'] = {'runs-on': 'ubuntu-latest', 'if': 'false', 'steps': [{'run': 'true'}]}; d['jobs']['allowlist']['needs'] = 'skip_guard'"
 case_ split-job-if            bad "d['jobs']['allowlist-chain']['if'] = 'false'"
+case_ job-runs-on-prs         bad "d['jobs']['allowlist']['if'] = \"\${{ always() }}\""
+case_ shard-runs-on-prs       bad "d['jobs']['allowlist-chain-1']['if'] = \"\${{ always() }}\""
+case_ gate-runs-on-prs        bad "d['jobs']['allowlist-chain']['if'] = \"\${{ always() }}\""
+case_ gate-push-only-no-always bad "d['jobs']['allowlist-chain']['if'] = \"\${{ github.event_name == 'push' }}\""
 case_ split-job-missing       bad "d['jobs'].pop('allowlist-persona')"
 case_ split-job-renamed       bad "d['jobs']['allowlist-pins-auditor']['name'] = 'pins'"
 case_ split-job-needs         bad "d['jobs']['allowlist-chain']['needs'] = ['lint']"
@@ -1260,8 +1285,8 @@ def split_chain(d):
     groups.append([i for i in range(5, len(steps)) if i not in taken])
     jobs = {}
     for k, g in enumerate(groups, 1):
-        jobs[f"allowlist-chain-{k}"] = {"name": f"allowlist-chain-{k}", "runs-on": "ubuntu-latest", "steps": copy.deepcopy(pre) + [copy.deepcopy(steps[i]) for i in g]}
-    gate = {"name": "allowlist-chain", "runs-on": "ubuntu-latest", "needs": [f"allowlist-chain-{k}" for k in range(1, 5)], "if": "${{ always() }}",
+        jobs[f"allowlist-chain-{k}"] = {"name": f"allowlist-chain-{k}", "runs-on": "ubuntu-latest", "if": "github.event_name == 'push'", "steps": copy.deepcopy(pre) + [copy.deepcopy(steps[i]) for i in g]}
+    gate = {"name": "allowlist-chain", "runs-on": "ubuntu-latest", "needs": [f"allowlist-chain-{k}" for k in range(1, 5)], "if": "${{ always() && github.event_name == 'push' }}",
             "steps": [{"name": "every shard of allowlist-chain succeeded (a failed, skipped, cancelled or missing result fails)",
                        "env": {f"R{k}": "${{ needs.allowlist-chain-%d.result }}" % k for k in range(1, 5)},
                        "run": 'for r in "$R1" "$R2" "$R3" "$R4"; do [ "$r" = success ] || { echo "a shard of allowlist-chain did not succeed: [$r]"; exit 1; }; done'}]}
@@ -1481,7 +1506,7 @@ PY
   else failn=$((failn+1)); echo "FAIL $1 → $got, want $2 ($out)"; fi
 }
 textcase duplicate-run-in-check-step   bad "t = t.replace('        run: git ls-files | ./bin/check-file-allowlist.sh', '        run: git ls-files | ./bin/check-file-allowlist.sh\\n        run: true', 1)"
-textcase duplicate-name-allowlist-job  bad "t = t.replace('  allowlist:\\n    name: allowlist', '  allowlist:\\n    name: allowlist\\n    name: allowlist', 1)"
+textcase duplicate-name-allowlist-job  bad "t = t.replace('  allowlist:\\n', '  allowlist:\\n    name: allowlist\\n', 1)"
 textcase duplicate-top-level-key       bad "t = t.replace('\\njobs:\\n', '\\npermissions:\\n  contents: read\\njobs:\\n', 1)"
 textcase the-text-edit-itself-is-neutral ok "t = t"
 

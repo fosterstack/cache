@@ -20,6 +20,7 @@
  "chain-install-witness-test.sh": 44,
  "chain-manifest-test.sh": 48,
  "chain-no-keyless-tag-test.sh": 10,
+ "chain-pull-request-checks-test.sh": 100,
  "chain-rebuild-test.sh": 102,
  "chain-records-test.sh": 98,
  "chain-rekor-key-test.sh": 66,
