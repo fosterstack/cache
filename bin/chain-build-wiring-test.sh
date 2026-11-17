@@ -4071,7 +4071,7 @@ if [ "$rc" = 0 ] \
 else bad "AC2 witness-sign-staged.sh: exit $rc, sign calls: $(cat "$wss/log" 2> /dev/null), ${out:0:100}"; fi
 # bin/release-publish.sh stops on the first pushed tag whose registry digest is not the attested one
 rp="$work/rp"; mkdir -p "$rp/bin" "$rp/witness-build" "$rp/fake"
-cp "$root/bin/release-publish.sh" "$rp/bin/"; : > "$rp/bin/release-layout.py"
+cp "$root/bin/release-publish.sh" "$root/bin/build-admit.py" "$rp/bin/"; : > "$rp/bin/release-layout.py"
 printf '{"image-production": "%s", "image-fips": "%s"}\n' "$DA" "$DB" > "$rp/witness-build/digests.json"
 for v in production fips; do
   mkdir -p "$rp/images/$v"; : > "$rp/images/$v/oci-layout"; : > "$rp/images/$v/index.json"
