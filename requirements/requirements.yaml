@@ -2520,7 +2520,7 @@ requirements:
       - id: REQ-SCAN-010-AC2
         given: "the three VEX forms"
         when: "they are compared"
-        then: "the CSAF file carries every OpenVEX statement about this release's images, except that a Go standard library subcomponent at a version other than the one build/melange.yaml pins is left out of both the Inspector and the CSAF file (the OpenVEX file keeps it), and a statement left with nothing is left out whole; the generator names each statement it drops in one line; the Inspector file carries one rule for each product scope and package that a suppressible statement names"
+        then: "the CSAF file carries every OpenVEX statement about this release's images, except that a Go standard library subcomponent at a version other than the one build/melange.yaml pins is left out of both the Inspector and the CSAF file (the OpenVEX file keeps it), and a statement left with nothing is left out whole; the generator names each left-out subcomponent in one line, one line for each CVE, product and subcomponent; the Inspector file carries one rule for each product scope and package that a suppressible statement names"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-SCAN-010-AC3

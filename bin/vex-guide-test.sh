@@ -74,7 +74,6 @@ check("no Scout local-file flag anywhere", "--vex-location" not in doc)
 check("the Scout section says nothing is loaded (the attestation is on the image) and why the author is named", "needs no file" in scout_sec and "author" in scout_sec)
 check("the stay-current part says there is nothing to reload for Scout", re.search(r"(?i)docker scout:\*\* nothing to (load|reload)", doc) is not None)
 # the blocks that need a published release or a registry are listed by exact text for the live test (rule 79 precedent: docs/verify-release.cannot-run.json)
-import json
 cr = json.load(open(os.path.join(root, "docs/using-our-vex.cannot-run.json")))
 blocks_all = re.findall(r"```sh\n(.*?)```", doc, re.S)
 check("the cannot-run list holds blocks of the page, each exactly once", all(blocks_all.count(b) == 1 for b in cr["blocks"]) and len(set(cr["blocks"])) == len(cr["blocks"]))
@@ -223,15 +222,21 @@ REVIEWED_CA = [
         ' key, a melange call outside the fosterstack namespace, an apk signed by another key, an '
         'apk whose files differ from build/baselayout/etc or an apk that ships a CA bundle file;'),
 ]
+# cuts "One. Two; three" into three sentences; leaves "docs/a.md", "1.27.4" and "a, b" whole
+SENTENCE_END = re.compile(r"(?<=[.!?;])\s+")
 def ca_bundle_hits(rel, text):
     hits = []
     for paragraph in text.split("\n\n"):
         # a table row is a sentence of its own: its cells carry no full stop to cut at
         for row in paragraph.split("\n|"):
-            for sentence in re.split(r"(?<=[.!?;])\s+", " ".join(row.split())):
+            for sentence in SENTENCE_END.split(" ".join(row.split())):
                 if CA_BUNDLE.search(sentence) and (rel, sentence) not in REVIEWED_CA:
                     hits.append(sentence)
     return hits
+check("R8 the sentence split cuts after a full stop, !, ? and ;",
+      SENTENCE_END.split("One. Two! Three? Four; five") == ["One.", "Two!", "Three?", "Four;", "five"])
+check("R8 the sentence split leaves a dot inside a word or number, and a comma, whole",
+      SENTENCE_END.split("see docs/a.md, go1.27.4 now") == ["see docs/a.md, go1.27.4 now"])
 notes = text_of("docs/release-notes-draft.md")
 check("R8 docs/release-notes-draft.md exists", notes is not None)
 check("R8 mutant: a sentence naming a CA bundle appended to the notes is caught",
@@ -283,7 +288,8 @@ for rel in scope_files(root):
 check("R8 every reviewed sentence is still in its file", reviewed_gone(root) == [], reviewed_gone(root))
 with tempfile.TemporaryDirectory(prefix="vex-guide-r8.") as scratch:
     copy_scope(root, scratch)
-    check("R8 the copy of the tree scans clean", scan_hits(scratch) == [], scan_hits(scratch))
+    hits = scan_hits(scratch)
+    check("R8 the copy of the tree scans clean", hits == [], hits)
     with open(os.path.join(scratch, "docs/install.md"), "a") as fh:
         fh.write("\nThe images ship a CA bundle.\n")
     check("R8 a CA bundle sentence appended to a copy of docs/install.md is a hit",
