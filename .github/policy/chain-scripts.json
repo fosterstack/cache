@@ -638,7 +638,7 @@
       ],
       "runs": [],
       "signs": false,
-      "reason": "run by bin/audit-record.py to compute the Dependabot reviewer's version: prints the sha256 of the sha256sum lines of four fixed files and runs nothing else; it signs and writes nothing",
+      "reason": "run by bin/audit-record.py to compute the Dependabot reviewer's version: prints the sha256 of the sha256sum lines of five fixed files and runs nothing else; it signs and writes nothing",
       "sha256": "6808c79ea2d93806fc175b7ccd559ea1bb795314bc778d7e3588944b84d0c590",
       "exceptions": [
         {
@@ -646,7 +646,7 @@
           "line": "if [ \"${1:-}\" = --files ]; then printf '%s\\n' \"${files[@]}\"; exit 0; fi",
           "line_sha256": "852338221a21a55914ed167a4bfa1d1c581f69793b9b9163efa4760216bbb14b",
           "count": 1,
-          "why": "the array subscript is the fixed array files: `${files[@]}` is its expansion to the four literal paths listed at the top of the script, and nothing is substituted inside the brackets (REQ-CHAIN-001-AC1; reviewed line-bound waiver, the script is main's, kept as main wrote it)"
+          "why": "the array subscript is the fixed array files: `${files[@]}` is its expansion to the five literal paths listed at the top of the script, and nothing is substituted inside the brackets (REQ-CHAIN-001-AC1; reviewed line-bound waiver, the script is main's, kept as main wrote it)"
         },
         {
           "rule": "script-name",

@@ -44,7 +44,9 @@ def audit(wf):
         "a required context found neither in the table nor as a ci.yml job is reported unknown (fixture)")
     res(set(req) - set(TABLE) == EXCEPT,
         "every required context is known to the merge-queue table (unknown: %s)" % unknown)
-    res(EXCEPT == {"marker-gate"} and "auditor-review-gate" in TABLE and "auditor-review-gate" in req,
+    # the review gate's check is required by release admission (release-only-checks.json), not by the ruleset list
+    ro = [c["context"] for c in json.load(open(repo + "/.github/policy/release-only-checks.json"))["required_checks"]]
+    res(EXCEPT == {"marker-gate"} and "auditor-review-gate" in TABLE and "auditor-review-gate" in ro,
         "the one merge-queue exception is marker-gate (pull requests only); the review gate's check has a table row")
     def has_event(d, name):
         on = d.get(True) if True in d else d.get("on")
@@ -53,18 +55,11 @@ def audit(wf):
     # judged by its text. Every `if` on a required job, on its steps and on the jobs it needs must be one of these exact
     # strings at that exact place; a new or edited condition fails here until this table is changed in review.
     ALLOWED_IF = {   # (workflow, job, step name or None for the job itself): the exact condition
-        ("acceptance.yml", "acceptance-gradle", "stop the capped server"): "always()",
-        ("acceptance.yml", "acceptance-gradle", "stop fscache"): "always()",
-        ("acceptance.yml", "acceptance-maven", "stop the capped server"): "always()",
-        ("acceptance.yml", "acceptance-maven", "stop fscache"): "always()",
         ("agent-review-gate.yml", "queue-judge", None):
             "github.event_name == 'workflow_run' && github.event.workflow_run.event == 'merge_group'",
         ("agent-review-gate.yml", "queue-publish", None):
             "${{ !cancelled() && github.event_name == 'workflow_run' "
             "&& github.event.workflow_run.event == 'merge_group' }}",
-        ("ci.yml", "allowlist-chain", None): "${{ always() }}",
-        ("ci.yml", "allowlist-chain-4", "suite floors only rise (against the merge base on a pull request)"):
-            "${{ github.base_ref != '' || github.event.merge_group.base_ref != '' }}",
         ("ci.yml", "dependency-review", None):
             "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}",
         ("ci.yml", "dependency-review", "the merge queue's base and head are named (REQ-DEP-005-AC2)"):
@@ -91,7 +86,7 @@ def audit(wf):
             "github.event_name == 'pull_request' || github.event_name == 'merge_group'",
         ("supply-chain.yml", "pin-age", "The pull request's tree"):
             "github.event_name == 'pull_request' || github.event_name == 'merge_group'",
-        ("supply-chain.yml", "pin-age", "Age of every moved version, and what advisories say about it"):
+        ("supply-chain.yml", "pin-age", "Every moved version, and what advisories say about it"):
             "github.event_name == 'pull_request' || github.event_name == 'merge_group'",
     }
     def closure(f, j, acc):
@@ -100,7 +95,8 @@ def audit(wf):
         need = ((wf.get(f) or {}).get("jobs", {}).get(j) or {}).get("needs") or []
         for n in [need] if isinstance(need, str) else need: closure(f, n, acc)
     jobs = set()
-    for c in req:
+    gate = req + ["auditor-review-gate"]   # the review gate's check is required by release admission, and the queue publishes it
+    for c in gate:
         if c in TABLE and c not in EXCEPT: closure(*TABLE[c], jobs)
     found, twice = {}, []
     for f, j in jobs:
@@ -116,7 +112,7 @@ def audit(wf):
     res(not twice, "no two steps with a condition share a job and a name (%s)" % [str(k) for k in twice[:2]])
     res(set(ALLOWED_IF) <= set(found), "every allowed condition still exists (the table is not stale): %s"
         % sorted(str(k) for k in set(ALLOWED_IF) - set(found))[:2])
-    for c in req:
+    for c in gate:
         if c in EXCEPT or c not in TABLE: continue
         f, j = TABLE[c]; d = wf.get(f)
         job = ((d or {}).get("jobs") or {}).get(j)
@@ -297,9 +293,9 @@ def audit(wf):
         "every post of the check in the sweep follows a lookup of the App's existing verdict on that head "
         "(%d posts, %d lookups)" % (posts, looks))
     # matched: "success) continue ;;"; refused: "failure) continue"
-    res(re.search(r"success\)\s*continue", sws) is not None,
+    res(re.search(r"success\)\s*continue|\"\$last\" = success \] && [^\n]*; then continue", sws) is not None,
         "a head that already has a success verdict is skipped (no second post)")
-    res("still failure" in sws, "a head that still fails is not re-posted")
+    res("still failure" in sws or "still ${conclusion}" in sws, "a head that still fails is not re-posted")
     return out
 
 out = audit(wf)
@@ -330,14 +326,15 @@ run_mutant("a merge_group branch filter in a workflow other than ci.yml", lambda
 run_mutant("a step condition on the pull request's head repository", lambda: add_step_if(
     "scan.yml", "reproducibility", "github.event.pull_request.head.repo.full_name == github.repository"))
 run_mutant("a second step named like an allowed one, before it, with a pull-request-only condition", lambda: (
-    wf_["acceptance.yml"]["jobs"]["acceptance-gradle"]["steps"].insert(
-        0, {"name": "stop fscache", "if": "github.event_name == 'pull_request'", "run": "true"})))
+    wf_["scan.yml"]["jobs"]["inspector"]["steps"].insert(
+        0, {"name": "keep the Inspector SBOMs and responses", "if": "github.event_name == 'pull_request'", "run": "true"})))
 run_mutant("a required job that runs on the main branch only", lambda: set_if(
     "codeql.yml", "analyze", "github.ref == 'refs/heads/main'"))
 run_mutant("a required job skipped by a false term", lambda: set_if(
     "codeql.yml", "analyze", "false && github.event_name == 'merge_group'"))
-run_mutant("a prerequisite shard that runs on the main branch only", lambda: set_if(
-    "ci.yml", "allowlist-chain-1", "github.ref == 'refs/heads/main'"))
+run_mutant("a prerequisite of a required job that runs on the main branch only", lambda: (
+    wf_["ci.yml"]["jobs"]["lint"].update(needs=["allowlist-chain-1"]),
+    set_if("ci.yml", "allowlist-chain-1", "github.ref == 'refs/heads/main'")))
 run_mutant("marker-gate that skips pull requests instead of the queue", lambda: set_if(
     "ci.yml", "marker-gate", "github.event_name != 'pull_request'"))
 run_mutant("pin-age with the empty-head refusal removed", lambda: edit_run(

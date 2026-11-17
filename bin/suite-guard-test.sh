@@ -263,10 +263,10 @@ ac = next(a for r in yaml.safe_load(open("requirements/requirements.yaml"))["req
 pinned = {n: int(k) for n, k in re.findall(r"([a-z0-9-]+-test\.sh) \((\d) runs?", ac["then"])}
 ci = [l for l in open(".github/workflows/ci.yml").read().splitlines() if not l.lstrip().startswith("#")]
 actual = {n: sum(1 for l in ci if re.search(r"\bbash [./A-Za-z0-9_-]*/%s\b" % re.escape(n), l)) + 1 for n in rest}
-print("ok" if bad == 0 and rest == set(pinned) and len(pinned) == 2 and actual == pinned else "bad %s residual %s pinned %s actual %s" % (bad, sorted(rest), pinned, actual))
+print("ok" if bad == 0 and rest == set(pinned) and len(pinned) == 3 and actual == pinned else "bad %s residual %s pinned %s actual %s" % (bad, sorted(rest), pinned, actual))
 PY
 )
-if [ "$real" = "ok" ]; then ok "REQ-CI-005-AC5 the real ci.yml: all runs itself exactly the two suites the AC names, each run as many times as the AC states; every other floored suite is counted by its own step"; else bad "real ci.yml residual: $real"; fi
+if [ "$real" = "ok" ]; then ok "REQ-CI-005-AC5 the real ci.yml: all runs itself exactly the three suites the AC names, each run as many times as the AC states; every other floored suite is counted by its own step"; else bad "real ci.yml residual: $real"; fi
 # (2) two counting steps for one suite: refused
 cwf "" "$CNT a-test.sh bin/a-test.sh" "$CNT a-test.sh bin/a-test.sh"
 out=$(cwall) && rc=0 || rc=$?; if [ "$rc" = 1 ] && grep -q 'more than one counting step' <<< "$out"; then ok "REQ-CI-005-AC1 all: two counting steps for one suite are refused (the suite would run twice)"; else bad "duplicate counting step: rc=$rc ${out:0:200}"; fi
@@ -293,7 +293,7 @@ out=$(cwall) || true; if ! grep -q 'x: 60 passed' <<< "$out" && grep -q 'a-test.
 # the wiring suite (bin/required-check-guard-test.sh) must exit non-zero when a case fails; run a copy in a scratch tree whose list names a context no job produces
 rcg="$work/rcg"; mkdir -p "$rcg/bin" "$rcg/.github/policy"
 mkdir -p "$rcg/requirements"; cp "$root/requirements/requirements.yaml" "$rcg/requirements/"
-cp "$root/bin/required-check-guard-test.sh" "$rcg/bin/"; cp -r "$root/.github/workflows" "$rcg/.github/"; cp "$root/.github/policy/required-checks.json" "$rcg/.github/policy/"
+cp "$root/bin/required-check-guard-test.sh" "$rcg/bin/"; cp -r "$root/.github/workflows" "$rcg/.github/"; cp "$root/.github/policy/required-checks.json" "$root/.github/policy/release-only-checks.json" "$rcg/.github/policy/"
 out=$(LC_ALL=C bash "$rcg/bin/required-check-guard-test.sh" 2>&1 < /dev/null) && rc=0 || rc=$?
 if [ "$rc" = 0 ]; then ok "REQ-DEP-005-AC1 the wiring suite exits 0 when every case passes"; else bad "unmutated wiring suite rc=$rc: ${out: -200}"; fi
 python3 -I - "$rcg/.github/policy/required-checks.json" <<'PY'

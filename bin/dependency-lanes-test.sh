@@ -6,7 +6,7 @@
 # event, one run at a time; it reads every Dependabot bump, arms or holds and posts its check but opens no PR and
 # edits nothing; it carries a success to a new head only past the same-diff proof, and settles the arms after its act
 # step; its evidence upload can never fail a run; the
-# patch/minor lane arms squash auto-merge only for the head it screened, never for a major and never for a head the reviewer
+# patch/minor lane arms squash auto-merge never for a major and never for a head the reviewer
 # failed, and its last step turns off an arm the reviewer's verdict does not allow. Each real workflow must pass;
 # each mutated copy must be caught.
 set -euo pipefail
@@ -554,7 +554,7 @@ PATHS = ("bin/dependabot-reviewer.py", ".github/policy/dependabot-reviewer-promp
 MAIN = {p: open(os.path.join(root, p), "rb").read() for p in PATHS}
 MAIN[SCRIPT] = open(os.path.join(root, SCRIPT), "rb").read() if os.path.exists(os.path.join(root, SCRIPT)) else b""
 def version(files):
-    """REQ-DEP-001-AC14, computed here and not by the script: sha256 of the output of sha256sum over the five files
+    """REQ-DEP-001-AC14, computed here and not by the script: sha256 of the output of sha256sum over the four files
     in order"""
     return hashlib.sha256("".join("%s  %s\n" % (hashlib.sha256(files[p]).hexdigest(),
             p) for p in PATHS).encode()).hexdigest()
@@ -717,7 +717,7 @@ for verdict in ("none", "neutral", "failure"):
     rc, log = go(last, verdict, waits="true")
     if "contents/" in log:
         bad.append("the verdict is %s: the version is read only for a success\n%s" % (verdict, log))
-# REQ-DEP-001-AC14: the version is of the five files on main, in that order (sha256 of the output of sha256sum): a
+# REQ-DEP-001-AC14: the version is of the four files on main, in that order (sha256 of the output of sha256sum): a
 # change to any of them voids every earlier success
 old_files = (("the program, the prompt and the workflow alone (the version before the guard and the checks list "
         "counted)",
@@ -727,7 +727,7 @@ old_files = (("the program, the prompt and the workflow alone (the version befor
              ("the three files hashed together without sha256sum's lines",
              hashlib.sha256(b"".join(MAIN[p] for p in PATHS)).hexdigest(), None))
 for path in PATHS:
-    old_files += (("the five files before main's %s changed" % path, VER, changed(path)),)
+    old_files += (("the four files before main's %s changed" % path, VER, changed(path)),)
 for what, ver, main in old_files:
     rc, log = go(last, [("success", ver)], waits="true", main=main)
     if rc != 0 or "pr merge --disable-auto" not in log:
@@ -779,7 +779,7 @@ if any(l.startswith("missing") for l in seen):
 # an empty file list, or an empty version, after a read that succeeded is no version either: it turns auto-merge off
 # and fails the step, as a failed read does
 LISTS_ONLY = ("#!/usr/bin/env bash\n" + FILES_LINE).encode()
-for what, script in (("is empty", b""), ("lists the five files but prints no version", LISTS_ONLY)):
+for what, script in (("is empty", b""), ("lists the four files but prints no version", LISTS_ONLY)):
     rc, log = go(last, [("success", VER)], waits="true", main={SCRIPT: script})
     if rc == 0 or "auto-merge stands" in LASTOUT or "pr merge --disable-auto" not in log:
         bad.append("the script on main %s: the step must turn auto-merge off and fail, never say it stands (rc "
@@ -792,7 +792,7 @@ for path in (PATHS[0], PATHS[1], PATHS[-1], SCRIPT):
         if (rc == 0) == (waits == "true") or ("pr merge --disable-auto" in log) != disarmed:
             bad.append("the read of %s fails (waits=%s): no version, so the success is no verdict, the major's arm "
                     "comes off and the patch's stands (rc %s)\n%s" % (path, waits, rc, log))
-# a failed fetch of any of the five files (nothing printed, or half a file) ends the step nonzero with auto-merge off,
+# a failed fetch of any of the four files (nothing printed, or half a file) ends the step nonzero with auto-merge off,
 # and the hash is never taken of what was read; an old version's success must not stand because of a short file
 for path in PATHS:
     for what, partial in (("prints nothing", False), ("prints half a file", True)):
@@ -978,7 +978,7 @@ then pass=$((pass+1)); echo "PASS gate-window-same-in-both"
 else failn=$((failn+1)); echo "FAIL gate-window-same-in-both"; fi
 
 # REQ-DEP-001-AC14: bin/dependabot-reviewer-version.sh, run from a checkout root, prints the version: the sha256 of the
-# output of sha256sum over the five files in order (computed here, not by the script); --files prints the five paths one
+# output of sha256sum over the four files in order (computed here, not by the script); --files prints the four paths one
 # per line; a file it cannot read fails it. The root folder may be its argument (from any working directory); with none
 # it works in the current directory.
 if python3 - "$root" "$work" <<'PY'
@@ -1015,7 +1015,7 @@ if rc != 0 or out.strip() != expected(tree) or len(out.strip()) != 64:
     bad.append("the version of the fixture tree: want %s, got rc %s %r %r" % (expected(tree), rc, out, err[-80:]))
 rc, out, err = run(tree, "--files")
 if rc != 0 or out.split("\n") != PATHS + [""]:
-    bad.append("--files: want the five paths in order, one per line; got rc %s %r %r" % (rc, out, err[-80:]))
+    bad.append("--files: want the four paths in order, one per line; got rc %s %r %r" % (rc, out, err[-80:]))
 rc, out, err = run(root)
 if rc != 0 or out.strip() != expected(root):
     bad.append("the version of this checkout: want %s, got rc %s %r %r" % (expected(root), rc, out, err[-80:]))
@@ -1028,7 +1028,7 @@ gone = fixture("gone-by-argument")
 os.remove(os.path.join(gone, PATHS[1]))
 if run_with_root(gone)[0] == 0:
     bad.append("a file missing under the root given as the argument must fail the script")
-for path in (PATHS[3], PATHS[4]):
+for path in (PATHS[3],):
     changed = fixture("changed")
     before = run(changed)[1].strip()
     open(os.path.join(changed, path), "a").write("one more line\n")

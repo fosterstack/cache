@@ -109,7 +109,7 @@ jobs:
           FORCE: ${{ inputs.force }}
         # A verdict is the App's LATEST dependabot-reviewer check on the head: success or failure; neutral or none is
         # read this hour. A success counts only with this reviewer's version as its external_id (the version printed
-        # by bin/dependabot-reviewer-version.sh, over five files): an older reviewer may have read less than the whole
+        # by bin/dependabot-reviewer-version.sh, over four files): an older reviewer may have read less than the whole
         # diff, and its success is no verdict, so the head is read as a head with none is.
         # No reader is called for a merge of main whose diff against main is the passed head's, byte for byte: the same
         # change was read.
@@ -655,12 +655,12 @@ jobs:
           done < "$W/candidates.txt"
           exit "$bad"
 
-      # The failure streak is the run history itself. This job fails if and only if a review did
-      # not finish (a lookup, the identity token, the SDK, gather, a reader, an
-      # action or an arm that could not be settled — every one of those paths ends in `unfinished` or a failed step), and a run with
-      # nothing to review succeeds. So "three failed runs in a row" is exactly "three unfinished
-      # runs in a row": no state of our own to lose or misread. If the history cannot be read,
-      # nothing is decided this hour; the next failed run reads it again.
+      # The failure streak is the run history itself. This job fails if and only if a review did not finish
+      # (a lookup, the identity token, the SDK, gather, a reader, an action or an arm that could not
+      # be settled — every one of those paths ends in `unfinished` or a failed step), and a run with nothing to
+      # review succeeds. So "three failed runs in a row" is exactly "three unfinished runs in a row": no state of
+      # our own to lose or misread. If the history cannot be read, nothing is decided this hour; the next failed
+      # run reads it again.
       - name: three unfinished runs in a row => one issue for the ccode queue
         if: failure()
         env:

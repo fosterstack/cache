@@ -716,13 +716,12 @@ check("bump: 99 pull requests are the whole answer", A.bump_pull(HEAD, FULL_PULL
 
 REVIEWER_PY = os.path.join(os.path.dirname(JUDGE_SH), "dependabot-reviewer.py")
 VERSION_FILES = ("bin/dependabot-reviewer.py", ".github/policy/dependabot-reviewer-prompt.txt",
-      ".github/workflows/dependabot-reviewer.yml",
-                 ".github/policy/required-checks.json")
+      ".github/workflows/dependabot-reviewer.yml", ".github/policy/required-checks.json")
 VERSION_SCRIPT = "bin/dependabot-reviewer-version.sh"   # the code author's: copied into the fixtures where it exists
 CHECKED_IN = [open(os.path.join(ROOT, f), "rb").read() for f in VERSION_FILES]
 def sum_lines(files):   # what `sha256sum` prints over the files, in this order
     return "".join("%s  %s\n" % (hashlib.sha256(text).hexdigest(), f) for f, text in files)
-# REQ-DEP-001-AC14, computed here: the sha256 of the output of sha256sum over the five files under `top`
+# REQ-DEP-001-AC14, computed here: the sha256 of the output of sha256sum over the four files under `top`
 def version_in(top):
     return hashlib.sha256(
           sum_lines((f, open(os.path.join(top, f), "rb").read()) for f in VERSION_FILES).encode()).hexdigest()
@@ -863,8 +862,8 @@ os.makedirs(G + "/.github/workflows")
 BIN = os.path.dirname(JUDGE_SH)
 for name in ("audit-record.py", "audit-record-judge.sh", "audit-record-prepare.sh"):
     open(G + "/bin/" + name, "w").write(open(os.path.join(BIN, name)).read())
-GREVIEWER, GPROMPT, GWORKFLOW, GCHECKS, GGUARD = (os.path.join(G, f) for f in VERSION_FILES)
-for f, text in zip((GREVIEWER, GPROMPT, GWORKFLOW, GCHECKS, GGUARD), CHECKED_IN): open(f, "wb").write(text)
+GREVIEWER, GPROMPT, GWORKFLOW, GCHECKS = (os.path.join(G, f) for f in VERSION_FILES)
+for f, text in zip((GREVIEWER, GPROMPT, GWORKFLOW, GCHECKS), CHECKED_IN): open(f, "wb").write(text)
 install_version_script(G)
 POLICY = G + "/.github/policy/audit-writers.json"
 open(POLICY, "w").write(json.dumps(WRITERS))
@@ -1021,7 +1020,7 @@ check("gate: 99 check runs are the whole answer: the newest, a success, passes a
 r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1, slug="github-actions")]})
 check("gate refused: a bump that only another App passed", refused(r, "it has no verdict"), said(r, c))
 
-# The reviewer's version is the sha256 of the sha256sum lines of the five files under the checked-out main (AC14). A
+# The reviewer's version is the sha256 of the sha256sum lines of the four files under the checked-out main (AC14). A
 # success of any other version, or with none, is a verdict that does not pass: it is not "no verdict", so no clean
 # merge of main carries a pass over it.
 def stale_refused(r): return r.returncode == 1 and r.stdout.startswith(
@@ -1081,10 +1080,9 @@ check(
       "workflow counted) is no success", stale_refused(r), said(r, c))
 for what, old in (("the three files joined", OLD3), ("the sha256sum lines of the three files", OLD3S)):
     r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1, ext=old)]})
-    check("gate refused: a success carrying the version of %s (before the five files and sha256sum) is no success"
+    check("gate refused: a success carrying the version of %s (before the four files and sha256sum) is no success"
           % what, stale_refused(r), said(r, c))
-for what, path in (("prompt", GPROMPT), ("workflow", GWORKFLOW), ("required-checks list", GCHECKS),
-      ("required-check guard", GGUARD)):
+for what, path in (("prompt", GPROMPT), ("workflow", GWORKFLOW), ("required-checks list", GCHECKS)):
     OLDTEXT = open(path, "rb").read()
     try:
         open(path, "wb").write(OLDTEXT + b"\n# changed\n")
@@ -1095,7 +1093,7 @@ for what, path in (("prompt", GPROMPT), ("workflow", GWORKFLOW), ("required-chec
         check("gate refused: ... nor is it carried across a clean merge of main",
               stale_refused(r) and c.count("check-runs") == 2, said(r, c))
         r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1, ext=version_in(G))]})
-        check("gate: ... and a success of the version of the five files as main has them passes",
+        check("gate: ... and a success of the version of the four files as main has them passes",
               r.returncode == 0 and "passed this head" in r.stdout, said(r, c))
         os.remove(path)
         r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1)]})

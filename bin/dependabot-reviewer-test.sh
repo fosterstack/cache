@@ -676,8 +676,8 @@ py_rc=$?
 
 # ============================================================================ the act step
 # The committed "gather, read twice, decide, act" step, run as written under GitHub's default
-# `bash -e`, with: a recording `gh` (per-scenario failures), a stub token endpoint (`curl`), and a fake SDK module that
-# returns each reader's canned answer. Asserts WHAT is called, in WHAT order, and whether a check
+# `bash -e`, with: a recording `gh` (per-scenario failures), a stub token endpoint (`curl`), and
+# a fake SDK module that returns each reader's canned answer. Asserts WHAT is called, in WHAT order, and whether a check
 # goes up — the round-1 paths (malformed answer, failed diff, re-hold with auto-merge armed,
 # partial failures, -e aborting the loop).
 w="$(mktemp -d)"; trap 'rm -rf "$w"' EXIT
@@ -968,7 +968,7 @@ A="$CLEAN" B="$CLEAN" MB=boom ARMED=true PRIOR=success act;
 for what in prompt-changed workflow-changed checks-changed; do
   mkalt "$w/alt" "$what"
   A="$CLEAN" B="$CLEAN" ACTDIR="$w/alt" act;
-    ext_on_every_check "act: with the $what the success check carries the version of the five files as they are" \
+    ext_on_every_check "act: with the $what the success check carries the version of the four files as they are" \
     "$(ver3 "$w/alt")"
 done
 # a version that cannot be computed stops the step before any verdict: nothing armed, disarmed or published, not even
@@ -1160,7 +1160,7 @@ for what in prompt-changed workflow-changed checks-changed; do
   CANCELDIR="$w/alt" cancel_one "$(verdicts "[[\"success\",\"$VER\",\"s\"]]")" no \
     "with the $what a success of the version of the old text is no success: the arm comes off"
   CANCELDIR="$w/alt" cancel_one "$(verdicts "[[\"success\",\"$(ver3 "$w/alt")\",\"s\"]]")" yes \
-    "with the $what a success of the version of the five files as they are is recorded"
+    "with the $what a success of the version of the four files as they are is recorded"
 done
 for what in no-prompt no-workflow no-checks; do
   mkalt "$w/alt" "$what"
@@ -1429,7 +1429,7 @@ PRIOR99=success GATE99_JSON=$(gate_page 99 "[\"failure\",\"$OLD\"]") cand "91 no
 also "candidates: the stale failure among 99 gate runs is published again" "+$GREFRESH"
 
 # REQ-DEP-001-AC14: a success counts only if its external_id is the version of the reviewer as this run checked it out
-# (the sha256 of the sha256sum lines of the five files). A success of another version, or with none, is no verdict:
+# (the sha256 of the sha256sum lines of the four files). A success of another version, or with none, is no verdict:
 # the head is read as a head with none is.
 CUR_OK="[\"success\",\"$VER\"]"; OLD_OK="[\"success\",\"$OLDVER\"]"; OWN99='name=dependabot-reviewer -f head_sha=sha99'
 ONLY=99 ARMED99=true PRIOR99_JSON=$(verdicts "[$CUR_OK,$OLD_OK]") cand "99 none," 0 \
@@ -1518,7 +1518,7 @@ also "candidates: nothing is listed, read or published without the version" "-pr
 ONLY=99 PRIOR99_JSON=$(verdicts "[[\"success\",\"$PYVER\"]]") cand "99 none," 0 \
   "a success carrying the sha256 of the program alone (the version before the prompt and the workflow counted) is read"
 ONLY=99 PRIOR99_JSON=$(verdicts "[[\"success\",\"$OLD3\"]]") cand "99 none," 0 \
-  "a success carrying the version of the three files joined (the version before the five files and sha256sum) is read"
+  "a success carrying the version of the three files joined (the version before the four files and sha256sum) is read"
 ONLY=99 PRIOR99_JSON=$(verdicts "[[\"success\",\"$OLD3S\"]]") cand "99 none," 0 \
   "a success carrying the version of the three files' sha256sum lines is read"
 for what in prompt-changed workflow-changed checks-changed; do
@@ -1527,7 +1527,7 @@ for what in prompt-changed workflow-changed checks-changed; do
     "with the $what a success of the version of the old text is read"
   also "candidates: it is not superseded, forced or published over" "-check-runs -f name=dependabot-reviewer"
   CANDDIR="$w/alt" ONLY=99 PRIOR99_JSON=$(verdicts "[[\"success\",\"$(ver3 "$w/alt")\"]]") cand "" 0 \
-    "with the $what a success of the version of the five files as they are is still a success"
+    "with the $what a success of the version of the four files as they are is still a success"
 done
 for what in no-prompt no-workflow no-checks; do
   mkalt "$w/alt" "$what"
@@ -1715,7 +1715,8 @@ ONLY=99 PRIOR99=neutral PARENT=p1 PRIORP1=success cand "99 neutral," 0 \
 also "candidates: no walk from a neutral head" "-commits/sha99 " "-compare/"
 
 # The lane turned an arm off just as the reviewer approved the head (the reviewer arms, then publishes): a success verdict on the
-# head, no arm, and the LAST auto-merge event being a disable by github-actions (the workflow token) means put the arm back; a person's disarm, an earlier lane disarm followed by a later enable, or no event at all stays.
+# head, no arm, and the LAST auto-merge event being a disable by github-actions (the workflow token) means put the arm back;
+# a person's disarm, an earlier lane disarm followed by a later enable, or no event at all stays.
 LANE_OFF='auto_merge_enabled fosterstack-automation\nauto_merge_disabled github-actions[bot]\n'
 heal() { # <events> <rc> <expect-rearm yes|no> <name>   (PRIOR99=success; ARMED99, REARMFAIL, EVENTSFAIL from the environment)
   PRIOR99=success EVENTS99="$1" cand "91 none," "$2" "$4"
@@ -1761,14 +1762,13 @@ EVENTS99_JSON=$(ev '[["auto_squash_enabled","fosterstack-automation[bot]"],["aut
 # armed over a failure verdict. A plain patch the lane had armed, whose review did not finish, is armed again for that
 # exact head.
 # settle <candidates lines> <lane-arms lines> <rc> <name>
-# env: PRIOR99 PRIOR90 ARMED99 ARMED90 RULES REARMFAIL DISARMFAIL LOOKUP90
+# env: PRIOR99 PRIOR90 ARMED99 ARMED90 REARMFAIL DISARMFAIL LOOKUP90
 settle() {
   local W="$w/settle"; rm -rf "$W"; mkdir -p "$W/work"; : > "$w/gh.log"
   printf '%b' "$1" > "$W/work/candidates.txt"; printf '%b' "$2" > "$W/work/lane-arms.txt"
   (cd "${SETTLEDIR:-$repo}" &&
     env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" GITHUB_REPOSITORY=o/r RUNNER_TEMP="$W" \
-    REPO_CHECKS="$repo/.github/policy/required-checks.json" \
-     GUARD_RULES_JSON="${RULES:-$w/rules-match.json}" APP_TOKEN=a APP_SLUG=fosterstack-automation MERGE_TOKEN=m \
+     APP_TOKEN=a APP_SLUG=fosterstack-automation MERGE_TOKEN=m \
        GH_TOKEN=job \
      bash --noprofile --norc -e -o pipefail "$w/settle.sh") > "$w/settle.out" 2>&1; local rc=$?
   SETTLE_RC="$rc"
@@ -1867,7 +1867,7 @@ for what in prompt-changed workflow-changed checks-changed; do
     "with the $what a success of the version of the old text"
   also "settle: it is no verdict: the lane's arm is put back" "$REARM90"
   SETTLEDIR="$w/alt" PRIOR90_JSON=$(verdicts "[[\"success\",\"$(ver3 "$w/alt")\"]]") settle "$BOTH" '90 sha90\n' 0 \
-    "with the $what a success of the version of the five files as they are"
+    "with the $what a success of the version of the four files as they are"
   also "settle: it is a success: left as the act step left it" "-pr merge"
 done
 for what in no-prompt no-workflow no-checks; do

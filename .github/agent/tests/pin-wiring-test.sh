@@ -110,7 +110,7 @@ for k in sorted(set(job) - {"name", "runs-on", "steps"}):
 if job.get("runs-on") != "ubuntu-latest":
     bad.append("the allowlist job does not run on exactly `ubuntu-latest` (GitHub-hosted)")
 want = {"bash .github/agent/tests/check-action-pins-test.sh", "python3 .github/agent/bin/check-action-pins.py --verify-tags .",
-        "bash .github/agent/tests/pin-wiring-test.sh",  # this test's own step, too
+        "bash .github/agent/tests/pin-wiring-test.sh", "bash bin/required-check-guard-test.sh",  # this test's own step, too, and the merge queue wiring suite's
         "bash .github/agent/tests/auditor-matrix-test.sh", "bash .github/agent/tests/auditor-labels-test.sh"}  # REQ-CI-005: their counting steps, split out of the parser-tests block (cache#705 round 1)
 seen = set()
 for st in job.get("steps", []):
@@ -1001,7 +1001,7 @@ else:
 sys.exit(1 if bad else 0)
 PY
 }
-# The byte pin (cache#930 round 9): the workflow's top level, read as raw bytes of the file, never parsed. A trailing comment or
+# The byte pins (cache#930 round 9): the workflow's top level, read as raw bytes of the file, never parsed. A trailing comment or
 # blank line under a block is not part of it.
 IFS= read -r -d '' PIN_WIRING_PERMISSIONS <<'TOP' || true
 permissions:
@@ -1149,6 +1149,12 @@ for sfx in matrix labels; do
   case_ "auditor-$sfx-env"      bad "$sel['env'] = {'A': 'b'}"
   case_ "auditor-$sfx-timeout"  bad "$sel['timeout-minutes'] = '5'"
 done
+gs='[s for s in '"$steps"' if (s.get("run") or "").strip() in ("bash bin/required-check-guard-test.sh", "python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json required-check-guard-test.sh bin/required-check-guard-test.sh")][0]'
+case_ guard-suite-step-removed  bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() not in ('bash bin/required-check-guard-test.sh', 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json required-check-guard-test.sh bin/required-check-guard-test.sh')]"
+case_ guard-suite-if-false      bad "$gs['if'] = 'false'"
+case_ guard-suite-continue      bad "$gs['continue-on-error'] = 'true'"
+case_ guard-suite-shell         bad "$gs['shell'] = \"bash -c 'true' {0}\""
+case_ guard-suite-workdir       bad "$gs['working-directory'] = 'bin'"
 
 ck='[s for s in '"$steps"' if (s.get("run") or "").strip().endswith("check-file-allowlist.sh")][0]'
 fe='[s for s in '"$steps"' if "git fetch" in (s.get("run") or "")][0]'
@@ -1867,7 +1873,7 @@ if out=$(PIN_WIRING_WORKFLOWS_DIR="$work/rs-pins-auditor-name" judge "$here/.git
 then failn=$((failn+1)); echo "FAIL reserved-pins-auditor-name → ok, want bad ($out)"
 else pass=$((pass+1)); echo "PASS reserved-pins-auditor-name → bad"; fi
 
-# ---- byte pins: the top-level env/defaults/permissions ----------------------------------------------------------------
+# ---- byte pins: the workflow's top level (env/defaults/permissions), and the line-ending refusal ----------------
 # bcase_ <name> <ok|bad> <sed script or empty>: the real ci.yml, edited as bytes by sed, judged by bytes_judge.
 bcase_() {
   local f="$work/$1.yml"
@@ -1882,12 +1888,14 @@ bcase_ the-real-bytes          ok  ""
 bcase_ top-level-env-key       bad 's/^permissions:$/env:\n  X: "1"\n\npermissions:/'
 bcase_ top-level-defaults-key  bad 's/^permissions:$/defaults:\n  run:\n    shell: bash\n\npermissions:/'
 bcase_ top-level-permissions   bad '/^permissions:$/a\  issues: write'
-# the checkout digest of another job is what Dependabot rewrites: it stands for any value
-old=3d3c42e5aac5ba805825da76410c181273ba90b1
-new=abababababababababababababababababababab
-bcase_ other-job-checkout-bumped          ok  "/^  test:\$/,/^  vendor:\$/s/@$old/@$new/"
+# YAML ends a line at CR, U+0085, U+2028 and U+2029; bytes_judge splits on LF only, so a step can hide after them
+for b in cr:$'\r' nel:$'\xc2\x85' ls:$'\xe2\x80\xa8' ps:$'\xe2\x80\xa9'; do
+  bcase_ "comment-line-has-${b%%:*}" bad "s/^permissions:\$/# note${b#*:}      - run: echo hidden\n&/"
+done
+bcase_ other-job-checkout-bumped          ok  "/^  test:\$/,/^  vendor:\$/s/@3d3c42e5aac5ba805825da76410c181273ba90b1/@abababababababababababababababababababab/"
 bcase_ other-job-go-version    ok  '/^  test:$/,/^  vendor:$/s/go-version: '"'1.27'/go-version: '1.26'/"
 bcase_ other-job-comment       ok  '/^  test:$/a\    # a note'
+
 
 echo "pin-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

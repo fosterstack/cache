@@ -131,7 +131,7 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 231 allow patterns: chain-v030 plus the 0710 and KMS-signing rows plus ^bin/policy-merge-harness\.py$, ^bin/dependabot-reviewer-version\.sh$ and ^\.github/policy/fulcio-chain\.pem$, minus tag_observer.py (main); read from the run of this test
+# 231 allow patterns: chain-v030 plus the 0710 and KMS-signing rows plus ^bin/policy-merge-harness\.py$, ^bin/dependabot-reviewer-version\.sh$ and ^\.github/policy/fulcio-chain\.pem$, minus tag_observer.py (main) and bin/required-check-guard.sh; read from the run of this test
 EXPECT_ALLOW, EXPECT_SUPPRESSION = 231, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
@@ -180,7 +180,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
 # the script text outside the v0.3.0 region; history is in git
-PINNED_SHA256 = "7fe2d3014b5aa24256e6586dc84fb3586b6612d08ad4d6560a4986d1f8fd8a9c"
+PINNED_SHA256 = "630db7f599e788404bb41b6082b8da1e3326f533ca05c2ed4f878b4d7b3af69b"
 if rstart and rend:
     import hashlib
     _b = _rawlines
@@ -964,7 +964,7 @@ grep -q "^api repos/o/r/pulls/12 " "$TMPROOT/qgh.log" && gp "queue: the call rea
 [ ! -s "$TMPROOT/qgh.log" ] && gp "a pull request run makes no lookup" \
     || gf "a pull request run makes no lookup" "$(cat "$TMPROOT/qgh.log")"
 
-# the reviewer's version script is one of the five files' list-keeper: admitted by its exact path only
+# the reviewer's version script is the four files' list-keeper: admitted by its exact path only
 passfam "feature/x" "the reviewer's version script" "bin/dependabot-reviewer-version.sh"
 runeach fail "feature/x" "reviewer-version near-miss refused" \
   "bin/dependabot-reviewer-version.sh.bak" "bin/dependabot-reviewer-version-x.sh" \
