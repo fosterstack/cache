@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """The two offline halves of signing a patch tag with the one release KMS key (REQ-REL-009-AC5, AC6).
 
-`prepare` writes the unsigned annotated tag object and the sha256 of the OpenSSH signed-data blob (namespace git) over
-it: the digest the KMS key signs, bin/with-aws-token.sh kms-sign, RSASSA-PKCS1-v1_5 SHA-256, which is what the
+`prepare` writes the unsigned annotated tag object and the sha256 of the OpenSSH signed-data blob over
+it: the digest the KMS key signs (RSASSA-PKCS1-v1_5 SHA-256), which is what the
 rsa-sha2-256 signature of an SSH SIGNATURE block is. `assemble` puts the key and that signature into the block and
-appends it to the object. Only a patch tag vX.Y.Z with Z >= 1 is made: source admission accepts the release key on
+appends it to the object. Only a patch tag vX.Y.Z with Z >= 1 is made: the admission of a tag accepts the release key on
 no other tag. Nothing is written when a check fails.
 """
 import argparse, base64, hashlib, os, re, struct, sys
