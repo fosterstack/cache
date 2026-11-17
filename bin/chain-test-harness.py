@@ -323,7 +323,7 @@ for std, name in (("std", "fscache"), ("fips", "fscache-fips")):
         open("%s/%s_%s_linux_%s.tar.gz" % (out, name, version, g), "w").write("tar|%s|%s|%s" % (std, g, version))
 '''
 FAKE_CV = '''#!/usr/bin/env python3
-import hashlib, importlib.util, json, os, sys
+import hashlib, importlib.util, json, os, shutil, sys
 spec = importlib.util.spec_from_file_location("h", os.environ["HARNESS_DIR"] + "/chain-test-harness.py")
 h = importlib.util.module_from_spec(spec); spec.loader.exec_module(h)
 a = sys.argv[1:]
@@ -349,7 +349,16 @@ if cmd == "bind":       # every file under --dir must be a product of the record
             if not os.path.exists(table) or open(table).read().strip() != hashlib.sha256(open(p, "rb").read()).hexdigest(): bad.append(p)
     if bad: sys.stderr.write("refused at build: digest: %s\\n" % " ".join(bad)); sys.exit(1)
     sys.exit(0)
-if cmd in ("items-apk", "items-merge") and os.environ.get("ITEMS_MODE") == "real":
+if cmd == "items-apk" and os.environ.get("ITEMS_MODE") == "real":
+    # the real verifier runs the apk tool that sits beside it (chain_items.APK_TOOL): a copy of the real files here, with this tree's fixture tool
+    real = os.path.dirname(os.environ["REAL_CV"])
+    shadow = os.path.abspath(".real")
+    os.makedirs(shadow + "/bin", exist_ok=True); os.makedirs(shadow + "/.github/policy", exist_ok=True)
+    for f in ("chain-verify.py", "chain_common.py", "chain_hostile.py", "chain_items.py"): shutil.copy(real + "/" + f, shadow + "/bin/" + f)
+    for f in ("rebuild-items.json", "chain-scripts.json"): shutil.copy(real + "/../.github/policy/" + f, shadow + "/.github/policy/" + f)
+    shutil.copy(os.path.abspath("bin/apk-tool.py"), shadow + "/bin/apk-tool.py")
+    os.execv(sys.executable, [sys.executable, shadow + "/bin/chain-verify.py"] + a)
+if cmd == "items-merge" and os.environ.get("ITEMS_MODE") == "real":
     os.execv(sys.executable, [sys.executable, os.environ["REAL_CV"]] + a)
 if cmd == "items-apk":
     json.dump(h.fragment(os.path.basename(arg("--out-dir").rstrip("/")), os.environ["TAG"]), open(arg("--result"), "w"))
