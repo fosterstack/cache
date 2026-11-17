@@ -297,6 +297,10 @@ check("AC3 admission passes when every required check is green on the tagged com
 for ctx in [c["context"] for c in req + rel if c["context"] != "auditor-review-gate"]:
     rc, out = admit("missing " + ctx, drop=(ctx,))
     check("AC3 admission refuses a tag whose commit has no run of %s" % ctx, rc != 0 and "'%s'" % ctx in out and "tagged commit" in out, out.strip()[-300:])
+rc, out = admit("red test", red=("test",))
+check("AC3 admission refuses a tag whose commit has a red run of test", rc != 0 and "'test'" in out, out.strip()[-300:])
+rc, out = admit("pr-only test", only_on_pr=("test",))
+check("AC3 admission does not take test from the merged pull request's head", rc != 0 and "'test'" in out and "tagged commit" in out, out.strip()[-300:])
 
 print("pull-request-checks: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
