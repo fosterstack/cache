@@ -2711,7 +2711,6 @@ jobs:
     permissions:
       contents: write
       packages: write
-      attestations: write
       id-token: write
       issues: write
       checks: read
@@ -2788,7 +2787,7 @@ cl c14 "AC14 the build call is gone" "  build:\n" "  built:\n" "build is missing
 # (B) the callers' grants are a STATIC CEILING: read only, whatever the stage asks for (the building jobs hold no identity token)
 cl w1 "AC14 ceiling: contents narrowed to read on the build call" "      contents: write\n" "      contents: read\n" "static ceiling"
 cl w2 "AC14 ceiling: packages write gone from the build call" "      packages: write\n" "" "static ceiling"
-cl w3 "AC14 ceiling: attestations write gone from the build call" "      attestations: write\n" "" "static ceiling"
+cl w3 "AC14 ceiling: attestations write on the build call is beyond the ceiling" "      id-token: write\n" "      attestations: write\n      id-token: write\n" "static ceiling"
 cl w4 "AC14 ceiling: checks: write on the build call" "      checks: read" "      checks: write" "static ceiling"
 cl w5 "AC14 ceiling: statuses: write on the build call" "      statuses: read" "      statuses: write" "static ceiling"
 cl w7 "AC14 ceiling: pull-requests: write on the build call" "      pull-requests: read" "      pull-requests: write" "static ceiling"

@@ -164,7 +164,7 @@ for gone in ("daily-rescan.yml", "rescan-v010.yml"):
 # REQ-CHAIN-004-AC14 / REQ-CHAIN-003-AC5: the one build path. Its job build calls release.yml with exactly `with: mode: snapshot` (no other input, secrets, if or needs),
 # under the called file's permission set as a static ceiling; no job calls a stage-*.yml file
 b = jobs.get("build") or {}
-CEILING = {"contents": "write", "packages": "write", "attestations": "write", "id-token": "write", "issues": "write", "checks": "read", "statuses": "read", "pull-requests": "read"}
+CEILING = {"contents": "write", "packages": "write", "id-token": "write", "issues": "write", "checks": "read", "statuses": "read", "pull-requests": "read"}
 if b.get("uses") != "./.github/workflows/release.yml" or b.get("with") != {"mode": "snapshot"}:
     bad.append("the build job is not a snapshot call of release.yml: %s" % {k: b.get(k) for k in ("uses", "with")})
 if b.get("permissions") != CEILING:
@@ -330,7 +330,7 @@ if (jobs.get("build") or {}).get("with") != {"mode": "snapshot"}:
 if "rebuild" in jobs:
     bad.append("scan.yml still has a rebuild job: release.yml's Rebuild jobs run in the one snapshot call")
 # the call's permissions are the STATIC CEILING of the called file's set, in both directions (REQ-CHAIN-004-AC14)
-CEILING = {"contents": "write", "packages": "write", "attestations": "write", "id-token": "write", "issues": "write", "checks": "read", "statuses": "read", "pull-requests": "read"}
+CEILING = {"contents": "write", "packages": "write", "id-token": "write", "issues": "write", "checks": "read", "statuses": "read", "pull-requests": "read"}
 if (jobs.get("build") or {}).get("permissions") != CEILING:
     bad.append("the build call's permissions are not exactly the called file's set (the ceiling): %s" % (jobs.get("build") or {}).get("permissions"))
 r = jobs.get("reproducibility") or {}
@@ -407,7 +407,7 @@ case_scan stage-image-back       bad "d['jobs']['assemble'] = {'needs': 'build',
 case_scan rebuild-job-back       bad "d['jobs']['rebuild'] = {'needs': 'build', 'uses': './.github/workflows/release.yml', 'with': {'mode': 'snapshot'}}"
 case_scan rebuild-stage-back     bad "d['jobs']['rebuild'] = {'needs': 'build', 'uses': './.github/workflows/stage-reproducibility.yml', 'with': {'mode': 'snapshot'}}"
 case_scan build-ceiling-id-token-gone bad "d['jobs']['build']['permissions'].pop('id-token')"
-case_scan build-ceiling-attestations-gone bad "d['jobs']['build']['permissions'].pop('attestations')"
+case_scan build-ceiling-attestations-added bad "d['jobs']['build']['permissions']['attestations'] = 'write'"
 case_scan build-ceiling-issues-gone bad "d['jobs']['build']['permissions'].pop('issues')"
 case_scan build-ceiling-widened  bad "d['jobs']['build']['permissions']['actions'] = 'write'"
 case_scan build-ceiling-checks-write bad "d['jobs']['build']['permissions']['checks'] = 'write'"

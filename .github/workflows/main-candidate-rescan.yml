@@ -16,7 +16,7 @@ on:
 # Top level stays read-only; the two reusable-stage caller jobs carry
 # their own grants (which the callee ceilings require), and the scan job
 # adds issues:write for the tracking issue. Keeping the default narrow
-# means the scan job never holds packages/id-token/attestations.
+# means the scan job never holds packages/id-token.
 permissions:
   contents: read
 
@@ -33,7 +33,6 @@ jobs:
     permissions:
       contents: write
       packages: write
-      attestations: write
       id-token: write
       issues: write
       checks: read

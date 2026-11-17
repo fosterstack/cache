@@ -92,10 +92,15 @@ def steps_text(s):
     t = (s.get("run") or "") + " " + (s.get("uses") or "") + " " + yaml.safe_dump(s.get("env") or {})
     return "\n".join(l for l in t.split("\n") if not l.strip().startswith("#"))
 RELEASE_SECRETS = {"DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN"}   # ruling R5: the release job that pushes images holds exactly these, nothing else
-# AC3 (b): DOCKERHUB_USERNAME, DOCKERHUB_TOKEN and packages: write live in the release job of release.yml alone. The only exceptions are three read-only probe holders, each keyed on the triple
-# (workflow file, job, environment): a same-named job whose environment changed or went away is not the holder. None holds packages: write or runs a login for a push, a push, a signature or an attach.
+# AC3 (b): DOCKERHUB_USERNAME, DOCKERHUB_TOKEN and packages: write live in the release job of release.yml alone. The only exceptions are three probe holders, each keyed on the triple
+# (workflow file, job, environment): a same-named job whose environment changed or went away is not the holder. None holds packages: write or runs a signature or an attach; two of them (panel-scout,
+# live-test-release) also run no login for a push and no push. The third, release.yml/live-test, pushes release-candidate images to the dedicated test repositories with DOCKERHUB_TEST_PUSH_TOKEN, never with the
+# release job's DOCKERHUB_TOKEN. One further job holds packages: write, go-freshness.yml/refresh (environment agent, same triple key): it stores the package archive by digest with the run's own token.
 PROBE_HOLDERS = {("main-candidate-rescan.yml", "panel-scout", "agent"), ("release.yml", "live-test", "live-test"), ("release.yml", "live-test-release", "live-test")}
 PUSH_WORDS = re.compile(r"\bcrane\s+auth\s+login\b|\bcosign\s+login\b|\bcrane\s+(?:push|copy|cp|append|mutate|tag)\b|\bdocker\s+(?:push|buildx\s+imagetools\s+create)\b|\bcosign\s+(?:sign|sign-blob|attach|attest|copy)\b|\boras\s+(?:login|push)\b|\bskopeo\s+(?:login|copy)\b|\bregctl\s+(?:registry\s+login|image\s+copy)\b")
+PUSH_PROBE = ("release.yml", "live-test")      # the one probe holder that may log in for a push and push (test repositories only)
+ARCHIVE_WRITER = ("go-freshness.yml", "refresh", "agent")   # the one further job that holds packages: write
+SIGN_ATTACH_WORDS = re.compile(r"\bcosign\s+(?:sign|sign-blob|attach|attest|copy)\b")
 READ_ONLY_LOGIN = re.compile(r"\bdocker\s+login\b")   # a docker login passes only in a step that carries a read-only token (DOCKERHUB_SCOUT_TOKEN or the job's own GH_TOKEN with packages: read)
 def holds(d, j):
     perms = j.get("permissions", d.get("permissions"))
@@ -219,15 +224,22 @@ for f in sorted(glob.glob(os.path.join(wf, "*.y*ml"))):
                 if excess_:
                     bad.append("%s/%s is a caller that grants more than its callee's ceiling (%s): %s" % (key[0], jn, j.get("uses"), ", ".join(excess_)))
             hit_ = re.search(r"\bDOCKERHUB_(?:USERNAME|TOKEN)\b|\bsecrets\s*\[|secrets:\s*inherit", yaml.safe_dump(j) + wf_lv)
+            if (key[0], jn, j.get("environment")) == ARCHIVE_WRITER:
+                pw_ = False
             if (key[0], jn, j.get("environment")) not in PROBE_HOLDERS:
                 if hit_ or pw_:
                     bad.append("%s/%s holds the registry secret or packages: write: only the release job of release.yml does, whatever script the step runs" % key)
             else:
                 if pw_:
                     bad.append("%s/%s is a read-only probe holder and holds packages: write" % key)
+                if key == PUSH_PROBE and re.search(r"\bDOCKERHUB_TOKEN\b", yaml.safe_dump(j)):
+                    bad.append("%s/%s pushes with the release job's registry token DOCKERHUB_TOKEN: only DOCKERHUB_TEST_PUSH_TOKEN, for the test repositories" % key)
                 for s_ in (j.get("steps") or []):
                     st_ = re.sub(r"\\\n[ \t]*", "", steps_text(s_))
-                    if PUSH_WORDS.search(st_) or (READ_ONLY_LOGIN.search(st_) and not re.search(r"\bDOCKERHUB_SCOUT_TOKEN\b|\bGH_TOKEN\b", st_)):
+                    if key == PUSH_PROBE:
+                        if SIGN_ATTACH_WORDS.search(st_):
+                            bad.append("%s/%s is a probe holder and runs a signature or an attach in the step %r" % (key[0], jn, s_.get("name") or "?"))
+                    elif PUSH_WORDS.search(st_) or (READ_ONLY_LOGIN.search(st_) and not re.search(r"\bDOCKERHUB_SCOUT_TOKEN\b|\bGH_TOKEN\b", st_)):
                         bad.append("%s/%s is a read-only probe holder and runs a login for a push, a push, a signature or an attach in the step %r" % (key[0], jn, s_.get("name") or "?"))
         if len(comp) >= 2 and key not in EXCLUDED_AC2:
             bad.append("%s/%s runs two builds: %r and %r" % (key[0], jn, comp[0], comp[1]))
@@ -349,7 +361,7 @@ check() { local name=$1 want=$2 dir=$3 out rc=0
 # a caller case judges one added job (scan.yml/probe-caller) alone: the real workflows carry other findings, so the verdict is read from the lines that name this job
 check_job() { local name=$1 want=$2 dir=$3 out rc=0 mine
   out=$(judge "$dir" 2>&1) || rc=$?
-  mine=$(grep -F "scan.yml/probe-caller " <<< "$out" || true)
+  mine=$(grep -F "${mjob:-scan.yml/probe-caller }" <<< "$out" || true)
   if { [ "$want" = ok ] && [ -z "$mine" ]; } ||
      { [ "$want" = bad ] && [ -n "$mine" ] && grep -Fq "$want_msg" <<< "$mine"; }
   then echo "ok   $name"
@@ -700,13 +712,42 @@ edit("scan.yml", lambda s: s.rstrip("\n") + "\n\n  leak:\n    runs-on: ubuntu-la
 want_msg="is a read-only probe holder and holds packages: write"
 mutate "main-candidate-rescan.yml panel-scout (a probe holder) is granted packages: write" '
 edit("main-candidate-rescan.yml", lambda s: in_job(s, "panel-scout", r"(    permissions:\n      contents: read\n)", r"\1      packages: write\n", regex=True))'
+# release.yml/live-test pushes to the test repositories: a login and a push pass; a signature, an attach and the release job's token do not
+mcheck=check_job; mjob="release.yml/live-test "; mwant=ok
+mutate "release.yml live-test pushes with crane auth login and crane push (test repositories, the test token)" '
+edit("release.yml", lambda s: in_job(s, "live-test", r"(    steps:\n)", r"\1      - name: mutant\n        run: |\n          crane auth login index.docker.io -u x -p y\n          crane push img.tar docker.io/x/y:z\n", regex=True))'
+mwant=bad; mcheck=check
+want_msg="runs a signature or an attach"
+mutate "release.yml live-test (a probe holder) attaches with cosign attach" '
+edit("release.yml", lambda s: in_job(s, "live-test", r"(    steps:\n)", r"\1      - name: mutant\n        run: cosign attach sbom --sbom s docker.io/x/y@sha256:0\n", regex=True))'
+mutate "release.yml live-test (a probe holder) attests with cosign attest" '
+edit("release.yml", lambda s: in_job(s, "live-test", r"(    steps:\n)", r"\1      - name: mutant\n        run: cosign attest --predicate p docker.io/x/y@sha256:0\n", regex=True))'
+want_msg="registry token DOCKERHUB_TOKEN"
+mutate "release.yml live-test pushes with the release job registry secret DOCKERHUB_TOKEN" '
+edit("release.yml", lambda s: in_job(s, "live-test", r"(          DOCKERHUB_TEST_PUSH_TOKEN: \$\{\{ secrets.DOCKERHUB_TEST_PUSH_TOKEN \}\}\n)", r"\1          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}\n", regex=True))'
+mutate "release.yml live-test swaps the test push token for DOCKERHUB_TOKEN" '
+edit("release.yml", lambda s: in_job(s, "live-test", r"secrets.DOCKERHUB_TEST_PUSH_TOKEN", "secrets.DOCKERHUB_TOKEN", regex=True))'
+want_msg="is a read-only probe holder and holds packages: write"
+mutate "release.yml live-test (a probe holder) is granted packages: write" '
+edit("release.yml", lambda s: in_job(s, "live-test", r"(    permissions:\n      contents: read\n)", r"\1      packages: write\n", regex=True))'
+want_msg="holds the registry secret or packages: write"
+mutate "release.yml live-test has its environment removed" '
+edit("release.yml", lambda s: in_job(s, "live-test", r"    environment: live-test[^\n]*\n", "", regex=True))'
+# go-freshness.yml/refresh (environment agent) is the one further job that holds packages: write; keyed on (workflow, job, environment)
+mutate "go-freshness.yml refresh has its environment switched to release" '
+edit("go-freshness.yml", lambda s: in_job(s, "refresh", r"    environment: agent[^\n]*\n", "    environment: release\n", regex=True))'
+mutate "go-freshness.yml refresh has its environment removed" '
+edit("go-freshness.yml", lambda s: in_job(s, "refresh", r"    environment: agent[^\n]*\n", "", regex=True))'
+mutate "go-freshness.yml check (another job of the file) is granted packages: write" '
+edit("go-freshness.yml", lambda s: in_job(s, "check", r"(    permissions:\n      contents: read\n)", r"\1      packages: write\n", regex=True))'
+mutate "go-freshness.yml refresh reads secrets.DOCKERHUB_TOKEN" '
+edit("go-freshness.yml", lambda s: in_job(s, "refresh", r"(    steps:\n)", r"\1      - name: leak\n        env:\n          K: ${{ secrets.DOCKERHUB_TOKEN }}\n        run: echo x\n", regex=True))'
 want_msg="is a read-only probe holder and runs a login for a push"
-mutate "release.yml live-test (a probe holder) runs crane auth login" '
-edit("release.yml", lambda s: in_job(s, "live-test", r"(    steps:\n)", r"\1      - name: mutant\n        run: crane auth login index.docker.io -u x -p y\n", regex=True))'
 mutate "main-candidate-rescan.yml panel-scout (a probe holder) pushes with crane push" '
 edit("main-candidate-rescan.yml", lambda s: in_job(s, "panel-scout", r"(    steps:\n)", r"\1      - name: mutant\n        run: crane push img.tar docker.io/x/y:z\n", regex=True))'
 mutate "release.yml live-test-release (a probe holder) runs docker login with no read-only token" '
 edit("release.yml", lambda s: in_job(s, "live-test-release", r"(    steps:\n)", r"\1      - name: mutant\n        run: docker login -u x -p y\n", regex=True))'
+want_msg="runs a signature or an attach"
 mutate "release.yml live-test (a probe holder) signs with cosign sign" '
 edit("release.yml", lambda s: in_job(s, "live-test", r"(    steps:\n)", r"\1      - name: mutant\n        run: cosign sign --key k docker.io/x/y@sha256:0\n", regex=True))'
 want_msg=""

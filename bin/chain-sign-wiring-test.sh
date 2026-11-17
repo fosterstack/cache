@@ -181,6 +181,9 @@ def judge_sign(path):
 SIGN_JOBS = ("sign", "sign-rebuild", "sign-check", "sign-release")
 APK_RUN = "bash bin/witnessed-local.sh apk bin/build-stage-apk.sh"
 APK_STEP = "apk under Witness"
+APK_JOB = "build-apk"
+# release and release-evidence run no signing tool: their secrets and GH_TOKEN are governed by REQ-REL-011-AC3 and REQ-CHAIN-001, not judged here (the environment sign is still refused to them)
+NOT_SIGNING_JOBS = ("release", "release-evidence")
 
 def judge_build(path):
     if not os.path.exists(path): return []
@@ -189,6 +192,9 @@ def judge_build(path):
     bad = []
     wf_env = d.get("env") or {}
     for jn, j in (d.get("jobs") or {}).items():
+        if jn in NOT_SIGNING_JOBS:   # exempt from the secret and token judgement only; the environment sign stays Sign's four jobs'
+            if j.get("environment") == "sign": bad.append("002-AC4: job %s is not a Sign job and may not run in the environment sign" % jn)
+            continue
         steps = j.get("steps") or []
         # bin/witnessed-local.sh is Build's signer: it signs each building step's record with a throwaway key
         signs = [s for s in steps
@@ -204,10 +210,10 @@ def judge_build(path):
         named_once = [x.get("name") for x in steps].count(APK_STEP) == 1
         for s in signs:
             nm = s.get("name") or s.get("uses")
-            # the one binding 002-AC4 allows: the run's own read-only token, on job apk's apk step only:
+            # the one binding 002-AC4 allows: the run's own read-only token, on job build-apk's apk step only:
             # the step name occurs once in the job and its run command is the one in stage-build.yml
             env = dict(s.get("env") or {})
-            is_apk_step = jn == "apk" and nm == APK_STEP and named_once
+            is_apk_step = jn == APK_JOB and nm == APK_STEP and named_once
             if is_apk_step and str(s.get("run")).strip() == APK_RUN and env.get("GH_TOKEN") == "${{ github.token }}":
                 del env["GH_TOKEN"]
             blob = yaml.dump({**s, "env": env}, width=10**6)
@@ -1052,11 +1058,11 @@ for j in sign sign-rebuild sign-check sign-release; do
   printf '%s\n' "jobs:" "  $j:" "    runs-on: ubuntu-24.04" "    environment: sign" "    env:" '      K: ${{ secrets.KEY }}' "    steps:" "$SIGNSTEP" > "$work/build-sign-secret-$j.yml"
   expect caught "002-AC4 the $j job takes a secret into its env (the environment sign is no exemption for a secret)" build "$work/build-sign-secret-$j.yml"
 done
-for j in release build-apk persona-uat-rc; do
+for j in release release-evidence build-apk persona-uat-rc; do
   printf '%s\n' "jobs:" "  $j:" "    runs-on: ubuntu-24.04" "    environment: sign" "    steps:" "$SIGNSTEP" > "$work/build-notsign-$j.yml"
   expect caught "002-AC4 the $j job signs in the environment sign (only Sign's four jobs may)" build "$work/build-notsign-$j.yml"
 done
-# 002-AC4: the one binding a signing step may take: GH_TOKEN with the run token, on job apk's apk step
+# 002-AC4: the one binding a signing step may take: GH_TOKEN with the run token, on job build-apk's apk step
 bfix() {  # bfix FILE JOB STEP-NAME ENV-LINE... : one job whose one step runs bin/witnessed-local.sh with that env
   local f=$1 job=$2 step=$3; shift 3
   printf '%s\n' "jobs:" "  $job:" "    runs-on: ubuntu-24.04" "    steps:" "      - name: $step" "        env:" > "$f"
@@ -1064,24 +1070,24 @@ bfix() {  # bfix FILE JOB STEP-NAME ENV-LINE... : one job whose one step runs bi
   printf '%s\n' "        run: bash bin/witnessed-local.sh apk bin/build-stage-apk.sh" >> "$f"
 }
 TOK='GH_TOKEN: ${{ github.token }}'
-bfix "$work/tok-ok.yml" apk "apk under Witness" "$TOK"
-expect ok "002-AC4 the one allowed binding, on the apk step of job apk" build "$work/tok-ok.yml"
-bfix "$work/tok-name.yml" apk "apk under Witness" 'OTHER: ${{ github.token }}'
+bfix "$work/tok-ok.yml" build-apk "apk under Witness" "$TOK"
+expect ok "002-AC4 the one allowed binding, on the apk step of job build-apk" build "$work/tok-ok.yml"
+bfix "$work/tok-name.yml" build-apk "apk under Witness" 'OTHER: ${{ github.token }}'
 expect caught "002-AC4 the job token under another env name" build "$work/tok-name.yml"
-bfix "$work/tok-secret.yml" apk "apk under Witness" 'GH_TOKEN: ${{ secrets.X }}'
+bfix "$work/tok-secret.yml" build-apk "apk under Witness" 'GH_TOKEN: ${{ secrets.X }}'
 expect caught "002-AC4 GH_TOKEN carrying a secret" build "$work/tok-secret.yml"
-bfix "$work/tok-literal.yml" apk "apk under Witness" 'GH_TOKEN: not-the-run-token'
+bfix "$work/tok-literal.yml" build-apk "apk under Witness" 'GH_TOKEN: not-the-run-token'
 expect caught "002-AC4 GH_TOKEN with a literal value" build "$work/tok-literal.yml"
-bfix "$work/tok-gh-secret.yml" apk "apk under Witness" 'GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}'
+bfix "$work/tok-gh-secret.yml" build-apk "apk under Witness" 'GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}'
 expect caught "002-AC4 GH_TOKEN with secrets.GITHUB_TOKEN" build "$work/tok-gh-secret.yml"
-bfix "$work/tok-step.yml" apk "snapshot-apk under Witness" "$TOK"
-expect caught "002-AC4 the binding on another step of job apk" build "$work/tok-step.yml"
-bfix "$work/tok-job.yml" other "apk under Witness" "$TOK"
-expect caught "002-AC4 the binding in a job not named apk" build "$work/tok-job.yml"
-{ printf '%s\n' "jobs:" "  apk:" "    runs-on: ubuntu-24.04" "    env:" "      $TOK" "    steps:"
+bfix "$work/tok-step.yml" build-apk "snapshot-apk under Witness" "$TOK"
+expect caught "002-AC4 the binding on another step of job build-apk" build "$work/tok-step.yml"
+bfix "$work/tok-job.yml" apk "apk under Witness" "$TOK"
+expect caught "002-AC4 the binding in a job not named build-apk (the old name apk is gone)" build "$work/tok-job.yml"
+{ printf '%s\n' "jobs:" "  build-apk:" "    runs-on: ubuntu-24.04" "    env:" "      $TOK" "    steps:"
   printf '%s\n' "      - name: apk under Witness" "        run: bash bin/witnessed-local.sh apk bin/build-stage-apk.sh"
 } > "$work/tok-jobenv.yml"
-expect caught "002-AC4 the binding in the job-level env of apk" build "$work/tok-jobenv.yml"
+expect caught "002-AC4 the binding in the job-level env of build-apk" build "$work/tok-jobenv.yml"
 { printf '%s\n' "env:" "  $TOK"; cat "$work/tok-ok.yml"; } > "$work/tok-wfenv.yml"
 expect caught "002-AC4 the binding in the workflow-level env" build "$work/tok-wfenv.yml"
 bfix "$work/tok-two.yml" apk "apk under Witness" "$TOK" 'K: ${{ secrets.KEY }}'
@@ -1100,6 +1106,20 @@ expect caught "002-AC4 the binding on the apk step name with a cosign sign comma
   printf '%s\n' "      - name: apk under Witness" "        env:" "          $TOK" "        run: $RUN_APK"
 } > "$work/tok-twice.yml"
 expect caught "002-AC4 the binding on two steps both named apk under Witness" build "$work/tok-twice.yml"
+# release and release-evidence are not signing jobs: their secrets and GH_TOKEN are not judged as a signing job's
+for j in release release-evidence; do
+  bfix "$work/notsign-$j.yml" "$j" "publish" 'DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}' "$TOK"
+  expect ok "002-AC4 the $j job is not a signing job: its secret and GH_TOKEN are governed by other rules" build "$work/notsign-$j.yml"
+done
+# the sign jobs hold no secret and no token at all (failing-label mutations)
+printf '%s\n' "jobs:" "  sign-release:" "    runs-on: ubuntu-24.04" "    environment: sign" "    steps:" "      - name: sign" "        env:" "          $TOK" "        run: bash bin/with-aws-token.sh sign --check --signer cosign --digests digests.json" > "$work/mut-signrel-tok.yml"
+expect caught "002-AC4 mutation: GH_TOKEN bound in sign-release" build "$work/mut-signrel-tok.yml"
+printf '%s\n' "jobs:" "  sign:" "    runs-on: ubuntu-24.04" "    environment: sign" "    steps:" "      - name: sign" "        env:" '          K: ${{ secrets.KEY }}' "        run: bash bin/with-aws-token.sh sign --check --signer cosign --digests digests.json" > "$work/mut-sign-secret.yml"
+expect caught "002-AC4 mutation: a secret passed to a sign step" build "$work/mut-sign-secret.yml"
+bfix "$work/mut-apk-value.yml" build-apk "apk under Witness" 'GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}'
+expect caught "002-AC4 mutation: GH_TOKEN bound with a value other than github.token in build-apk's apk step" build "$work/mut-apk-value.yml"
+{ printf '%s\n' "jobs:" "  build-apk:" "    runs-on: ubuntu-24.04" "    steps:" "      - name: apk under Witness" "        run: $RUN_APK" "      - name: snapshot-apk under Witness" "        env:" "          $TOK" "        run: bash bin/witnessed-local.sh snapshot-apk bin/build-stage-snapshot-apk.sh"; } > "$work/mut-apk-moved.yml"
+expect caught "002-AC4 mutation: the GH_TOKEN binding moved to another build-apk step" build "$work/mut-apk-moved.yml"
 # 001-AC1 (advisor decision, Oct 9, replaces the script-reach scan): the tree judge on fixture trees. A stage file may only run what
 # .github/policy/chain-scripts.json lists (path + sha256); a listed script may use only its tools and start only its `runs`.
 gen() { judge gen "$1" > /dev/null; }
@@ -3573,7 +3593,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='ad7b978ed4ff59e6c505cc25b18ca7393265bfc417bf0e3193ae084cbcb88f87'
+FX_PIN='36fc0bd953239d0fdc1f832f85fed424874bbd2a90353478a014c8e74c549b1a'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -5157,6 +5177,15 @@ probe value_gh_secret "must be exactly" "GH_TOKEN read from a stored secret inst
   "repl .github/workflows/release.yml 'GH_TOKEN: \${{ github.token }}' 'GH_TOKEN: \${{ secrets.GH_TOKEN }}'"
 probe value_swapped "must be exactly" "DOCKERHUB_USERNAME given the token's secret" \
   "repl .github/workflows/release.yml 'DOCKERHUB_USERNAME: \${{ secrets.DOCKERHUB_USERNAME }}' 'DOCKERHUB_USERNAME: \${{ secrets.DOCKERHUB_TOKEN }}'"
+# jobenv FILE JOB TEXT: puts TEXT (a job-level env block, \n for newlines) before the steps of job JOB in the copy
+jobenv() { python3 -c 'import re,sys;p,j,t=sys.argv[1:4];s=open(p).read();n=re.sub(r"(\n  "+re.escape(j)+r":\n(?:(?!  \S).*\n)*?)(    steps:)",lambda m:m.group(1)+t.replace("\\n","\n")+m.group(2),s,count=1);assert n!=s,"jobenv: no change";open(p,"w").write(n)' "$@"; }
+# jrepl FILE JOB OLD NEW: replaces the first OLD inside job JOB only (the four sign jobs carry the same lines)
+jrepl() { python3 -c 'import re,sys;p,j,a,b=sys.argv[1:5];a=a.replace("\\n","\n");b=b.replace("\\n","\n");s=open(p).read();m=re.search(r"\n  "+re.escape(j)+r":\n(?:(?!  \S).*\n)*",s);assert m,"jrepl: no job "+j;seg=m.group(0);assert a in seg,"jrepl: not found in "+j+": "+a;open(p,"w").write(s[:m.start()]+seg.replace(a,b,1)+s[m.end():])' "$@"; }
+# jstep FILE JOB TEXT: puts TEXT (a step block, \n for newlines) as the first step of job JOB in the copy
+jstep() { python3 -c 'import re,sys;p,j,t=sys.argv[1:4];s=open(p).read();n=re.sub(r"(\n  "+re.escape(j)+r":\n(?:(?!  \S).*\n)*?    steps:\n)",lambda m:m.group(1)+t.replace("\\n","\n"),s,count=1);assert n!=s,"jstep: no change";open(p,"w").write(n)' "$@"; }
+# wfenv FILE TEXT: puts TEXT (a top-level block) before the top-level permissions: of FILE
+wfenv() { python3 -c 'import re,sys;p,t=sys.argv[1:3];s=open(p).read();n=re.sub(r"^permissions:",lambda m:t.replace("\\n","\n")+"permissions:",s,count=1,flags=re.M);assert n!=s,"wfenv: no change";open(p,"w").write(n)' "$@"; }
+REL=.github/workflows/release.yml
 # sign-release holds no row (REQ-REL-011-AC3 (a), REQ-CHAIN-007-AC2, AC18): the run's token, either registry credential, any other stored secret and packages write are each refused in it
 probe sg_gh_token "GH_TOKEN is allowed only" "the run's token (GH_TOKEN) in a step of sign-release: it holds no secret row" \
   "jstep $REL sign-release '      - name: x\n        env:\n          GH_TOKEN: \${{ github.token }}\n        run: bash bin/install-scanner.sh cosign\n'"
@@ -5180,15 +5209,6 @@ okprobe() {  # okprobe NAME LABEL EDIT(shell, run in the copy): a copy of the re
   out=$(judge tree "$d") || rc=$?
   if [ "$rc" = 0 ]; then pass=$((pass + 1)); echo "ok   real-tree control: $2 passes"
   else failn=$((failn + 1)); echo "FAIL real-tree control refused $2: rc=$rc ${out:0:300}"; fi; }
-# jobenv FILE JOB TEXT: puts TEXT (a job-level env block, \n for newlines) before the steps of job JOB in the copy
-jobenv() { python3 -c 'import re,sys;p,j,t=sys.argv[1:4];s=open(p).read();n=re.sub(r"(\n  "+re.escape(j)+r":\n(?:(?!  \S).*\n)*?)(    steps:)",lambda m:m.group(1)+t.replace("\\n","\n")+m.group(2),s,count=1);assert n!=s,"jobenv: no change";open(p,"w").write(n)' "$@"; }
-# jrepl FILE JOB OLD NEW: replaces the first OLD inside job JOB only (the four sign jobs carry the same lines)
-jrepl() { python3 -c 'import re,sys;p,j,a,b=sys.argv[1:5];a=a.replace("\\n","\n");b=b.replace("\\n","\n");s=open(p).read();m=re.search(r"\n  "+re.escape(j)+r":\n(?:(?!  \S).*\n)*",s);assert m,"jrepl: no job "+j;seg=m.group(0);assert a in seg,"jrepl: not found in "+j+": "+a;open(p,"w").write(s[:m.start()]+seg.replace(a,b,1)+s[m.end():])' "$@"; }
-# jstep FILE JOB TEXT: puts TEXT (a step block, \n for newlines) as the first step of job JOB in the copy
-jstep() { python3 -c 'import re,sys;p,j,t=sys.argv[1:4];s=open(p).read();n=re.sub(r"(\n  "+re.escape(j)+r":\n(?:(?!  \S).*\n)*?    steps:\n)",lambda m:m.group(1)+t.replace("\\n","\n"),s,count=1);assert n!=s,"jstep: no change";open(p,"w").write(n)' "$@"; }
-# wfenv FILE TEXT: puts TEXT (a top-level block) before the top-level permissions: of FILE
-wfenv() { python3 -c 'import re,sys;p,t=sys.argv[1:3];s=open(p).read();n=re.sub(r"^permissions:",lambda m:t.replace("\\n","\n")+"permissions:",s,count=1,flags=re.M);assert n!=s,"wfenv: no change";open(p,"w").write(n)' "$@"; }
-REL=.github/workflows/release.yml
 FED3='      AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n      AWS_REGION: us-east-1\n      RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n'
 ROLE_LINE='      AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n'
 REGION_LINE='      AWS_REGION: us-east-1\n'
@@ -5455,7 +5475,7 @@ wr_mutant "the token is fetched before a caller's option is refused" \
   's#^case "\${1:-}" in sign-record|sign|kms-sign) ;;#sh bin/loopback-get.sh\n&#'
 wr_mutant "a caller-passed --aws is accepted" 's/--aws|--aws=\*|--public-key|--public-key=\*)/--no-such-flag)/'
 
-EXPECT=2294
+EXPECT=2301
 if [ -e "$work/judge-dead" ]; then
   failn=$((failn + 1))
   echo "FAIL the persistent judge died, was silent or leaked state between cases (see the line above)"
