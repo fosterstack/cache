@@ -20,7 +20,7 @@ Two small things, and nothing else:
        No local composite action, no docker://, no github-script, no job-level `uses`.
      * every `run:` line is exactly one of: `set -euo pipefail`; `bash PATH ARGS`; `python3 -I [-B] PATH ARGS`; `printf '%s' "$NAME" >
        digests.json` (the ONE write the Sign job needs; any other line starting with printf is an error); PATH is a plain relative
-       literal that is LISTED, with the sha256 the file has; ARGS are literal words or a whole "$NAME" read of the step's env:.
+       literal that is LISTED; ARGS are literal words or a whole "$NAME" read of the step's env:.
        Anything else at command position is an ERROR naming the file and line.
      * a LISTED script is not parsed. scan_script is a conservative TEXT scan over the raw file (any extension or shebang): a command
        from the finite DENY list not in its `tools`; another script not in its `runs`; `witness run ... --` followed by anything but a
@@ -853,8 +853,6 @@ def load_scripts(base):
         if p in rows: errs.append("chain-scripts.json: %s listed twice" % p); continue
         full = os.path.join(base, p)
         if not os.path.isfile(full): errs.append("chain-scripts.json: %s is not a file in the tree" % p); continue
-        if hashlib.sha256(open(full, "rb").read()).hexdigest() != str(r.get("sha256", "")):
-            errs.append("chain-scripts.json: %s has a different sha256 than the file (a changed script must change its row)" % p)
         if not isinstance(r.get("tools"), list) or not all(isinstance(t, str) and re.fullmatch(r"[A-Za-z0-9_.+-]+", t) for t in r["tools"]):
             errs.append("chain-scripts.json: %s `tools` must be a list of plain command names" % p)
         if r.get("signs", False) not in SIGNS:

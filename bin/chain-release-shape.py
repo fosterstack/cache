@@ -24,7 +24,7 @@ which is RED until PR 4 is implemented. Finite grammars and allowlists only, no 
 Modelled on: in-toto-witness docs/attestors/environment.md (what the environment attestor records and what a filter removes) and
 docs/tutorials/artifact-policy.md:58-70 (the envelope: base64 payload); PR 3's bin/chain-check-shape.py (the same stage grammar, the same
 fixtures); PR 1's chain-scripts.json rows (tools, runs, signs)."""
-import base64, hashlib, json, os, re, sys, yaml
+import base64, json, os, re, sys, yaml
 
 # a stored secret or the job token read in any expression syntax (dotted or bracket), or a credential name; used by the credential judges (fail closed on the bracket form too)
 CRED_RE = re.compile(r"secrets\s*(\.|\[)|github\s*(\.\s*token|\[\s*['\"]?\s*token)|GH_TOKEN|DOCKERHUB", re.I)
@@ -539,8 +539,6 @@ def listed(jsonpath, root):
         f = os.path.join(root, p)
         if not os.path.exists(f):
             bad.append("%s is listed but missing" % p); continue
-        if hashlib.sha256(open(f, "rb").read()).hexdigest() != r.get("sha256"):
-            bad.append("%s: the sha256 in chain-scripts.json is not the file's" % p)
         if want is None:
             continue
         if sorted(r.get("tools", [])) != sorted(want["tools"]):

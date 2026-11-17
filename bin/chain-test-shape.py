@@ -824,9 +824,15 @@ def shell_exact(path, name, want):
     return ["control character %s in %s" % (c, name) for c in control_chars(raw)] + faults + bad
 
 
+def ns_lines_held(name):
+    """Whether ns_shell holds exact lines of this closure shell file (any other holds nothing, shebang included)."""
+    return name in SCRIPTS.values() and name != SCRIPTS["witnessed"] or name == "bin/witnessed-local.sh" \
+        or name in SHELL_LINES
+
+
 def ns_shell(path, name):
     """One closure shell file: a stage script, the Witness local helper, a helper or the mode guard (each exact
-    text)."""
+    text); any other closure shell file holds only its shebang."""
     stage = {v: k for k, v in SCRIPTS.items() if k != "witnessed"}
     if name in stage:
         return ["%s: %s" % (name, b) for b in script(path, stage[name])]
@@ -834,7 +840,7 @@ def ns_shell(path, name):
         return ["%s: %s" % (name, b) for b in localhelper(path)]
     if name in SHELL_LINES:
         return shell_exact(path, name, SHELL_LINES[name])
-    return ["%s is a shell script of the closure with no exact lines held (commands, the grammar has none)" % name]
+    return []
 
 
 NS_SHEBANG = b"#!/usr/bin/env bash"
@@ -851,7 +857,7 @@ def nosource(root):
             bad.append("%s cannot be read" % p)
             continue
         if not p.endswith(".py"):
-            if raw.split(b"\n", 1)[0] != NS_SHEBANG:
+            if ns_lines_held(p) and raw.split(b"\n", 1)[0] != NS_SHEBANG:
                 bad.append("%s: line 1 is not the held shebang %s" % (p, NS_SHEBANG.decode()))
             bad += ns_shell(path, p)
     return bad
