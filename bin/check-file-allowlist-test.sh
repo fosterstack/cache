@@ -124,7 +124,7 @@ ALLOWED_MENTIONS = {
 # 151: + the six bin/persona-uat* patterns (REQ-UAT-001); 145: + ^bin/vendor-provenance-test\.sh$ (REQ-VEND-001); 144:
 # + ^vendor/ subtree (REQ-VEND-001); 143: main's 139 (+ ^bin/scan-no-workflow-call-test\.sh$, REQ-SCAN-015) +
 # build-apk-helper.py, build/sealed-env.json (v0.3.0 region), bin/suite-guard*.sh, test-evidence/suite-floors.json
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 156, 6
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 157, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -176,7 +176,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # patterns (PR 2b-2c); + the scout-older-versions pattern (advisor 0520); + the six bin/persona-uat* patterns
 # (REQ-UAT-001); ruling D: the ^vendor/ pattern admits a dot-leading final file name; + the REQ-SCAN-015 scanner
 # guard, the REQ-TEST-001 suite guard patterns outside the v0.3.0 region, the REQ-VEND-001 ^vendor/ subtree pattern
-PINNED_SHA256 = "34f98f7b15950252b3e634a6bb4b27c12b97da5c13b1e2382c33d575dc8d3d99"
+PINNED_SHA256 = "41da834fdc02018ad175851590b261f2b2d33e8bc4ec43eb11865742dafb3700"
 if rstart and rend:
     import hashlib
     _b = _rawlines
