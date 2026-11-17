@@ -4,7 +4,7 @@ Written from the English rule only, not from the checker's source.
 """
 import unittest
 
-from test_pin_writes_redirect import FINDING, JobOrder, step
+import test_pin_writes_redirect as base
 
 
 class VariableSetByOtherForms(unittest.TestCase):
@@ -31,9 +31,9 @@ class VariableSetByOtherForms(unittest.TestCase):
     }
 
     def hits(self, run):
-        hits, out = JobOrder("test_r4_case_d_own_step_text_before_run_is_finding").check(
-            [step(run)], self.FILES)
-        return [l for l in out.splitlines() if FINDING in l and "build.sh" in l], out
+        hits, out = base.JobOrder("test_r4_case_d_own_step_text_before_run_is_finding").check(
+            [base.step(run)], self.FILES)
+        return [l for l in out.splitlines() if base.FINDING in l and "build.sh" in l], out
 
     def test_setter_then_write_then_run_by_name_is_reported(self):
         for name, setter in self.SETTERS.items():
@@ -55,6 +55,77 @@ class VariableSetByOtherForms(unittest.TestCase):
     def test_plain_reads_not_reported(self):
         hits, out = self.hits('out=$RUNNER_TEMP/out\necho "$out"\necho ${out}\ncat "${out}" "$out"\n'
                               'cp payload "$out"\ncp payload "${out}"\nbash scripts/build.sh')
+        self.assertFalse(hits, out)
+
+    # a setter inside a comment or single quotes sets nothing (rows A, B, F1, F7)
+    def test_default_in_comment_or_single_quotes_is_not_a_known_value(self):
+        for name, setter in {"comment": "# ${out:=w}", "single quotes": "echo '${out:=w}'",
+                             "trailing comment": "true # ${out:=w}"}.items():
+            with self.subTest(setter=name):
+                hits, out = self.hits('%s\ncp payload "$out"\nbash scripts/build.sh' % setter)
+                self.assertTrue(hits, out)
+
+    def test_default_on_an_already_set_variable_makes_it_unknown(self):
+        hits, out = self.hits('out=$RUNNER_TEMP/out\n: "${out:=$RUNNER_TEMP/other}"\ncp payload "$out"\nbash scripts/build.sh')
+        self.assertTrue(hits, out)
+
+    def test_quote_in_a_default_word_does_not_hide_later_commands(self):
+        for line in ['out=$RUNNER_TEMP/out\n: "${x:="}"}"', ': "${x:="}"}"']:
+            with self.subTest(line=line):
+                hits, out = self.hits(line + "\ncp payload scripts/build.sh\nbash scripts/build.sh")
+                self.assertTrue(hits, out)
+
+    def test_default_with_an_option_word_does_not_make_an_options_variable(self):
+        bad = []
+        base.M.check_runs("j", [("w", 'IMG=alpine\n: "${IMG:=--rm}"\ndocker run "$IMG"', None)], bad)
+        self.assertTrue(bad)
+        self.assertFalse([b for b in bad if "no image operand" in b], bad)
+
+    # a setter anywhere bash expands it (row A, B, F2)
+    def test_default_in_an_unquoted_heredoc_or_command_substitution_makes_it_unknown(self):
+        forms = {
+            "heredoc": "cat <<EOF\n${out:=scripts/build.sh}\nEOF",
+            "heredoc assign": "cat <<EOF\n${out=scripts/build.sh}\nEOF",
+            "multi-line substitution": 'x=$(\necho ${out:=scripts/build.sh}\n)',
+            "multi-line substitution assign": 'x=$(\necho ${out=scripts/build.sh}\n)',
+        }
+        for name, setter in forms.items():
+            with self.subTest(setter=name):
+                hits, out = self.hits('out=$RUNNER_TEMP/out\n%s\ncp payload "$out"\nbash scripts/build.sh' % setter)
+                self.assertTrue(hits, out)
+
+    # option values attached to the option letters (F3)
+    def test_attached_option_values_set_the_variable(self):
+        forms = {
+            "printf -vout": "printf -vout %s scripts/build.sh",
+            "read -raout": "read -raout <<< x",
+            "mapfile -tout": "mapfile -tout <<< x",
+            "readarray -tout": "readarray -tout <<< x",
+        }
+        for name, setter in forms.items():
+            with self.subTest(setter=name):
+                hits, out = self.hits('out=$RUNNER_TEMP/out\n%s\ncp payload "$out"\nbash scripts/build.sh' % setter)
+                self.assertTrue(hits, out)
+
+    # a trap action runs in the current shell (F4)
+    def test_trap_action_sets_the_variable(self):
+        for sig in ("DEBUG", "EXIT"):
+            with self.subTest(signal=sig):
+                hits, out = self.hits("out=$RUNNER_TEMP/out\ntrap 'out=scripts/build.sh' %s\n"
+                                      'cp payload "$out"\nbash scripts/build.sh' % sig)
+                self.assertTrue(hits, out)
+
+    # a nameref sets the variable it names (F5)
+    def test_nameref_assignment_sets_the_named_variable(self):
+        for decl in ("declare -n r=out", "local -n r=out", "typeset -n r=out"):
+            with self.subTest(decl=decl):
+                hits, out = self.hits('out=$RUNNER_TEMP/out\n%s\nr=scripts/build.sh\n'
+                                      'cp payload "$out"\nbash scripts/build.sh' % decl)
+                self.assertTrue(hits, out)
+
+    def test_nameref_to_another_variable_leaves_out_known(self):
+        hits, out = self.hits('out=$RUNNER_TEMP/out\ndeclare -n r=other\nr=scripts/build.sh\n'
+                              'cp payload "$out"\nbash scripts/build.sh')
         self.assertFalse(hits, out)
 
 

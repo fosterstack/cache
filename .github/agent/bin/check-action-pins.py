@@ -672,20 +672,18 @@ ALIASING = re.compile(r"(?<![\w.-])(alias|expand_aliases)(?![\w.-])")
 PARAM_WORD = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*])(:?)([-=+?])([^{}]*)\}")
 
 
+DEFAULT_ASSIGNED = set()   # names a ${x:=word} or ${x=word} of the job's text may set; cleared at the start of check_runs
+
+
 def _expand_defaults(text):
-    """${x:-word} as word; ${x:=word} too, with the assignment kept as a line `: x=word` before its line, so the
-    variable's values stay readable."""
-    out = []
-    for line in text.split("\n"):
-        while True:   # each pass removes at least one ${...}: it ends
-            sets = [": %s=%s" % (m.group(1), m.group(4)) for m in PARAM_WORD.finditer(line) if m.group(3) == "="]
-            new = PARAM_WORD.sub(lambda m: m.group(4), line)
-            if new == line:
-                break
-            out += sets
-            line = new
-        out.append(line)
-    return "\n".join(out)
+    """${x:-word} as word, ${x:=word} too. The names a `:=` or `=` form may set are kept in DEFAULT_ASSIGNED, read before
+    the word replaces the form: the variable's value is then unknown (_set_by_setter)."""
+    while True:   # each pass removes at least one ${...}: it ends
+        DEFAULT_ASSIGNED.update(m.group(1) for m in PARAM_WORD.finditer(text) if m.group(3) == "=")
+        new = PARAM_WORD.sub(lambda m: m.group(4), text)
+        if new == text:
+            return new
+        text = new
 
 
 def _mark_defaults(text):
@@ -2044,7 +2042,10 @@ SETTER_WORDS = re.compile("read|mapfile|readarray|getopts|declare|typeset|local|
 
 def _set_by_setter(name, script):
     """True when a form other than name= names the variable as a literal word and may set it: a command that takes a
-    variable name (read, for, eval …), printf -v, name+=, name[0]=, (( name = … )). ${name:=x} is read as `: name=x`."""
+    variable name (read, for, eval, trap …), -<letters>name attached to read or printf, a nameref to it, printf -v, name+=,
+    name[0]=, (( name = … )), ${name:=x} (DEFAULT_ASSIGNED)."""
+    if name in DEFAULT_ASSIGNED:
+        return True
     word = r"(?<![\w/.$-])(?<!\$\{)" + name + r"(?![A-Za-z0-9_])"
     step = r"(?:\+\+|--)"
     arithmetic = (r"\(\([^\n]*(?:" + word + r"\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)|" + word + step + "|" + step + word + ")")
@@ -2057,7 +2058,14 @@ def _set_by_setter(name, script):
         names_it = any(re.fullmatch(name + r"(?:\[[^]]*\])?\+?(?:=.*)?", t, re.S) for t in toks)
         if names_it and (any(SETTER_WORDS.fullmatch(t) for t in toks) or ("printf" in toks and "-v" in toks)):
             return True
-        if "eval" in toks and any(re.search(word, t) for t in toks):
+        attached = any(re.fullmatch(r"-[A-Za-z]+" + name + r"(?:\[[^]]*\])?", t) for t in toks)
+        if attached and any(t in ("read", "mapfile", "readarray", "printf") for t in toks):
+            return True
+        nameref = any(re.fullmatch(r"[^=]+=" + name + r"(?:\[.*\])?", t, re.S) for t in toks)
+        with_n = any(re.fullmatch(r"-[A-Za-z]*n[A-Za-z]*", t) for t in toks)
+        if nameref and with_n and any(t in ("declare", "typeset", "local") for t in toks):
+            return True
+        if ("eval" in toks or "trap" in toks) and any(re.search(word, t) for t in toks):
             return True
     return False
 
@@ -2813,6 +2821,7 @@ def check_runs(where_job, scripts, bad, tree=None):
     check reads POSIX shell only (Sonnet B8)."""
     def read(raw):
         return _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", raw))))
+    DEFAULT_ASSIGNED.clear()
     posix = [not item[2] or re.match(r"^(bash|sh)(\s|$)", item[2]) for item in scripts]
     # steps of one job share a workspace: a file changed in ANY step of the job counts (Sonnet #164 r6, NEW-7); the
     # committed scripts they run are part of it (Codex #164 r2, C11)
