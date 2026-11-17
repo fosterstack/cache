@@ -1,4 +1,4 @@
-"""Run one suite of .github/policy/ci-suites.json: the file named SUITE under bin/ or .github/agent/tests/, by bash, in the repository root."""
+"""Run one tracked suite: the file named SUITE under bin/ or .github/agent/tests/, by bash, in the repository root."""
 import subprocess
 import sys
 

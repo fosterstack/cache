@@ -61,8 +61,9 @@ ALLOW_PATTERNS=(
   # The suite guard (REQ-TEST-001): the guard and its test.
   '^bin/suite-guard(-test)?\.sh$'
 
-  # The runner of one suite of .github/policy/ci-suites.json (ci.yml, job suites) and its test.
+  # The runner of one suite of the suites matrix (ci.yml, job suites) and its test.
   '^bin/run-ci-suite(\.py|-test\.sh)$'
+  '^bin/(chain-signing-trust|ci-suites-matrix|persona-uat-file|release-workflow-wiring)-test\.sh$'
   '^test-evidence/dependabot-reviewer/[A-Za-z0-9._-]+\.json$'
   '^docs/quality/[A-Za-z0-9._-]+\.md$'
   '^docs/quality/releases/[A-Za-z0-9._-]+\.md$'

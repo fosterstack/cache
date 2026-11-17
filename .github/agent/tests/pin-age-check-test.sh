@@ -1003,7 +1003,7 @@ CASE="AC16: a row for another file rules nothing: both lines fail (exit 1)"
 check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/rt.out")" -eq 2
 rtrows "$work/rt" "$work/rt-orig.json" all
 newcase rtedit "$(pyw bin/ruled.sh "${rtext/later/soon}")"
-rc=0; python3 "$chk" --root "$work/rtedit" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/rt-orig.json" >"$work/rt.out" 2>&1 || rc=$?
+rc=0; python3 "$chk" --root "$work/rtedit" --base HEAD~1 --head HEAD --exceptions "$work/rt-orig.json" >"$work/rt.out" 2>&1 || rc=$?
 CASE="AC16: editing the reviewed file keeps its row (no hash of the file is held): every unmeasured line is still ruled text (exit 0)"
 check test "$rc" -eq 0; check test "$(grep -c 'FAIL unmeasured' "$work/rt.out")" -eq 0; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 2
 for m in emptyruling noruling extra extrakey extracount dup dupsame notdict nofile emptyfile notlist dupjsonkey duprowkey nantop infnested neginfrow; do rtck rt $m
@@ -2374,7 +2374,7 @@ newcase pkedit "$(pyk bin/judge-test.sh "#!/usr/bin/env bash
 ${pk_line/requests/requests2}
 ")"
 pkrows "$work/pk-orig.json" ok bin/judge-test.sh "$pk_line" "$work/pk"
-rc=0; python3 "$chk" --root "$work/pkedit" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/pk-orig.json" >"$work/pk.out" 2>&1 || rc=$?
+rc=0; python3 "$chk" --root "$work/pkedit" --base HEAD~1 --head HEAD --exceptions "$work/pk-orig.json" >"$work/pk.out" 2>&1 || rc=$?
 CASE="AC20: editing the reviewed file keeps its row (no hash of the file is held): exit 0"
 check test "$rc" -eq 0; check bash -c "! grep -q 'not a pin' '$work/pk.out'"
 newcase pktwo "$(pyk bin/judge-test.sh "#!/usr/bin/env bash
