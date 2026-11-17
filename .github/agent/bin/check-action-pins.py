@@ -2000,13 +2000,24 @@ def _touches(script, name, consumer):
 OUTSIDE = ("$RUNNER_TEMP", "${RUNNER_TEMP}", "/", "$(mktemp")   # outside the checkout: never the file's directory
 
 
+# a builtin that takes a variable name, given a name word that holds $ or a backtick: the name is made at run time
+RUNTIME_NAME = re.compile(
+    r"(?<![\w-])(?:(?:read|mapfile|readarray|getopts|declare|typeset|local|export|readonly|let|select)"
+    r"|printf\s+-v)(?:\s+[^\s=;|&<>$`]+)*\s+[^\s=;|&<>$`]*[$`]|\(\([^\n]*[$`]")
+
+
 def _only_read(name, script):
-    """True when the job script mentions `name` only as a plain $name or ${name} read and runs no eval. Any other
-    mention (read, for, printf -v, ${name:=x}, (( )), let, name[0]=, …) may set it, so none is listed form by form."""
+    """True when the job script, as bash forms its words (quotes and backslashes removed), mentions `name` only as a
+    plain $name or ${name} read, runs no eval, and builds no variable name at run time ($'…', "${n}OUTPUT": a name the
+    check cannot read). Any other mention (read, for, printf -v, ${name:=x}, (( )), let, name[0]=, …) may set it."""
+    if "$'" in script:
+        return False
+    script = re.sub(r"\\(.)|[\"']", lambda m: m.group(1) or "", script)
     word = r"(?<![A-Za-z0-9_])" + name + r"(?![A-Za-z0-9_])"
     reads = r"\$" + name + r"(?![A-Za-z0-9_])|\$\{" + name + r"\}"
     return (len(re.findall(word, script)) == len(re.findall(reads, script))
-            and not re.search(r"(?<![\w-])eval(?![\w-])", script))
+            and not re.search(r"(?<![\w-])eval(?![\w-])", script)
+            and not RUNTIME_NAME.search(script))
 
 
 def _outside(target, script, depth=0):

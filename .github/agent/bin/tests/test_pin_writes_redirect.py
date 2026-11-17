@@ -276,6 +276,47 @@ class RunnerFileSetByOtherForms(unittest.TestCase):
         hits, out = self.hits('echo y >> "${GITHUB_OUTPUT}"\nbash scripts/build.sh')
         self.assertFalse(hits, out)
 
+    # The name is judged as bash forms it: after quote and backslash removal, failing closed on names built at run time
+    def reported_cp(self, setter):
+        hits, out = self.hits(setter + '\ncp payload "$GITHUB_OUTPUT"\nbash scripts/build.sh')
+        self.assertTrue(hits, out)
+
+    def test_cp_runner_file_set_by_read_with_quote_split_name_is_reported(self):
+        self.reported_cp('read -r GITHUB_""OUTPUT <<< scripts/build.sh')
+
+    def test_cp_runner_file_set_by_printf_v_with_quote_split_name_is_reported(self):
+        self.reported_cp('printf -v GITHUB_""OUTPUT %s scripts/build.sh')
+
+    def test_cp_runner_file_set_by_quote_split_eval_word_is_reported(self):
+        self.reported_cp('e""val \'GITHUB_\'"OUTPUT=scripts/build.sh"')
+
+    def test_cp_runner_file_set_by_backslash_split_name_is_reported(self):
+        self.reported_cp('GITHUB_OUT\\PUT=scripts/build.sh')
+
+    def test_cp_runner_file_set_by_read_with_ansi_c_name_is_reported(self):
+        self.reported_cp("read -r $'GITHUB_OUTPUT' <<< scripts/build.sh")
+
+    def test_cp_runner_file_set_by_read_with_name_built_at_run_time_is_reported(self):
+        self.reported_cp('n=GITHUB_; read -r "${n}OUTPUT" <<< scripts/build.sh')
+
+    def test_fills_dir_runner_file_set_by_read_with_quote_split_name_is_not_exempt(self):
+        self.assertTrue(M._writes('read -r GITHUB_""OUTPUT <<< scripts\ntar -xf a.tar -C "$GITHUB_OUTPUT"\n', "scripts/build.sh"))
+
+    def test_fills_dir_runner_file_set_by_read_with_name_built_at_run_time_is_not_exempt(self):
+        self.assertTrue(M._writes('n=GITHUB_; read -r "${n}OUTPUT" <<< scripts\ntar -xf a.tar -C "$GITHUB_OUTPUT"\n', "scripts/build.sh"))
+
+    def test_cp_onto_plain_dollar_read_not_reported(self):
+        hits, out = self.hits('echo x >> "$GITHUB_OUTPUT"\ncp payload "$GITHUB_OUTPUT"\nbash scripts/build.sh')
+        self.assertFalse(hits, out)
+
+    def test_cp_onto_braced_read_not_reported(self):
+        hits, out = self.hits('echo x >> "${GITHUB_OUTPUT}"\ncp payload "${GITHUB_OUTPUT}"\nbash scripts/build.sh')
+        self.assertFalse(hits, out)
+
+    def test_cp_with_unrelated_literal_read_keeps_exemption(self):
+        hits, out = self.hits('read -r line <<< hello\ncp payload "$GITHUB_OUTPUT"\nbash scripts/build.sh')
+        self.assertFalse(hits, out)
+
 
 if __name__ == "__main__":
     unittest.main()
