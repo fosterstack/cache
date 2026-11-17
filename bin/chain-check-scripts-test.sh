@@ -1077,7 +1077,7 @@ EOF
 chmod +x "$fake/cosign" "$fake/gh"
 printf 'abc  cache_linux_amd64.tar.gz\n' > "$fx/checksums.txt";
 printf '{}\n' > "$fx/checksums.txt.bundle";
-printf 'key\n' > "$fx/release.rsa.pub"
+printf 'key\n' > "$fx/release.rsa.pub"; mkdir -p "$fx/build/keys"; cp "$fx/release.rsa.pub" "$fx/build/keys/release.rsa.pub"
 REPO=registry.example/fosterstack/cache
 grun() { # grun SCRIPT ARGS...  like run, with the candidate's environment of a release run
   : > "$work/log"; rc=0
@@ -1131,7 +1131,7 @@ ${FENCE}"
 rm -f "$fx/out/guide-results.json"
 gwant_ok "AC7 commands on local files and local placeholders run: cosign verify-blob on the checksums file, jq (a text block is prose)"
 if [ -f "$fx/out/guide-results.json" ] && jq -e '(.commands | length) == 2 and all(.commands[]; .outcome == "pass")' "$fx/out/guide-results.json" > /dev/null 2>&1; then ok "AC7 the results file lists each of the two commands with its outcome"; else bad "AC7 guide-results.json shape"; fi
-if grep -Fq "cosign verify-blob --key release.rsa.pub --type slsa-v0.3.0" "$work/log" && ! grep -q '<[A-Z_]*>' "$work/log";
+if grep -Fq "cosign verify-blob --key build/keys/release.rsa.pub --type slsa-v0.3.0" "$work/log" && ! grep -q '<[A-Z_]*>' "$work/log";
 then ok "AC7 <TAG> is substituted in a runnable verify command (no placeholder left)";
 else bad "AC7 substitution: $(tr '\n' ' ' < "$work/log" | cut -c1-200)";
 fi
@@ -1264,10 +1264,10 @@ g "$(blk "$GHV")"; gwant_fail "AC7 F2 an unlisted gh attestation verify is refus
 g "$(blk "cosign verify-blob --key release.rsa.pub --type fail-me --bundle checksums.txt.bundle checksums.txt")"
 gwant_fail "AC7 a runnable command that exits non-zero fails the script naming it" "fail-me"
 g "$(blk "cosign verify-blob --key release.rsa.pub --bundle checksums.txt.bundle cache_0.3.0_linux_amd64.tar.gz")"
-# a file-subject command whose file Check lacks is run by Release's postverify, so it is no failure and needs no list entry
-gwant_ok "AC7 a verify-blob on a file that is not local to Check is planned as run by postverify before publishing (exit 0, unlisted)"
-gplan_row "AC7 that plan row has run null and says it is run by postverify before publishing"
-g "$(blk "jq -e '.a' not-here.json")"; gwant_ok "AC7 a jq over a file that is not local to Check is planned for postverify too (exit 0)"
+# a command whose file operand is not local to Check, and that no rule places in a later stage, is a fault: it exits 1 naming the operand
+gwant_fail "AC7 a verify-blob on a file that is not local to Check fails, naming the operand (unlisted)" "cache_0.3.0_linux_amd64.tar.gz"
+gwant_fail "AC7 that failure says no later stage is named for the missing operand" "no later stage is named for it"
+g "$(blk "jq -e '.a' not-here.json")"; gwant_fail "AC7 a jq over a file that is not local to Check fails, naming the operand" "not-here.json"
 # an image-reference subject still needs the list; a non-local operand of another kind still fails closed
 g "$(blk "cosign verify <IMAGE_REF> --key release.rsa.pub")"
 gwant_fail "AC7 an image-reference command not on the list still fails (postverify class is for file subjects only)" "unlisted command needs a registry"
@@ -1329,7 +1329,7 @@ for f in "--bundle X" "--bundle=X" "--certificate X" "--certificate=X" "--cert X
   # only --bundle is in the closed flag set (and --key must be release.rsa.pub): every other file-valued flag is refused by the judge
   case "$f" in --bundle*) ;;
     *) grefuse "AC7 a file-valued flag outside the closed set (or a key that is not release.rsa.pub) is refused: ${f%% *}" "${f%%[ =]*}"; continue;; esac
-  gwant_ok "AC7 a file-valued flag whose file is not local to Check is run by postverify, no failure (unlisted): ${f%% *}"
+  gwant_fail "AC7 a file-valued flag whose file is not local to Check fails, naming the operand (unlisted): ${f%% *}" "provenance.intoto.jsonl.bundle"
   # a listed command's key flag is release.rsa.pub, so the key value cannot be this file
   case "$f" in --key*) continue;; esac
   # only --bundle is in a listed command's closed flag set; the other file-valued flags are refused there (G2), so no
@@ -1349,7 +1349,7 @@ gwant_fail "AC7 a flag-value command listed with text that does not match exactl
 g "$(blk "$c")"; printf '[{"command": "%s", "reason": " "}]\n' "$c" > "$fx/guide.cannot-run.json"
 gwant_fail "AC7 a flag-value command listed without a reason is refused" "cannot-run entry"
 c="$BA --key release.rsa.pub --bundle provenance.intoto.jsonl.bundle"
-g "$(blk "$c")"; gwant_ok "AC7 a flag-value command neither runnable nor listed is run by postverify, not refused"
+g "$(blk "$c")"; gwant_fail "AC7 a flag-value command neither runnable nor listed fails, naming its missing operand" "provenance.intoto.jsonl.bundle"
 g "$(blk "jq -e \"\$TAG\" checksums.txt.bundle")"; grefuse "AC7 \$ inside double quotes (\"\$TAG\") is refused" '"$TAG"'
 g "$(blk "jq -e \"\${TAG}\" checksums.txt.bundle")"; grefuse "AC7 \${...} inside double quotes is refused" '"${TAG}"'
 g "$(blk "jq -e \"\$(id)\" checksums.txt.bundle")"; grefuse "AC7 a command substitution inside double quotes is refused" '"$(id)"'
