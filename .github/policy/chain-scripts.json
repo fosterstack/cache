@@ -64,7 +64,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "2de75e08e4a6ad24c6b0a10a05d242b9379009c655c6af1daf4c94e9663d4c2e",
+      "sha256": "c7396185fd47a7dd69872c2ad77c746b70217af30c73c719709d60d2be41340d",
       "tools": [
         "make",
         "at",
@@ -80,19 +80,22 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "4dce850bb3080b874670ccfd31a316bcfd5e1838d38843caf61c4d063996b46b",
+      "sha256": "5b32cddaeae7827f6c06126db0d6023a87b30d72f44033bf2e78c5d103041ca7",
       "tools": [
         "at",
         "aws",
         "curl",
         "git",
         "go",
+        "python3",
         "source",
         "tar",
         "trap",
         "unzip"
       ],
-      "runs": [],
+      "runs": [
+        "bin/build-admit.py"
+      ],
       "signs": "other",
       "reason": "installs one pinned tool by checksum (curl downloads it, trap cleans the temp dir); it signs nothing; the listed words appear in its comments",
       "exceptions": [
@@ -524,7 +527,7 @@
       ],
       "signs": "other",
       "reason": "verifies (never makes) the owner's SSH signature of a release tag and calls gh for GET-only reads",
-      "sha256": "30cbf81b2640ca8f14d70e9b33d1954fc0db0709f23c6fd1de60a2534ab3a3e2",
+      "sha256": "6d7939f48bc234f6e9012b8aa93536b2b0a510c4bd9bba30bd2cbd5f8e0af44b",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -714,7 +717,7 @@
       ],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "4d02cfe8da7c98eba2d9cc78f36bcafe6ccdad87639e9a1d04b701e23588d20e"
+      "sha256": "201e1e3579beff1f89e52d79583ee37a305567ca55a63f16e4ec418a9d234e2d"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
@@ -795,7 +798,7 @@
       "runs": [],
       "signs": "other",
       "reason": "the tag-signature route and the owner baselines (policy read from origin/main by bin/build-admit.py); names git verify-tag, verifies and signs nothing",
-      "sha256": "4f9ea6b8214cc0f8ac3d4b8202edc90b24fbb4e949bf86802afef89fa769c9e7"
+      "sha256": "4519680d8018298a046836ff14731495f4863fd30938d092211b3465292cf037"
     },
     {
       "path": "bin/build-stage-refuse-mode.sh",
@@ -1655,19 +1658,13 @@
         "python3"
       ],
       "runs": [
+        "bin/build-admit.py",
         "bin/chain-verify.py"
       ],
       "signs": false,
       "reason": "Release, step release-verify: the tag, the release policy, then Build's, Sign's, Rebuild's and Check's records in rule 69's order (REQ-CHAIN-007-AC4); no secret or token is bound to this step",
-      "sha256": "e638d4892f4f6cdf5ba3c93a769d72e65a1c0d286deaaf58a7f058c41f079a45",
+      "sha256": "1e93751334a6bd3f3554adabb2e4e4e6e28e24bc09beb1f3cff1e9cbd27a410c",
       "exceptions": [
-        {
-          "rule": "deny",
-          "line": "[[ \"${GITHUB_REF_NAME:-}\" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+(-rc[0-9]+)?$ ]] || { echo \"refused at tag: ${GITHUB_REF_NAME:-} is not vX.Y.Z or vX.Y.Z-rcN\" >&2; exit 1; }",
-          "line_sha256": "8f8d116d24c40ce326b31d13a270a361609939c249925e03a44b3051b3c4cb99",
-          "count": 1,
-          "why": "the refusal message must read `refused at tag` (rule 71: the failure names its stage); `at` is a word of that message, not a command"
-        },
         {
           "rule": "deny",
           "line": "python3 bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag \"$GITHUB_REF_NAME\" --out policy.json",
@@ -1686,11 +1683,12 @@
       ],
       "runs": [
         "bin/apk-tool.py",
+        "bin/build-admit.py",
         "bin/release-sign-apks.sh"
       ],
       "signs": "other",
       "reason": "Release, step release-apks: checks the four apks against the digests Build attested, then calls cache's bin/release-sign-apks.sh (chain-verify.py kms-sign signs each apk's control section with the release KMS key named by RELEASE_KMS_KEY_REF, through the aws CLI, and posts one Rekor entry; comparing them with Rebuild's is bin/release-compare.sh's job, which holds no key) and copies each signed apk with its Rekor bundle (REQ-CHAIN-007-AC6); no key file exists and no stored secret is read",
-      "sha256": "29fc6f44658e2243d51b9118d6cf50c3839e892ccc4ff6d6564b04fde38e8b15",
+      "sha256": "1d1f0ac829c6977a540f50f7a4a07e821022a5ca853dc24d66d8a2328c51f339",
       "reads_env": [
         "RELEASE_KMS_KEY_REF"
       ],
@@ -1699,13 +1697,6 @@
           "rule": "deny",
           "line": "if [ -z \"${RELEASE_KMS_KEY_REF:-}\" ]; then echo \"release-apks: RELEASE_KMS_KEY_REF is unset\" >&2; exit 2; fi",
           "line_sha256": "55301f2b6fd02ac18652a24c1c62f82e6723be5b539ec9e8be9598bd68fade4d",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[[ \"${GITHUB_REF_NAME:-}\" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]] || { echo \"release-apks: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never signs)\" >&2; exit 1; }",
-          "line_sha256": "53332d23d89044b0a2accd7fe78feab1abb4e543ce0e895965189632ddd4f030",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
@@ -1741,11 +1732,12 @@
         "trap"
       ],
       "runs": [
+        "bin/build-admit.py",
         "bin/release-layout.py"
       ],
       "signs": false,
       "reason": "Release, step release-publish: pushes the exact image bytes by digest to ghcr.io and Docker Hub and reads each registry back (REQ-CHAIN-007-AC7, REQ-REL-009-AC11); it signs nothing",
-      "sha256": "8f568f99ac6e0a2abe16191bfac624ee88a9aee1835351f2831c0d16771308b8",
+      "sha256": "a245fc7d1478ed9217f5ff6c22764cab52d0131947b3677edd006abf9a5ff6ce",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -1756,13 +1748,6 @@
           "rule": "deny",
           "line": "  if [ -z \"${!name:-}\" ]; then echo \"release-publish: $name is unset\" >&2; exit 2; fi",
           "line_sha256": "b33467e870161493005cadacb59e992f3b4a6183524ad1f20c4dc26daa2d1edb",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[[ \"${GITHUB_REF_NAME:-}\" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]] || { echo \"release-publish: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never reaches this step)\" >&2; exit 1; }",
-          "line_sha256": "6ddd77257e073559d10a1e5a84f7e1623200005d31ef9a290d27bac758853c1c",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
@@ -1793,6 +1778,7 @@
         "trap"
       ],
       "runs": [
+        "bin/build-admit.py",
         "bin/chain-verify.py",
         "bin/release-metadata.py",
         "bin/vendor-provenance.py",
@@ -1800,7 +1786,7 @@
       ],
       "signs": "other",
       "reason": "Release, step release-sign: cosign signatures made with the release KMS key (--key RELEASE_KMS_KEY_REF; the step refuses an empty RELEASE_ROLE_ARN or RELEASE_TOKEN_FILE, which the Witness wrapper hands it, and maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE itself), each with a Rekor entry, on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
-      "sha256": "4e68f5b569736ef7ec01e5988d71b2a5d8d454252c68d48dda9ff0784e526ad0",
+      "sha256": "931806db61f62821c314d56801ccc44917621781698782ec194b4cb4a1b51347",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -1811,13 +1797,6 @@
           "rule": "deny",
           "line": "  if [ -z \"${!name:-}\" ]; then echo \"release-sign: $name is unset\" >&2; exit 2; fi",
           "line_sha256": "18a76e77de3fce5659a5630e6611566cc5cacf27b1006c19ab052614449aeb00",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[[ \"${GITHUB_REF_NAME:-}\" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]] || { echo \"release-sign: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never reaches this step)\" >&2; exit 1; }",
-          "line_sha256": "6fb5bc63ef42405f8c8e6942e3b50560a86793a9964a29430e1bbdaa9639847b",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
@@ -1831,11 +1810,12 @@
         "python3"
       ],
       "runs": [
+        "bin/build-admit.py",
         "bin/release-metadata.py"
       ],
       "signs": false,
       "reason": "Release, step release-assets: attaches the evidence to the GitHub release, a release created only with --verify-tag (REQ-CHAIN-007-AC9)",
-      "sha256": "c00ae4aab1954305e7905baba37b89b5e39ed61747f825c6fe1ce01c19dc92cb",
+      "sha256": "b5577fbdb548148c3d605b0231f95cf9ca474013f7940d5db9ee5f8e7f507276",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -1844,13 +1824,6 @@
           "rule": "deny",
           "line": "if [ -z \"${GH_TOKEN:-}\" ]; then echo \"release-assets: GH_TOKEN is unset\" >&2; exit 2; fi",
           "line_sha256": "e5778de5c31451c3398b89c86cab491aa376118285c29c9c3415f7ecf4eca244",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[[ \"${GITHUB_REF_NAME:-}\" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]] || { echo \"release-assets: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never reaches this step)\" >&2; exit 1; }",
-          "line_sha256": "c9c53c71c1636a42c620cc2a666e2542dc3adf726b7430f7862cbaf2f8b7d884",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
@@ -1941,7 +1914,7 @@
       ],
       "signs": false,
       "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports; the judged verify pipes run without a shell (run_pipe); load_verifier compiles and runs (exec) the sha256-checked bytes of bin/chain-verify.py as a module, to call its bundle_certificate_why on the bundles a listed command names",
-      "sha256": "a60cfe1b566e72caaf84319c47930978881acf76266e900de42298e90adbde81",
+      "sha256": "e438b854e6e3aa762aa9a06c8939cea9f784bb049e15961a791c2c6943383352",
       "exceptions": [
         {
           "rule": "deny",
@@ -1981,7 +1954,7 @@
       "runs": [],
       "signs": false,
       "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files and the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
-      "sha256": "1ec07a4081b97f401351ac6713fe42bd240503db3f471239e4062756b9cbbb3a"
+      "sha256": "dd242da5458f4a30f6e92d86ad7dc357e2336ca5c25f3b7d837f8385599d9ade"
     },
     {
       "path": "bin/vex-forms.py",
