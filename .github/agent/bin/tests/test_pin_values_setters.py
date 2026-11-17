@@ -214,6 +214,31 @@ class VariableSetByOtherForms(unittest.TestCase):
                 hits, out = self.scenario(setter)
                 self.assertFalse(hits, out)
 
+    # a < or > inside quotes is part of the word, not a redirection: a quoted subscript still names the variable
+    def test_quoted_subscript_with_angle_bracket_still_names_the_variable(self):
+        forms = {}
+        for ch in "<>":
+            for q in ("'", '"'):
+                sub = "%sout[1%s0]%s" % (q, ch, q)
+                forms["declare -n %s" % sub] = "declare -n r=%s; r=scripts/build.sh" % sub
+                forms["printf -v %s" % sub] = "printf -v %s %%s scripts/build.sh" % sub
+        for name, setter in forms.items():
+            with self.subTest(setter=name):
+                hits, out = self.scenario(setter)
+                self.assertTrue(hits, out)
+
+    def test_control_quoted_angle_bracket_in_an_unrelated_word_changes_nothing(self):
+        forms = {
+            "echo single <": "echo 'a<b'",
+            "echo double >": 'echo "a>b"',
+            "other quoted subscript printf -v": "printf -v 'other[1<0]' %s /inside",
+            "other quoted subscript nameref": 'declare -n r="other[1>0]"; r=/inside',
+        }
+        for name, setter in forms.items():
+            with self.subTest(setter=name):
+                hits, out = self.scenario(setter)
+                self.assertFalse(hits, out)
+
 
 if __name__ == "__main__":
     unittest.main()

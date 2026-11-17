@@ -2037,6 +2037,31 @@ def _only_read(name, script):
             and not any(_builds_name(_unquoted(c)) for c in _split_commands(script)))
 
 
+def _cut_redirections(text):
+    """The text with each redirection cut off its word: from a < or > outside quotes to the next blank outside quotes.
+    A < or > inside '…' or "…" stays part of the word (declare -n r='out[1<0]')."""
+    out, q, cut, i = [], None, False, 0
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and q != "'" and i + 1 < len(text):
+            if not cut:
+                out.append(text[i:i + 2])
+            i += 2
+            continue
+        if q:
+            q = None if c == q else q
+        elif c in "'\"":
+            q = c
+        elif c in "<>":
+            cut = True
+        elif c.isspace():
+            cut = False
+        if not cut:
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
 SETTER_WORDS = re.compile("read|mapfile|readarray|getopts|declare|typeset|local|export|readonly|let|select|for")
 
 
@@ -2055,7 +2080,7 @@ def _set_by_setter(name, script):
         return True
     for command in _split_commands(script):
         body = _tokens(command)
-        toks = [re.sub(r"[<>].*", "", t, flags=re.S) for t in body]   # printf -vout>/dev/null: the redirection is no part of the name
+        toks = _tokens(_cut_redirections(_mask_shell(command)[0]))   # printf -vout>/dev/null: the redirection is no part of the name
         names_it = any(re.fullmatch(name + r"(?:\[[^]]*\])?\+?(?:=.*)?", t, re.S) for t in toks)
         if names_it and (any(SETTER_WORDS.fullmatch(t) for t in toks) or ("printf" in toks and "-v" in toks)):
             return True
