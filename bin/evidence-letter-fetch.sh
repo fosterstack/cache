@@ -19,11 +19,11 @@ repo=${REPO:-fosterstack/cache}
 mkdir -p "$out/rel"
 
 # every release, all pages; the letter's releases are the final ones published in the month, else the newest
-# one before it. A final tag is vX.Y.Z: "v0.3.1" matches; "v0.3.1-rc1" and "0.3.1" do not
+# one before it. A final tag is vX.Y.Z by bin/build-admit.py's one tag grammar: "v0.3.1" matches; "v0.3.1-rc1" and "0.3.1" do not
 gh api --paginate --slurp "repos/$repo/releases?per_page=100" | jq 'add // []' > "$out/releases.json"
-tags=$(jq -r --arg m "$month" '
+tags=$(jq -r --arg m "$month" --arg t "$(python3 -I bin/build-admit.py tag-pattern)" '
   [.[] | select(.draft == false and .prerelease == false
-                and (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")))] as $final
+                and (.tag_name | test("\\A" + $t + "\\z") and (contains("-rc") | not)))] as $final
   | [$final[] | select(.published_at | startswith($m))] as $in
   | if ($in | length) > 0 then $in
     else [$final[] | select(.published_at < ($m + "-01"))] | sort_by(.published_at) | .[-1:] end
