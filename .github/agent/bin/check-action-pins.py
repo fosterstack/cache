@@ -176,7 +176,6 @@ usage: check-action-pins.py [--verify-tags] [--git <commit>] [repo-root]
 """
 import collections
 import csv
-import hashlib
 import json
 import os
 import pathlib
@@ -2210,16 +2209,6 @@ def daemon_redirects(text):
 # test, never a container. They are committed files, and every diff that adds or changes one gets both reviewers.
 TEST_HARNESS = re.compile(r"^(\.github/agent/tests/[^/]+\.sh|bin/[^/]+-test\.sh)$")   # exactly these roots (Codex r2, R03)
 
-# Documented exclusion (the same charter): the sandbox-wall probe is a dry-run-only step of Build that runs the sealed
-# melange call of bin/build-apk.sh through fixed absolute paths held in variables (the lines of the script that end in
-# TEST-SUBST), while this check reads a variable program as unreadable. It installs nothing, pulls no image and starts
-# only the pinned tools at fixed paths. It is still read at its committed bytes and bound like any script
-# (READ_SCRIPTS), never inlined, and every change to it gets both reviewers. ONE exact path: no pattern, no directory
-# match, so the same text under another name, or in another directory, is read as every script is. The exemption holds
-# only for the bytes that were reviewed: the sha256 of the raw file at the chain commit d7cab146 (any other text at this
-# path, even a CRLF copy, is read like every script).
-SEALED_PROBE = {"bin/chain-sandbox-probe.sh": "34f39a4658c66eced1a36e48e5ca696261342ece173eb8fb443fc32b37d70a30"}
-
 
 HEREDOC = re.compile(r"(?<!<)<<(-?)(?!<)\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
 
@@ -2536,9 +2525,8 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
             found.append("runs %s from a working directory this check cannot place; refused" % path)
             continue
         READ_SCRIPTS.append((rel, tree.read(rel)))       # bound to its committed bytes after inlining (check_runs)
-        sealed = rel in SEALED_PROBE and SEALED_PROBE[rel] == hashlib.sha256(tree.read_bytes(rel)).hexdigest()
-        if TEST_HARNESS.search(rel) or sealed:
-            continue                                     # a test harness (its probes are fixture data) or the sealed probe: documented exclusions
+        if TEST_HARNESS.search(rel):
+            continue                                     # a test harness (its probes are fixture data): a documented exclusion
         if depth >= 4:
             found.append("scripts nest deeper than this check reads (%s); refused" % path)
             continue
