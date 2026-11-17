@@ -673,11 +673,19 @@ PARAM_WORD = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*])(:?)([-=+?])([
 
 
 def _expand_defaults(text):
-    while True:   # each pass removes at least one ${...}: it ends
-        new = PARAM_WORD.sub(lambda m: m.group(4), text)
-        if new == text:
-            return new
-        text = new
+    """${x:-word} as word; ${x:=word} too, with the assignment kept as a line `: x=word` before its line, so the
+    variable's values stay readable."""
+    out = []
+    for line in text.split("\n"):
+        while True:   # each pass removes at least one ${...}: it ends
+            sets = [": %s=%s" % (m.group(1), m.group(4)) for m in PARAM_WORD.finditer(line) if m.group(3) == "="]
+            new = PARAM_WORD.sub(lambda m: m.group(4), line)
+            if new == line:
+                break
+            out += sets
+            line = new
+        out.append(line)
+    return "\n".join(out)
 
 
 def _mark_defaults(text):
@@ -2016,15 +2024,17 @@ def _builds_name(command):
     return bool(RUNTIME_NAME.search(command) or (PRINTF.search(command) and "-v" in command))
 
 
-def _only_read(name, script):
+def _only_read(name, script, assigned=False):
     """True when the job script, as bash forms its words (quotes and backslashes removed), mentions `name` only as a
-    plain $name or ${name} read, runs no eval, and builds no variable name at run time ($'…', "${n}OUTPUT": a name the
+    plain $name or ${name} read (and, with `assigned`, a plain name= assignment), runs no eval, and builds no variable name at run time ($'…', "${n}OUTPUT": a name the
     check cannot read). Any other mention (read, for, printf -v, ${name:=x}, (( )), let, name[0]=, …) may set it."""
     if "$'" in script:
         return False
     words = _unquoted(script)
-    word = r"(?<![A-Za-z0-9_])" + name + r"(?![A-Za-z0-9_])"
+    word = r"(?<![\w/.-])" + name + r"(?![A-Za-z0-9_])"
     reads = r"\$" + name + r"(?![A-Za-z0-9_])|\$\{" + name + r"\}"
+    if assigned:
+        reads += "|" + word + "=(?!=)"
     return (len(re.findall(word, words)) == len(re.findall(reads, words))
             and not re.search(r"(?<![\w-])eval(?![\w-])", words)
             and not RUNTIME_EXPANSION.search(words)
@@ -2047,6 +2057,8 @@ def _outside(target, script, depth=0):
     m = re.match(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?(/.*)?$", target.strip("\"'"))
     if not m or depth > 4:
         return False
+    if not _only_read(m.group(1), script, assigned=True):
+        return False                                     # set by read, printf -v, (( )), name[0]= …: an unknown value
     values = re.findall(r"(?:^|[\s;(])" + m.group(1) + r"=[\"']?([^\s\"';)]*)", script)
     return bool(values) and all(_outside(v, script, depth + 1) for v in values)
 
