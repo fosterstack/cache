@@ -241,8 +241,8 @@ GATE_WORKFLOW = ".github/workflows/agent-review-gate.yml"
 GATE_WORKFLOW_SHA256 = frozenset({
     # main's gate workflow (the passed-audit record judge and writer)
     "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f",
-    # the gate workflow with the merge queue judge (REQ-DEP-005-AC3, cache#542)
-    "3f7127c8f61aefc9a8394050cb705f4e5b5cc042d6e779276f88e36e2662dcdc",
+    # the gate workflow with one step per check, no merge queue judge, and the record rule's Dependabot exemption
+    "3102248f3d2c88b6e5be3751a1fc42635296b5187bc1d10024eaf19b810bf34e",
 })
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)
@@ -2726,7 +2726,7 @@ DOWNLOAD_EXCLUSIONS = {
         "the identity-token request: curl prints the JSON answer from ${ACTIONS_ID_TOKEN_REQUEST_URL} (set by the runner, quoted, followed by a literal &audience=) into a "
         "command substitution that jq reads; it writes no file (this exclusion holds only while the file never assigns ACTIONS_ID_TOKEN_REQUEST_URL itself)",
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
-    (".github/workflows/dependabot-reviewer.yml", "review", 7, "d392e05c19840af9c4476875649c42e1c86be22e04c33883fb2dc6d22957cc7a"): (
+    (".github/workflows/dependabot-reviewer.yml", "review", 7, "2c0d58801e11c42d47d3df1894079de8bb84ba45aee6e1f56e0dfccb7716abee"): (
         "the same identity-token request inside the decision loop's token refresh: stdout into a command substitution that jq reads, no file written (this exclusion holds "
         "only while the file never assigns ACTIONS_ID_TOKEN_REQUEST_URL itself)",
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),

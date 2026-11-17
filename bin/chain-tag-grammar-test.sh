@@ -4,11 +4,11 @@
 # One tag grammar for every release script and check that reads a release tag (REQ-CHAIN-004-AC19). The grammar is TAG_PATTERN of
 # bin/build-admit.py: vX.Y.Z or vX.Y.Z-rcN, no leading zero in any number, an rc number of at least 1, full match only (no trailing
 # newline, no prefix). A Python script loads that pattern from bin/build-admit.py; a shell script or workflow step calls
-# `python3 bin/build-admit.py tag-ok [--final] TAG` (exit 0 accepted, exit 1 refused; --final also refuses a -rc tag) or reads
+# `python3 -I -B bin/build-admit.py tag-ok [--final] TAG` (exit 0 accepted, exit 1 refused; --final also refuses a -rc tag) or reads
 # `python3 bin/build-admit.py tag-pattern`; none has a pattern of its own. v01.2.3, v1.2.3-rc0 and v1.2.3-rc.1 are refused by every one.
 #
 # Parsers, one case group each (all under bin/ unless a path says otherwise):
-#   release-apks.sh release-assets.sh release-publish.sh release-sign.sh   final tags only (they read GITHUB_REF_NAME)
+#   release-apks.sh release-assets.sh release-publish.sh release-sign.sh release-signatures.sh release-stage.sh   final tags only (they read GITHUB_REF_NAME)
 #   release-verify.sh                final or rc        release-metadata.py   baseline command (final)
 #   release-postverify.py            final only         chain-verify.py       policy make --tag / --ref refs/tags/<tag> (final or rc)
 #   marker-pr-gate.py                rc only            chain_items.py        admission-baseline (rc vs final baseline), via chain-verify.py
@@ -96,7 +96,7 @@ shrun() { # shrun CASEDIR SCRIPT TAG [VAR=VALUE...]: runs bin/SCRIPT with GITHUB
   (cd "$c" && env -i PATH="$c/fake:/usr/bin:/bin" HOME="$c/home" TMPDIR="$c/home" GITHUB_REF_NAME="$tag" "$@" /usr/bin/bash "bin/$sc" > "$c/out" 2> "$c/err") || RC=$?
   ERR=$(head -c 300 "$c/err" | tr '\n' ' ')
 }
-refused_sh() { [ "$RC" = 1 ] && [ ! -s "$1/trips" ] && grep -qi tag "$1/err"; }   # exit 1, a message about the tag, and no program of the next step was called
+refused_sh() { [ "$RC" = 1 ] && [ ! -s "$1/trips" ] && grep -qiE 'tag refused|refused at tag' "$1/err"; }   # exit 1, the tag refusal's message, and no program of the next step was called
 reached_sh() { ! refused_sh "$1"; }                                               # the tag check let the tag through
 n=0
 shcase() { # shcase SCRIPT KIND(final|any) ENV...: every refusal, and the controls
@@ -117,11 +117,15 @@ shcase() { # shcase SCRIPT KIND(final|any) ENV...: every refusal, and the contro
   done
 }
 KMS='awskms:///arn:aws:kms:us-east-1:123456789012:key/0123abcd'
-COMMON=(RELEASE_KMS_KEY_REF="$KMS" GH_TOKEN=g DOCKERHUB_USERNAME=u DOCKERHUB_TOKEN=t RELEASE_ROLE_ARN=arn:aws:iam::123456789012:role/r RELEASE_TOKEN_FILE=/dev/null RUNNER_TEMP="$S/c")
+COMMON=(RELEASE_KMS_KEY_REF="$KMS" GH_TOKEN=g DOCKERHUB_USERNAME=u DOCKERHUB_TOKEN=t RELEASE_ROLE_ARN=arn:aws:iam::123456789012:role/r RELEASE_TOKEN_FILE=/dev/null RUNNER_TEMP="$S/c"
+        GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_SERVER_URL=https://github.com GITHUB_REPOSITORY=owner/repo GITHUB_RUN_ID=1 GITHUB_RUN_ATTEMPT=1
+        GITHUB_WORKFLOW_REF=owner/repo/.github/workflows/release.yml@refs/tags/v1.2.3)
 shcase release-apks.sh final "${COMMON[@]}"
 shcase release-assets.sh final "${COMMON[@]}"
 shcase release-publish.sh final "${COMMON[@]}"
 shcase release-sign.sh final "${COMMON[@]}"
+shcase release-signatures.sh final "${COMMON[@]}"
+shcase release-stage.sh final "${COMMON[@]}"
 shcase release-verify.sh any "${COMMON[@]}"
 
 # ------------------------------------------------------------------ C. chain-verify.py: policy make --tag / --ref (final or rc)
@@ -218,7 +222,7 @@ for sub in manifest list checksums; do
   v=v01.2.3; [ "$sub" = checksums ] && v=01.2.3
   RC=0
   case $sub in
-    manifest) args=(--digests d --images-dir i --items it --modules-dir m --vex-dir v --baseline-version v1.2.0 --repo-root r --version "$v" --commit 0123456789abcdef0123456789abcdef01234567 --ci-url u --workflow w --out o) ;;
+    manifest) args=(--digests d --images-dir i --items it --modules-dir m --vex-dir v --baseline-version v1.2.0 --repo-root r --version "$v" --commit 0123456789abcdef0123456789abcdef01234567 --ci-url u --workflow w --published-at 2026-11-04T12:00:00Z --reason r --out o) ;;
     list) args=(--version "$v" --dir "$S/rm/nodir" --out "$S/rm/o") ;;
     checksums) args=(--version "$v" --digests "$S/rm/nodigests" --dist "$S/rm/nodist" --out "$S/rm/o") ;;
   esac
@@ -271,7 +275,7 @@ done
 # ------------------------------------------------------------------ G. evidence-letter.py (final only): the release folders it reads
 mkdir -p "$S/el/bin"; cp "$root/bin/evidence-letter.py" "$root/bin/build-admit.py" "$S/el/bin/"
 for t in v01.2.3 v1.2.3-rc1 v1.2.3-rc0 v1.2.3 v0.3.1; do
-  mkdir -p "$S/el/rel/$t"; printf '{"published_at": "2026-11-04T12:00:00Z"}\n' > "$S/el/rel/$t/release.json"
+  mkdir -p "$S/el/rel/$t"; printf '{"published_at": "2026-11-04T12:00:00Z"}\n' > "$S/el/rel/$t/release-manifest.json"
 done
 got=$(cd "$S/el" && "$REALPY" - bin/evidence-letter.py rel 2> err <<'PY'
 import importlib.util, sys
@@ -297,9 +301,10 @@ for ln in open(f).read().split("\n"):
 print("\n".join(out) if on and out and re.search(b, out[-1]) else "")
 PY
 }
-fr=$(fragment "$root/bin/evidence-letter-fetch.sh" '^tags=\$\(jq' 'releases\.json"\)')
+# the release loop's own list: `for tag in $(jq ... releases.json"); do`, made here into `tags=$(jq ... releases.json")`
+fr=$(fragment "$root/bin/evidence-letter-fetch.sh" '^for tag in \$\(jq' 'releases\.json"\); do$' | sed -e '1s/^for tag in \$(jq/tags=$(jq/' -e '$s/); do$/)/')
 if [ -z "$fr" ]; then
-  bad "evidence-letter-fetch.sh: the final-release jq test is found" "no 'tags=\$(jq ... releases.json\")' command in the file"
+  bad "evidence-letter-fetch.sh: the final-release jq test is found" "no 'for tag in \$(jq ... releases.json\"); do' loop in the file"
 else
   mkdir -p "$S/ef/bin" "$S/ef/out"; cp "$root/bin/build-admit.py" "$S/ef/bin/"
   printf '%s\n' '[' \
@@ -352,8 +357,8 @@ shaperun "$S/sh/rv-tree.sh"
 "$REALPY" - "$root/bin/release-verify.sh" "$S/sh/rv-loose.sh" <<'PY'
 import sys
 lines = open(sys.argv[1]).read().split("\n")
-i = next(k for k, l in enumerate(lines) if "GITHUB_REF_NAME" in l and "refused at tag" in l)
-lines[i] = '[[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+(-rc[0-9]+)?$ ]] || { echo "refused at tag: ${GITHUB_REF_NAME:-} is not vX.Y.Z or vX.Y.Z-rcN" >&2; exit 1; }'
+i = next(k for k, l in enumerate(lines) if "build-admit.py tag-ok" in l and "GITHUB_REF_NAME" in l)
+lines[i] = lines[i].replace('python3 -I -B bin/build-admit.py tag-ok "${GITHUB_REF_NAME:-}"', '[[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+(-rc[0-9]+)?$ ]]')
 open(sys.argv[2], "w").write("\n".join(lines))
 PY
 shaperun "$S/sh/rv-loose.sh"
@@ -432,7 +437,7 @@ fi
 # ------------------------------------------------------------------ L. structure: no listed file holds a tag pattern of its own
 # A tag regex of its own looks like v[0-9], ^v[0-9] or ^v(0|, v(0|, v(?:0|, or an rc number class -rc[...]. The files below read
 # a tag; each must hold none of them and must name bin/build-admit.py (or TAG_PATTERN) as where the grammar comes from.
-LISTED="bin/release-apks.sh bin/release-assets.sh bin/release-publish.sh bin/release-sign.sh bin/release-verify.sh bin/release-metadata.py
+LISTED="bin/release-apks.sh bin/release-assets.sh bin/release-publish.sh bin/release-sign.sh bin/release-signatures.sh bin/release-stage.sh bin/release-verify.sh bin/release-metadata.py
 bin/release-postverify.py bin/chain-verify.py bin/marker-pr-gate.py bin/chain_items.py bin/evidence-letter.py bin/evidence-letter-fetch.sh
 bin/admission-tag-signer.py bin/chain-release-shape.py bin/install-scanner.sh .github/workflows/main-candidate-rescan.yml"
 for f in $LISTED; do
@@ -442,10 +447,10 @@ for f in $LISTED; do
   grep -qE 'build-admit|TAG_PATTERN' "$root/$f" && ok "$f takes the grammar from bin/build-admit.py" || bad "$f takes the grammar from bin/build-admit.py" "no mention of build-admit.py or TAG_PATTERN"
 done
 # a shell script and a workflow step reach the grammar only by the two commands; a Python script only by loading the file
-for f in bin/release-apks.sh bin/release-assets.sh bin/release-publish.sh bin/release-sign.sh bin/release-verify.sh bin/evidence-letter-fetch.sh bin/install-scanner.sh .github/workflows/main-candidate-rescan.yml; do
+for f in bin/release-apks.sh bin/release-assets.sh bin/release-publish.sh bin/release-sign.sh bin/release-signatures.sh bin/release-stage.sh bin/release-verify.sh bin/evidence-letter-fetch.sh bin/install-scanner.sh .github/workflows/main-candidate-rescan.yml; do
   grep -qE 'build-admit\.py (tag-ok|tag-pattern)' "$root/$f" && ok "$f calls build-admit.py tag-ok or tag-pattern" || bad "$f calls build-admit.py tag-ok or tag-pattern" "no such call"
 done
-for f in bin/release-sign.sh bin/release-apks.sh bin/release-assets.sh bin/release-publish.sh; do
+for f in bin/release-sign.sh bin/release-signatures.sh bin/release-stage.sh bin/release-apks.sh bin/release-assets.sh bin/release-publish.sh; do
   # the final-only shell steps pass --final (the Python scripts refuse a release candidate in code; evidence-letter-fetch.sh may read tag-pattern instead)
   grep -qE 'build-admit\.py tag-ok( -[A-Za-z-]+)* --final|build-admit\.py tag-ok --final' "$root/$f" && ok "$f passes --final" || bad "$f passes --final" "no tag-ok --final call"
 done

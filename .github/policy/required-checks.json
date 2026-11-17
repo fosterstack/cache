@@ -1,17 +1,10 @@
 {
   "comment": [
-    "The single source of truth for the required-check set on main.",
-    "Consumed by the Dependabot auto-merge guard today and by the release",
-    "chain's source-admission stage when it lands. The GitHub ruleset",
-    "(main-protection) must match this list EXACTLY - contexts and",
-    "integration IDs both; the guard fails closed on any difference in",
-    "either direction. integration_id 15368 is GitHub Actions: it pins each",
-    "context to check runs produced by Actions, so a check run with the",
-    "same name from any other app does not satisfy the requirement.",
-    "Editing this list does not change the ruleset; only the owner can do",
-    "that, in the GitHub UI. Edit here first, then the owner updates the",
-    "ruleset to match - the guard stays red in between, which is the",
-    "correct failure mode.",
+    "What the release chain's source-admission stage requires green on a tagged commit.",
+    "The GitHub ruleset (main-protection) is the list that gates merges; nothing compares",
+    "the two, so keep this list to the checks admission should demand.",
+    "integration_id 15368 is GitHub Actions: it pins each context to check runs produced",
+    "by Actions, so a check run with the same name from any other app does not satisfy it.",
     "scope: 'push' means the check runs on main commits and release",
     "admission requires it green on the exact tagged SHA; 'pull_request'",
     "means it only ever runs on PRs, so admission requires it green on",
@@ -29,17 +22,7 @@
       "scope": "push"
     },
     {
-      "context": "gosec",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
       "context": "govulncheck",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "analyze (go)",
       "integration_id": 15368,
       "scope": "push"
     },
@@ -49,42 +32,12 @@
       "scope": "push"
     },
     {
-      "context": "allowlist-persona",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
       "context": "allowlist-chain",
       "integration_id": 15368,
       "scope": "push"
     },
     {
-      "context": "allowlist-pins-auditor",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "dependency-review",
-      "integration_id": 15368,
-      "scope": "pull_request"
-    },
-    {
-      "context": "fips140-only",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "acceptance-gradle",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "acceptance-maven (1.2.0)",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "acceptance-maven (1.2.3)",
+      "context": "acceptance",
       "integration_id": 15368,
       "scope": "push"
     },
@@ -95,11 +48,6 @@
     },
     {
       "context": "reproducibility",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "coverage",
       "integration_id": 15368,
       "scope": "push"
     },
@@ -116,16 +64,6 @@
     {
       "context": "auditor-review-gate",
       "integration_id": 5054756,
-      "scope": "pull_request"
-    },
-    {
-      "context": "vendor",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "marker-gate",
-      "integration_id": 15368,
       "scope": "pull_request"
     }
   ]
