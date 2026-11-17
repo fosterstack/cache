@@ -55,7 +55,7 @@ JOBS = {
     "sign-release": dict(needs={"build-assemble", "release-verify", "release-compare"}, environment="sign", perm={"contents": "read", "id-token": "write"}, installs=["witness", "cosign", "aws-cli"], steps=["release-apks", "release-sign"],
                          helper="witnessed.sh", local="", pairs=SIGN_RELEASE_PAIRS, concurrency=None, env="fed", pre=["digests"],
                          ups=[("release-evidence-signatures", "release-evidence"), ("witness-release-signatures", "witness-release-apks\nwitness-release-sign"), ("release-apks", "release-apks"), ("release-metadata", "release-metadata"),
-                              ("release-checksums", "dist/checksums.txt"), ("release-dist-bundles", "dist/*.bundle")]),
+                              ("release-checksums", "dist/checksums.txt"), ("release-dist-bundles", "dist/bundles")]),
     "release-evidence": dict(needs={"release"}, environment=None, perm={"contents": "write"}, installs=["witness", "cosign", "crane"], steps=["release-assets", "release-postverify"],
                              helper="witnessed-local.sh", local=".local", pairs=EVIDENCE_PAIRS, concurrency=None, env=None,
                              ups=[("witness-release-evidence", "witness-release-assets\nwitness-release-postverify")]),

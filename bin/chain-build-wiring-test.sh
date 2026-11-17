@@ -2802,16 +2802,36 @@ rc=0; python3 "$KR" base-check > /dev/null 2>&1 || rc=$?       # CI: the pull re
 for sfile in bin/chain-build-wiring-test.sh bin/chain-sign-wiring-test.sh bin/chain-check-wiring-test.sh bin/chain-records-test.sh; do
   if grep -q 'chain-known-red.py" judge --suite '"$sfile" "$root/$sfile" 2> /dev/null && grep -q -- '--inner-rc' "$root/$sfile" && grep -q 'CHAIN_FINDINGS=1' "$root/$sfile"; then ok "known-red: $sfile judges its own output against the list, with the inner exit status and the structured findings on"; else bad "known-red: $sfile does not judge its output with --inner-rc and CHAIN_FINDINGS=1"; fi
 done
-# the burn-down (cache4, handoff 0475): the vendor-provenance row landed in chain-scripts.json, so the three entries it kept open are gone. Only KR-CUTOVER may remain, and the marker
-# pull request of REQ-CHAIN-001-AC6 removes that one entry too: the committed list is [KR-CUTOVER] now and [] after the marker, nothing else
-python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red: the committed list is exactly [KR-CUTOVER] (or [] after the marker pull request): KR-SIGN-1, KR-SIGN-3 and KR-RECORDS-1 are gone with the bin/vendor-provenance.py row in chain-scripts.json" || bad "known-red: the committed list holds a burned-down entry or another id (only KR-CUTOVER, or nothing after the marker, is allowed)"
+# the burn-down (cache4, handoff 0475): the vendor-provenance row landed in chain-scripts.json, so the three entries it kept open are gone. What may remain: KR-CUTOVER ("rc proof
+# pending", removed by the marker pull request of REQ-CHAIN-001-AC6) and KR-BASELOCKS (the gradle wrapper jar pin file, on chain-v030 and not on main; the cutover pull request, which
+# puts that file on main, removes it). The committed list is [KR-CUTOVER, KR-BASELOCKS] today, [KR-CUTOVER] after the cutover pull request and [] after the marker, nothing else
+python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red: the committed list is exactly [KR-CUTOVER, KR-BASELOCKS] (then [KR-CUTOVER] after the cutover pull request, [] after the marker): KR-SIGN-1, KR-SIGN-3 and KR-RECORDS-1 are gone with the bin/vendor-provenance.py row in chain-scripts.json" || bad "known-red: the committed list is not [KR-CUTOVER, KR-BASELOCKS], [KR-CUTOVER] or [] (a burned-down entry, a duplicate, KR-BASELOCKS without KR-CUTOVER or another id)"
 import json, sys
-allowed = lambda ids: ids in ([], ["KR-CUTOVER"])
+allowed = lambda ids: ids in ([], ["KR-CUTOVER"], ["KR-CUTOVER", "KR-BASELOCKS"])
 ids = [x["id"] for x in json.load(open(sys.argv[1]))["entries"]]
 assert allowed(ids), ids
-assert allowed([]) and allowed(["KR-CUTOVER"])                     # the marker pull request's list (empty) is as valid as today's
-for bad_ids in (["KR-CUTOVER", "KR-SIGN-1"], ["KR-SIGN-1"], ["KR-RECORDS-1", "KR-CUTOVER"], ["KR-CUTOVER", "KR-CUTOVER"], ["x"]):
+assert allowed([]) and allowed(["KR-CUTOVER"]) and allowed(["KR-CUTOVER", "KR-BASELOCKS"])   # the marker pull request's list (empty), the cutover pull request's and today's are valid
+for bad_ids in (["KR-CUTOVER", "KR-SIGN-1"], ["KR-SIGN-1"], ["KR-RECORDS-1", "KR-CUTOVER"], ["KR-CUTOVER", "KR-CUTOVER"], ["x"],
+                ["KR-BASELOCKS"], ["KR-BASELOCKS", "KR-CUTOVER"], ["KR-CUTOVER", "KR-BASELOCKS", "KR-SIGN-1"], ["KR-CUTOVER", "KR-BASELOCKS", "KR-RECORDS-1"],
+                ["KR-CUTOVER", "KR-BASELOCKS", "KR-BASELOCKS"], ["KR-CUTOVER", "KR-BASELOCKS", "x"], ["KR-SIGN-1", "KR-BASELOCKS"]):
     assert not allowed(bad_ids), bad_ids
+PY
+# KR-BASELOCKS names exactly one finding: the one the base locks case prints for the gradle wrapper jar pin file. Any other absent path is a new, unlisted red
+python3 - "$root/test-evidence/known-red.json" "$root" <<'PY' && ok "known-red: KR-BASELOCKS carries exactly one finding, the base input .github/policy/gradle-wrapper-jar-sha256.txt, for the base locks case of this suite while that file is not on origin/main (and is gone once it is)" || bad "known-red: KR-BASELOCKS is not the one entry for the gradle wrapper jar pin file (listed while the file is not on origin/main, gone once it is; suite, case, exit text, one finding)"
+import json, subprocess, sys
+ents = {x["id"]: x for x in json.load(open(sys.argv[1]))["entries"]}
+PIN = ".github/policy/gradle-wrapper-jar-sha256.txt"
+r = subprocess.run(["git", "-C", sys.argv[2], "ls-tree", "-r", "--name-only", "origin/main", "--", PIN], capture_output=True, text=True)
+on_main = r.returncode == 0 and PIN in r.stdout.split()      # an unreadable origin/main counts the file as absent, as the base locks case does
+if on_main:                         # the cutover pull request puts the file on main and removes the entry
+    sys.exit(0 if "KR-BASELOCKS" not in ents else 1)
+assert "KR-BASELOCKS" in ents, "KR-BASELOCKS is not listed while the pin file is not on origin/main"
+e = ents["KR-BASELOCKS"]
+assert e["suite"] == "bin/chain-build-wiring-test.sh", e["suite"]
+assert e["case"] == "KNOWN-RED base locks: every path .github/policy/base-inputs.json lists is a file of origin/main", e["case"]
+assert e["findings"] == ["the base input .github/policy/gradle-wrapper-jar-sha256.txt is not on origin/main"], e["findings"]
+assert "REQ-SUP-001-AC34" in e["reason"] and e["reason"].strip(), e["reason"]
+assert "chain-v030" in e["green_by"] and "main" in e["green_by"], e["green_by"]
 PY
 # PR 4 (advisor ruling): the records suite's expected failures are ONE entry (KR-RECORDS-1) that names the three cache scripts Release's steps run and that are not
 # listed rows yet. The judge accepts exactly those findings, refuses any other (the entry cannot grow silently) and any missing one (it shrinks only by an edit that
@@ -2838,6 +2858,20 @@ rec_run "exactly the entry's one finding is accepted" 0 bin/vendor-provenance.py
 rec_run "a second finding (a script the entry does not name) is refused: the entry cannot grow" 1 bin/vendor-provenance.py bin/other.py
 rec_run "a missing finding (the script landed, the entry not shrunk) is refused" 1
 rec_run "a different finding of the same size is refused" 1 bin/other.py
+# KR-BASELOCKS: the judge accepts the one path the entry names and refuses a second absent path in the FINDINGS-JSON line of the base locks case (fixture list and output)
+BLCASE="KNOWN-RED base locks: every path .github/policy/base-inputs.json lists is a file of origin/main"
+python3 - "$work/kr-baselocks-list.json" <<'PY'
+import json, sys
+e = {"id": "KR-BASELOCKS", "suite": "bin/chain-build-wiring-test.sh", "case": "KNOWN-RED base locks: every path .github/policy/base-inputs.json lists is a file of origin/main",
+     "reason": "fixture", "green_by": "chain-v030 on main", "findings": ["the base input .github/policy/gradle-wrapper-jar-sha256.txt is not on origin/main"]}
+json.dump({"_note": "fixture", "entries": [e]}, open(sys.argv[1], "w"), indent=1)
+PY
+bl_run() { # bl_run LABEL WANT-EXIT PATHS... : the base locks case's output with those absent paths, judged against the fixture list
+  local label=$1 want=$2 rc=0 out; shift 2
+  out=$( { printf '%s\n' "$@" | jq -R '"the base input " + . + " is not on origin/main"' | jq -sc '.' | sed 's/^/FINDINGS-JSON /'; echo "FAIL $BLCASE"; echo "pass=96 fail=1"; } | python3 "$KR" judge --suite bin/chain-build-wiring-test.sh --list "$work/kr-baselocks-list.json" --inner-rc 1 2>&1) || rc=$?
+  if [ "$rc" = "$want" ]; then ok "known-red base locks: $label"; else bad "known-red base locks: $label (exit $rc, wanted $want: ${out:0:200})"; fi; }
+bl_run "exactly the gradle wrapper jar pin file absent is accepted" 0 .github/policy/gradle-wrapper-jar-sha256.txt
+bl_run "a second absent path next to the pin file is refused: the entry cannot grow" 1 .github/policy/gradle-wrapper-jar-sha256.txt .github/policy/other-base-input.txt
 # ---- advisor ruling (finding 5): no suite reads or writes a fixed host path under /tmp --------------------------------------------------------------------
 # A stray /tmp/x once changed a verdict. Every file a chain suite makes or reads lives in its own mktemp -d ($work). This guard reads the suites' own shell and Python
 # text: a redirection, a file command or an open() whose target is a literal /tmp/ path outside any quote is a violation. Fixture TEXT (a workflow or a script held in
@@ -4016,7 +4050,7 @@ if [ "$rc" = 1 ] \
 else
   bad "AC7 release-publish.sh with a wrong registry digest: exit $rc, pushes $pushes: ${out:0:140}"
 fi
-EXPECT=1395
+EXPECT=1398
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

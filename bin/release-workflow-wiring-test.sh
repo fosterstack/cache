@@ -213,7 +213,7 @@ if "sign-release" in jobs:
     ups = {(s.get("with") or {}).get("name"): str((s.get("with") or {}).get("path", "")).strip() for s in steps_of(sr) if "actions/upload-artifact@" in str(s.get("uses"))}
     if any(str(u).startswith("signed-witness-release") for u in ups):
         bad.append("sign-release uploads signed-witness-release: it signs no Witness record and has no such artifact")
-    for name, want_path in (("release-evidence-signatures", "release-evidence"), ("release-checksums", "dist/checksums.txt"), ("release-dist-bundles", "dist/*.bundle"), ("witness-release-signatures", None), ("release-apks", None), ("release-metadata", None)):
+    for name, want_path in (("release-evidence-signatures", "release-evidence"), ("release-checksums", "dist/checksums.txt"), ("release-dist-bundles", "dist/bundles"), ("witness-release-signatures", None), ("release-apks", None), ("release-metadata", None)):
         if name not in ups:
             bad.append("sign-release does not upload the artifact %s: %s" % (name, sorted(map(str, ups))))
         elif want_path and ups[name].rstrip("/") != want_path:
@@ -336,9 +336,14 @@ if "build-assemble" in jobs:
     if j.get("runs-on") != "ubuntu-24.04" or j.get("permissions") != READ or "strategy" in j:
         bad.append("build-assemble is not one job on ubuntu-24.04 with exactly contents read: %s %s" % (j.get("runs-on"), j.get("permissions")))
 SNAP = {"build-apk": ("snapshot-apk", "bin/build-stage-snapshot-apk.sh", "apk", "bin/build-stage-apk.sh"),
-        "build-assemble": ("snapshot-build", "bin/build-stage-snapshot-assemble.sh", "build", "bin/build-stage-assemble.sh"),
+        "build-assemble": ("snapshot-build", "bin/build-stage-assemble.sh", "build", "bin/build-stage-assemble.sh"),
         "rebuild-apk": ("snapshot-rapk", "bin/build-stage-snapshot-rebuild-apk.sh", "rapk", "bin/build-stage-rebuild-apk.sh"),
-        "rebuild-assemble": ("snapshot-rebuild", "bin/build-stage-snapshot-rebuild-assemble.sh", "rebuild", "bin/build-stage-rebuild-assemble.sh")}
+        "rebuild-assemble": ("snapshot-rebuild", "bin/build-stage-assemble.sh", "rebuild", "bin/build-stage-assemble.sh")}
+# the two assemble jobs run ONE script, told the stage by its first argument: (snapshot step's argument, release step's argument)
+STAGE_ARG = {"build-assemble": ("snapshot-apk", "apk"), "rebuild-assemble": ("snapshot-rapk", "rapk")}
+def witness_arg(step, name):   # the word after the script of the witnessed(-local).sh line that names `name`, or None
+    m = re.search(r"bash bin/witnessed(?:-local)?\.sh %s \S+ (\S+)" % re.escape(name), step.get("run") or "")
+    return m.group(1) if m else None
 for jn, (sstep, sscript, rstep, rscript) in SNAP.items():
     j = jobs.get(jn)
     if not j:
@@ -358,6 +363,8 @@ for jn, (sstep, sscript, rstep, rscript) in SNAP.items():
         bad.append("%s does not have exactly the two Witness steps %s and %s: %s" % (jn, rstep, sstep, [n for n, _, _ in wl])); continue
     if by[sstep][0] != sscript or by[rstep][0] != rscript:
         bad.append("%s: a Witness step runs another script than %s / %s" % (jn, rscript, sscript))
+    if jn in STAGE_ARG and (witness_arg(by[sstep][1], sstep), witness_arg(by[rstep][1], rstep)) != STAGE_ARG[jn]:
+        bad.append("%s: a Witness step passes another stage argument than %s (snapshot step) / %s (release step)" % (jn, STAGE_ARG[jn][0], STAGE_ARG[jn][1]))
     sif, rif = norm(by[sstep][1].get("if", "")), norm(by[rstep][1].get("if", ""))
     if "inputs.mode" not in sif or "snapshot" not in sif or sif == rif:
         bad.append("%s: the snapshot Witness step %s is not gated by the mode" % (jn, sstep))
@@ -402,7 +409,7 @@ for jn in REBUILD_JOBS:   # both start from Build's UNSIGNED record, in release 
         if "signed-witness-build" in text_of(jobs[jn]):
             bad.append("%s names signed-witness-build (Rebuild needs Build only, so it cannot need Sign)" % jn)
 if "rebuild-assemble" in jobs and "stage-start" not in runs_of(jobs["rebuild-assemble"]) + runs_of(jobs.get("rebuild-apk") or {}) + "\n".join(
-        open(os.path.join(root, "bin", b)).read() for b in ("build-stage-rebuild-apk.sh", "build-stage-rebuild-assemble.sh") if os.path.exists(os.path.join(root, "bin", b))):
+        open(os.path.join(root, "bin", b)).read() for b in ("build-stage-rebuild-apk.sh", "build-stage-assemble.sh") if os.path.exists(os.path.join(root, "bin", b))):
     bad.append("Rebuild does not start from chain-verify.py stage-start against Build's record (in the jobs or their two scripts)")
 
 # ---- Check (REQ-CHAIN-006-AC1) ------------------------------------------------------------------------------------------------------------------------
@@ -614,6 +621,9 @@ done
 case_ sign-release-signatures-path bad "sign-release uploads the artifact release-evidence-signatures from" "hit(s['with'].__setitem__('path', 'release-evidence/registry') for s in $J['sign-release']['steps'] if (s.get('with') or {}).get('name') == 'release-evidence-signatures')"
 case_ sign-release-checksums-path bad "sign-release uploads the artifact release-checksums from" "hit(s['with'].__setitem__('path', 'release-evidence/checksums.txt') for s in $J['sign-release']['steps'] if (s.get('with') or {}).get('name') == 'release-checksums')"
 case_ sign-release-dist-bundles-path bad "sign-release uploads the artifact release-dist-bundles from" "hit(s['with'].__setitem__('path', 'release-evidence/*.bundle') for s in $J['sign-release']['steps'] if (s.get('with') or {}).get('name') == 'release-dist-bundles')"
+case_ sign-release-dist-bundles-path-glob-bundle bad "sign-release uploads the artifact release-dist-bundles from" "hit(s['with'].__setitem__('path', 'dist/*.bundle') for s in $J['sign-release']['steps'] if (s.get('with') or {}).get('name') == 'release-dist-bundles' and 'upload-artifact' in str(s.get('uses')))"
+case_ sign-release-dist-bundles-path-glob-dir bad "sign-release uploads the artifact release-dist-bundles from" "hit(s['with'].__setitem__('path', 'dist/bundles/*') for s in $J['sign-release']['steps'] if (s.get('with') or {}).get('name') == 'release-dist-bundles' and 'upload-artifact' in str(s.get('uses')))"
+case_ sign-release-dist-bundles-path-beside-files bad "sign-release uploads the artifact release-dist-bundles from" "hit(s['with'].__setitem__('path', 'dist') for s in $J['sign-release']['steps'] if (s.get('with') or {}).get('name') == 'release-dist-bundles' and 'upload-artifact' in str(s.get('uses')))"
 case_ sign-release-no-policy-download bad "sign-release does not download the artifact release-policy into release-policy/" "$J['sign-release']['steps'] = [s for s in $J['sign-release']['steps'] if (s.get('with') or {}).get('name') != 'release-policy']"
 case_ sign-release-policy-elsewhere bad "sign-release does not download the artifact release-policy into release-policy/" "hit(s['with'].__setitem__('path', 'policy') for s in $J['sign-release']['steps'] if (s.get('with') or {}).get('name') == 'release-policy')"
 case_ sign-release-gh-token bad "sign-release names a secret, a registry credential" "$J['sign-release']['steps'][-1].setdefault('env', {})['GH_TOKEN'] = \"\${{ github.token }}\""
@@ -699,7 +709,11 @@ for jn in build-apk build-assemble rebuild-apk rebuild-assemble; do
   case_ "$jn-id-token"        bad "holds an id-token or packages write" "$J['$jn']['permissions']['id-token'] = 'write'"
 done
 case_ build-apk-snapshot-script bad "runs another script" "hit(s.__setitem__('run', s['run'].replace('build-stage-snapshot-apk.sh', 'build-stage-apk.sh')) for s in $J['build-apk']['steps'] if 'snapshot-apk' in (s.get('run') or ''))"
-case_ rebuild-assemble-snapshot-script bad "runs another script" "hit(s.__setitem__('run', s['run'].replace('build-stage-snapshot-rebuild-assemble.sh', 'build-stage-rebuild-assemble.sh')) for s in $J['rebuild-assemble']['steps'] if 'snapshot-rebuild' in (s.get('run') or ''))"
+case_ rebuild-assemble-snapshot-script bad "runs another script" "hit(s.__setitem__('run', s['run'].replace('build-stage-assemble.sh', 'build-stage-apk.sh')) for s in $J['rebuild-assemble']['steps'] if 'snapshot-rebuild' in (s.get('run') or ''))"
+case_ rebuild-assemble-snapshot-arg bad "another stage argument" "hit(s.__setitem__('run', s['run'].replace('snapshot-rapk', 'rapk')) for s in $J['rebuild-assemble']['steps'] if 'snapshot-rebuild' in (s.get('run') or ''))"
+case_ rebuild-assemble-release-arg bad "another stage argument" "hit(s.__setitem__('run', s['run'].replace('assemble.sh rapk', 'assemble.sh apk')) for s in $J['rebuild-assemble']['steps'] if 'witnessed-local.sh rebuild ' in (s.get('run') or ''))"
+case_ build-assemble-snapshot-arg bad "another stage argument" "hit(s.__setitem__('run', s['run'].replace('snapshot-apk', 'apk')) for s in $J['build-assemble']['steps'] if 'snapshot-build' in (s.get('run') or ''))"
+case_ build-assemble-release-arg bad "another stage argument" "hit(s.__setitem__('run', s['run'].replace('assemble.sh apk', 'assemble.sh rapk')) for s in $J['build-assemble']['steps'] if 'witnessed-local.sh build ' in (s.get('run') or ''))"
 case_ build-hostile-input     bad "workflow_call still takes a hostile input" "d['on']['workflow_call']['inputs']['hostile'] = {'type': 'boolean'}"
 
 # the hostile Build step runs in every build (REQ-CHAIN-004-AC19)

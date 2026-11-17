@@ -1801,7 +1801,7 @@
       ],
       "signs": "other",
       "reason": "Release, step release-sign: cosign signatures made with the release KMS key (--key RELEASE_KMS_KEY_REF; the step refuses an empty RELEASE_ROLE_ARN or RELEASE_TOKEN_FILE, which the Witness wrapper hands it, and maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE itself), each with a Rekor entry, on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
-      "sha256": "39a970760e463eaf81224f0a38819071ee72372f0dcf95f7508c6f062c40a640",
+      "sha256": "f37cba3e1280f752e5ee9174b77e7fa8242dee036df7cc621b2d8097c9839ed7",
       "exceptions": [
         {
           "rule": "deny",

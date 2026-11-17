@@ -3,7 +3,7 @@
 # it holds no registry credential. The images are signed by digest for BOTH registries (a signature is a per-registry object) as a simple-signing payload, its signature and a Rekor bundle,
 # release-evidence/registry/<host>/<hex>.{payload,sig,bundle}, and the release manifest as an attestation bundle <hex>.attestation.bundle beside them; release verifies them and attaches them
 # (the release job). The SBOMs, the lock files, the dependency evidence and the release policy are signed with a bundle each, kept in release-evidence/; the four archives and
-# the archives' checksums file get a <file>.bundle beside them in dist/. The transparency log is never turned off: a bundle without a Rekor entry fails the
+# the archives' checksums file get a <file>.bundle in dist/bundles/ (the artifact release-dist-bundles, which release-evidence downloads into dist/). The transparency log is never turned off: a bundle without a Rekor entry fails the
 # step and names the file. The four release metadata files (the OpenVEX file, the CSAF file, the inspector-filters file and release-manifest.json) are made
 # from Build's verified digest list and listed, with their hashes, in release-files.sha256, which is signed too. The Witness records of the earlier stages are extra evidence and are not signed again.
 set -euo pipefail
@@ -82,11 +82,13 @@ cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/pol
 has_rekor release-evidence/vendor-evidence.json.bundle
 cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/dependency-list.json.bundle release-evidence/dependency-list.json
 has_rekor release-evidence/dependency-list.json.bundle
-cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle dist/checksums.txt.bundle dist/checksums.txt
-has_rekor dist/checksums.txt.bundle
+mkdir dist/bundles
+cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle dist/bundles/checksums.txt.bundle dist/checksums.txt
+has_rekor dist/bundles/checksums.txt.bundle
 for archive in dist/*.tar.gz; do
-  cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle "$archive.bundle" "$archive"
-  has_rekor "$archive.bundle"
+  name=${archive#dist/}
+  cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle "dist/bundles/$name.bundle" "$archive"
+  has_rekor "dist/bundles/$name.bundle"
 done
 cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/release-policy.bundle release-policy/policy.json
 has_rekor release-evidence/release-policy.bundle

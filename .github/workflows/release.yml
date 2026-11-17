@@ -1011,7 +1011,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-dist-bundles
-          path: dist/*.bundle
+          path: dist/bundles
 
   # Release's last job: after the signatures exist it attaches the evidence to the release (bin/release-assets.sh) and runs the post-publish commands (bin/release-postverify.sh), so both see what sign-release signed. It holds contents write
   # and nothing else: no environment, no KMS role, no identity token, so its two Witness steps run under the throwaway key of bin/witnessed-local.sh. A candidate never reaches it: sign-release is skipped for one and this job needs it.

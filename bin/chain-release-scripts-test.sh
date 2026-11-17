@@ -772,14 +772,17 @@ t = tree(); shutil.rmtree(os.path.join(t, SIGDIR)); rc, so, se = run(t, "release
 Lf = log(t)
 check(rc != 0 and len([l for l in Lf if l.startswith("cosign sign-blob") and ".payload" in l]) == 1 and not any(l.startswith("cosign attest-blob") for l in Lf),
       "AC8 a failing payload signature stops at the first one: no other payload is signed and no attestation is made after it", "rc=%s %s" % (rc, first(se)))
-# REQ-CHAIN-007-AC22 (the hand-over): the four archives and checksums.txt get their bundle beside them in dist/, the release policy is signed from release-policy/policy.json
+# REQ-CHAIN-007-AC22 (the hand-over): the four archives and checksums.txt get their bundle in their own directory dist/bundles (never beside them in dist/), the release policy is signed from release-policy/policy.json
 BL8 = " ".join(L8)
-check(all(("cosign sign-blob" + KEYSC + "--bundle dist/%s.bundle dist/%s" % (n, n)) in L8 for n in ("fscache_0.3.0_linux_amd64.tar.gz", "fscache_0.3.0_linux_arm64.tar.gz", "fscache-fips_0.3.0_linux_amd64.tar.gz", "fscache-fips_0.3.0_linux_arm64.tar.gz")),
-      "AC22 each of the four archives is signed with cosign sign-blob --bundle dist/<archive>.bundle dist/<archive>", str([l for l in L8 if "dist/" in l]))
-check(("cosign sign-blob" + KEYSC + "--bundle dist/checksums.txt.bundle dist/checksums.txt") in L8 and "release-evidence/checksums.txt.bundle" not in BL8 and not os.path.exists(os.path.join(t8, "release-evidence/checksums.txt.bundle")) and has_rekor_(t8, "dist/checksums.txt.bundle"),
-      "AC22 checksums.txt is signed into dist/checksums.txt.bundle (not release-evidence/checksums.txt.bundle) and that bundle carries a Rekor entry", str([l for l in L8 if "checksums" in l]))
-check(all(has_rekor_(t8, "dist/%s.bundle" % n) for n in sorted(os.listdir(os.path.join(t8, "dist"))) if n.endswith(".tar.gz")) and len([n for n in os.listdir(os.path.join(t8, "dist")) if n.endswith(".bundle")]) == 5,
-      "AC22 dist/ holds exactly five bundles after the run (the four archives' and checksums.txt's), each with a Rekor entry", str(sorted(os.listdir(os.path.join(t8, "dist")))))
+ARCS8 = ("fscache_0.3.0_linux_amd64.tar.gz", "fscache_0.3.0_linux_arm64.tar.gz", "fscache-fips_0.3.0_linux_amd64.tar.gz", "fscache-fips_0.3.0_linux_arm64.tar.gz")
+check(all(("cosign sign-blob" + KEYSC + "--bundle dist/bundles/%s.bundle dist/%s" % (n, n)) in L8 for n in ARCS8),
+      "AC22 each of the four archives is signed with cosign sign-blob --bundle dist/bundles/<archive>.bundle dist/<archive>", str([l for l in L8 if "dist/" in l]))
+check(("cosign sign-blob" + KEYSC + "--bundle dist/bundles/checksums.txt.bundle dist/checksums.txt") in L8 and "release-evidence/checksums.txt.bundle" not in BL8 and not os.path.exists(os.path.join(t8, "release-evidence/checksums.txt.bundle")) and has_rekor_(t8, "dist/bundles/checksums.txt.bundle"),
+      "AC22 checksums.txt is signed into dist/bundles/checksums.txt.bundle (not release-evidence/checksums.txt.bundle) and that bundle carries a Rekor entry", str([l for l in L8 if "checksums" in l]))
+check(all(has_rekor_(t8, "dist/bundles/%s.bundle" % n) for n in sorted(os.listdir(os.path.join(t8, "dist"))) if n.endswith(".tar.gz")) and sorted(os.listdir(os.path.join(t8, "dist/bundles"))) == sorted(n + ".bundle" for n in ARCS8 + ("checksums.txt",)),
+      "AC22 dist/bundles holds exactly five bundles after the run (the four archives' and checksums.txt's), each with a Rekor entry", str(sorted(os.listdir(os.path.join(t8, "dist/bundles"))) if os.path.isdir(os.path.join(t8, "dist/bundles")) else "no dist/bundles"))
+check(not [n for n in os.listdir(os.path.join(t8, "dist")) if n.endswith(".bundle")],
+      "AC22 no bundle is written beside the files in dist/ (the artifact release-dist-bundles is the literal directory dist/bundles, which holds nothing else)", str(sorted(os.listdir(os.path.join(t8, "dist")))))
 check(("cosign sign-blob" + KEYSC + "--bundle release-evidence/release-policy.bundle release-policy/policy.json") in L8 and has_rekor_(t8, "release-evidence/release-policy.bundle"),
       "AC22 release-policy/policy.json (the artifact release-policy) is signed into release-evidence/release-policy.bundle with a Rekor entry", str([l for l in L8 if "policy" in l]))
 blobs = " ".join(l for l in L if l.startswith("cosign sign-blob"))
@@ -1037,10 +1040,12 @@ three = pub_bytes(tc)
 manifest = os.path.join(tc, "release-metadata", "release-manifest.json")
 man1 = open(manifest, "rb").read()
 # the job ran again: it signs again, and its manifest carries the new run attempt
-shutil.rmtree(os.path.join(tc, "release-evidence"))     # a re-run is a new job on a fresh workspace: the first run's bundles (release-evidence/ and the dist/*.bundle beside the archives) are not there
+shutil.rmtree(os.path.join(tc, "release-evidence"))     # a re-run is a new job on a fresh workspace: the first run's bundles (release-evidence/ and dist/bundles) are not there
 for n_ in os.listdir(os.path.join(tc, "dist")):
-    if n_.endswith(".bundle"): os.remove(os.path.join(tc, "dist", n_))
+    if n_.endswith(".bundle"): os.remove(os.path.join(tc, "dist", n_))      # release-evidence downloads the artifact into dist: the bundles beside the files, as full_assets left them
+shutil.rmtree(os.path.join(tc, "dist/bundles"), ignore_errors=True)
 rcs, sos, ses = run(tc, "release-sign", creds=REG, env={"GITHUB_RUN_ATTEMPT": "2"})
+for n_ in os.listdir(os.path.join(tc, "dist/bundles")): shutil.copy(os.path.join(tc, "dist/bundles", n_), os.path.join(tc, "dist", n_))      # the download of the artifact release-dist-bundles into dist: each bundle lands beside its file (AC22)
 man2 = open(manifest, "rb").read()
 rcc, soc, sec = run(tc, "release-assets", creds=["GH_TOKEN"])
 check(rcc1 == 0 and rcs == 0 and man2 != man1 and b"attempts/2" in man2 and len(three) == 3
@@ -1818,7 +1823,7 @@ check(rc == 0 and os.path.isfile(os.path.join(t, "out/guide-results.json")),
       "AC7 check-guide.sh passes a passing guide command and writes guide-results.json",
       "rc=%s %s" % (rc, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "571"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "572"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
