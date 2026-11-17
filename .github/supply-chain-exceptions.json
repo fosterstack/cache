@@ -437,7 +437,7 @@
     {
       "file": ".github/agent/supply-chain/pin-inventory.py",
       "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-inventory.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made | text, not a command: the tuple of client module names in .github/agent/supply-chain/pin-inventory.py (data; it runs nothing)",
-      "body-sha256": "3564af58853ee15660512063b088aa4dc7d04e1ed3b1b90f2a144de93fc24e3c"
+      "body-sha256": "46a891d1a5a50464b43b9c1f41c997066f856460fb49be2cc7422e15dbf56a2e"
     },
     {
       "file": ".github/agent/tests/k8s-harness-fence-test.sh",
