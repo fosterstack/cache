@@ -393,7 +393,7 @@ jobs:
       contents: read
     uses: ./.github/workflows/stage-verify.yml
 
-  # Sign's third call (REQ-REL-011-AC1, cache#606): the same file, the stage check: it checks and signs the records of the Check jobs, which hold no identity token (their
+  # Sign's third call (REQ-REL-011-AC1): the same file, the stage check: it checks and signs the records of the Check jobs, which hold no identity token (their
   # steps build tools and run workloads), against the results Check uploaded. Its identity is the first call's.
   sign-check:
     needs: [build, check]

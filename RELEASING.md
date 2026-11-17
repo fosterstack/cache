@@ -1,8 +1,9 @@
 # Releasing
 
-**Releases build only in CI.** No binary, image, or tag that ships to a user
-is ever produced on a developer machine — including the maintainers'. This
-is a hard rule, not a preference: it's what makes the SLSA provenance and
+**Releases build only in CI.** No binary or image that ships to a user is
+ever produced on a developer machine, including the maintainers'. A maintainer
+makes only the signed release tag; CI builds everything else and signs it with
+the release signing key. This is a hard rule, not a preference: it's what makes the SLSA provenance and
 signatures on every release mean something (an attacker with a
 laptop cannot forge a release that GitHub's own runners never built).
 
@@ -23,8 +24,8 @@ before them and tie their work to the digest list Build made; Sign checks
 the building jobs' records (Build's against the artifacts it receives, Rebuild's
 against Build's digest list) and signs them. Release publishes by
 digest the exact bytes Build made and Rebuild and Check judged, and never
-rebuilds. Release is the only job that holds a registry credential, the apk
-signing key or `packages: write`.
+rebuilds. Of the jobs above, Release is the only one that holds a registry credential or
+`packages: write`.
 
 - **Build** (`stage-build.yml`): admits the tagged commit (tag signature,
   ancestry of `main`, required checks, approved requirements baseline), builds
@@ -55,7 +56,7 @@ signing key or `packages: write`.
 - **Release** (`stage-promote.yml`, environment `release`): six Witness steps,
   each a committed script. `release-verify` checks the tag and verifies the
   earlier stages' records in order before any credential exists in the job;
-  `release-apks` re-signs the apks with the stored release key through
+  `release-apks` re-signs the apks with the release signing key through
   `bin/release-sign-apks.sh`; `release-publish` pushes the images by digest to
   `ghcr.io/fosterstack/cache` and `docker.io/fosterstack/cache` and reads each
   registry back; `release-sign` signs the images in both registries and the
@@ -88,15 +89,15 @@ release, once the key exists, a person commits its public half as
 `build/keys/release.rsa.pub`, replacing the placeholder there (the output of
 `cosign public-key --key awskms:///alias/fosterstack-release-signing`).
 
-The key replacement lands together with the APK signing change (the release APKs are signed with the same key); until then the placeholder stays and the APK signing step cannot use a KMS key.
+The release APKs are signed with the same key. Until the public half is committed, the placeholder stays and the APK signing step refuses every release.
 
 ```sh
 git tag -s -m "..." vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-The tag must be signed (`tag.gpgSign = true` is already set inside
-`~/fosterstack/`). Pushing it is the only trigger — there is no manual
+Sign the tag with SSH: set `gpg.format` to `ssh` and `user.signingkey` to the SSH key
+listed for you as a maintainer, then run `git tag -s`. Pushing it is the only trigger — there is no manual
 release path.
 
 ## What a release contains
@@ -106,13 +107,12 @@ made (nothing is rebuilt). The images and the release files are signed with
 the release signing key, a key held in a cloud key service that the Release job
 reaches with short-lived credentials, each with an entry in Rekor. Sign's
 records and provenance are signed with the same key through the cloud key
-service (entry in Rekor). The apks are signed in Release's `release-apks` step, which
-today reads a separate local apk release key; the intended state is the one
-release signing key, and it lands with the APK signing change:
+service (entry in Rekor). The apks are signed in Release's `release-apks` step with
+the same key; no apk key is stored anywhere:
 
 - Two image variants, `production` and `-fips`, each a `linux/amd64` +
-  `linux/arm64` index holding the `fscache` binary and a few packages (base layout, CA
-  certificates, time zone data), with no base image,
+  `linux/arm64` index holding the `fscache` binary and a few packages (base layout and
+  time zone data), with no base image,
   at `ghcr.io/fosterstack/cache` and mirrored, same digests, at
   `docker.io/fosterstack/cache`. Tags: `:X.Y.Z` and `:X.Y.Z-fips` exactly;
   `:X.Y` moves to every final release of that line; `:X` and `:latest` move
@@ -147,9 +147,7 @@ release signing key, and it lands with the APK signing change:
 
 Releases built by the earlier eight-stage chain shipped a `-debug` variant on
 the unmodified `gcr.io/distroless/static:debug-nonroot` base (shell at
-`/busybox/sh`, no `/bin/sh`; a `/bin/sh` symlink layer was considered and
-rejected on 2026-09-02 because "the upstream distroless base, pinned by digest,
-with one Go binary added" must hold for every variant). Those releases are
+`/busybox/sh`, no `/bin/sh`). Those releases are
 verified as their own documentation says; see
 [docs/verify-images.md](docs/verify-images.md).
 
