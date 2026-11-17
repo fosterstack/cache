@@ -566,10 +566,13 @@ def cmd_admission_baseline(a):
     if got["sha"] != a.sha:
         refuse("build", "sha: admission was for %s, this run is %s" % (got["sha"], a.sha))
     # a release candidate tag (vX.Y.Z-rcN) is admitted with its OWN baseline: the version is the tag itself; every other tag carries a vX.Y.Z baseline
-    if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+", a.tag):
+    syntax = sys.modules["build-admit"].TAG_SYNTAX      # the one tag grammar (REQ-CHAIN-004-AC19), loaded by chain-verify.py
+    if not syntax.fullmatch(a.tag):
+        refuse("build", "baseline: tag %r is not vX.Y.Z or vX.Y.Z-rcN, so it has no baseline" % a.tag)
+    if "-rc" in a.tag:
         version_ok = got["baseline_version"] == a.tag
     else:
-        version_ok = re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", got["baseline_version"]) is not None
+        version_ok = syntax.fullmatch(got["baseline_version"]) is not None and "-rc" not in got["baseline_version"]
     if not version_ok or got["baseline"] != "requirements/releases/%s.yaml" % got["baseline_version"]:
         refuse("build", "baseline: %r at %r is not the baseline of tag %s at requirements/releases/<version>.yaml (vX.Y.Z, or the release candidate's own version)" % (got["baseline_version"], got["baseline"], a.tag))
     with open(a.out, "w") as f:
