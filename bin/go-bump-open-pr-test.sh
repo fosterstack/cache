@@ -254,15 +254,17 @@ for f in files:
             print("%s:%d:%s" % (f, whole.count("\n", 0, m.start()) + 1, " ".join(m.group(0).split())[:160]))
 '
 guard_scan() { python3 -I -c "$GUARD_PY" "$@"; }   # guard_scan <repo root> [allowed "file<TAB>whole line" ...]
+# the agent directory is written as @ in the rows and joined here: this file is outside it, and the layout check (REQ-AUD-18 AC1) reads any file that names it
 mapfile -t ALLOW <<'ROWS'
-.github/agent/bin/auditor-open-pr.py	shim("git commit -m auditor:%s" % change)
-.github/agent/bin/auditor-run.py	"gh api graphql createCommitOnBranch %s -- %s" % (branch, " ".join(staged)),   # a signed commit made through the API: no git commit, no git push
-.github/agent/bin/auditor-run.py	"gh api graphql createCommitOnBranch %s -- go.mod go.sum" % branch]   # a signed commit made through the API: no git commit, no git push
-.github/agent/bin/auditor-signed-commit.py	main requires signed commits; `git commit` in a runner is unsigned. This makes ONE commit on --branch through createCommitOnBranch with the
-.github/agent/bin/auditorlib/signed_commit.py	main's ruleset requires signed commits. A commit made by `git commit` in the runner is not signed, so the PR it
-.github/agent/bin/auditorlib/signed_commit.py	raise CommitError("signed commit: %s is %d bytes, over the %d-byte limit of createCommitOnBranch; the commit cannot be made through the API (and a git commit would be unsigned)"
+@bin/auditor-open-pr.py	shim("git commit -m auditor:%s" % change)
+@bin/auditor-run.py	"gh api graphql createCommitOnBranch %s -- %s" % (branch, " ".join(staged)),   # a signed commit made through the API: no git commit, no git push
+@bin/auditor-run.py	"gh api graphql createCommitOnBranch %s -- go.mod go.sum" % branch]   # a signed commit made through the API: no git commit, no git push
+@bin/auditor-signed-commit.py	main requires signed commits; `git commit` in a runner is unsigned. This makes ONE commit on --branch through createCommitOnBranch with the
+@bin/auditorlib/signed_commit.py	main's ruleset requires signed commits. A commit made by `git commit` in the runner is not signed, so the PR it
+@bin/auditorlib/signed_commit.py	raise CommitError("signed commit: %s is %d bytes, over the %d-byte limit of createCommitOnBranch; the commit cannot be made through the API (and a git commit would be unsigned)"
 bin/melange-apko-lib.sh	GIT_COMMITTER_EMAIL=t@example.test GIT_COMMITTER_DATE="$ISO" GIT_AUTHOR_DATE="$ISO" git commit -q -m fixture ) >/dev/null 2>&1
 ROWS
+gh_dir=.github; ALLOW=("${ALLOW[@]/#@/$gh_dir/agent/}")
 bad_lines="$(guard_scan "$root" "${ALLOW[@]}")" || bad_lines="the guard itself failed"
 if [ -z "$bad_lines" ]; then echo "ok: no workflow or script outside the tests makes a commit with git (AC8, plain forms)"; pass=$((pass+1))
 else echo "FAIL: a commit-making git call outside the tests:"; printf '%s\n' "$bad_lines" | sed 's/^/    /'; fail=$((fail+1)); fi

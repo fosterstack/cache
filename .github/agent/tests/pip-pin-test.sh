@@ -337,8 +337,8 @@ def judge(t):
         r.append(("C6", f"ci.yml's required allowlist job runs this test {len(me)} times, not once"))
     elif any(k in me[0] for k in ("if", "continue-on-error", "shell", "working-directory", "env")):
         r.append(("C6", "the step that runs this test has if / continue-on-error / shell / working-directory / env"))
-    elif (job or {}).get("if") or str((job or {}).get("continue-on-error", "false")).lower() != "false":
-        r.append(("C6", "the allowlist job has an if or continue-on-error"))
+    elif (job or {}).get("if") != "github.event_name != 'pull_request'" or str((job or {}).get("continue-on-error", "false")).lower() != "false":
+        r.append(("C6", "the allowlist job's if is not exactly the push-to-main one (github.event_name != 'pull_request'), or it has continue-on-error"))
     # case 7: job-level `uses:` is a local workflow (read here) or a digest-pinned external one, and the job has no steps of its own
     for f, d in t["docs"].items():
         for jn, j in ((d or {}).get("jobs") or {}).items():
@@ -547,8 +547,17 @@ def ci_set(k, v):
             if "pip-pin-test.sh" in str(x.get("run", "")): x[k] = v; return True
         return False
     return f
+def ci_job_set(k, v):
+    def f(t):
+        j = t["docs"][".github/workflows/ci.yml"]["jobs"]["allowlist"]
+        if v is None: return j.pop(k, None) is not None
+        j[k] = v; return True
+    return f
 mutants += [("ci.yml's allowlist job no longer runs this test", "C6", ci_unwire), ("the step is conditional", "C6", ci_set("if", "false")),
-            ("the step is continue-on-error", "C6", ci_set("continue-on-error", True))]
+            ("the step is continue-on-error", "C6", ci_set("continue-on-error", True)),
+            ("the allowlist job's if is another condition", "C6", ci_job_set("if", "false")),
+            ("the allowlist job has no if", "C6", ci_job_set("if", None)),
+            ("the allowlist job is continue-on-error", "C6", ci_job_set("continue-on-error", True))]
 
 def jobs_with_uses(t):
     return [(f, jn, j) for f, d in t["docs"].items() for jn, j in ((d or {}).get("jobs") or {}).items() if isinstance(j, dict) and "uses" in j]
