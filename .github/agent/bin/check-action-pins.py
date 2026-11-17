@@ -2024,21 +2024,42 @@ def _builds_name(command):
     return bool(RUNTIME_NAME.search(command) or (PRINTF.search(command) and "-v" in command))
 
 
-def _only_read(name, script, assigned=False):
+def _only_read(name, script):
     """True when the job script, as bash forms its words (quotes and backslashes removed), mentions `name` only as a
-    plain $name or ${name} read (and, with `assigned`, a plain name= assignment), runs no eval, and builds no variable name at run time ($'…', "${n}OUTPUT": a name the
+    plain $name or ${name} read, runs no eval, and builds no variable name at run time ($'…', "${n}OUTPUT": a name the
     check cannot read). Any other mention (read, for, printf -v, ${name:=x}, (( )), let, name[0]=, …) may set it."""
     if "$'" in script:
         return False
     words = _unquoted(script)
-    word = r"(?<![\w/.-])" + name + r"(?![A-Za-z0-9_])"
+    word = r"(?<![A-Za-z0-9_])" + name + r"(?![A-Za-z0-9_])"
     reads = r"\$" + name + r"(?![A-Za-z0-9_])|\$\{" + name + r"\}"
-    if assigned:
-        reads += "|" + word + "=(?!=)"
     return (len(re.findall(word, words)) == len(re.findall(reads, words))
             and not re.search(r"(?<![\w-])eval(?![\w-])", words)
             and not RUNTIME_EXPANSION.search(words)
             and not any(_builds_name(_unquoted(c)) for c in _split_commands(script)))
+
+
+SETTER_WORDS = re.compile("read|mapfile|readarray|getopts|declare|typeset|local|export|readonly|let|select|for")
+
+
+def _set_by_setter(name, script):
+    """True when a form other than name= names the variable as a literal word and may set it: a command that takes a
+    variable name (read, for, eval …), printf -v, name+=, name[0]=, (( name = … )). ${name:=x} is read as `: name=x`."""
+    word = r"(?<![\w/.$-])(?<!\$\{)" + name + r"(?![A-Za-z0-9_])"
+    step = r"(?:\+\+|--)"
+    arithmetic = (r"\(\([^\n]*(?:" + word + r"\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)|" + word + step + "|" + step + word + ")")
+    element = word + r"(?:\[[^]\n]*\])?\+=|" + word + r"\[[^]\n]*\]="
+    words = _unquoted(script)
+    if re.search(arithmetic, words) or re.search(element, words):
+        return True
+    for command in _split_commands(script):
+        toks = _tokens(command)
+        names_it = any(re.fullmatch(name + r"(?:\[[^]]*\])?\+?(?:=.*)?", t, re.S) for t in toks)
+        if names_it and (any(SETTER_WORDS.fullmatch(t) for t in toks) or ("printf" in toks and "-v" in toks)):
+            return True
+        if "eval" in toks and any(re.search(word, t) for t in toks):
+            return True
+    return False
 
 
 def _outside(target, script, depth=0):
@@ -2057,7 +2078,7 @@ def _outside(target, script, depth=0):
     m = re.match(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?(/.*)?$", target.strip("\"'"))
     if not m or depth > 4:
         return False
-    if not _only_read(m.group(1), script, assigned=True):
+    if _set_by_setter(m.group(1), script):
         return False                                     # set by read, printf -v, (( )), name[0]= …: an unknown value
     values = re.findall(r"(?:^|[\s;(])" + m.group(1) + r"=[\"']?([^\s\"';)]*)", script)
     return bool(values) and all(_outside(v, script, depth + 1) for v in values)
