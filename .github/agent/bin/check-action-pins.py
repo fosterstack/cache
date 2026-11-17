@@ -2325,6 +2325,27 @@ BASE_SHA_REFS = (
 _BASE_WRITE = r"(?<![\w.-])(?:sed\s+-\w*i|perl\s+-\w*i|awk\s+-i|cp|mv|ln|install|tee|dd|rsync|curl|wget|truncate|patch|ed|ex|rm|chmod|tar|unzip|git\s+(?:checkout|apply|restore))(?![\w.-])"
 
 
+def _basename_is_other(arg, base, text, at):
+    """True when the argument of a `$(basename ARG)` write, found at offset `at` of the job text, is proven to name a file other
+    than `base`: one literal word of another name, or one variable `v` that nothing assigns and whose loop, the nearest `for v in`
+    before the write and still open there, lists only literal files without `base`."""
+    words = arg.split()
+    if len(words) != 1:
+        return False
+    word = words[0].strip("\"'")
+    if re.fullmatch(r"[\w./-]+", word):
+        return _base(word) != base
+    v = re.fullmatch(r"\$\{?(\w+)\}?", word)
+    if not v:
+        return False
+    name = re.escape(v.group(1))
+    loops = list(re.finditer(r"\bfor\s+" + name + r"\s+in\s+([^;\n]*?)\s*;\s*do\b", text[:at]))
+    if not loops or re.search(r"\bdone\b", text[loops[-1].end():at]) or re.search(r"(?<![\w$-])" + name + r"\s*[:=]", text) or re.search(r"\bread\b[^;\n]*\b" + name + r"\b", text):
+        return False
+    files = loops[-1].group(1).split()
+    return all(re.fullmatch(r"[\w./-]+", x) and _base(x) != base for x in files)
+
+
 def _resolve_script(path, text, entries, bases=()):
     """A script path as a committed file: relative (./x), under $GITHUB_WORKSPACE, or a COPY that a real
     `git show <ref>:<file> > <dir>/<name>` or `gh api repos/${GITHUB_REPOSITORY}/contents/<file>?ref=main` command of the
@@ -2355,10 +2376,10 @@ def _resolve_script(path, text, entries, bases=()):
             return None
     dpat = r"\$\{?RUNNER_TEMP\}?" if d.startswith("$") else re.escape(d)
     dst = r">\s*\"?" + dpat + r"/(" + re.escape(base) + r"|\$\(basename[^)]*\))"
-    # a `$(basename …)` write names this copy only when a `for f in` list of the job holds a file of this name: a loop
-    # that fetches other scripts does not write this one (and does not hide its literal write)
-    looped = {_base(x) for lst in re.findall(r"\bfor\s+f\s+in\s+([^;\n]*?)\s*;\s*do\b", text) for x in lst.split()}
-    if base not in looped:
+    # a `$(basename …)` write names this copy unless its destination is proven another name: it is left out only when every
+    # such write's argument is a literal path, or a variable whose one definition is a literal `for v in` list, of other names
+    writes_ = re.finditer(r">\s*\"?" + dpat + r"/\$\(basename([^)]*)\)", text)
+    if all(_basename_is_other(w.group(1), base, text, w.start()) for w in writes_):
         dst = r">\s*\"?" + dpat + r"/(" + re.escape(base) + r")"
     writes = len(re.findall(dst + r"\"?", text))
     if writes != 1:

@@ -1509,5 +1509,47 @@ class StartupHookWrites(unittest.TestCase):
         self.assertIn(" 0 finding(s)", out)
 
 
+class BasenameWriteKeepsCounting(unittest.TestCase):     # a `> "$RUNNER_TEMP/$(basename X)"` write counts unless proven another name
+    ENTRIES = {"bin/tool.sh": "file", "bin/other.sh": "file", "bin/a.sh": "file", "bin/b.sh": "file"}
+    FETCH = 'git show origin/main:bin/tool.sh > "$RUNNER_TEMP/tool.sh"\n'
+    GH = 'gh api repos/${GITHUB_REPOSITORY}/contents/bin/tool.sh?ref=main --jq .content | base64 -d > "$RUNNER_TEMP/tool.sh"\n'
+    RUN = 'bash "$RUNNER_TEMP/tool.sh"\n'
+
+    def resolve(self, body):
+        return M._resolve_script("$RUNNER_TEMP/tool.sh", body, self.ENTRIES)
+
+    def test_a_literal_basename_write_of_the_same_name_is_refused(self):
+        body = self.FETCH + 'printf x > "$RUNNER_TEMP/$(basename bin/tool.sh)"\n' + self.RUN
+        self.assertIsNone(self.resolve(body))
+
+    def test_a_literal_basename_write_of_another_name_is_resolved(self):
+        body = self.FETCH + 'printf x > "$RUNNER_TEMP/$(basename bin/other.sh)"\n' + self.RUN
+        self.assertEqual(self.resolve(body), "bin/tool.sh")
+
+    def test_a_variable_set_outside_a_loop_is_refused(self):
+        body = self.FETCH + 'f=bin/tool.sh\nprintf x > "$RUNNER_TEMP/$(basename "$f")"\n' + self.RUN
+        self.assertIsNone(self.resolve(body))
+
+    def test_a_variable_set_outside_a_loop_to_another_name_is_still_refused(self):
+        body = self.FETCH + 'f=bin/other.sh\nprintf x > "$RUNNER_TEMP/$(basename "$f")"\n' + self.RUN
+        self.assertIsNone(self.resolve(body))
+
+    def test_the_repro_with_no_loop_list_is_refused_for_gh_api_and_git_show(self):
+        for fetch in (self.GH, self.FETCH):
+            with self.subTest(fetch=fetch):
+                body = fetch + 'echo evil > "$RUNNER_TEMP/$(basename bin/tool.sh)"\n' + self.RUN
+                self.assertIsNone(self.resolve(body))
+
+    def test_a_loop_whose_list_lacks_the_name_leaves_the_literal_copy_resolved(self):
+        loop = ('for f in bin/a.sh bin/b.sh; do\n  gh api repos/${GITHUB_REPOSITORY}/contents/${f}?ref=main --jq .content'
+                ' | base64 -d > "$RUNNER_TEMP/$(basename "$f")"\ndone\n')
+        self.assertEqual(self.resolve(loop + self.FETCH + self.RUN), "bin/tool.sh")
+
+    def test_a_loop_whose_list_names_the_file_still_resolves_through_the_loop(self):
+        loop = ('for f in bin/tool.sh bin/b.sh; do\n  gh api repos/${GITHUB_REPOSITORY}/contents/${f}?ref=main --jq .content'
+                ' | base64 -d > "$RUNNER_TEMP/$(basename "$f")"\ndone\n')
+        self.assertEqual(self.resolve(loop + self.RUN), "bin/tool.sh")
+
+
 if __name__ == "__main__":       # last: every test class above is defined first (Codex #164 adversarial r1, R02)
     unittest.main()
