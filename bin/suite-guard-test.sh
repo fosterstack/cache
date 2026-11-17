@@ -320,7 +320,7 @@ for r in yaml.safe_load(open("requirements/requirements.yaml"))["requirements"]:
 PY
 )
 if [ "$txt" = "$(printf 'REQ-DEP-005-AC1 ok\nREQ-DEP-005-AC3 ok')" ]; then ok "REQ-DEP-005-AC1 AC3 the requirements say the queue's grouping is a ruleset setting the repository does not check"; else bad "requirements grouping text: $txt"; fi
-judge="$root/.github/agent/bin/queue-gate-judge.sh"
+judge=$(find "$root/.github" -name queue-gate-judge.sh)
 if grep -q 'does not check' "$judge" && ! tr -d '#\n' < "$judge" | tr -s ' ' | grep -q 'the grouping ALLGREEN, so that'; then ok "REQ-DEP-005-AC3 queue-gate-judge.sh says the grouping is a setting it does not check"; else bad "queue-gate-judge.sh still claims the grouping ALLGREEN as a requirement"; fi
 
 EXPECT=120
