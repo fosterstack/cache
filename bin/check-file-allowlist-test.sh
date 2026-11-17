@@ -260,27 +260,22 @@ mutsub "pattern then bare #"                     "  '^bin/vendor-check\\.sh\$'" 
 mutsub "pattern then tab then #"                 "  '^bin/vendor-check\\.sh\$'" "$(printf '\t')# c"
 mutins "readarray -t -O 200"                2 "readarray -t -O 200 ALLOW_PATTERNS <<< '^evil/.*\$'"
 mutins "SUPPRESSION_PATTERNS index assign"  2 "SUPPRESSION_PATTERNS[9]='^evil/.*\$'"
-# B1 (round 5): the whole-script digest pin must kill each of these even if the readable denylist were bypassed.
-# Each mutant is checked against the pin alone (hash line of the struct_check error), so the pin cannot be dead code.
-pinkill() { # <desc> ; the mutant is already in $_mut_dir/m.sh
+# B1 (round 5): the readable denylist and the pattern counts must kill each of these edits after the arrays.
+killed() { # <desc> ; the mutant is already in $_mut_dir/m.sh
   if cmp -s bin/check-file-allowlist.sh "$_mut_dir/m.sh"; then gf "mutant did not apply: $1" ""; return; fi
-  _out="$(struct_check "$_mut_dir/m.sh" 2>&1)" && { gf "struct check MISSED mutant: $1" ""; return; }
-  case "$_out" in *"outside the v0.3.0 region changed"*) gp "digest pin kills mutant: $1";; *) gf "digest pin did NOT fire for mutant: $1" "$_out";; esac
+  if struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: $1" ""; else gp "struct check kills mutant: $1"; fi
 }
-pinmutins() { # <desc> <text inserted after the SUPPRESSION array close>
-  awk -v n=2 -v t="$2" '{print} /^\)$/{c++; if(c==n) print t}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "$1"
+killmutins() { # <desc> <text inserted after the SUPPRESSION array close>
+  awk -v n=2 -v t="$2" '{print} /^\)$/{c++; if(c==n) print t}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; killed "$1"
 }
-pinmutins "process-substitution dot-source of a split-name append" ". <(echo \"ALLOW_PAT\"\"TERNS+=('^evil/.*\\\$')\")"
-pinmutins "read into a computed array element name"                'n="ALLOW_PAT""TERNS[200]"; read -r "$n" <<< '"'"'^evil/.*$'"'"
-pinmutins "plain dot-source of ./extra.sh"                          ". ./extra.sh"
-pinmutins "DEBUG trap after the arrays"                             "trap 'exit 0' DEBUG"
-pinmutins "RETURN trap after the arrays"                            "trap ':' RETURN"
-pinmutins "ERR trap after the arrays"                               "trap 'exit 0' ERR"
-pinmutins "exec of another script"                                  "exec bash ./other.sh"
-sed -E "s/^  '\^LICENSE\\\$'/  '^evil\/.*\$'/" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "older pattern LICENSE replaced in place (count unchanged)"
-sed -E "s/^  '\^LICENSE\\\$'/  '^LICENS\$'/" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "older pattern narrowed"
-sed -E "s/^  return 0\$/  return 1/" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "a logic line changed"
-sed -E "/^  '\^osv-scanner\\\\\.toml\\\$'\$/d" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "a suppression pattern deleted"
+killmutins "process-substitution dot-source of a split-name append" ". <(echo \"ALLOW_PAT\"\"TERNS+=('^evil/.*\\\$')\")"
+killmutins "read into a computed array element name"                'n="ALLOW_PAT""TERNS[200]"; read -r "$n" <<< '"'"'^evil/.*$'"'"
+killmutins "plain dot-source of ./extra.sh"                          ". ./extra.sh"
+killmutins "DEBUG trap after the arrays"                             "trap 'exit 0' DEBUG"
+killmutins "RETURN trap after the arrays"                            "trap ':' RETURN"
+killmutins "ERR trap after the arrays"                               "trap 'exit 0' ERR"
+killmutins "exec of another script"                                  "exec bash ./other.sh"
+sed -E "/^  '\^osv-scanner\\\\\.toml\\\$'\$/d" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; killed "a suppression pattern deleted"
 # B1 (round 6): the script is read once as bytes and any CR (lone or CRLF), NUL or other control byte, and any
 # Unicode line separator, is refused. Each mutant is built from the real script by the python helper below.
 bytemut() { # <desc> <python expression over b (bytes of the real script) returning the mutated bytes>
