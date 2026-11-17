@@ -89,7 +89,7 @@ mappings:
       - { type: go-test, ref: "internal/server:TestLoggableErrWithoutCauseNamesOnlyTheOperation" }
   - ac: REQ-FIPS-003-AC1
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/ci.yml job test, FIPS step: full race suite under GOFIPS140=v1.0.0 + GODEBUG=fips140=only on every push/PR" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml job fips140-only: full race suite under GOFIPS140=v1.0.0 + GODEBUG=fips140=only on every push/PR" }
   - ac: REQ-REL-001-AC1
     evidence:
       - { type: workflow-job, ref: ".github/workflows/release.yml: cosign sign per digest, attest-build-provenance, and gh attestation verify gate - executed on the v0.1.0 release" }

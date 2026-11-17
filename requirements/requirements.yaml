@@ -1357,7 +1357,7 @@ requirements:
       - id: REQ-FIPS-003-AC1
         given: the CI configuration
         when: a commit lands
-        then: the fips140-only job runs the full race-enabled suite under the validated module in only-mode
+        then: the fips140-only job, a job of its own and so its own status check on every pull request and push, runs the full race-enabled suite under the validated module in only-mode
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 

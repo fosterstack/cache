@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   # One required context for the Go tests. The race run writes the coverage profile, so the tests run once; each coverage gate runs once; the
-  # FIPS run is the second, separate test run (it needs its own environment). The vendored tree is what `go mod vendor` regenerates (REQ-VEND-001-AC3) on every pull request,
+  # FIPS run is a second test run in its own job, fips140-only (it needs its own environment). The vendored tree is what `go mod vendor` regenerates (REQ-VEND-001-AC3) on every pull request,
   # Dependabot's included: it only compares, with no token and no commit. The whole history is fetched so origin/main is readable:
   # bin/vendor-check.sh passes a tree without vendor/ only when origin/main has none either.
   test:
@@ -90,12 +90,25 @@ jobs:
             /tmp/req.out
             /tmp/auditor-python-coverage.txt
           retention-days: 90
-      # The mechanical oracle for the FIPS check. GOFIPS140 selects Go's CMVP-validated cryptographic module (cert #5247) at build
-      # time; GODEBUG=fips140=only makes that module REFUSE any non-approved algorithm at runtime rather than quietly computing it.
-      # Running the full suite under both means every crypto path the tests exercise — ours or a dependency's — is proven
-      # approved-only on every commit. This bites: a probe that calls crypto/md5 panics under fips140=only with "not allowed in
-      # FIPS 140-only mode". Scope, stated honestly because SECURITY.md says the same: =only proves the paths the tests actually
-      # execute; the depguard crypto allowlist covers the static side. Neither alone is the whole claim.
+
+  # The FIPS run is a job of its own, so it is its own required status check.
+  # The mechanical oracle for the FIPS check. GOFIPS140 selects Go's CMVP-validated cryptographic module (cert #5247) at build
+  # time; GODEBUG=fips140=only makes that module REFUSE any non-approved algorithm at runtime rather than quietly computing it.
+  # Running the full suite under both means every crypto path the tests exercise — ours or a dependency's — is proven
+  # approved-only on every commit. This bites: a probe that calls crypto/md5 panics under fips140=only with "not allowed in
+  # FIPS 140-only mode". Scope, stated honestly because SECURITY.md says the same: =only proves the paths the tests actually
+  # execute; the depguard crypto allowlist covers the static side. Neither alone is the whole claim.
+  fips140-only:
+    name: fips140-only
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+          check-latest: true
       - name: build the -fips variant (same env as the released binary)
         run: CGO_ENABLED=0 GOFIPS140=v1.0.0 go build -o /tmp/fscache-fips ./cmd/fscache
       - name: full test suite, validated module, approved algorithms only

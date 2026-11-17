@@ -886,7 +886,7 @@ jobs:
             witness-release-verify
             witness-release-publish
 
-  # Sign's fourth job (ruling 7 of cache#921): before release publishes, it alone holds the KMS role, and signs with it everything release publishes (bin/release-sign.sh, bin/release-apks.sh). It holds no registry credential and
+  # Sign's fourth job: before release publishes, it alone holds the KMS role, and signs with it everything release publishes (bin/release-sign.sh, bin/release-apks.sh). It holds no registry credential and
   # no packages write: it writes each payload, signature and Rekor bundle to artifacts, which release verifies before its first login. Its if carries the release-candidate condition: a candidate signs nothing.
   sign-release:
     needs: [build-assemble, release-verify, release-compare]
