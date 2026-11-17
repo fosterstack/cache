@@ -34,7 +34,7 @@ def _load(name):
 inv = _load("pin-inventory")
 
 
-def parse_time(s, clock=False):
+def parse_time(s):
     """ISO 8601 -> aware datetime, or None when it is not one."""
     if not isinstance(s, str):
         return None
@@ -42,7 +42,7 @@ def parse_time(s, clock=False):
     m = re.match(r"^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}:?\d{2})?$", t)
     if not m:
         return None
-    base, frac, tz = m.groups()
+    base, _, tz = m.groups()
     try:
         d = dt.datetime.strptime(base.replace(" ", "T"), "%Y-%m-%dT%H:%M:%S")
     except ValueError:
@@ -51,12 +51,7 @@ def parse_time(s, clock=False):
         sign = 1 if tz[0] == "+" else -1
         hh, mm = int(tz[1:3]), int(tz[-2:])
         d = d - sign * dt.timedelta(hours=hh, minutes=mm)
-    d = d.replace(tzinfo=dt.timezone.utc)
-    if frac and not clock:
-        # a publication time's fractional second is rounded UP, a clock's (clock=True) is truncated:
-        # a publication time is never shown earlier than it was
-        d += dt.timedelta(seconds=1)
-    return d
+    return d.replace(tzinfo=dt.timezone.utc)
 
 
 _PIN = re.compile(r"^(?:[0-9a-f]{40}|sha256:[0-9a-f]{64}|v?\d+(?:\.\d+)*(?:[-+._][0-9A-Za-z][0-9A-Za-z.\-+]*)?)$")

@@ -245,6 +245,27 @@ for n in ("live_proofs", "observed", "_pr_clock", "_registry_push", "_go_index_t
           "Fixture", "Live", "MIN_DAYS", "SERVER_SIDE", "tobs", "GO_EXEMPT_REASON"):
     assert not hasattr(ac, n), n
 PY
+CASE="parse_time truncates a publication time's fraction like a clock (12:00:00.9 is 12:00:00, not 12:00:01), reads an offset, and gives None for a non-ISO string and a non-string"
+check python3 - "$chk" <<'PY'
+import datetime as dt, importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+U = dt.timezone.utc
+assert ac.parse_time("2026-10-05T12:00:00.9Z") == dt.datetime(2026, 10, 5, 12, 0, 0, tzinfo=U), ac.parse_time("2026-10-05T12:00:00.9Z")
+assert ac.parse_time("2026-10-05T12:00:00+01:00") == dt.datetime(2026, 10, 5, 11, 0, 0, tzinfo=U)
+assert ac.parse_time("not a time") is None and ac.parse_time(5) is None and ac.parse_time(None) is None
+PY
+CASE="parse_time takes exactly one parameter (the hold-era clock flag is gone): a second argument is a TypeError"
+check python3 - "$chk" <<'PY'
+import importlib.util, inspect, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+assert len(inspect.signature(ac.parse_time).parameters) == 1
+try:
+    ac.parse_time("2026-10-05T12:00:00Z", True)
+except TypeError:
+    pass
+else:
+    raise SystemExit("a second argument was accepted")
+PY
 
 # --- plain forms from review round 3: pip extras and operators, an indented requirements line, a tag-only docker run, an expression that holds `|`, an action's subdirectory -----------------------------------
 newcase extras "$(sub .github/workflows/ci.yml '      - run: |' $'      - run: |\n          pip install requests[socks]==2.99.0 urllib3>=2.0\n          docker run --rm -e A=b alpine:3.99 true\n          go install example.org/tool@${{secrets.PRIVATE_VERSION||'"'"'v1.2.3'"'"'}}')"
