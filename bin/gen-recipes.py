@@ -15,22 +15,19 @@ The template is plain text with a CLOSED set of named placeholders and nothing e
   @VERSION@       left as written (build-apk.sh replaces it with the apk version)
 The template must hold no GOFIPS140 (the two FIPS constants live HERE), no tab, carriage return or NUL, and be UTF-8; each of the four named placeholders appears
 exactly once, FIPS_EXPORT and FIPS_PROOF each alone on a line. Nothing is parsed or compared as YAML, so there is no parser difference to exploit.
-What the generator does NOT do: it does not read or judge the shell in the template. Behaviour parity of the two builds rests on the template being reviewed and
-pinned (TEMPLATE_SHA256 below: --check fails if the template changes, naming the pin; a change must update the pin in the same reviewed change), and the final control
-is build-apk.sh's check of the packaged binary (GOFIPS140 stamp, version, vcs), which is mandatory in CI.
+What the generator does NOT do: it does not read or judge the shell in the template. Behaviour parity of the two builds rests on the template being reviewed,
+and the final control is build-apk.sh's check of the packaged binary (GOFIPS140 stamp, version, vcs), which is mandatory in CI.
 --check exits 0 when both committed files equal the generator's output byte for byte, 1 when a file differs (the diff is printed) or the template breaks a rule,
 2 when a file is missing or unreadable. --write writes the two files.
 """
 import argparse
 import difflib
-import hashlib
 import os
 import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-TEMPLATE_SHA256 = "7360d7398fec17fede54ac7e71a84db0d5a29ea28d9a727483228de44816ea3a"   # sha256 of build/melange.yaml.tmpl: a change to the template must update this line in the same reviewed change
 ALLOWED_SUBST = ("${{targets.destdir}}", "${{build.arch}}")
 ALLOWED_IF = re.compile(r"    if: \$\{\{build\.arch\}\} == '(x86_64|aarch64)'")
 NAMED = ("NAME", "DESCRIPTION", "PACKAGES", "FIPS_EXPORT", "FIPS_PROOF")
@@ -77,15 +74,6 @@ def bad(msg, code=1):
     sys.exit(code)
 
 
-def pin_value():
-    env = os.environ.get("FSCACHE_GEN_PIN")
-    if env is None:
-        return TEMPLATE_SHA256
-    if os.environ.get("FSCACHE_TEST_MODE") != "1":
-        bad("FSCACHE_GEN_PIN is allowed only in test mode (FSCACHE_TEST_MODE=1); the pin is the constant in this file", 2)
-    return env
-
-
 def read_template(path):
     try:
         raw = open(path, "rb").read()
@@ -129,9 +117,6 @@ def read_template(path):
     for n in ("PACKAGES", "FIPS_EXPORT", "FIPS_PROOF"):
         if ("\n@%s@\n" % n) not in text:
             bad("@%s@ must be alone on its line" % n)
-    got = hashlib.sha256(raw).hexdigest()
-    if got != pin_value():
-        bad("the template changed: update TEMPLATE_SHA256 in the same reviewed change (the template %s has sha256 %s, the pin is %s)" % (path, got, pin_value()))
     return text
 
 

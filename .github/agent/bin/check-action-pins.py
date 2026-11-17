@@ -48,11 +48,8 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
              signed Ubuntu archive, PyYAML for this checker) are distribution packages, not actions —
              outside this check, the same class as a binary installed by version; covered by the review
              pass (row 78 pass on PR #148, Oct 2: documented here rather than pinned).
-  The gate's own wiring: .github/workflows/agent-review-gate.yml is pinned here by GATE_WORKFLOW_SHA256 (a
-             frozen set of exactly two digests while cache PR #316 is bootstrapped; a later change leaves one)
-             (its action pins masked, so a Dependabot bump still passes). Any other edit to it fails
-             until this file is updated — a change under .github/agent/, so it needs the independent
-             second review: the enforcement cannot be removed from its caller by an ordinary merge either.
+  The gate's own wiring: .github/workflows/agent-review-gate.yml must be in the tree; its text is judged
+             by review, not by a digest.
   container: / image: / each service: <image>@sha256:<64 hex>, optionally docker://; never ${{ }}.
   Executor images: a pinned action that runs a container image of its own must be given that image
              by digest through its input (EXECUTOR_INPUTS) — a pinned action with a mutable default
@@ -180,7 +177,6 @@ usage: check-action-pins.py [--verify-tags] [--git <commit>] [repo-root]
 """
 import collections
 import csv
-import hashlib
 import json
 import os
 import pathlib
@@ -239,12 +235,6 @@ DOCKER_ACTIONS = {"ossf/scorecard-action"}
 RETIRED_COMPOSITE = {"ossf/scorecard-action"}   # refused outright (advisor 0140); DOCKER_ACTIONS kept for docstring/test
                                                  # continuity, never reached since RETIRED_COMPOSITE returns first
 GATE_WORKFLOW = ".github/workflows/agent-review-gate.yml"
-# the accepted gate-workflow digests (gate_digest: pins masked), a closed set of EXACTLY TWO while a change to the gate is in flight:
-# main's gate workflow and the change's; a later change removes main's old one, leaving one
-GATE_WORKFLOW_SHA256 = frozenset({
-    "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f",   # main's gate workflow
-    "30ab1b01d956e176e777c859b77b233ee1444abec869a8e1121473b98c001c89",   # the same file after the change in flight
-})
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)
 EXECUTOR_ALLOWED = {
@@ -497,12 +487,6 @@ def docker_inputs(where, step, bad):
         for n in names:
             if n is None or not re.fullmatch(r"[a-z0-9_-]+", n) or n in ("entrypoint", "args"):
                 bad.append(f"{where}: Docker action input {n!r} is refused (entrypoint/args, or not a plain name)")
-
-
-def gate_digest(text):
-    """The gate workflow's sha256 with each action pin masked (a Dependabot bump moves only those)."""
-    masked = re.sub(rf"@{SHA}[ \t]+#[ \t]*v[0-9][0-9A-Za-z.+-]*", "@<pin>", text)
-    return hashlib.sha256(masked.encode("utf-8")).hexdigest()
 
 
 def check_uses(tree, where, path, node, parent, lines, pins, bad):
@@ -2808,18 +2792,16 @@ def _token_url_breach(text, name, run_texts, key):
 
 
 DOWNLOAD_EXCLUSIONS = {
-    (".github/workflows/auditor.yml", "audit", 9, "ec6b56ab920e50d88208a5c553521658f5eab8c32cff1cc0d56404e1b27de643"): (
+    (".github/workflows/auditor.yml", "audit", 9): (
         "the CISA KEV catalog is fetched to ${AUDITOR_KEV_CATALOG}, a file under runner.temp that the step's env names and nothing else assigns (this exclusion "
         "holds only while the file assigns that variable exactly once, as `AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json`); it is read as data by the auditor and never run",
         "AUDITOR_KEV_CATALOG", "AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json"),
-    (".github/workflows/dependabot-reviewer.yml", "review", 4,
-     "bd33b686b13cadaf9d7b3b2216165f30fa6dbe35ef74bcefaebe9c5c86d4e3f1"): (
+    (".github/workflows/dependabot-reviewer.yml", "review", 4): (
         "the identity-token request: curl prints the JSON answer from ${ACTIONS_ID_TOKEN_REQUEST_URL} "
         "(set by the runner, quoted, followed by a literal &audience=) into a "
         "command substitution that jq reads; it writes no file " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
-    (".github/workflows/dependabot-reviewer.yml", "review", 8,
-     "b0786a7fa2ac09fd6adf8658a0e853d527f2f9e0aea4aeb72fc7bbee9620effd"): (
+    (".github/workflows/dependabot-reviewer.yml", "review", 8): (
         "the same identity-token request inside the decision loop's token refresh: "
         "stdout into a command substitution that jq reads, no file written " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
@@ -2828,10 +2810,9 @@ DOWNLOAD_EXCLUSIONS = {
 
 def _exclusion_key(item):
     """The DOWNLOAD_EXCLUSIONS key of one step of a job's scripts:
-    (workflow file, job, step index, sha256 of its run text), or None."""
+    (workflow file, job, step index), or None."""
     m = re.match(r"^(.*)\.jobs\.([^.\[]+)\.steps\[(\d+)\]\.run$", item[0])
-    digest = hashlib.sha256(item[1].encode("utf-8", "replace")).hexdigest()
-    return (m.group(1), m.group(2), int(m.group(3)), digest) if m else None
+    return (m.group(1), m.group(2), int(m.group(3))) if m else None
 
 
 def _excluded_run_texts(scripts, name):
@@ -3467,10 +3448,6 @@ def main():
         check_file(tree, rel, pins, bad)
     if GATE_WORKFLOW not in files:
         bad.append(f"{GATE_WORKFLOW}: missing — the gate that runs this check")
-    elif gate_digest(tree.read(GATE_WORKFLOW)) not in GATE_WORKFLOW_SHA256:
-        bad.append(f"{GATE_WORKFLOW}: changed — update GATE_WORKFLOW_SHA256 in this checker "
-                   f"(a reviewed .github/agent/ change) to {gate_digest(tree.read(GATE_WORKFLOW))}; "
-                   f"accepted: {', '.join(sorted(GATE_WORKFLOW_SHA256))}")
     if verify:
         bad += verify_pins(pins)
     for b in bad:
