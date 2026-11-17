@@ -260,8 +260,8 @@ for flag, what, name in (("--snapshot", "Build (capital B)", "Build"), ("--snaps
           rc == 1 and first.startswith("refused at rebuild: ") and "Traceback" not in err and "digest: items.json" not in first,
           "exit %s, first line %r" % (rc, first[:140]))
 # ---- REQ-CHAIN-004-AC15: the snapshot version -------------------------------------------------------------------------------------------------------------
-# the check stage reads the collections scanners, acceptance, runtime and arm64; the fixture names one of them
-CHECK_COLLECTION = {"check": "scanners"}
+# the check stage reads the collections scanners, acceptance, runtime and arm64 (#683 split it); the fixture names one of them; the release stage reads the release names release-verify and release-publish, so it names release-verify
+CHECK_COLLECTION = {"check": "scanners", "release": "release-verify"}
 SNAP_APK, REAL_APK = "out/x86_64/fscache-0.0.0_rc1-r0.apk", "out/x86_64/fscache-0.3.0-r0.apk"
 for label, args, stage, env in SUBCOMMANDS:
     for files, want_snapshot in (([SNAP_APK], True), ([REAL_APK], False)):

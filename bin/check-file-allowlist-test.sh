@@ -117,11 +117,8 @@ bin/layout-archive.sh bin/layout-archive-test.sh
 bin/chain-sandbox-probe.sh bin/build-sandbox-hostile-test.sh
 build/probe/control.yaml.tmpl build/probe/read-record.yaml.tmpl build/probe/write-record.yaml.tmpl
 build/probe/read-keydir.yaml.tmpl build/probe/read-token.yaml.tmpl build/probe/network.yaml.tmpl
-bin/evidence-letter.py bin/evidence-letter-test.sh docs/evidence-letter-signatory.txt
-bin/evidence-letter-fetch.sh bin/evidence-letter-publish.sh bin/evidence-letter-job-test.sh
-bin/evidence-letter-verify.sh bin/evidence-letter-present.sh
 """.split())
-if len(DECLARED) != 97: errs.append("declared list is not 97 paths: %d" % len(DECLARED))
+if len(DECLARED) != 89: errs.append("declared list is not 89 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -131,8 +128,8 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 227 allow patterns: chain-v030 plus the 0710 and KMS-signing rows; read from the run of this test
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 227, 4
+# 220 allow patterns: chain-v030 plus the 0710 and KMS-signing rows; read from the run of this test
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 220, 4
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -180,7 +177,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
 # the script text outside the v0.3.0 region; history is in git
-PINNED_SHA256 = "163059999c0e4eca4a3f41cd3cce0f09ae994c43a169c5c21a36f4f2cd2bc307"
+PINNED_SHA256 = "4c1cb5c483010e44070341f82f9e4abb8d9e7fedc61d8c60d375f94f34df2c79"
 if rstart and rend:
     import hashlib
     _b = _rawlines
@@ -846,6 +843,10 @@ runeach fail "feature/x" "REQ-CHAIN-008: verify-key-page-test near-miss refused"
 passfam "feature/x" "REQ-CHAIN-007: the Release scripts and helpers" "bin/release-verify.sh" "bin/release-apks.sh" "bin/release-compare.sh" "bin/release-compare.py" "bin/release-publish.sh" "bin/release-sign.sh" "bin/release-assets.sh" "bin/release-postverify.sh" "bin/release-postverify.py" "bin/release-metadata.py" "bin/release-layout.py"
 runeach fail "feature/x" "REQ-CHAIN-007: Release helper near-misses refused" "bin/release-layout.py.bak" "bin/release-layout.pyx" "bin/Release-Layout.py" "bin/release-other.py" "bin/sub/release-layout.py" "./bin/release-layout.py"
 
+
+# REQ-CHAIN-006-AC1: Check has ONE script for all three phases and both chips, bin/check-phase.sh; the dispatcher and the per-phase targets are gone
+passfam "feature/x" "REQ-CHAIN-006: the one Check script" "bin/check-phase.sh"
+runeach fail "feature/x" "REQ-CHAIN-006: the old Check dispatcher, the per-phase targets and the arm64 target are not admitted" "bin/check-stage.sh" "bin/check-phase-scanners.sh" "bin/check-phase-acceptance.sh" "bin/check-phase-runtime.sh" "bin/check-phase-arm64.sh"
 
 # Deferred (not admitted until the PR that adds them): the vendored tree.
 

@@ -39,8 +39,8 @@ ARTIFACTS = (
     ("items", "witness-build"),
     ("provenance", "provenance"),
     ("witness-rebuild", "witness-rebuild"),
-    ("witness-check", "witness-check"),
-    ("witness-check-arm64", "witness-check/witness-arm64"),
+    ("witness-check-ubuntu-24.04", "witness-check/ubuntu-24.04"),
+    ("witness-check-ubuntu-24.04-arm", "witness-check/ubuntu-24.04-arm"),
     ("hostile-results", "hostile-results"),
 )
 

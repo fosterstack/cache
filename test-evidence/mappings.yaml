@@ -89,7 +89,7 @@ mappings:
       - { type: go-test, ref: "internal/server:TestLoggableErrWithoutCauseNamesOnlyTheOperation" }
   - ac: REQ-FIPS-003-AC1
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/ci.yml job test, FIPS step: full race suite under GOFIPS140=v1.0.0 + GODEBUG=fips140=only on every push/PR" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml job fips140-only: full race suite under GOFIPS140=v1.0.0 + GODEBUG=fips140=only on every push/PR" }
   - ac: REQ-REL-001-AC1
     evidence:
       - { type: workflow-job, ref: ".github/workflows/release.yml: cosign sign per digest, attest-build-provenance, and gh attestation verify gate - executed on the v0.1.0 release" }
@@ -411,6 +411,7 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/vex-both-scanners-test.sh" }
       - { type: shell-test, ref: "bin/layout-archive-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/scan.yml: the required aggregation job 'scan' needs every scanner leg (Grype over the image children and archives; Amazon Inspector over the image children from an SBOM made on the runner) on pull_request, push to main and v* tags, blocking at any severity with the published VEX as the only exception; govulncheck runs in ci.yml over the root module (row 73)" }
   - ac: REQ-REL-004-AC2
     evidence:
@@ -444,15 +445,15 @@ mappings:
   - ac: REQ-REL-004-AC10
     evidence:
       - { type: inspection, ref: "Verified by reviewer inspection; there is no coded check." }
-      - { type: inspection, ref: "The guard before every first use of skopeo, in these 2 jobs, spelled the same in each:" }
+      - { type: inspection, ref: "The guard before every first use of skopeo, in the one job that uses it:" }
       - { type: inspection, ref: "command -v skopeo > /dev/null || { echo \"::error::skopeo is not on this runner image\"; exit 1; }" }
-      - { type: inspection, ref: "auditor.yml: audit. main-candidate-rescan.yml: vex-attach." }
+      - { type: inspection, ref: "auditor.yml: audit." }
       - { type: inspection, ref: "The scan and panel jobs that scan the candidate read a tar made by bin/layout-archive.sh and use no skopeo." }
       - { type: inspection, ref: "No job installs skopeo. The job token reaches docker login only through env: GH_TOKEN," }
       - { type: inspection, ref: "in main-candidate-rescan.yml (rescan); acceptance.yml's two login lines follow in their own change." }
   - ac: REQ-REL-005-AC1
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — the action-pin checker's fixture cases (119); ci.yml:suites — the pin-check wiring test (triggers unfiltered; steps unconditional, in the default shell, with no environment, PATH or checkout redirection); the checker itself over the tree runs in agent-review-gate.yml from main's copy" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — the action-pin checker's fixture cases (119); the checker itself over the tree runs in agent-review-gate.yml from main's copy" }
       - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml:judge and sweep — the base branch's action-pin checker over every PR head (required check auditor-review-gate)" }
       - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/36721513759" }
       - { type: shell-test, ref: ".github/agent/tests/k8s-harness-fence-test.sh" }
@@ -470,6 +471,10 @@ mappings:
       - { type: shell-test, ref: "bin/job-isolation-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs bin/job-isolation-test.sh over the real workflows and its mutated copies" }
   - ac: REQ-REL-011-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/job-isolation-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs bin/job-isolation-test.sh over the real workflows and its mutated copies" }
+  - ac: REQ-REL-011-AC3
     evidence:
       - { type: shell-test, ref: "bin/job-isolation-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs bin/job-isolation-test.sh over the real workflows and its mutated copies" }
@@ -763,30 +768,6 @@ mappings:
   - ac: REQ-SCAN-010-AC8
     evidence:
       - { type: shell-test, ref: "bin/vex-forms-test.sh" }
-  - ac: REQ-REL-009-AC1
-    evidence:
-      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
-  - ac: REQ-REL-009-AC2
-    evidence:
-      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
-  - ac: REQ-REL-009-AC4
-    evidence:
-      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
-  - ac: REQ-REL-009-AC8
-    evidence:
-      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
-  - ac: REQ-REL-009-AC11
-    evidence:
-      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
-  - ac: REQ-REL-009-AC14
-    evidence:
-      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
-  - ac: REQ-REL-009-AC15
-    evidence:
-      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
-  - ac: REQ-REL-009-AC3
-    evidence:
-      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
   - ac: REQ-REL-009-AC6
     evidence:
       - { type: shell-test, ref: "bin/admission-tag-signer-test.sh" }
@@ -836,12 +817,17 @@ mappings:
       - { type: shell-test, ref: "bin/persona-uat-agent-test.sh" }
       - { type: shell-test, ref: "bin/persona-uat-test.sh" }
       - { type: shell-test, ref: "bin/persona-uat-wiring-test.sh" }
+  - ac: REQ-UAT-001-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/persona-uat-file-test.sh" }
+      - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
   - ac: REQ-SUP-001-AC1
     evidence:
-      - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/release-age-gone-test.sh" }
   - ac: REQ-SUP-001-AC2
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/release-age-gone-test.sh" }
       - { type: shell-test, ref: ".github/agent/tests/s2-p2-readers-test.sh" }
       - { type: shell-test, ref: ".github/agent/tests/s2-p2-series-rule-test.sh" }
   - ac: REQ-SUP-001-AC3
@@ -939,7 +925,6 @@ mappings:
   - ac: REQ-SUP-001-AC34
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
-      - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
   - ac: REQ-SUP-001-AC35
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
@@ -1042,13 +1027,19 @@ mappings:
   - ac: REQ-CHAIN-001-AC7
     evidence:
       - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
+  - ac: REQ-CHAIN-001-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/chain-signing-trust-test.sh" }
+  - ac: REQ-CHAIN-001-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/release-workflow-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
   # The marker refusal is driven by chain-build-admit-test.sh, marker-gate-test.sh and chain-verify-test.sh.
   - ac: REQ-CHAIN-001-AC6
     evidence:
       - { type: shell-test, ref: "bin/marker-gate-test.sh" }
       - { type: shell-test, ref: "bin/chain-verify-test.sh" }
       - { type: shell-test, ref: "bin/chain-build-admit-test.sh" }
-      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
   - ac: REQ-CHAIN-002-AC1
     evidence:
@@ -1080,6 +1071,7 @@ mappings:
   - ac: REQ-CHAIN-003-AC5
     evidence:
       - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/release-workflow-wiring-test.sh" }
   # VERBATIM RATIFIED TEXT of REQ-AUD-018-AC1 (the auditor matrix page, lines 101-103; owner-ratified in #113 / 731f2d1, Sep 25; AC3 as a check: option C, Sep 27).
   # requirements.yaml carries a path-free PARAPHRASE (the layout check forbids the literal path there); this comment is the source sentence:
   #   All auditor code, prompts, fixtures and tests live under `.github/agent/` and nowhere else; the only auditor-related files outside it are the workflow files (`.github/workflows/`), the allowlist entries, the auditor's generated outputs, and (amendment, owner Oct 2) the two traceability files `test-evidence/mappings.yaml` and `test-evidence/unmapped.yaml`, which name test paths as metadata; and (amendment, owner Oct 3) the patch-release classifier `bin/patch-decide.py` and its test `bin/patch-decide-test.sh`, which name the auditor directory as data and hold no auditor code.
@@ -1107,6 +1099,7 @@ mappings:
   - ac: REQ-CHAIN-004-AC1
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/release-workflow-wiring-test.sh" }
       - { type: shell-test, ref: "bin/chain-install-witness-test.sh" }
   - ac: REQ-CHAIN-004-AC2
     evidence:
@@ -1146,6 +1139,7 @@ mappings:
   - ac: REQ-CHAIN-005-AC1
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/release-workflow-wiring-test.sh" }
   - ac: REQ-CHAIN-005-AC2
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
@@ -1164,6 +1158,7 @@ mappings:
   - ac: REQ-CHAIN-005-AC5
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/release-workflow-wiring-test.sh" }
   - ac: REQ-CHAIN-005-AC6
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
@@ -1171,6 +1166,7 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
       - { type: shell-test, ref: "bin/chain-bind-test.sh" }
+      - { type: shell-test, ref: "bin/release-workflow-wiring-test.sh" }
   - ac: REQ-CHAIN-004-AC13
     evidence:
       - { type: shell-test, ref: "bin/chain-snapshot-test.sh" }
@@ -1178,6 +1174,7 @@ mappings:
   - ac: REQ-CHAIN-004-AC14
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/release-workflow-wiring-test.sh" }
   - ac: REQ-CHAIN-004-AC15
     evidence:
       - { type: shell-test, ref: "bin/chain-snapshot-test.sh" }
@@ -1190,11 +1187,15 @@ mappings:
   - ac: REQ-CHAIN-004-AC18
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-CHAIN-004-AC19
+    evidence:
+      - { type: shell-test, ref: "bin/release-workflow-wiring-test.sh" }
   - ac: REQ-CHAIN-005-AC7
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
       - { type: shell-test, ref: "bin/chain-rebuild-test.sh" }
       - { type: shell-test, ref: "bin/chain-bind-test.sh" }
+      - { type: shell-test, ref: "bin/release-workflow-wiring-test.sh" }
   - ac: REQ-AUD-019-AC1
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_fs_guard.py" }
@@ -1330,6 +1331,7 @@ mappings:
   - ac: REQ-CHAIN-006-AC1
     evidence:
       - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/release-workflow-wiring-test.sh" }
       - { type: shell-test, ref: "bin/chain-install-witness-test.sh" }
   - ac: REQ-CHAIN-006-AC2
     evidence:
@@ -1361,12 +1363,14 @@ mappings:
   - ac: REQ-CHAIN-006-AC9
     evidence:
       - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
   - ac: REQ-CHAIN-006-AC10
     evidence:
       - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
   - ac: REQ-CHAIN-006-AC11
     evidence:
       - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
   - ac: REQ-CHAIN-006-AC12
     evidence:
       - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
@@ -1463,6 +1467,9 @@ mappings:
   - ac: REQ-CHAIN-007-AC21
     evidence:
       - { type: shell-test, ref: "bin/chain-release-metadata-test.sh" }
+      - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
+  - ac: REQ-CHAIN-007-AC22
+    evidence:
       - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
   - ac: REQ-CHAIN-008-AC1
     evidence:
@@ -1856,12 +1863,29 @@ mappings:
   - ac: REQ-SCAN-012-AC6
     evidence:
       - { type: shell-test, ref: "bin/vex-live-test-test.sh" }
+  - ac: REQ-CI-001-AC1
+    evidence:
+      - { type: inspection, ref: ".github/workflows/ci.yml: the allowlist-chain job" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
+  - ac: REQ-CI-001-AC2
+    evidence:
+      - { type: inspection, ref: ".github/workflows/ci.yml: the allowlist-chain job" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
+  - ac: REQ-CI-001-AC3
+    evidence:
+      - { type: inspection, ref: ".github/workflows/ci.yml: the allowlist-chain job" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
+  - ac: REQ-CI-001-AC4
+    evidence:
+      - { type: inspection, ref: ".github/workflows/ci.yml: the allowlist-chain job" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
   - ac: REQ-CI-005-AC1
     evidence:
-      - { type: shell-test, ref: "bin/suite-guard-test.sh" }
+      - { type: shell-test, ref: "bin/ci-suites-matrix-test.sh" }
   - ac: REQ-CI-005-AC2
     evidence:
-      - { type: shell-test, ref: "bin/suite-guard-test.sh" }
+      - { type: shell-test, ref: "bin/ci-suites-matrix-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
   - ac: REQ-CI-005-AC3
     evidence:
       - { type: shell-test, ref: "bin/suite-guard-test.sh" }
@@ -1870,39 +1894,13 @@ mappings:
       - { type: shell-test, ref: "bin/suite-guard-test.sh" }
   - ac: REQ-CI-005-AC5
     evidence:
-      - { type: shell-test, ref: "bin/suite-guard-test.sh" }
+      - { type: shell-test, ref: "bin/ci-suites-matrix-test.sh" }
+  - ac: REQ-CI-005-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/ci-suites-matrix-test.sh" }
+  - ac: REQ-CI-005-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/ci-suites-matrix-test.sh" }
   - ac: REQ-CI-006-AC1
     evidence:
       - { type: inspection, ref: "Rule only, not built (owner, Oct 24 2026): the persona suite is not sharded; ops/docs/ratify/2026-10-24-ci-suites-once-and-persona-shard.md item 2." }
-  - ac: REQ-REL-013-AC1
-    evidence:
-      - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
-  - ac: REQ-REL-013-AC2
-    evidence:
-      - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
-  - ac: REQ-REL-013-AC3
-    evidence:
-      - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
-  - ac: REQ-REL-013-AC4
-    evidence:
-      - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
-  - ac: REQ-REL-013-AC5
-    evidence:
-      - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
-  - ac: REQ-REL-013-AC6
-    evidence:
-      - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
-  - ac: REQ-REL-013-AC7
-    evidence:
-      - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
-  - ac: REQ-REL-013-AC8
-    evidence:
-      - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
