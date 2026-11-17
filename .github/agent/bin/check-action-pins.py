@@ -2327,23 +2327,28 @@ _BASE_WRITE = r"(?<![\w.-])(?:sed\s+-\w*i|perl\s+-\w*i|awk\s+-i|cp|mv|ln|install
 
 def _basename_is_other(arg, base, text, at):
     """True when the argument of a `$(basename ARG)` write, found at offset `at` of the job text, is proven to name a file other
-    than `base`: one literal word of another name, or one variable `v` that nothing assigns and whose loop, the nearest `for v in`
-    before the write and still open there, lists only literal files without `base`."""
+    than `base`: one literal word of another name with no trailing slash (shell basename drops it), or one variable `v` whose
+    name occurs nowhere in the job text but in `for v in LIST; do` headers and as `$v`/`${v}` reads, the last header before the write
+    still open there and its LIST literal files of other names. Any other way to write `v` (read, printf -v, a header of another form) is an
+    occurrence that is no header."""
     words = arg.split()
     if len(words) != 1:
         return False
     word = words[0].strip("\"'")
-    if re.fullmatch(r"[\w./-]+", word):
+    literal = r"[\w./-]*[\w.-]"
+    if re.fullmatch(literal, word):
         return _base(word) != base
     v = re.fullmatch(r"\$\{?(\w+)\}?", word)
     if not v:
         return False
     name = re.escape(v.group(1))
-    loops = list(re.finditer(r"\bfor\s+" + name + r"\s+in\s+([^;\n]*?)\s*;\s*do\b", text[:at]))
-    if not loops or re.search(r"\bdone\b", text[loops[-1].end():at]) or re.search(r"(?<![\w$-])" + name + r"\s*[:=]", text) or re.search(r"\bread\b[^;\n]*\b" + name + r"\b", text):
+    headers = list(re.finditer(r"\bfor\s+" + name + r"\s+in\s+([^;\n]*?)\s*;\s*do\b", text))
+    loops = [h for h in headers if h.start() < at]
+    bare = re.sub(r"\$\{?" + name + r"\b\}?", "", text)
+    if not loops or re.search(r"\bdone\b", text[loops[-1].end():at]) or len(re.findall(r"(?<![\w.-])" + name + r"(?![\w.-])", bare)) != len(headers):
         return False
     files = loops[-1].group(1).split()
-    return all(re.fullmatch(r"[\w./-]+", x) and _base(x) != base for x in files)
+    return all(re.fullmatch(literal, x) and _base(x) != base for x in files)
 
 
 def _resolve_script(path, text, entries, bases=()):

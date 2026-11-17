@@ -1551,5 +1551,38 @@ class BasenameWriteKeepsCounting(unittest.TestCase):     # a `> "$RUNNER_TEMP/$(
         self.assertEqual(self.resolve(loop + self.RUN), "bin/tool.sh")
 
 
+class BasenameWriteProofFailsClosed(unittest.TestCase):  # the "another name" proof fails closed on any write it cannot see
+    ENTRIES = {"bin/tool.sh": "file", "bin/other.sh": "file", "bin/a.sh": "file", "bin/b.sh": "file"}
+    FETCH = 'git show origin/main:bin/tool.sh > "$RUNNER_TEMP/tool.sh"\n'
+    RUN = 'bash "$RUNNER_TEMP/tool.sh"\n'
+
+    def resolve(self, body):
+        return M._resolve_script("$RUNNER_TEMP/tool.sh", body, self.ENTRIES)
+
+    def test_a_literal_word_of_another_name_without_a_trailing_slash_is_resolved(self):
+        body = self.FETCH + 'printf x > "$RUNNER_TEMP/$(basename bin/other.sh)"\n' + self.RUN
+        self.assertEqual(self.resolve(body), "bin/tool.sh")
+
+    def test_a_trailing_slash_word_is_refused(self):
+        body = self.FETCH + 'printf x > "$RUNNER_TEMP/$(basename bin/tool.sh/)"\n' + self.RUN
+        self.assertIsNone(self.resolve(body))
+
+    def test_a_builtin_writing_the_loop_variable_is_refused(self):
+        body = (self.FETCH + 'for f in bin/a.sh bin/b.sh; do\n'
+                "printf -v f '%s' bin/tool.sh\n"
+                'printf x > "$RUNNER_TEMP/$(basename "$f")"\n'
+                'done\n' + self.RUN)
+        self.assertIsNone(self.resolve(body))
+
+    def test_a_loop_header_the_do_form_does_not_match_is_refused(self):
+        body = (self.FETCH + 'for f in bin/a.sh bin/b.sh; do\n'
+                'for f in bin/tool.sh\n'
+                'do\n'
+                'printf x > "$RUNNER_TEMP/$(basename "$f")"\n'
+                'done\n'
+                'done\n' + self.RUN)
+        self.assertIsNone(self.resolve(body))
+
+
 if __name__ == "__main__":       # last: every test class above is defined first (Codex #164 adversarial r1, R02)
     unittest.main()
