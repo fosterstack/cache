@@ -266,7 +266,7 @@ def judge_db(d, gomod_dirs=GOMOD_DIRS):
             ups.setdefault(k[0], u)
     for u in d.get("updates", []):
         if "cooldown" in u:
-            bad.append(f"the {u.get('package-ecosystem')} {u.get('directory')} entry has a cooldown: there is no release-age wait")
+            bad.append(f"the {u.get('package-ecosystem')} {u.get('directory')} entry has a cooldown key, which this repo does not use")
     for eco in ("github-actions", "pip"):
         # exactly weekly and no extra key (no day, time or timezone)
         if (ups.get(eco) or {}).get("schedule") != {"interval": "weekly"}:

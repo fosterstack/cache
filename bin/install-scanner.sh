@@ -233,7 +233,7 @@ case "$TOOL" in
     install -m 0755 "$tmp/govulncheck" "${DEST}/govulncheck" || pipeline_fail "install failed for govulncheck"
     ;;
   crane)
-    # the digest reader of the weekly persona job (the chain's pinned tool; no buildx): a release tarball holding the crane binary, verified against the pinned sum.
+    # the digest reader of the weekly persona job (the chain's pinned tool): a release tarball holding the crane binary, verified against the pinned sum.
     # each release asset is written out in full, with its version: the pin scan names a literal release URL
     # (no version variable and no base-URL hook)
     case "$arch" in
