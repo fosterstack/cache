@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-004-AC4, REQ-CHAIN-004-AC5, REQ-CHAIN-004-AC7, REQ-CHAIN-001-AC6, REQ-REL-012-AC7, REQ-REL-009-AC6, REQ-REL-013-AC1
+# proves: REQ-CHAIN-004-AC4, REQ-CHAIN-004-AC5, REQ-CHAIN-004-AC7, REQ-CHAIN-001-AC6, REQ-REL-012-AC7, REQ-REL-009-AC6, REQ-REL-013-AC1, REQ-CHAIN-004-AC19
 #
 # Build's first action: bin/build-admit.py keeps every check the old stage-admission.yml made, none dropped.
 # Needs: bash, git >= 2.34, ssh-keygen, gpg, jq, openssl, python3 + PyYAML. Offline: the git repos, the
@@ -16,6 +16,8 @@
 #       bin/admission-tag-signer.py, bin/install-scanner.sh), NEVER from the checked-out tagged commit.
 #       GitHub data only through `gh api <PATH>` (GET: no -X/--method/-f/-F/--input), parsing the JSON itself, for PATH
 #         repos/R/commits/SHA/check-runs?filter=latest   (and the same for the merged PR's head sha)
+#         repos/R/commits/SHA/check-runs?filter=all      (every run of a bound context: AC19)
+#         repos/R/actions/runs/ID                        (the workflow run behind a bound check run: path, event, head_sha; AC19)
 #         repos/R/commits/SHA/status
 #         repos/R/commits/SHA/pulls
 #       the freeze file freeze/freeze.txt (the `freeze` job's result: `freeze-ok COMMIT BASE`; no Go runs
@@ -293,9 +295,9 @@ mkbase() { # base fixture in $W/base: origin.git + repo with main, a signed tagg
   printf 'owner@example.com ssh-ed25519 %s\n' "$(cut -d' ' -f2 "$W/keys/owner.pub")" > .github/policy/allowed_signers
   cp "$W/keys/web.gpg" .github/policy/github-web-flow.gpg
   printf \
-      '{"required_checks":[{"context":"ci","integration_id":15368,"scope":"push"},{"context":"review","integration_id":15368,"scope":"pull_request"}]}\n' \
+      '{"required_checks":[{"context":"ci","integration_id":15368,"scope":"push"},{"context":"review","integration_id":15368,"scope":"pull_request"}],"promotion_checks":[{"context":"scan","integration_id":15368,"scope":"push"},{"context":"analyze (go)","integration_id":15368,"scope":"push"}]}\n' \
       > .github/policy/required-checks.json
-  printf '{"required_checks":[{"context":"rel-only","integration_id":15368,"scope":"push"}]}\n' > .github/policy/release-only-checks.json
+  printf '{"required_checks":[{"context":"allowlist-persona","integration_id":15368,"scope":"push"}]}\n' > .github/policy/release-only-checks.json
   cp "$root/bin/admission-tag-signer.py" bin/; printf '#!/bin/sh\nexit 0\n' > bin/install-scanner.sh
   # gate 7: main's judge, its helper and the writers policy (build-admit.py reads them from origin/main, never from the tagged commit)
   cp "$root/bin/audit-record.py" "$root/bin/audit-record-judge.sh" bin/; cp "$root/.github/policy/audit-writers.json" .github/policy/
@@ -338,10 +340,15 @@ gh_fixtures() { # gh_fixtures DIR SHA  (all green; the merged PR is #7 with head
   python3 - "$1" "$sha" "$ph" <<'PY'
 import json, sys
 d, sha, ph = sys.argv[1:4]
+def url(rid): return "https://github.com/fosterstack/cache/actions/runs/%d/job/1" % rid
 def w(path, obj): open(d + "/" + path.replace("/", "_") + ".json", "w").write(json.dumps(obj))
 w("repos/fosterstack/cache/commits/%s/check-runs" % sha,
   {"check_runs": [{"name": "ci", "conclusion": "success", "app": {"id": 15368}, "id": 11, "head_sha": sha},
-                  {"name": "rel-only", "conclusion": "success", "app": {"id": 15368}, "id": 15, "head_sha": sha}]})
+                  {"name": "allowlist-persona", "conclusion": "success", "app": {"id": 15368}, "id": 15, "head_sha": sha, "details_url": url(9015)},
+                  {"name": "scan", "conclusion": "success", "app": {"id": 15368}, "id": 16, "head_sha": sha, "details_url": url(9016)},
+                  {"name": "analyze (go)", "conclusion": "success", "app": {"id": 15368}, "id": 17, "head_sha": sha, "details_url": url(9017)}]})
+for rid, wf in ((9015, "full-suite.yml"), (9016, "scan.yml"), (9017, "codeql.yml")):  # the workflow runs behind the bound checks
+    w("repos/fosterstack/cache/actions/runs/%d" % rid, {"path": ".github/workflows/" + wf, "event": "schedule", "head_sha": sha})
 w("repos/fosterstack/cache/commits/%s/status" % sha, {"statuses": [{"context": "legacy", "state": "success", "id": 5}]})
 w("repos/fosterstack/cache/commits/%s/pulls" % sha,
   [{"number": 7, "merge_commit_sha": sha, "base": {"ref": "main"}, "merged_at": "2026-10-01T00:00:00Z", "head": {"sha": ph}}])
@@ -385,6 +392,7 @@ PY
     exit 0;;
 esac
 f="$GH_FIXTURES/$(printf '%s' "$base" | tr '/' '_').json"
+[ -f "$f.fail" ] && { echo "gh: Internal Server Error (HTTP 500)" >&2; exit 1; }
 [ -f "$f" ] || { echo "no fixture for $path" >&2; exit 1; }
 cat "$f"
 [ "$pag" = 1 ] && [ -f "$f.page2" ] && cat "$f.page2"
@@ -526,10 +534,10 @@ if [ -f "$W/c/repo/admission.json" ]; then
          and (.required_checks|length==3) and (.informational_statuses|length==1) and .baseline_version=="v0.3.0"
          and (.baseline=="requirements/releases/v0.3.0.yaml") and (.run.id==1) and (.run.attempt==1)' "$A" > /dev/null \
     && ok \
-        "AC4 admission.json records the tag, sha, signer evidence, the three verified checks (ci, review and the release-only rel-only) with their sources, the informational statuses, the baseline and the run" \
+        "AC4 admission.json records the tag, sha, signer evidence, the three verified checks (ci, review and the release-only allowlist-persona) with their sources, the informational statuses, the baseline and the run" \
         || bad "AC4 admission.json content: $(head -c 300 "$A")"
   jq -e '[.required_checks[].source]|sort==["check-run-on-merged-pr-head","check-run-on-tagged-sha","check-run-on-tagged-sha"]' "$A" > /dev/null && ok \
-      "AC4 the three checks are recorded with their evidence source: ci and rel-only on the tagged sha, review on the merged PR head" || bad "AC4 required_checks sources"
+      "AC4 the three checks are recorded with their evidence source: ci and allowlist-persona on the tagged sha, review on the merged PR head" || bad "AC4 required_checks sources"
   ! grep -rq SENTINEL-GH-TOKEN "$A" "$W/c/out" "$W/c/err" && ok "AC4 the GitHub token appears in no output or evidence" || bad \
       "AC4 the token leaked into output"
   cp "$A" "$W/c/first.json";
@@ -883,21 +891,21 @@ import json, sys
 d = json.load(open(sys.argv[1])); assert d["informational_statuses"] and all(c["conclusion"] == "success" for c in d["required_checks"])
 PY
 # ---- release-only-checks.json: admission requires its contexts green too (REQ-REL-013-AC1) ---------------------------------------------
-ro_edit() { # ro_edit red|missing|wrong-app : change the rel-only check-run of the tagged commit; ci stays green
+ro_edit() { # ro_edit red|missing|wrong-app : change the allowlist-persona check-run of the tagged commit; ci stays green
   python3 - "$W/c/gh/repos_fosterstack_cache_commits_${SHAC}_check-runs.json" "$1" <<'PY'
 import json, sys
 f, mode = sys.argv[1:3]; j = json.load(open(f))
-if mode == "missing": j["check_runs"] = [c for c in j["check_runs"] if c["name"] != "rel-only"]
+if mode == "missing": j["check_runs"] = [c for c in j["check_runs"] if c["name"] != "allowlist-persona"]
 for c in j["check_runs"]:
-    if c["name"] == "rel-only" and mode == "red": c["conclusion"] = "failure"
-    if c["name"] == "rel-only" and mode == "wrong-app": c["app"]["id"] = 99
+    if c["name"] == "allowlist-persona" and mode == "red": c["conclusion"] = "failure"
+    if c["name"] == "allowlist-persona" and mode == "wrong-app": c["app"]["id"] = 99
 json.dump(j, open(f, "w"))
 PY
 }
 fresh; run_admit; expect_ok "AC1 release-only: every context of required-checks.json and of release-only-checks.json green, admission succeeds"
 for m in "red|a red release-only check" "missing|a release-only check that did not run" "wrong-app|a release-only check from another app than the pinned integration"; do
   IFS='|' read -r mode label <<< "$m"; fresh; ro_edit "$mode"; run_admit
-  expect_refuse "AC1 release-only: $label is refused at required-checks and names the check" required-checks rel-only
+  expect_refuse "AC1 release-only: $label is refused at required-checks and names the check" required-checks allowlist-persona
 done
 fresh; edit_gh failed; run_admit; expect_refuse "AC1 release-only: a red context of required-checks.json still refuses while the release-only one is green" required-checks ci
 fresh; G checkout -q main; G rm -q .github/policy/release-only-checks.json
@@ -1143,6 +1151,132 @@ G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.1 v0.3.1; gh_fixtures "$W/c/
 mkfreeze
 run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
 expect_refuse "AC6 a PATCH tag whose chain files are not the bytes the marker names is refused, naming the bytes" rc-proof bytes
+# ---- REQ-CHAIN-004-AC19: promotion and release-only contexts count only from a schedule or dispatch run of their one workflow file --------
+# runs CONTEXT FILE SPEC...: replace the check runs of CONTEXT on the tagged commit by the runs the SPECs (JSON objects) describe, and write the workflow
+# run behind each. SPEC keys: id (check-run id; its workflow run is 9000+id), conclusion (success; null = pending), event (schedule), file (FILE),
+# head (the tagged sha), url (the job url), app (15368), api (fail: the runs call fails; bad: not JSON; nostr: path is not a string)
+runs() {
+  local c=$1 f=$2; shift 2
+  python3 - "$W/c/gh" "$(G rev-parse HEAD)" "$c" "$f" "$@" <<'PY'
+import json, sys
+d, sha, ctx, wf = sys.argv[1:5]; p = d + "/repos_fosterstack_cache_commits_%s_check-runs.json" % sha
+j = json.load(open(p)); j["check_runs"] = [r for r in j["check_runs"] if r["name"] != ctx]
+for s in map(json.loads, sys.argv[5:]):
+    rid = 9000 + s["id"]; af = d + "/repos_fosterstack_cache_actions_runs_%d.json" % rid
+    j["check_runs"].append({"name": ctx, "conclusion": s.get("conclusion", "success"), "app": {"id": s.get("app", 15368)}, "id": s["id"], "head_sha": sha,
+                            "details_url": s.get("url", "https://github.com/fosterstack/cache/actions/runs/%d/job/1" % rid)})
+    api = {"path": ".github/workflows/" + s.get("file", wf), "event": s.get("event", "schedule"), "head_sha": s.get("head", sha)}
+    if s.get("api") == "fail": open(af + ".fail", "w").close()
+    elif s.get("api") == "bad": open(af, "w").write("not json")
+    else:
+        if s.get("api") == "nostr": api["path"] = 7
+        json.dump(api, open(af, "w"))
+json.dump(j, open(p, "w"))
+PY
+}
+dropruns() { # dropruns CONTEXT : no check run of CONTEXT on the tagged commit
+  python3 - "$W/c/gh/repos_fosterstack_cache_commits_$(G rev-parse HEAD)_check-runs.json" "$1" <<'PY'
+import json, sys
+f, ctx = sys.argv[1:3]; j = json.load(open(f)); j["check_runs"] = [c for c in j["check_runs"] if c["name"] != ctx]; json.dump(j, open(f, "w"))
+PY
+}
+poledit() { # poledit FILE PYCODE : change a policy file of the case's repo (d is its JSON)
+  (cd "$W/c/repo" && python3 - "$1" "$2" <<'PY'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p)); exec(sys.argv[2]); json.dump(d, open(p, "w"))
+PY
+  ); }
+RC_F=.github/policy/required-checks.json RO_F=.github/policy/release-only-checks.json
+rcfresh() { # rcfresh [FILE PYCODE] : the release candidate tag v0.3.0-rc2 (no marker needed), optionally on a main whose policy FILE is changed
+  fresh; G checkout -q main; G rm -q .github/policy/rc-proof.json; if [ "$#" -gt 0 ]; then poledit "$1" "$2"; fi
+  sed 's/^version: v0.3.0$/version: v0.3.0-rc2/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.0-rc2.yaml"
+  G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "rc2 baseline"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
+  G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.0-rc2 -m "$APPROVAL" v0.3.0-rc2; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; mkfreeze; }
+rc_admit() { run_admit GITHUB_REF=refs/tags/v0.3.0-rc2 GITHUB_REF_NAME=v0.3.0-rc2; }
+PS=allowlist-persona; FS=full-suite.yml; MISSING="schedule or dispatch run of $FS"
+# 1. the three lists must be non-empty (policy edits run on a release candidate tag: a final tag's chain bytes cover the policy files)
+rcfresh $RC_F 'del d["promotion_checks"]'; rc_admit
+expect_refuse "AC19 required-checks.json with no promotion_checks list is refused at required-checks, naming the file" required-checks required-checks.json
+rcfresh $RC_F 'd["promotion_checks"] = []'; rc_admit
+expect_refuse "AC19 required-checks.json with an empty promotion_checks list is refused at required-checks, naming the file" required-checks required-checks.json
+rcfresh $RC_F 'd["required_checks"] = []'; rc_admit
+expect_refuse "AC19 required-checks.json with an empty required_checks list is refused at required-checks, naming the file" required-checks required-checks.json
+rcfresh $RC_F 'del d["required_checks"]'; rc_admit
+expect_refuse "AC19 required-checks.json with no required_checks list is refused at required-checks, naming the file" required-checks required-checks.json
+rcfresh $RO_F 'd["required_checks"] = []'; rc_admit
+expect_refuse "AC19 release-only-checks.json with an empty required_checks list is refused at required-checks, naming the file" required-checks release-only-checks.json
+rcfresh $RO_F 'del d["required_checks"]'; rc_admit
+expect_refuse "AC19 release-only-checks.json with no required_checks list is refused at required-checks, naming the file" required-checks release-only-checks.json
+# 2. promotion checks on a release candidate tag only; the required and release-only checks on every tag
+fresh; run_admit; expect_ok "AC19 a final tag with both lists and every bound check a green schedule run is admitted"
+fresh; runs scan scan.yml '{"id":16,"conclusion":"failure"}'; dropruns "analyze (go)"; run_admit
+expect_ok "AC19 a final tag does not need the promotion checks: a red scan and no analyze (go) run do not stop it"
+rcfresh; rc_admit; expect_ok "AC19 a release candidate tag with every bound check a green schedule run is admitted"
+if [ "$RC" = 0 ]; then
+  jq -e '[.required_checks[].context] | (index("scan") != null) and (index("analyze (go)") != null) and (index("'"$PS"'") != null)' "$W/c/repo/admission.json" > /dev/null \
+    && ok "AC19 the admission of a release candidate records its promotion checks and the release-only check" \
+    || bad "AC19 rc admission.json lacks a promotion or release-only check: $(jq -c '[.required_checks[].context]' "$W/c/repo/admission.json")"
+else bad "AC19 the admission of a release candidate records its promotion checks (no admission)"; fi
+for m in "scan|scan.yml|16" "analyze (go)|codeql.yml|17"; do
+  IFS='|' read -r ctx wf id <<< "$m"
+  rcfresh; dropruns "$ctx"; rc_admit
+  expect_refuse "AC19 a release candidate tag with no '$ctx' run is refused at required-checks, naming it" required-checks "$ctx"
+  rcfresh; runs "$ctx" "$wf" '{"id":'"$id"',"conclusion":"failure"}'; rc_admit
+  expect_refuse "AC19 a release candidate tag with a red '$ctx' schedule run is refused, naming it" required-checks "$ctx"
+  rcfresh; runs "$ctx" "$wf" '{"id":'"$id"',"event":"push"}'; rc_admit
+  expect_refuse "AC19 a release candidate tag whose only '$ctx' run is a green push run is refused: a schedule or dispatch run of $wf is missing" required-checks "schedule or dispatch run of $wf"
+done
+rcfresh; runs "$PS" $FS '{"id":15,"conclusion":"failure"}'; rc_admit
+expect_refuse "AC19 a release candidate tag still needs the release-only check green: a red $PS is refused" required-checks "$PS"
+# 3. a context the table does not bind
+rcfresh $RO_F 'd["required_checks"] = [{"context": "rel-only", "integration_id": 15368, "scope": "push"}]'; runs rel-only $FS '{"id":25}'; rc_admit
+expect_refuse "AC19 a release-only context the table does not bind is refused, even with a green schedule run: no producing workflow file" required-checks "no producing workflow file"
+rcfresh $RC_F 'd["promotion_checks"].append({"context": "novel-promo", "integration_id": 15368, "scope": "push"})'; runs novel-promo $FS '{"id":26}'; rc_admit
+expect_refuse "AC19 a promotion context the table does not bind is refused on a release candidate tag: no producing workflow file" required-checks "no producing workflow file"
+rcfresh $RO_F 'd["required_checks"] = [{"context": "acceptance / smoke", "integration_id": 15368, "scope": "push"}]'; runs "acceptance / smoke" $FS '{"id":27}'; rc_admit
+expect_ok "AC19 every context that starts with 'acceptance / ' is bound to full-suite.yml"
+fresh; runs ci ci.yml '{"id":11,"event":"push"}'; run_admit
+expect_ok "AC19 a context of required_checks is never bound: a green push run of ci.yml satisfies it"
+# 4+5. the run behind a bound check: file, event, commit; the newest qualifying run alone decides
+fresh; run_admit; expect_ok "AC19 control: a green schedule run of the bound file on the tagged commit"
+if [ "$RC" = 0 ]; then
+  jq -e --arg sha "$SHAC" '.required_checks[] | select(.context == "'"$PS"'") | . == {context: "'"$PS"'", source: "check-run-on-tagged-sha", evidence_sha: $sha, id: 15, conclusion: "success"}' \
+    "$W/c/repo/admission.json" > /dev/null && ok "AC19 the evidence of a passed bound check keeps its shape: context, source check-run-on-tagged-sha, evidence_sha, id, conclusion success" \
+    || bad "AC19 bound check evidence: $(jq -c '.required_checks' "$W/c/repo/admission.json")"
+  grep -q '^gh api .*check-runs?filter=all' "$W/c/calls.log" && grep -q '^gh api .*--paginate.*check-runs?filter=all\|^gh api .*check-runs?filter=all.*--paginate' "$W/c/calls.log" \
+    && grep -q '^gh api .*repos/fosterstack/cache/actions/runs/9015' "$W/c/calls.log" \
+    && ok "AC19 every run of a bound name is read with filter=all (paginated) and the workflow run behind it from the runs API by the id in its details_url" \
+    || bad "AC19 gh calls: $(grep '^gh api' "$W/c/calls.log" | tr '\n' '|' | head -c 400)"
+else bad "AC19 bound check evidence and calls (no admission)"; fi
+fresh; runs $PS $FS '{"id":20,"event":"workflow_dispatch"}'; run_admit; expect_ok "AC19 a green workflow_dispatch run of the bound file counts"
+for m in "event push|{\"id\":20,\"event\":\"push\"}" "event pull_request|{\"id\":20,\"event\":\"pull_request\"}" "another workflow file|{\"id\":20,\"file\":\"scan.yml\"}" \
+    "another head_sha|{\"id\":20,\"head\":\"$(printf 'd%.0s' $(seq 40))\"}" "a details_url that names no run|{\"id\":20,\"url\":\"https://github.com/fosterstack/cache/runs/5\"}"; do
+  IFS='|' read -r label spec <<< "$m"
+  fresh; runs $PS $FS "$spec"; run_admit
+  expect_refuse "AC19 a green bound check whose only run has $label does not qualify: a schedule or dispatch run of the file is missing" required-checks "$MISSING"
+  fresh; runs $PS $FS '{"id":20}' "$(sed 's/"id":20/"id":21,"conclusion":"failure"/' <<< "$spec")"; run_admit
+  expect_ok "AC19 a newer red run with $label is skipped: the older green qualifying run decides"
+done
+fresh; runs $PS $FS '{"id":20}' '{"id":21,"conclusion":"failure"}'; run_admit
+expect_refuse "AC19 the newest qualifying run alone decides: older green, newest failed is refused as not green" required-checks "not green"
+fresh; runs $PS $FS '{"id":21,"conclusion":"failure"}' '{"id":20}' ; run_admit
+expect_refuse "AC19 newest first by id whatever the order of the answer: the failed id 21 listed before the green id 20 is refused" required-checks "not green"
+fresh; runs $PS $FS '{"id":20,"conclusion":"failure"}' '{"id":21}'; run_admit
+expect_ok "AC19 the newest qualifying run alone decides: older failed, newest green is admitted"
+fresh; runs $PS $FS '{"id":20}' '{"id":21,"conclusion":null}'; run_admit
+expect_refuse "AC19 a newest qualifying run with no conclusion refuses saying it is pending, whatever an older run says" required-checks "pending"
+fresh; runs $PS $FS '{"id":20,"conclusion":"cancelled"}'; run_admit
+expect_refuse "AC19 a cancelled newest qualifying run refuses saying the check is not green" required-checks "not green"
+fresh; runs $PS $FS '{"id":20}' '{"id":21,"event":"push"}' '{"id":22,"event":"push","conclusion":"failure"}'; run_admit
+expect_ok "AC19 several newer non-qualifying runs are all skipped: the older green qualifying run decides"
+# 6. a run that cannot be read is its own refusal, never skipped
+for m in "fail|the runs call fails" "bad|the runs answer is not JSON" "nostr|the runs answer has a path that is not a string"; do
+  IFS='|' read -r api label <<< "$m"
+  fresh; runs $PS $FS "{\"id\":20,\"api\":\"$api\"}"; run_admit
+  expect_refuse "AC19 a run that cannot be read ($label) is refused, naming the run id and the context" required-checks "cannot read workflow run 9020 behind required check '$PS'"
+  fresh; runs $PS $FS '{"id":19}' "{\"id\":20,\"api\":\"$api\"}"; run_admit
+  expect_refuse "AC19 an unreadable newest run ($label) is not skipped, though an older run is green" required-checks "cannot read workflow run 9020 behind required check '$PS'"
+done
 # ---- the committed web-flow keyring: exactly the current GitHub web-flow key, no expired key
 wf_keys=$(gpg --batch --show-keys --with-colons "$root/.github/policy/github-web-flow.gpg" 2> /dev/null | awk -F: '$1 == "pub" { print $5 ":" $2 }')
 [ "$wf_keys" = "B5690EEEBB952194:-" ] && ok "the committed github-web-flow.gpg holds only the current web-flow key B5690EEEBB952194, not expired" || bad "github-web-flow.gpg holds: ${wf_keys//$'\n'/ } (want only B5690EEEBB952194, not expired)"
@@ -1151,6 +1285,6 @@ wf_fprs=$(gpg --batch --show-keys --with-colons "$root/.github/policy/github-web
 TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # a skipped or added case fails the suite
-EXPECT_TOTAL=205
+EXPECT_TOTAL=258
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
