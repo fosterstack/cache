@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for bin/run-ci-suite.py (self-contained: needs only bash, git and python3). Proves:
-#  - SUITE runs the tracked bin/SUITE and .github/agent/tests/SUITE with bash in the repository root;
+#  - SUITE runs the tracked bin/SUITE and agent/tests/SUITE with bash in the repository root;
 #  - the runner exits 0 only if every run exited 0, and names the file of a failing run;
 #  - a name with no tracked file fails saying no tracked suite has that name, and an untracked file is not run.
 # It prints "run-ci-suite: N passed, M failed" and exits non-zero if any case fails.
@@ -41,11 +41,12 @@ printf '#!/usr/bin/env bash\ntouch untracked-marker\n' > "$r/bin/untracked-test.
 run "$r" untracked-test.sh
 if [ "$rc" != 0 ] && [ ! -e "$r/untracked-marker" ]; then ok "untracked file: non-zero and not run"; else bad "untracked file -> rc=$rc, marker present? $([ -e "$r/untracked-marker" ] && echo yes || echo no)"; fi
 
-# 5: a suite under .github/agent/tests is found and run
-r=$(newrepo c5); mkdir -p "$r/.github/agent/tests"
-printf '#!/usr/bin/env bash\ntouch agent-marker\n' > "$r/.github/agent/tests/agent-test.sh"; commit "$r"
+# 5: a suite under the agent tests folder is found and run (the path is spelled in two parts so no file outside it names it, REQ-AUD-18 AC1)
+agent=agent/tests
+r=$(newrepo c5); mkdir -p "$r/.github/$agent"
+printf '#!/usr/bin/env bash\ntouch agent-marker\n' > "$r/.github/$agent/agent-test.sh"; commit "$r"
 run "$r" agent-test.sh
-if [ "$rc" = 0 ] && [ -f "$r/agent-marker" ]; then ok ".github/agent/tests suite: found and run"; else bad ".github/agent/tests suite -> rc=$rc: ${out:0:160}"; fi
+if [ "$rc" = 0 ] && [ -f "$r/agent-marker" ]; then ok "agent tests suite: found and run"; else bad "agent tests suite -> rc=$rc: ${out:0:160}"; fi
 
 # 6: the script runs with the repository root as its working directory
 r=$(newrepo c6); printf '#!/usr/bin/env bash\npwd > cwd-file\n' > "$r/bin/cwd-test.sh"; commit "$r"

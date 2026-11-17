@@ -5300,7 +5300,7 @@ requirements:
   - id: REQ-CI-005
     title: A tracked suite is run once
     statement: >
-      Every suite, a tracked *-test.sh file under bin/ or .github/agent/tests/, is run once per workflow run: by the step of ci.yml that runs it by its path or,
+      Every suite, a tracked *-test.sh file under bin/ or the agent tests folder, is run once per workflow run: by the step of ci.yml that runs it by its path or,
       when no step does, by its own leg of the suites matrix. No file lists the suites: the job that lists the legs reads the tracked files.
     source: [ci-speed read-back of Oct 23, the suites matrix of ci.yml]
     tier: community

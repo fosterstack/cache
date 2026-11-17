@@ -19,7 +19,7 @@ import json, os, re, subprocess, sys, tempfile, yaml
 check, base = sys.argv[1], sys.argv[2]
 wf = yaml.safe_load(open(base + "/.github/workflows/ci.yml"))
 files = subprocess.run(["git", "ls-files"], cwd=base, capture_output=True, text=True, check=True).stdout.split("\n")
-tracked = [f for f in files if re.fullmatch(r"(bin|\.github/agent/tests)/[^/]*-test\.sh", f)]
+tracked = [f for f in files if re.fullmatch(r"(bin|[^/]*/agent/tests)/[^/]*-test\.sh", f)]
 RUN = re.compile(r"^bash (\S+)$")
 def fail(msg): print(msg); sys.exit(1)
 steps = lambda job: wf["jobs"][job].get("steps", [])

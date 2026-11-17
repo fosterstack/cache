@@ -1629,7 +1629,7 @@ The branch protection requires the check `allowlist-chain` of .github/workflows/
 
 ### REQ-CI-005 — A tracked suite is run once
 
-Every suite, a tracked *-test.sh file under bin/ or .github/agent/tests/, is run once per workflow run: by the step of ci.yml that runs it by its path or, when no step does, by its own leg of the suites matrix. No file lists the suites: the job that lists the legs reads the tracked files.
+Every suite, a tracked *-test.sh file under bin/ or the agent tests folder, is run once per workflow run: by the step of ci.yml that runs it by its path or, when no step does, by its own leg of the suites matrix. No file lists the suites: the job that lists the legs reads the tracked files.
 
 *Introduced v0.3.0 · tier community · confidence documented · source: ci-speed read-back of Oct 23; the suites matrix of ci.yml*
 
