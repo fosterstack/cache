@@ -2208,7 +2208,10 @@ rp = tempfile.mkdtemp(prefix="rcproof-")
 bindir = os.path.dirname(os.path.abspath(sys.argv[1]))
 def rg(*a): return subprocess.run(["git", "-C", rp, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"] + list(a), check=True, capture_output=True, text=True).stdout.strip()
 rg("init", "-q", "-b", "main")
-for d in (".github/workflows", ".github/policy", "bin"): os.makedirs(os.path.join(rp, d))
+for d in (".github/workflows", ".github/policy", "bin", "build/locks"): os.makedirs(os.path.join(rp, d))
+# chain-bytes-sha.py requires these build inputs in every commit it hashes
+for f in ("sealed-env.json", "archive.json", "melange.yaml", "apko.yaml", "locks/fips-module.txt"):
+    open(os.path.join(rp, "build", f), "w").write("fixed\n")
 open(os.path.join(rp, ".github/workflows/release.yml"), "w").write("name: Release\n")
 if os.path.exists(os.path.join(bindir, "chain-bytes-sha.py")): shutil.copy(os.path.join(bindir, "chain-bytes-sha.py"), os.path.join(rp, "bin/chain-bytes-sha.py"))
 else: open(os.path.join(rp, "bin/chain-bytes-sha.py"), "w").write("x\n")
