@@ -745,8 +745,7 @@ PRODUCES = {"ci.yml": tuple((j, j) for j in PROTECTED + ("coverage", "test", "li
             "scan.yml": (("scan", "scan"), ("reproducibility", "reproducibility"),
                          ("scanner", "scan (${{ matrix.scanner }})")),
             "stage-reproducibility.yml": (("reproduce", "reproducibility"),),
-            "stage-verify.yml": (("scan", "scan (${{ matrix.scanner }})"),),
-            "supply-chain.yml": (("pin-age", "pin-age"),)}
+            "stage-verify.yml": (("scan", "scan (${{ matrix.scanner }})"),)}
 RESERVED = set(PROTECTED) | {"auditor-review-gate"} \
            | {p[1].split(" (")[0] for ps in PRODUCES.values() for p in ps} \
            | {n for c in ruleset + release_only for n in (str(c.get("context")), str(c.get("context")).split(" (")[0])}
@@ -1628,12 +1627,10 @@ $(printf "$JOB")"
 $(printf "$JOB")" ;; esac
 done < <(jq -r '.required_checks[].context' "$here/.github/policy/required-checks.json")
 case_ g2-second-ci-job-named-lint       bad "d['jobs']['zz'] = dict($ZZ, name='lint')"
-case_ g2-second-ci-job-named-pin-age    bad "d['jobs']['zz'] = dict($ZZ, name='pin-age')"
 case_ g2-second-ci-job-named-scan       bad "d['jobs']['zz'] = dict($ZZ, name='scan')"
 case_ g2-second-ci-job-named-analyze    bad "d['jobs']['zz'] = dict($ZZ, name='analyze (go)')"
 case_ g2-second-ci-job-matrix-suffix    bad "d['jobs']['zz'] = dict($ZZ, name='test (\${{ matrix.v }})')"
 case_ g2-ci-job-renamed-to-another-context bad "d['jobs']['lint']['name'] = 'test'"
-case_ g2-ci-job-id-is-a-context         bad "d['jobs']['pin-age'] = d['jobs'].pop('lint')"
 # row 2: the names main produces stay reserved when the head's own required-checks.json no longer lists them
 jq '.required_checks |= map(select(.context != "lint"))' "$here/.github/policy/required-checks.json" \
   > "$work/pol-no-lint.json"
@@ -1666,7 +1663,6 @@ PY
   else failn=$((failn+1)); echo "FAIL g2-$1 → ok, want bad ($out)"; fi
 }
 g2_swap codeql-producer-takes-lint        codeql.yml        analyze      lint
-g2_swap supply-chain-producer-takes-test  supply-chain.yml  pin-age      test
 g2_swap scan-producer-takes-vendor        scan.yml          scan         vendor
 
 # ---- byte pins: the workflow's top level (env/defaults/permissions), and the line-ending refusal ----------------

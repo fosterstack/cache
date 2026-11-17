@@ -47,6 +47,9 @@ inv = _load("pin-inventory")
 age = _load("pin-age-check")
 
 
+GO_EXACT = re.compile(r"v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?|[0-9a-f]{40}")
+
+
 class Fail(Exception):
     """The audit could not do its job (exit 2)."""
 
@@ -1386,6 +1389,10 @@ def main(argv=None):
             print(f"audit: DEAD EXCEPTION: {dead_message(e, held, net)}")
         for e in dormant:
             print(f"information: dormant exception: the ruling for {_ruling_label(e)} waits for its pin; nobody holds it")
+        # REQ-SUP-001-AC34: a go install whose version is not exact is a finding of the daily run (the pull-request scan that judged it is deleted)
+        unpinned = [] if a.base else sorted(k for k, i in head.items() if i.kind == "gotool" and not GO_EXACT.match(i.version))
+        for k in unpinned:
+            print(f"audit: UNPINNED GO TOOL: {clean(k)} is not an exact version (vMAJOR.MINOR.PATCH or a full commit)")
         plan, disputes, per_item, pending = [], {}, {}, []
         for f in findings:
             print(f"audit: {'DISPUTED' if f.disputed else 'HIT'}: {clean(f.item.key)} ({clean(', '.join(f.ids))}): {f.why}"
@@ -1435,7 +1442,7 @@ def main(argv=None):
         if incomplete:
             print("audit: INCOMPLETE: some open pull request pins could not be checked (above): no clean claim is made today", file=sys.stderr)
             return 1
-        if lapsed or dead:
+        if lapsed or dead or unpinned:
             return 1
         print(f"audit: no known-compromised versions as of {today}"
               + (f" ({excepted_n} disputed hit(s) covered by a checked-in exception)" if excepted_n else "")

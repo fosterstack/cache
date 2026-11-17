@@ -4,14 +4,13 @@
 #   AC1  the jobs that run on the pull_request event (a workflow's `on:` keys and each job's `if` and `needs` decide) are
 #        test, lint, govulncheck, analyze (go), fips140-only and scan, the jobs scan needs, and the jobs of the two
 #        untouched workflows (agent-review-gate.yml, dependabot-auto-merge.yml); every other job of ci.yml, scan.yml,
-#        acceptance.yml and supply-chain.yml's pin-age still runs on push to main.
-#   AC2  pin-age (supply-chain.yml) runs on push to main only, never on a pull request, and judges the commit before the
-#        push (github.event.before) to the commit after it (github.sha); dependency-review (ci.yml) does the same through
-#        its base-ref and head-ref. That the checker fails on an unpinned version in such a range is proved in
-#        .github/agent/tests/pin-age-check-test.sh.
-#   AC3  required-checks.json scopes pin-age and dependency-review to push, and release admission's own step (run from
+#        acceptance.yml still runs on push to main; supply-chain.yml has no job on a pull request or a push.
+#   AC2  supply-chain.yml (the daily audit) has no push, pull_request, pull_request_target or workflow_run trigger: the
+#        pin-age pull-request scan was deleted. dependency-review (ci.yml) runs on push to main only and judges the commit
+#        before the push (github.event.before) to the commit after it (github.sha) through its base-ref and head-ref.
+#   AC3  required-checks.json scopes dependency-review to push, and release admission's own step (run from
 #        stage-admission.yml against a stub of the GitHub API) refuses a tag whose commit has a red or missing run of any
-#        push-scoped check, those two included.
+#        push-scoped check, dependency-review included.
 # The real files must pass and each mutated copy must be caught.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -185,34 +184,17 @@ def judge_ac1(wfs):
         lost = set(wfs[f]["jobs"]) - runs_on(wfs[f], "push")
         if lost:
             bad.append("%s jobs that no longer run on push to main: %s" % (f, sorted(lost)))
-    if "pin-age" not in runs_on(wfs["supply-chain.yml"], "push"):
-        bad.append("supply-chain.yml's pin-age does not run on push to main")
     return bad
 
 
 def judge_ac2(wfs):
     bad = []
     sc = wfs["supply-chain.yml"]
-    on = sc.get("on") or {}
-    if not isinstance(on, dict) or on.get("push") != {"branches": ["main"]}:
-        bad.append("supply-chain.yml is not triggered on push to main alone (no path or other filter): %s" % on.get("push") if isinstance(on, dict) else on)
-    for ev in ("pull_request", "pull_request_target", "workflow_run"):
+    for ev in ("push", "pull_request", "pull_request_target", "workflow_run"):
         if ev in events_of(sc):
             bad.append("supply-chain.yml still has the %s trigger" % ev)
-    job = (sc.get("jobs") or {}).get("pin-age") or {}
-    text = yaml.safe_dump(job)
-    if "github.event.pull_request" in text:
-        bad.append("pin-age still reads github.event.pull_request")
-    runs = "\n".join(str(s.get("run", "")) for s in job.get("steps") or [])
-    for prog in ("pin-age-check.py", "pin-audit.py"):
-        line = next((l for l in runs.splitlines() if prog in l and l.strip().startswith("python3")), "")
-        if "--base ${{ github.event.before }}" not in line or "--head ${{ github.sha }}" not in line:
-            bad.append("pin-age does not run %s from github.event.before to github.sha: %r" % (prog, line))
-    co = [s for s in job.get("steps") or [] if str(s.get("uses", "")).startswith("actions/checkout@")]
-    if not co or any((s.get("with") or {}).get("fetch-depth") != "0" for s in co if (s.get("with") or {}).get("path") != "trusted"):
-        bad.append("pin-age's checkout of the pushed tree is not full depth (the commit before the push must be there)")
-    if evaluate(job.get("if"), "push") is False or any(evaluate(s.get("if"), "push") is False for s in job.get("steps") or []):
-        bad.append("pin-age or one of its steps is skipped on push")
+    if "pin-age" in (sc.get("jobs") or {}):
+        bad.append("supply-chain.yml still has the pin-age job")
     ci = wfs["ci.yml"]["jobs"]["dependency-review"]
     if evaluate(ci.get("if"), "push") is False:
         bad.append("ci.yml's dependency-review is skipped on push")
@@ -254,7 +236,7 @@ for name, f, edit, want_bad in [
     ("artifact-acceptance-on-pull-request", "scan.yml", "J['artifact-acceptance'].pop('if', None)", True),
     ("acceptance-on-pull-request", "acceptance.yml", "d['on']['pull_request'] = ''", True),
     ("codeql-off-pull-request", "codeql.yml", "d['on'].pop('pull_request')", True),
-    ("pin-age-on-pull-request", "supply-chain.yml", "d['on']['pull_request'] = {}", True),
+    ("supply-chain-on-pull-request", "supply-chain.yml", "d['on']['pull_request'] = {}; J['daily-audit'].pop('if')", True),
     ("scan-off-pull-request", "scan.yml", "d['on'].pop('pull_request')", True),
     ("scan-dropped-from-push", "scan.yml", "d['on'].pop('push')", True),
     ("review-gate-job-added", "agent-review-gate.yml", "J['sweep'].pop('if')", True),
@@ -264,16 +246,11 @@ for name, f, edit, want_bad in [
 
 # AC2
 bad = judge_ac2(real)
-check("AC2 the real workflows: pin-age and dependency-review run on push to main and judge before..sha", not bad, "; ".join(bad))
+check("AC2 the real workflows: supply-chain.yml has no pull-request or push trigger; dependency-review runs on push to main and judges before..sha", not bad, "; ".join(bad))
 for name, f, edit in [
     ("pull-request-trigger-back", "supply-chain.yml", "d['on']['pull_request'] = {}"),
-    ("no-push-trigger", "supply-chain.yml", "d['on'].pop('push', None)"),
-    ("push-any-branch", "supply-chain.yml", "d['on']['push'] = {}"),
-    ("push-paths-filter", "supply-chain.yml", "d['on']['push'] = {'branches': ['main'], 'paths': ['.github/**']}"),
-    ("base-is-the-pr-base", "supply-chain.yml", "[s.__setitem__('run', s['run'].replace('github.event.before', 'github.event.pull_request.base.sha')) for s in J['pin-age']['steps'] if 'run' in s]"),
-    ("head-is-the-pr-head", "supply-chain.yml", "[s.__setitem__('run', s['run'].replace('github.sha', 'github.event.pull_request.head.sha')) for s in J['pin-age']['steps'] if 'run' in s]"),
-    ("pin-age-skipped-on-push", "supply-chain.yml", "J['pin-age']['if'] = \"github.event_name == 'pull_request'\""),
-    ("shallow-checkout", "supply-chain.yml", "[s.setdefault('with', {}).__setitem__('fetch-depth', '1') for s in J['pin-age']['steps'] if str(s.get('uses','')).startswith('actions/checkout@') and (s.get('with') or {}).get('path') != 'trusted']"),
+    ("push-trigger-back", "supply-chain.yml", "d['on']['push'] = {'branches': ['main']}"),
+    ("pin-age-job-back", "supply-chain.yml", "J['pin-age'] = J['daily-audit']"),
     ("review-skipped-on-push", "ci.yml", "J['dependency-review']['if'] = \"${{ github.event_name == 'pull_request' }}\""),
     ("review-base-ref-dropped", "ci.yml", "[s.setdefault('with', {}).pop('base-ref', None) for s in J['dependency-review']['steps'] if str(s.get('uses','')).startswith('actions/dependency-review-action@')]"),
     ("review-head-ref-pr", "ci.yml", "[s.setdefault('with', {}).__setitem__('head-ref', '${{ github.event.pull_request.head.sha }}') for s in J['dependency-review']['steps'] if str(s.get('uses','')).startswith('actions/dependency-review-action@')]"),
@@ -285,7 +262,7 @@ for name, f, edit in [
 POL = os.path.join(root, ".github/policy")
 req = json.load(open(os.path.join(POL, "required-checks.json")))["required_checks"]
 rel = json.load(open(os.path.join(POL, "release-only-checks.json")))["required_checks"]
-for ctx in ("pin-age", "dependency-review"):
+for ctx in ("dependency-review",):
     ents = [c for c in req + rel if c["context"] == ctx]
     check("AC3 %s is listed once, scope push, Actions app" % ctx, ents == [{"context": ctx, "integration_id": 15368, "scope": "push"}], ents)
 
@@ -331,7 +308,7 @@ check("AC3 admission passes when every required check is green on the tagged com
 for ctx in [c["context"] for c in req + rel if c["context"] != "auditor-review-gate"]:
     rc, out = admit("missing " + ctx, drop=(ctx,))
     check("AC3 admission refuses a tag whose commit has no run of %s" % ctx, rc != 0 and "'%s'" % ctx in out and "tagged commit" in out, out.strip()[-300:])
-for ctx in ("pin-age", "dependency-review"):
+for ctx in ("dependency-review",):
     rc, out = admit("red " + ctx, red=(ctx,))
     check("AC3 admission refuses a tag whose commit has a red run of %s" % ctx, rc != 0 and "'%s'" % ctx in out, out.strip()[-300:])
     rc, out = admit("pr-only " + ctx, drop=(ctx,), only_on_pr=(ctx,))

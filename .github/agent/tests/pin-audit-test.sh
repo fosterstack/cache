@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC5, REQ-SUP-001-AC7, REQ-SUP-001-AC8, REQ-SUP-001-AC9, REQ-SUP-001-AC10
+# proves: REQ-SUP-001-AC5, REQ-SUP-001-AC7, REQ-SUP-001-AC8, REQ-SUP-001-AC9, REQ-SUP-001-AC10, REQ-SUP-001-AC34
 # The daily supply-chain audit (owner ratified Oct 5, rules 2, 3 and 5; advisor 0172, 0175, 0177), proved offline against a fixtures file that stands in for the
 # advisory databases, the actions' own repositories and the registries, with a recording `gh`:
 #   python3 bin/pin-audit.py --root REPO --fixtures FILE --now ISO --gh CMD [--exceptions FILE]
@@ -1561,6 +1561,58 @@ for _ in range(2):
         inv.inventory(dict(t))
 assert walks == [], walks      # then every file of every tree is answered by the memo: no walk at all
 PY
+
+# --- AC34: a `go install` of a tool at no exact version is a finding in the daily audit: a line naming it, exit 1, and no issue ---------------------------
+# gofind <name> <wf|sh> <go install command text>: a tree whose only go install is that command, audited in the daily mode (no --base) against CLEAN fixtures
+gofind() {
+  local n=$1 kind=$2 cmd=$3 r="$work/r-go-$1"
+  mkrepo "$r" "5:$CLEANSHA"
+  if [ "$kind" = wf ]; then
+    printf 'on: pull_request\njobs:\n  g:\n    runs-on: ubuntu-latest\n    steps:\n      - run: %s\n' "$cmd" >"$r/.github/workflows/go.yml"
+  else
+    printf '#!/usr/bin/env bash\nset -e\n%s\n' "$cmd" >"$r/bin/get-tool.sh"
+  fi
+  git -C "$r" add -A; git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "go install"
+  run "$n" "$CLEAN" "$r"
+}
+no_issue_call() { none_match '"issue", "(create|edit)"' "$work/$1.gh"; }
+UNPINNED_GO=(
+  "latest|go install example.com/x@latest"
+  "main|go install example.com/x@main"
+  "branch|go install example.com/x@release-branch"
+  "v1|go install example.com/x@v1"
+  "v12|go install example.com/x@v1.2"
+  "short|go install example.com/x@abc1234"
+  # no range case: the inventory does not read a quoted range (go install 'example.com/x@>=1.0.0'), so the rule cannot judge it
+  "bare|go install example.com/x"
+  "var|go install \"\$TOOL\""
+  "varat|go install example.com/x@\$TOOL_VERSION"
+)
+for kind in wf sh; do
+  for spec in "${UNPINNED_GO[@]}"; do
+    form=${spec%%|*}; cmd=${spec#*|}; n="go-$kind-$form"
+    gofind "$n" "$kind" "$cmd"
+    if [ "$form" = var ]; then
+      CASE="AC34: daily audit, $kind file, '$cmd' (a variable names no version): exit 1, a line is printed, no issue create/edit call"
+      check test "$rc" -eq 1; check test -s "$work/$n.out"; check no_issue_call "$n"
+    else
+      CASE="AC34: daily audit, $kind file, '$cmd' (not an exact version): exit 1, the line names example.com/x, no issue create/edit call"
+      check test "$rc" -eq 1; check bash -c "grep -v '^  gotool:' '$work/$n.out' | grep -q 'example\.com/x'"; check no_issue_call "$n"
+    fi
+  done
+  for spec in "exact|go install example.com/x@v1.2.3" "rc|go install example.com/x@v1.2.3-rc.1" "sha|go install example.com/x@$SHA4"; do
+    form=${spec%%|*}; cmd=${spec#*|}; n="go-$kind-ok-$form"
+    gofind "$n" "$kind" "$cmd"
+    CASE="AC34: daily audit, $kind file, '$cmd' (an exact version) is no finding: exit 0, example.com/x not flagged, no issue call"
+    check test "$rc" -eq 0; check bash -c "! grep -v '^  gotool:' '$work/$n.out' | grep -q 'example\.com/x'"; check no_issue_call "$n"
+  done
+done
+mkrepo "$work/r-go-mix" "5:$CLEANSHA"
+printf 'on: pull_request\njobs:\n  g:\n    runs-on: ubuntu-latest\n    steps:\n      - run: go install example.com/loose@latest\n      - run: go install example.com/tight@v1.2.3\n' >"$work/r-go-mix/.github/workflows/go.yml"
+git -C "$work/r-go-mix" add -A; git -C "$work/r-go-mix" -c user.name=t -c user.email=t@x commit -q -m "go install"
+run go-mix "$CLEAN" "$work/r-go-mix"
+CASE="AC34: one unpinned and one pinned go install in one tree: exit 1, only the unpinned module path (example.com/loose) is named, no issue call"
+check test "$rc" -eq 1; check bash -c "grep -v '^  gotool:' '$work/go-mix.out' | grep -q 'example\.com/loose'"; check bash -c "! grep -v '^  gotool:' '$work/go-mix.out' | grep -q 'example\.com/tight'"; check no_issue_call go-mix
 
 echo "pin-audit: $pass passed, $failn failed"
 test "$failn" -eq 0
