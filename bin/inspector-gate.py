@@ -60,12 +60,23 @@ def name_version(purl_or_id):
     return name.lower(), ver
 
 
-def vex_versions(purl, name, ver):
-    """The versions a statement may write for a finding. Scanners write the Go standard library's version go1.27.2 where the statement's
-    pkg:golang/stdlib@1.27.2 has no prefix, so that package (a golang stdlib purl, or no purl) also tries the version without its prefix;
-    every other package keeps its version as written."""
-    go_stdlib = purl.partition("@")[0] == "pkg:golang/stdlib" if purl else name == "stdlib"
-    return [ver, ver[2:]] if go_stdlib and re.match(r"go\d", ver) else [ver]
+def package_type(purl, name):
+    """The purl type. With no purl: golang for the stdlib, else None (no type)."""
+    if purl.startswith("pkg:"):
+        return purl[4:].split("/", 1)[0]
+    return "golang" if name == "stdlib" else None
+
+
+def stdlib_version(typ, name, ver):
+    """Scanners write go1.27.2 for the golang stdlib's 1.27.2: that one package loses the prefix."""
+    if typ == "golang" and name == "stdlib" and ver.startswith("go") and ver[2:3].isdigit():
+        return ver[2:]
+    return ver
+
+
+def types_cover(ftyp, styps):
+    """Go names collide across ecosystems (a bare stdlib), other names do not: when either side is golang the types must be equal; generic, apk and deb stay interchangeable. No finding type: any."""
+    return ftyp is None or any(t == ftyp or (t != "golang" and ftyp != "golang") for t in styps)
 
 
 def same_pkg(a, b):
@@ -157,7 +168,8 @@ def _package_key(sid):
     s = urllib.parse.unquote(str(sid)).split("?", 1)[0].split("#", 1)[0]
     s = s[4:].split("/", 1)[-1] if s.startswith("pkg:") else s
     name, _, ver = s.rpartition("@") if "@" in s else (s, "", "")
-    return (name.rsplit("/", 1)[-1].lower(), ver)
+    name = name.rsplit("/", 1)[-1].lower()
+    return (name, stdlib_version("golang", name, ver))
 
 
 def superseded(statements):
@@ -221,20 +233,27 @@ def vex_index(doc):
             scope = scope_of(pid)
             if scope is None:          # not this gate's repository, or a scope the grammar rejects: it covers nothing, with or without an image (covered(.., image=None) trusts the index)
                 continue
-            subs = {name_version(s.get("@id")) for s in p.get("subcomponents") or []}
+            subs = {}   # (name, version) -> the purl types it was written with
+            for s in p.get("subcomponents") or []:
+                name, ver = name_version(s.get("@id"))
+                typ = package_type(s.get("@id") or "", name)
+                subs.setdefault((name, stdlib_version(typ, name, ver)), set()).add(typ)
             for i in ids:
                 if i:
                     idx.setdefault(i, []).append((subs, scope))
     return idx
 
 
-def covered(idx, vid, pkg, image=None):
+def covered(idx, vid, pkg, image=None, typ=None):
     """image = the scanned image's identity (image_identity(label)); None means the caller has already filtered the statements to
-    this image (the panel's tally does, per image), so the scope is not applied a second time."""
+    this image (the panel's tally does, per image), so the scope is not applied a second time.
+    typ = the finding's purl type: when it or a subcomponent's is golang, a subcomponent of another type never covers it. None: the finding has no type."""
+    if typ is not None:
+        pkg = (pkg[0], stdlib_version(typ, *pkg))
     for subs, scope in idx.get(vid, []):
         if image is not None and not in_scope(scope, image):
             continue
-        if not subs or any(same_pkg(pkg, s) for s in subs):
+        if not subs or any(types_cover(typ, subs[s]) and same_pkg(pkg, s) for s in subs):
             return True
     return False
 
@@ -274,11 +293,12 @@ def main(argv):
         sev = ",".join(sorted({(r.get("severity") or "unknown") for r in v.get("ratings") or []})) or "unknown"
         for a in v.get("affects") or [{"ref": ""}]:
             c = by_ref.get(a.get("ref"), {})
-            pkg = name_version(c.get("purl") or "")
+            purl = c.get("purl") or ""
+            pkg = name_version(purl)
             if not pkg[0]:
                 pkg = ((c.get("name") or "?").lower(), c.get("version") or "")
             row = f"{vid} {pkg[0]}@{pkg[1]} ({sev})"
-            is_covered = any(covered(idx, vid, (pkg[0], ver), image) for ver in vex_versions(c.get("purl"), pkg[0], pkg[1]))
+            is_covered = covered(idx, vid, pkg, image, package_type(purl, pkg[0]))
             (suppressed if is_covered else blocking).append(row)
     print(f"inspector {label}: {n_pkg} packages, {len(blocking)} finding(s), "
           f"{len(suppressed)} covered by the published VEX")

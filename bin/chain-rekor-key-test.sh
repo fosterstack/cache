@@ -685,6 +685,7 @@ for rel, n, cmd in lines:
     cmd = re.split(r"\s(?:2>|>|\|\||&&|\||;)\s*", cmd)[0].rstrip("\\ ")
     try:
         words = shlex.split(cmd)
+        words = [w for w in words if not re.fullmatch(r"\$\{\w+\[@\]\}", w)]     # "${name[@]}" stands for zero words
         argv = [(("1" if words[i - 1] == "--exit-code" else "x") if "$" in w else w) for i, w in enumerate(words)][1:]
         cv.build_parser().parse_args(argv)
         parsed += 1
@@ -696,6 +697,18 @@ if lines and parsed == len(lines):
     ok("every pinned chain-verify.py line (%d, in the workflows and bin/*.sh) parses through build_parser()" % len(lines))
 else:
     bad("no pinned chain-verify.py line was found to parse")
+# mutation: the array word is dropped, but a bad flag next to it still fails to parse
+for tail, want in (("--items items.json", True), ("--no-such-flag x", False)):
+    try:
+        base = 'items-merge --fragment f --images i --archives a --version v --archive archive "${digests[@]}" '
+        w = [w for w in shlex.split(base + tail)
+             if not re.fullmatch(r"\$\{\w+\[@\]\}", w)]
+        cv.build_parser().parse_args(w)
+        parses = True
+    except SystemExit:
+        parses = False
+    verdict = "parses" if want else "is refused"
+    (ok if parses == want else bad)("a line with \"${digests[@]}\" and %s %s" % (tail, verdict))
 try:
     cv.build_parser().parse_args(["verify", "--stage", "sign", "--record", "x", "--policy", "x", "--rekor-entries", "x"])
     ok("--rekor-entries is accepted by verify")
@@ -730,7 +743,7 @@ for script in ("witnessed.sh", "witness-sign-staged.sh"):
     (ok if parses(["sign-record"] + [x for f in sorted(flags) for x in (f, "x")]) else bad)("%s: its sign-record call (%s) is accepted by the parser" % (script, " ".join(sorted(flags))))
 
 print("pass=%d fail=%d" % (passed, failed))
-EXPECT = 174
+EXPECT = 176
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))
     sys.exit(1)

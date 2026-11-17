@@ -195,7 +195,8 @@ def cmd_empty_except(args):
 
 class OneLineParser(argparse.ArgumentParser):
     def error(self, message):
-        sys.exit("%s: error: %s" % (self.prog, message))
+        print("%s: error: %s" % (self.prog, message), file=sys.stderr)
+        sys.exit(2)      # a usage error is exit 2: exit 1 means a red case or a refusal
 
 
 def parser():

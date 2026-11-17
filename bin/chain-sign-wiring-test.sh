@@ -3003,6 +3003,41 @@ expect caught "002-AC4 a secret on the step that runs bin/witnessed-local.sh" bu
 expect ok "the real tree: only release.yml calls stage-sign.yml and no stage calls a stage (003-AC5; green already: scan.yml and main-candidate-rescan.yml are non-stage callers)" calls "$REAL"
 label="the real tree: only stage-sign.yml and evidence-letter.yml are new and only stage-sign.yml signs provenance"
 expect ok "$label" tree "$REAL"
+# a grant covers a whole file: the grants of these two files excused one literal and one prose word (B1)
+b1() { # b1 0|1 LABEL [DETAIL]: 0 is a pass
+  if [ "$1" = 0 ]; then pass=$((pass + 1)); echo "ok   B1 $2"
+  else failn=$((failn + 1)); echo "FAIL B1 $2 ${3:+-> ${3:0:300}}"; fi
+}
+row_has() { # row_has PATH KEY VALUE: 0 when the real chain-scripts.json row of PATH lists VALUE under KEY
+  python3 - "$root/.github/policy/chain-scripts.json" "$1" "$2" "$3" <<'PYR'
+import json, sys
+rows = {r["path"]: r for r in json.load(open(sys.argv[1]))["scripts"]}
+sys.exit(0 if sys.argv[4] in rows[sys.argv[2]].get(sys.argv[3], []) else 1)
+PYR
+}
+rc=0; row_has bin/inspector-gate.py tools go || rc=$?
+b1 "$((rc != 0 ? 0 : 1))" 'the bin/inspector-gate.py row has no "go" tools grant'
+rc=0; row_has bin/chain-bytes-sha.py tools script || rc=$?
+b1 "$((rc != 0 ? 0 : 1))" 'the bin/chain-bytes-sha.py row has no "script" tools grant'
+# guard, green before the fix too: the judge names neither file
+tout=$(judge tree "$REAL" 2>&1) || true
+rc=0; grep -F -q -e inspector-gate.py -e chain-bytes-sha.py <<< "$tout" || rc=$?
+b1 "$((rc != 0 ? 0 : 1))" \
+  'the judge over the real files reports no finding for bin/inspector-gate.py and bin/chain-bytes-sha.py' "$tout"
+# the literal is excused by a line-bound deny exception (line, its sha256, count), as bin/assemble-image.sh's are
+rc=0
+python3 - "$root" <<'PYL' || rc=$?
+import hashlib, json, sys
+root = sys.argv[1]
+rows = {r["path"]: r for r in json.load(open(root + "/.github/policy/chain-scripts.json"))["scripts"]}
+row = rows["bin/inspector-gate.py"]
+lines = open(root + "/bin/inspector-gate.py").read().split("\n")
+found = [e for e in row.get("exceptions", [])
+         if e["rule"] == "deny" and e["line"] in lines and e["count"] == lines.count(e["line"])
+         and e["line_sha256"] == hashlib.sha256(e["line"].encode()).hexdigest() and e["why"]]
+sys.exit(0 if found and "go" not in row["tools"] else 1)
+PYL
+b1 "$rc" 'the bin/inspector-gate.py row carries a line-bound deny exception, not a tools grant'
 # every probe is a copy of the real tree with ONE change; the tree judge must fail it and name the changed file
 SIGN_JOB='  extra-attest:\n    runs-on: ubuntu-24.04\n    permissions:\n      id-token: write\n      attestations: write\n    steps:\n      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.0.0\n        with:\n          subject-path: x\n'
 probe() {  # probe NAME TEXT-THE-FINDINGS-MUST-NAME LABEL EDIT(shell, run in the copy)
@@ -3479,7 +3514,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='a7679bf19c1f98b865e69ddf782de7a444325d1f9748d2019dfb5125f6274a46'
+FX_PIN='3fe6a20c9e0bc951810c35b6c12679d6ebae586cbc1c529d5e277a5c03b8ce4d'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -3998,6 +4033,29 @@ d=$(amfix t2_s2); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_map"]={"apk":"bi
 d=$(amfix t2_s3); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_map"]={"a b":"bin/stage-apk.sh"}'; expm caught "$d" 'arg_map' "round-3 (2): an arg_map key that is not a plain word is an error"
 d=$(amfix t2_s4); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_map"]={}'; expm caught "$d" 'arg_map' "round-3 (2): an empty arg_map is an error"
 d=$(amfix t2_s5); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_words"]=["zzz"]'; printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh apk bin/stage-apk.sh\n' > "$d/.github/workflows/stage-verify.yml"; expm ok "$d" - "round-3 (2): a row with arg_map uses arg_map (arg_words is ignored)"
+# (2b) arg_extra: a STEP may carry one more plain word after its TARGET;
+# a STEP without an entry takes exactly STEP TARGET.
+# apk carries the word and runs stage-apk.sh with GH_TOKEN as the arg_map cases above do;
+# build has no entry and its step holds no env
+axfix() { local d; d=$(amfix "$1"); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_extra"]={"apk":"snap"}'; echo "$d"; }
+ax() { # ax NAME RUN ok|caught FRAGMENT [noenv]
+  local d env='        env:\n          GH_TOKEN: ${{ github.token }}\n'; d=$(axfix "$1"); [ -z "${5:-}" ] || env=''
+  printf 'jobs:\n  j:\n    steps:\n      - name: apk\n'"$env"'        run: %s\n' "$2" \
+    > "$d/.github/workflows/stage-verify.yml"
+  expm "$3" "$d" "$4" "arg_extra: $2"
+}
+ax t2x_ok 'bash bin/witnessed.sh apk bin/stage-apk.sh snap' ok -
+ax t2x_ok2 'bash bin/witnessed.sh build bin/build-apk.sh' ok - noenv
+ax t2x_wrong 'bash bin/witnessed.sh apk bin/stage-apk.sh other' caught 'arg_extra'
+ax t2x_missing 'bash bin/witnessed.sh apk bin/stage-apk.sh' caught 'arg_extra'
+ax t2x_extra 'bash bin/witnessed.sh build bin/build-apk.sh snap' caught 'arg_extra' noenv
+ax t2x_two 'bash bin/witnessed.sh apk bin/stage-apk.sh snap more' caught 'arg_extra'
+d=$(amfix t2x_s1); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_extra"]={"bogus":"snap"}'
+expm caught "$d" 'arg_extra' "arg_extra: a STEP that is not in arg_map is an error"
+d=$(amfix t2x_s2); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_extra"]={"apk":"a b"}'
+expm caught "$d" 'arg_extra' "arg_extra: a value that is not one plain word is an error"
+d=$(amfix t2x_s3); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_extra"]=["apk"]'
+expm caught "$d" 'arg_extra' "arg_extra: an arg_extra that is not an object is an error"
 # (3) program-running options are refused as options
 tr3() { local d; d=$(cfix "$1" "$2" "${4:-[\"tar\"]}"); expm caught "$d" 'program-running option' "round-3 (3): $2 is refused"; }
 tr3 t3_a 'tar --to-command=vi -xf a.tar'
@@ -5317,7 +5375,7 @@ wr_mutant "the token is fetched before a caller's option is refused" \
   's#^case "\${1:-}" in sign-record|sign|kms-sign) ;;#sh bin/loopback-get.sh\n&#'
 wr_mutant "a caller-passed --aws is accepted" 's/--aws|--aws=\*|--public-key|--public-key=\*)/--no-such-flag)/'
 
-EXPECT=2163
+EXPECT=2176
 if [ -e "$work/judge-dead" ]; then
   failn=$((failn + 1))
   echo "FAIL the persistent judge died, was silent or leaked state between cases (see the line above)"

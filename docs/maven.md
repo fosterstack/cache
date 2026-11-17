@@ -119,14 +119,4 @@ generic repository, nginx with the `fs` module). If your hit rate looks
 wrong, the extension's own [configuration reference][mvn-ext] is the right
 place to start, not an issue against this repo.
 
-## Positioning
-
-FosterStack Cache is, as far as we've found, the only maintained,
-purpose-built remote-cache **server** for Maven — the alternative is
-Develocity's Maven extension, which requires a full Develocity
-subscription. If you're
-already running FosterStack Cache for Gradle, pointing Maven modules at
-the same server (mixed Gradle+Maven shops, one deploy) is the whole
-pitch: "one self-hosted cache server for Gradle **and** Maven."
-
 What the server answers to each request, and why a request is refused: [server responses](server-responses.md).

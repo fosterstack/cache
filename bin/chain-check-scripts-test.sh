@@ -330,7 +330,7 @@ if grep -Fq 'OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY' <<< "$out" && ! grep -Fq 'osv
 # exit 0 does not mean an empty report: osv-scanner can list findings and still exit 0 (findings it classes as unimportant or, with call analysis, uncalled). The report is judged at ANY exit code.
 mkfake osv-scanner 0 80
 FAKE_OSV_RC=0 FAKE_OSV_VULNS='[{"pkg": "libssl3@3.0.0", "id": "CVE-2025-99999"}]' want_fail "AC4 e osv-scanner exits 0 with an uncovered finding in its report: the scan fails" "found vulnerabilities" "${SCAN[@]}"
-FAKE_OSV_RC=0 FAKE_OSV_VULNS='[{"pkg": "busybox@1.37.0", "id": "CVE-2025-60876"}]' want_ok "AC4 e osv-scanner exits 0 with a finding the published VEX excepts: the scan passes" "${SCAN[@]}"
+FAKE_OSV_RC=0 FAKE_OSV_ECO_ONLY="Debian:12" FAKE_OSV_VULNS='[{"pkg": "busybox@1.37.0", "id": "CVE-2025-60876"}]' want_ok "AC4 e osv-scanner exits 0 with a finding the published VEX excepts: the scan passes" "${SCAN[@]}"
 FAKE_OSV_RC=0 FAKE_OSV_GARBAGE=1 want_fail "AC4 e osv-scanner exits 0 with a report that cannot be read: the scan did not run" "could not run" "${SCAN[@]}"
 FAKE_OSV_RC=0 want_ok "AC4 e osv-scanner exits 0 with an empty report: the scan passes" "${SCAN[@]}"
 for sh_ in 'vulnerabilities is null|{"results":[{"packages":[{"package":{"name":"p","version":"1","ecosystem":"Go"},"vulnerabilities":null}]}]}' 'vulnerabilities is a string|{"results":[{"packages":[{"package":{"name":"p","version":"1","ecosystem":"Go"},"vulnerabilities":"x"}]}]}' 'results is not a list|{"results":"x"}' 'packages is not a list|{"results":[{"packages":"x"}]}' 'packages is null beside a result with packages|{"results":[{"packages":null},{"packages":[{"package":{"name":"p","version":"1","ecosystem":"Go"}}]}]}' 'packages is false|{"results":[{"packages":false},{"packages":[{"package":{"name":"p","version":"1","ecosystem":"Go"}}]}]}' 'results is null|{"results":null}' 'a result that is not an object|{"results":["x"]}' 'a null result beside a good one|{"results":[null,{"packages":[{"package":{"name":"p","version":"1","ecosystem":"Go"}}]}]}' 'a null package entry beside a good one|{"results":[{"packages":[null,{"package":{"name":"p","version":"1","ecosystem":"Go"}}]}]}' 'the report itself is a list|[]'; do
@@ -546,7 +546,7 @@ cp "$work/dig.f1" "$fx/digests.json"
 # package at its version. Every finding must be covered; one that is not, an unreadable VEX or a failure with nothing parseable to cover fails.
 VBUSY='[{"pkg": "busybox@1.37.0", "id": "CVE-2025-60876"}]'
 mkfake grype 0 120; mkfake osv-scanner 1 80
-FAKE_OSV_VULNS="$VBUSY" want_ok "AC4 F3 osv-scanner exit 1 on a finding the published VEX excepts (CVE-2025-60876 on busybox 1.37.0) passes" "${SCAN[@]}"
+FAKE_OSV_ECO_ONLY="Debian:12" FAKE_OSV_VULNS="$VBUSY" want_ok "AC4 F3 osv-scanner exit 1 on a finding the published VEX excepts (CVE-2025-60876 on busybox 1.37.0) passes" "${SCAN[@]}"
 if jq -e '[.scanners[] | select(.name == "osv-scanner") | .subjects[] | select(.name | test("^production/linux/"))] | length == 2 and all(.[]; .verdict == "pass" and .vex_suppressed == 1)' "$fx/out/scan-results.json" > /dev/null 2>&1; then ok "AC4 F3 the result says how many findings the VEX excepted on the subject"; else bad "AC4 F3 vex_suppressed missing from the osv subject: $(jq -c '[.scanners[] | select(.name == "osv-scanner") | .subjects[0]]' "$fx/out/scan-results.json" 2>&1 | cut -c1-200)"; fi
 FAKE_OSV_VULNS='[{"pkg": "github.com/golang-jwt/jwt/v4@v4.5.0", "id": "GHSA-29wx-vh33-7x7r", "aliases": ["CVE-2024-51744", "GO-2024-3250"]}]' \
   want_ok "AC4 F3 a finding whose id differs from the statement's name but whose alias equals it is excepted (the OSV id is the GHSA, the VEX names the CVE)" "${SCAN[@]}"
@@ -1077,7 +1077,7 @@ EOF
 chmod +x "$fake/cosign" "$fake/gh"
 printf 'abc  cache_linux_amd64.tar.gz\n' > "$fx/checksums.txt";
 printf '{}\n' > "$fx/checksums.txt.bundle";
-printf 'key\n' > "$fx/release.rsa.pub"
+printf 'key\n' > "$fx/release.rsa.pub"; mkdir -p "$fx/build/keys"; cp "$fx/release.rsa.pub" "$fx/build/keys/release.rsa.pub"
 REPO=registry.example/fosterstack/cache
 grun() { # grun SCRIPT ARGS...  like run, with the candidate's environment of a release run
   : > "$work/log"; rc=0
@@ -1131,7 +1131,7 @@ ${FENCE}"
 rm -f "$fx/out/guide-results.json"
 gwant_ok "AC7 commands on local files and local placeholders run: cosign verify-blob on the checksums file, jq (a text block is prose)"
 if [ -f "$fx/out/guide-results.json" ] && jq -e '(.commands | length) == 2 and all(.commands[]; .outcome == "pass")' "$fx/out/guide-results.json" > /dev/null 2>&1; then ok "AC7 the results file lists each of the two commands with its outcome"; else bad "AC7 guide-results.json shape"; fi
-if grep -Fq "cosign verify-blob --key release.rsa.pub --type slsa-v0.3.0" "$work/log" && ! grep -q '<[A-Z_]*>' "$work/log";
+if grep -Fq "cosign verify-blob --key build/keys/release.rsa.pub --type slsa-v0.3.0" "$work/log" && ! grep -q '<[A-Z_]*>' "$work/log";
 then ok "AC7 <TAG> is substituted in a runnable verify command (no placeholder left)";
 else bad "AC7 substitution: $(tr '\n' ' ' < "$work/log" | cut -c1-200)";
 fi
@@ -1264,10 +1264,10 @@ g "$(blk "$GHV")"; gwant_fail "AC7 F2 an unlisted gh attestation verify is refus
 g "$(blk "cosign verify-blob --key release.rsa.pub --type fail-me --bundle checksums.txt.bundle checksums.txt")"
 gwant_fail "AC7 a runnable command that exits non-zero fails the script naming it" "fail-me"
 g "$(blk "cosign verify-blob --key release.rsa.pub --bundle checksums.txt.bundle cache_0.3.0_linux_amd64.tar.gz")"
-# a file-subject command whose file Check lacks is run by Release's postverify, so it is no failure and needs no list entry
-gwant_ok "AC7 a verify-blob on a file that is not local to Check is planned as run by postverify before publishing (exit 0, unlisted)"
-gplan_row "AC7 that plan row has run null and says it is run by postverify before publishing"
-g "$(blk "jq -e '.a' not-here.json")"; gwant_ok "AC7 a jq over a file that is not local to Check is planned for postverify too (exit 0)"
+# a command whose file operand is not local to Check, and that no rule places in a later stage, is a fault: it exits 1 naming the operand
+gwant_fail "AC7 a verify-blob on a file that is not local to Check fails, naming the operand (unlisted)" "cache_0.3.0_linux_amd64.tar.gz"
+gwant_fail "AC7 that failure says no later stage is named for the missing operand" "no later stage is named for it"
+g "$(blk "jq -e '.a' not-here.json")"; gwant_fail "AC7 a jq over a file that is not local to Check fails, naming the operand" "not-here.json"
 # an image-reference subject still needs the list; a non-local operand of another kind still fails closed
 g "$(blk "cosign verify <IMAGE_REF> --key release.rsa.pub")"
 gwant_fail "AC7 an image-reference command not on the list still fails (postverify class is for file subjects only)" "unlisted command needs a registry"
@@ -1329,7 +1329,7 @@ for f in "--bundle X" "--bundle=X" "--certificate X" "--certificate=X" "--cert X
   # only --bundle is in the closed flag set (and --key must be release.rsa.pub): every other file-valued flag is refused by the judge
   case "$f" in --bundle*) ;;
     *) grefuse "AC7 a file-valued flag outside the closed set (or a key that is not release.rsa.pub) is refused: ${f%% *}" "${f%%[ =]*}"; continue;; esac
-  gwant_ok "AC7 a file-valued flag whose file is not local to Check is run by postverify, no failure (unlisted): ${f%% *}"
+  gwant_fail "AC7 a file-valued flag whose file is not local to Check fails, naming the operand (unlisted): ${f%% *}" "provenance.intoto.jsonl.bundle"
   # a listed command's key flag is release.rsa.pub, so the key value cannot be this file
   case "$f" in --key*) continue;; esac
   # only --bundle is in a listed command's closed flag set; the other file-valued flags are refused there (G2), so no
@@ -1349,7 +1349,7 @@ gwant_fail "AC7 a flag-value command listed with text that does not match exactl
 g "$(blk "$c")"; printf '[{"command": "%s", "reason": " "}]\n' "$c" > "$fx/guide.cannot-run.json"
 gwant_fail "AC7 a flag-value command listed without a reason is refused" "cannot-run entry"
 c="$BA --key release.rsa.pub --bundle provenance.intoto.jsonl.bundle"
-g "$(blk "$c")"; gwant_ok "AC7 a flag-value command neither runnable nor listed is run by postverify, not refused"
+g "$(blk "$c")"; gwant_fail "AC7 a flag-value command neither runnable nor listed fails, naming its missing operand" "provenance.intoto.jsonl.bundle"
 g "$(blk "jq -e \"\$TAG\" checksums.txt.bundle")"; grefuse "AC7 \$ inside double quotes (\"\$TAG\") is refused" '"$TAG"'
 g "$(blk "jq -e \"\${TAG}\" checksums.txt.bundle")"; grefuse "AC7 \${...} inside double quotes is refused" '"${TAG}"'
 g "$(blk "jq -e \"\$(id)\" checksums.txt.bundle")"; grefuse "AC7 a command substitution inside double quotes is refused" '"$(id)"'
@@ -1900,9 +1900,21 @@ if [ "$rc" != 0 ] && [ "$rc" != 127 ] && [ ! -s "$work/gvlog" ] && [ ! -e "$gvt/
 mv "$gvt/vendor.hide" "$gvt/vendor"
 if ! grep -Eq 'cosign|witness|attest|gitsign|docker login|ghcr\.io|secrets|GH_TOKEN|ACTIONS_ID_TOKEN' "$root/bin/check-govulncheck.py" 2> /dev/null && [ -f "$root/bin/check-govulncheck.py" ]; then ok "G the script knows nothing about signing (plain, rule 66)"
 else bad "G bin/check-govulncheck.py is missing or names a signing tool or credential"; fi
-# the static strace of the egress suite is fetched from its GitHub release (a literal URL the pin-age check dates): the URL names the pinned STRACE_VER
-sv_=$(sed -n 's/^STRACE_VER=\([0-9.]*\)$/\1/p' "$root/bin/acceptance-egress.sh" | head -1)
-if [ -n "$sv_" ] && grep -q "releases/download/v${sv_}/strace-${sv_}.tar.xz" "$root/bin/acceptance-egress.sh"; then ok "acceptance-egress.sh: the strace release URL names the pinned version $sv_"; else bad "acceptance-egress.sh: the strace release URL does not name the pinned version '${sv_}'"; fi
+# the static strace of the egress suite is built from a pinned source: STRACE_VER is the only place the
+# version is written (passed into the builder container as V, used as ${V} in the URL), the URL is the
+# github.com/strace/strace release, and the comments never name strace.io
+ae_f="$root/bin/acceptance-egress.sh"
+ae_url='https://github.com/strace/strace/releases/download/v${V}/strace-${V}.tar.xz'
+# the non-comment lines, so the version test below needs no pipe
+ae_code=$(grep -v '^[[:space:]]*#' "$ae_f" || true)
+sv_=$(sed -n 's/^STRACE_VER=\([0-9.]*\)$/\1/p' "$ae_f" | head -1)
+if [ -n "$sv_" ] && grep -Fq -- '-e V="$STRACE_VER"' "$ae_f" && grep -Fq "\"$ae_url\"" "$ae_f" \
+  && ! grep -Eq 'strace-?[0-9]+\.[0-9]|download/v[0-9]' <<< "$ae_code" \
+  && grep -q '^# .*github\.com/strace/strace' "$ae_f" && ! grep -q 'strace\.io' "$ae_f"; then
+  ok "acceptance-egress.sh: strace URL uses \${V} from STRACE_VER=$sv_, no literal version, github.com/strace/strace"
+else
+  bad "acceptance-egress.sh: strace not pinned via STRACE_VER/V, or a literal version, or strace.io named"
+fi
 # the egress suite's strace target is the image's real entrypoint: the path in the script equals both apko
 # entrypoints and the path the recipes install to
 ce_=$(sed -n 's/^CANDIDATE_ENTRYPOINT=\(.*\)$/\1/p' "$root/bin/acceptance-egress.sh" | head -1)

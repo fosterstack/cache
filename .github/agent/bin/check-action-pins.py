@@ -2733,7 +2733,7 @@ DOWNLOAD_EXCLUSIONS = {
         "the identity-token request: curl prints the JSON answer from ${ACTIONS_ID_TOKEN_REQUEST_URL} (set by the runner, quoted, followed by a literal &audience=) into a "
         "command substitution that jq reads; it writes no file (this exclusion holds only while the file never assigns ACTIONS_ID_TOKEN_REQUEST_URL itself)",
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
-    (".github/workflows/dependabot-reviewer.yml", "review", 7, "d392e05c19840af9c4476875649c42e1c86be22e04c33883fb2dc6d22957cc7a"): (
+    (".github/workflows/dependabot-reviewer.yml", "review", 7, "2c0d58801e11c42d47d3df1894079de8bb84ba45aee6e1f56e0dfccb7716abee"): (
         "the same identity-token request inside the decision loop's token refresh: stdout into a command substitution that jq reads, no file written (this exclusion holds "
         "only while the file never assigns ACTIONS_ID_TOKEN_REQUEST_URL itself)",
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
