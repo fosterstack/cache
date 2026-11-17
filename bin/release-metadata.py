@@ -16,13 +16,20 @@
         every file of the release assets directory is covered; see GATE below
 
 Every refusal exits 1 and names the file or the key; an output file is written only after every check passed. Offline."""
-import argparse, hashlib, json, os, re, sys
+import argparse, hashlib, importlib.util, json, os, re, sys
 
 REPO_GHCR, REPO_HUB = "ghcr.io/fosterstack/cache", "docker.io/fosterstack/cache"
 VARIANTS = ("production", "fips")
 ARCHES = ("amd64", "arm64")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
-FINAL = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
+# the one tag grammar (REQ-CHAIN-004-AC19), loaded from the file beside this one
+_spec = importlib.util.spec_from_file_location("build_admit", os.path.join(os.path.dirname(os.path.abspath(__file__)), "build-admit.py"))
+_admit = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_admit)
+
+
+def is_final(tag):
+    return bool(_admit.TAG_SYNTAX.fullmatch(tag)) and "-rc" not in tag
 
 
 def refuse(msg):
@@ -202,17 +209,16 @@ def cmd_baseline(a):
     if d["sha"] != a.commit:
         refuse("%s is for commit %s, this run is %s" % (p, d["sha"], a.commit))
     v = d["baseline_version"]
-    if not FINAL.fullmatch(v) or d["baseline"] != "requirements/releases/%s.yaml" % v:
+    if not is_final(v) or d["baseline"] != "requirements/releases/%s.yaml" % v:
         refuse("baseline %r at %r is not a vX.Y.Z baseline at requirements/releases/<version>.yaml" % (v, d["baseline"]))
     num = lambda s: tuple(int(x) for x in s[1:].split("."))
-    tm = re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", a.tag or "")
-    if not tm or num(v) > num(a.tag):
+    if not is_final(a.tag or "") or num(v) > num(a.tag):
         refuse("baseline %s is not a version at or before the tag %s" % (v, a.tag))
     print(v)
 
 
 def cmd_manifest(a):
-    if not FINAL.fullmatch(a.version or ""):
+    if not is_final(a.version or ""):
         refuse("version %r is not vX.Y.Z (a release candidate has no release manifest)" % a.version)
     if not re.fullmatch(r"[0-9a-f]{40}", a.commit or ""):
         refuse("commit %r is not 40 lower-case hex" % a.commit)
@@ -221,7 +227,7 @@ def cmd_manifest(a):
     want = sorted("apk-%s-%s" % (v, ar) for v in ("standard", "fips") for ar in ARCHES)
     if apks != want:
         refuse("%s: the apk keys must be exactly %s (missing: %s)" % (a.digests, ", ".join(want), ", ".join(k for k in want if k not in d) or "none"))
-    if not FINAL.fullmatch(a.baseline_version or ""):
+    if not is_final(a.baseline_version or ""):
         refuse("baseline version %r is not vX.Y.Z" % a.baseline_version)
     base = {}
     for key, rel in (("requirements_baseline", "requirements/releases/%s.yaml" % a.baseline_version), ("test_evidence", "test-evidence/mappings.yaml")):
@@ -261,7 +267,7 @@ def meta_names(version):
 
 
 def cmd_list(a):
-    if not FINAL.fullmatch(a.version or ""):
+    if not is_final(a.version or ""):
         refuse("version %r is not vX.Y.Z (a release candidate has no list)" % a.version)
     lines = []
     for n in meta_names(a.version):
@@ -430,14 +436,14 @@ def cmd_checksums(a):
     """CHECKSUMS (REQ-CHAIN-007-AC21, Astra R3): the one producer of checksums.txt. DIST must hold exactly the four Linux archives Build recorded, each with the digest of
     Build's digests.json (the checks of bind-archives, run here first); OUT then gets one `<sha256>  <name>` line per archive, in byte order of the names, ending in a
     newline, through a temporary file renamed into place. Any refusal exits 1 and writes nothing."""
-    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", a.version or ""):
+    if not is_final("v" + (a.version or "")):
         refuse("version %r is not X.Y.Z (a release candidate has no checksums file)" % a.version)
     bound = bound_archives(a)      # the names and hashes the check itself read: the lines come from these, nothing is listed or hashed a second time
     write_atomic(a.out, "".join("%s  %s\n" % (bound[n], n) for n in sorted(bound, key=lambda n: n.encode())))
 
 
 RELEASE_TAGGER = "fosterstack release <release@users.noreply.github.com>"     # decide's tagger identity (release.yml): the one tagger of a generated patch tag
-PATCH_HEAD = re.compile(r"^## (v[0-9]+\.[0-9]+\.[0-9]+) \u2014 patch release$")
+PATCH_HEAD = re.compile(r"^## (%s) \u2014 patch release$" % _admit.TAG_PATTERN)
 
 
 def cmd_tag_notes(a):
@@ -460,7 +466,7 @@ def cmd_tag_notes(a):
     if not tagger.startswith(RELEASE_TAGGER + " ") or not sig.startswith("SIGNED MESSAGE-----"):
         sys.exit(1)
     m = PATCH_HEAD.match(body.split("\n", 1)[0])
-    if not m or m.group(1) != tag or m.group(1) != a.tag:
+    if not m or not is_final(m.group(1)) or m.group(1) != tag or m.group(1) != a.tag:
         sys.exit(1)
     sys.stdout.write(body.strip() + "\n")
 
