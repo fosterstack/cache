@@ -595,11 +595,10 @@ SECRET_ROWS = {
 SECRET_VALUE = {"GH_TOKEN": "${{ github.token }}",
                 "DOCKERHUB_USERNAME": "${{ secrets.DOCKERHUB_USERNAME }}", "DOCKERHUB_TOKEN": "${{ secrets.DOCKERHUB_TOKEN }}"}
 # W1 (#822 round 1): the three NON-SECRET federation entries of the signing steps: the AWS role of the release Sign identity, its region and the release key's reference. They are step env
-# literals, allowed only where a step signs through bin/chain-verify.py sign-record or sign (stage-sign.yml's three jobs, Release's six witnessed steps), reaching only the scripts below,
+# literals, allowed only where a step signs through bin/chain-verify.py sign-record, sign or kms-sign (stage-sign.yml's three jobs; the Release job holds none), reaching only the scripts below,
 # and each must be exactly the value below; the key reference is the verifier's own RELEASE_KEY_REF, read from bin/chain-verify.py beside this file.
 _SS = ".github/workflows/stage-sign.yml"
-_FED_AT = {(_SS, "sign"): {"bin/witness-sign-staged.sh", "bin/with-aws-token.sh"}, (_SS, "sign-rebuild"): {"bin/witness-sign-staged.sh"}, (_SS, "sign-check"): {"bin/witness-sign-staged.sh"},
-           (_SP, "release"): {_WIT, "bin/release-verify.sh", "bin/release-apks.sh", "bin/release-publish.sh", "bin/release-sign.sh", "bin/release-assets.sh", "bin/release-postverify.sh"}}
+_FED_AT = {(_SS, "sign"): {"bin/witness-sign-staged.sh", "bin/with-aws-token.sh", "bin/release-signatures.sh"}, (_SS, "sign-rebuild"): {"bin/witness-sign-staged.sh"}, (_SS, "sign-check"): {"bin/witness-sign-staged.sh", "bin/release-signatures.sh"}}      # S2: Release holds no KMS role, no key reference and no AWS name; release-signatures.sh (Sign's release signing step) is the one release script that does
 FED_ROWS = {"AWS_ROLE_ARN": _FED_AT, "AWS_REGION": _FED_AT, "RELEASE_KMS_KEY_REF": _FED_AT}
 
 

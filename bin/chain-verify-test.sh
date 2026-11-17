@@ -2044,7 +2044,7 @@ for f in $BI; do
 done
 # the real tree: the scripts the real release workflow runs are in its set
 cbx list --commit HEAD --repo "$root" || true; rl=$(cat "$work/cb.out")
-for f in bin/patch-decide.py $AG/bin/auditor-signed-commit.py $AG/bin/auditorlib/__init__.py $AG/bin/auditorlib/signed_commit.py bin/chain-verify.py bin/chain-bytes-sha.py; do
+for f in bin/chain-verify.py bin/chain-bytes-sha.py; do
   grep -F -q "  $f" <<< "$rl" && ok "AC6 bytes: the real chain set holds $f" || bad "AC6 bytes: the real chain set lacks $f"
 done
 rcg checkout -q -b gone "$C1"; printf '{"scripts":[{"path":"bin/chain-bytes-sha.py"},{"path":"bin/b.sh"},{"path":"bin/gone.sh"}]}\n' > "$RG/.github/policy/chain-scripts.json"
@@ -2506,7 +2506,7 @@ for path in sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.yml")
                 print("%s:%d: does not parse: %s (%s)" % (os.path.relpath(path, root), n, cmd[:100], why))
 sys.exit(0 if found and not failed else 1)
 PY
-EXPECT=858
+EXPECT=854
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

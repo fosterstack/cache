@@ -119,6 +119,7 @@ echo "gh $*" >> "$CALLS"
 case "$2" in
   repos/o/r/git/ref/heads/audit/*) f="$FAKE/ref"; ;;
   repos/o/r/commits/*) f="$FAKE/commit"; ;;
+  repos/o/r/compare/main...*) f="$FAKE/compare"; ;;
   *) echo "UNEXPECTED $*" >> "$CALLS"; exit 9 ;;
 esac
 if [ -f "$f.err" ]; then cat "$f.err" >&2; exit 1; fi
@@ -129,8 +130,10 @@ root = os.path.join(d, "repo"); os.makedirs(root + "/bin"); os.makedirs(root + "
 for src, dst in ((sys.argv[1], root + "/bin/audit-record.py"), (JUDGE_SH, root + "/bin/audit-record-judge.sh")):
     open(dst, "w").write(open(src).read()); os.chmod(dst, 0o755)
 open(root + "/.github/policy/audit-writers.json", "w").write(json.dumps(WRITERS))
-def wrap(head=HEAD, base_ref="main", ref=REF, commit=COMMIT, ref_err=None, commit_err=None, repo="o/r"):
+def wrap(head=HEAD, base_ref="main", ref=REF, commit=COMMIT, ref_err=None, commit_err=None, repo="o/r", compare=None):
     fk = tempfile.mkdtemp(dir=d)
+    if compare is not None: open(os.path.join(fk, "compare.json"), "w").write(json.dumps(compare))
+    else: open(os.path.join(fk, "compare.err"), "w").write("gh: Not Found (HTTP 404)")
     for name, obj, err in (("ref", ref, ref_err), ("commit", commit, commit_err)):
         if err is not None: open(os.path.join(fk, name + ".err"), "w").write(err)
         elif obj is not None: open(os.path.join(fk, name + ".json"), "w").write(json.dumps(obj))
@@ -148,8 +151,33 @@ r, calls = wrap(ref_err="gh: HTTP 502: Bad Gateway"); check("wrapper: a GitHub A
 r, calls = wrap(commit_err="gh: HTTP 403: rate limit exceeded"); check("wrapper: a GitHub API error on the commit exits 3 as an API error", r.returncode == 3 and "could not read the record" in r.stderr, (r.returncode, r.stdout, r.stderr))
 r, calls = wrap(commit=None); check("wrapper: a commit that is not found exits 1", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
 r, calls = wrap(commit=mut(COMMIT, ["commit", "verification", "verified"], False)); check("wrapper: an unverified record exits 1", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
-r, calls = wrap(ref={"ref": "refs/heads/audit/" + HEAD, "object": {"sha": "not-a-sha", "type": "commit"}}); check("wrapper: a ref whose object is not a sha exits 1 without a commit request", r.returncode == 1 and calls.count("gh api") == 1, (r.returncode, r.stdout, calls))
+r, calls = wrap(ref={"ref": "refs/heads/audit/" + HEAD, "object": {"sha": "not-a-sha", "type": "commit"}}); check("wrapper: a ref whose object is not a sha exits 1 without a commit request", r.returncode == 1 and "repos/o/r/commits/" not in calls, (r.returncode, r.stdout, calls))
 r, calls = wrap(repo="o/r; x"); check("wrapper: a repository that is not owner/name exits 1 and calls nothing", r.returncode == 1 and calls == "", (r.returncode, r.stderr, calls))
+
+# a head whose every commit is Dependabot's or the audit writer's needs no record; any other author, committer or signature puts it back under the record
+DEP = {"login": "dependabot[bot]", "id": 49699333, "type": "Bot"}
+GH = {"login": "web-flow", "id": 19864447, "type": "User"}
+def bump_commit(author=DEP, committer=GH, verified=True):
+    return {"author": author, "committer": committer, "commit": {"verification": {"verified": verified, "reason": "valid" if verified else "unsigned"}}}
+def cmp_of(*commits): return {"total_commits": len(commits), "commits": list(commits)}
+check("Dependabot's verified commit, committed by GitHub, needs no record", A.bot_authored(cmp_of(bump_commit()), WRITERS))
+check("the audit writer's App commits count too", A.bot_authored(cmp_of(bump_commit(), bump_commit(author=BOT, committer=BOT)), WRITERS))
+for name, cmp_ in (
+    ("one commit by a person among Dependabot's", cmp_of(bump_commit(), bump_commit(author={"login": "someone", "id": 5, "type": "User"}))),
+    ("Dependabot's name with another id", cmp_of(bump_commit(author=dict(DEP, id=1)))),
+    ("a commit committed by a person (signed with their own key)", cmp_of(bump_commit(committer={"login": "someone", "id": 5, "type": "User"}))),
+    ("an unverified commit", cmp_of(bump_commit(verified=False))),
+    ("an author GitHub cannot name", cmp_of(bump_commit(author=None))),
+    ("no commits past main", cmp_of()),
+    ("a list cut short of its total", {"total_commits": 2, "commits": [bump_commit()]}),
+    ("a malformed answer", []),
+):
+    check("a record is still needed for " + name, not A.bot_authored(cmp_, WRITERS))
+check("a malformed writers policy exempts nothing", not A.bot_authored(cmp_of(bump_commit()), {}))
+r, calls = wrap(ref=None, compare=cmp_of(bump_commit())); check("wrapper: no record, but only Dependabot's commits, exits 0", r.returncode == 0 and "no record needed" in r.stdout, (r.returncode, r.stdout, r.stderr))
+r, calls = wrap(ref=None, compare=cmp_of(bump_commit(), bump_commit(author={"login": "someone", "id": 5, "type": "User"}))); check("wrapper: no record and a person's commit among them exits 1", r.returncode == 1 and "no passed-audit record" in r.stdout, (r.returncode, r.stdout, r.stderr))
+r, calls = wrap(ref=None); check("wrapper: no record and the commits cannot be read exits 1", r.returncode == 1 and "no passed-audit record" in r.stdout, (r.returncode, r.stdout, r.stderr))
+r, calls = wrap(compare=cmp_of(bump_commit())); check("wrapper: a good record never asks for the commits", r.returncode == 0 and "compare" not in calls, (r.returncode, calls))
 
 # the writer's own checks: the pull request must be open, into main, with exactly this head, before anything is written
 PR = {"number": 7, "state": "open", "merged": False, "head": {"sha": HEAD}, "base": {"ref": "main"}}
