@@ -2000,10 +2000,13 @@ def _touches(script, name, consumer):
 OUTSIDE = ("$RUNNER_TEMP", "${RUNNER_TEMP}", "/", "$(mktemp")   # outside the checkout: never the file's directory
 
 
-# a builtin that takes a variable name, given a name word that holds $ or a backtick: the name is made at run time
+# whole commands that may set a variable whose name is made at run time, each read as text and never by word: any ${!,
+# a builtin that takes a variable name with a $ or backtick anywhere up to the command's end, printf -v likewise, (( ))
 RUNTIME_NAME = re.compile(
-    r"(?<![\w-])(?:(?:read|mapfile|readarray|getopts|declare|typeset|local|export|readonly|let|select)"
-    r"|printf\s+-v)(?:\s+[^\s=;|&<>$`]+)*\s+[^\s=;|&<>$`]*[$`]|\(\([^\n]*[$`]")
+    r"\$\{!"
+    r"|(?<![\w-])(?:read|mapfile|readarray|getopts|declare|typeset|local|export|readonly|let|select)(?![\w-])[^;&|\n]*[$`]"
+    r"|(?<![\w-])printf(?![\w-])(?=[^;&|\n]*-v)[^;&|\n]*[$`]"
+    r"|\(\([^\n]*[$`]")
 
 
 def _only_read(name, script):

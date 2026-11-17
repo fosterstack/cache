@@ -305,6 +305,31 @@ class RunnerFileSetByOtherForms(unittest.TestCase):
     def test_fills_dir_runner_file_set_by_read_with_name_built_at_run_time_is_not_exempt(self):
         self.assertTrue(M._writes('n=GITHUB_; read -r "${n}OUTPUT" <<< scripts\ntar -xf a.tar -C "$GITHUB_OUTPUT"\n', "scripts/build.sh"))
 
+    def test_cp_runner_file_set_through_declare_nameref_is_reported(self):
+        self.reported_cp('n=GITHUB_; declare -n ref="${n}OUTPUT"; ref=scripts/build.sh')
+
+    def test_cp_runner_file_set_by_read_with_here_string_before_name_is_reported(self):
+        self.reported_cp('n=GITHUB_; read -r <<< scripts/build.sh "${n}OUTPUT"')
+
+    def test_cp_runner_file_set_by_read_with_lt_in_prompt_is_reported(self):
+        self.reported_cp('n=GITHUB_; read -p "<" "${n}OUTPUT" <<< scripts/build.sh')
+
+    def test_cp_runner_file_set_by_read_with_equals_in_prompt_is_reported(self):
+        self.reported_cp('n=GITHUB_; read -p "=" "${n}OUTPUT" <<< scripts/build.sh')
+
+    def test_cp_runner_file_set_by_printf_v_attached_run_time_name_is_reported(self):
+        self.reported_cp('n=GITHUB_; printf -v"${n}OUTPUT" %s scripts/build.sh')
+
+    def test_cp_runner_file_set_by_indirect_default_assign_is_reported(self):
+        self.reported_cp('n=GITHUB_; ref=${n}OUTPUT; unset "$ref"; : "${!ref:=scripts/build.sh}"')
+
+    def test_cp_runner_file_set_by_read_with_ansi_c_name_after_run_time_name_is_reported(self):
+        self.reported_cp("read -r $'GITHUB_OUTPUT' <<< scripts/build.sh")
+        self.reported_cp('n=GITHUB_; read -r "${n}OUTPUT" <<< scripts/build.sh')
+
+    def test_fills_dir_runner_file_set_through_declare_nameref_is_not_exempt(self):
+        self.assertTrue(M._writes('n=GITHUB_; declare -n ref="${n}OUTPUT"; ref=scripts\ntar -xf a.tar -C "$GITHUB_OUTPUT"\n', "scripts/build.sh"))
+
     def test_cp_onto_plain_dollar_read_not_reported(self):
         hits, out = self.hits('echo x >> "$GITHUB_OUTPUT"\ncp payload "$GITHUB_OUTPUT"\nbash scripts/build.sh')
         self.assertFalse(hits, out)
