@@ -133,11 +133,9 @@ export PIN_WIRING_CHAIN25
 # the workflow's allowed top-level keys, for judge and bytes_judge alike
 export PIN_WIRING_TOP_KEYS='["name", "on", "concurrency", "permissions", "jobs"]'
 
-judge() { PIN_WIRING_WORKFLOWS_DIR="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}" PIN_WIRING_POLICY_FILE="${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}" PIN_WIRING_RELEASE_ONLY_FILE="${PIN_WIRING_RELEASE_ONLY_FILE:-$here/.github/policy/release-only-checks.json}" python3 - "$1" <<'PY'
-import sys, os, json, re, yaml
-# every workflow file the judge reads goes through this first (ci.yml, then each other workflow); it returns the reason to refuse, or None
-# cheap pre-parse, BEFORE any structure is built: a token scan is linear and expands nothing, so an
-# anchor/alias bomb cannot hang the judge; the pin checker refuses anchors and aliases too
+# the refusal every workflow file goes through, shared by judge and refuse_all
+IFS= read -r -d '' PIN_WIRING_REFUSE_PY <<'REFUSE' || true
+import re, yaml
 def _refuse(_text):
     _n = 0
     for _t in yaml.scan(_text, Loader=yaml.BaseLoader):
@@ -200,6 +198,15 @@ def _refuse(_text):
         return ("the workflow has plain scalar(s) that YAML 1.1 and 1.2 read differently: "
                 + ", ".join(sorted(set(_split))[:5]))
     return None
+REFUSE
+export PIN_WIRING_REFUSE_PY
+
+judge() { PIN_WIRING_WORKFLOWS_DIR="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}" PIN_WIRING_POLICY_FILE="${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}" PIN_WIRING_RELEASE_ONLY_FILE="${PIN_WIRING_RELEASE_ONLY_FILE:-$here/.github/policy/release-only-checks.json}" python3 - "$1" <<'PY'
+import sys, os, json, re, yaml
+# every workflow file the judge reads goes through this first (ci.yml, then each other workflow); it returns the reason to refuse, or None
+# cheap pre-parse, BEFORE any structure is built: a token scan is linear and expands nothing, so an
+# anchor/alias bomb cannot hang the judge; the pin checker refuses anchors and aliases too
+exec(os.environ["PIN_WIRING_REFUSE_PY"])
 _text = open(sys.argv[1]).read()
 _why = _refuse(_text)
 if _why:
@@ -810,6 +817,23 @@ sys.exit(1 if bad else 0)
 PY
 }
 
+# every file of the commit's workflows folder, whichever form the head takes: the landing judge never calls _refuse
+refuse_all() { python3 - "$@" <<'PY'
+import os, sys, yaml
+exec(os.environ["PIN_WIRING_REFUSE_PY"])
+bad = []
+for _f in sys.argv[1:]:
+    try:
+        _why = _refuse(open(_f).read())
+    except Exception as e:
+        _why = f"cannot be read ({type(e).__name__})"
+    if _why:
+        bad.append(f"{os.path.basename(_f)}: {_why}")
+print("; ".join(bad) or "ok")
+sys.exit(1 if bad else 0)
+PY
+}
+
 # The byte pins (cache#930 round 9): the workflow's top level, read as raw bytes of the file, never parsed. A trailing comment or
 # blank line under a block is not part of it.
 IFS= read -r -d '' PIN_WIRING_PERMISSIONS <<'TOP' || true
@@ -873,6 +897,7 @@ if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
   # pin-wiring-landing.sh in the same mode over the same commit. A head that fits neither is refused with both findings.
   export PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" PIN_WIRING_POLICY_FILE="$work/head-policy.json"
   export PIN_WIRING_RELEASE_ONLY_FILE="$work/head-release-only.json"
+  refuse_out=$(refuse_all "$work"/head-wf/*) || { printf '%s\n' "$refuse_out"; exit 1; }
   if main_out=$(judge "$work/head-ci.yml" && bytes_judge "$work/head-ci.yml"); then exit 0; fi
   landing="$here/.github/agent/tests/pin-wiring-landing.sh"
   [ -f "$landing" ] || { printf '%s\nno landing judge at %s\n' "$main_out" "$landing"; exit 1; }
@@ -1025,6 +1050,9 @@ gitcase release-only-drops-chain-at-a-commit bad "" \
 gitcase run-true-at-a-commit      bad "[s for s in $steps if (s.get('run') or '').strip().endswith('check-file-allowlist.sh')][0]['run'] = 'true'"
 gitcase inserted-step-at-a-commit bad "$steps.insert(2, {'run': 'git update-ref refs/remotes/origin/main HEAD'})"
 gitcase fetch-depth-at-a-commit   bad "$steps[0].pop('with')"
+# whichever form the head uses, every other workflow file of the commit is read as YAML 1.2 too
+extra_wf='name: x\non: push\npermissions:\n  contents: read\njobs:\n  zz:\n    runs-on: ubuntu-latest\n    env:\n      FLAG: yes\n    steps:\n      - run: true\n'
+gitcase main-form-extra-workflow-refused bad "" "printf '%b' \"\$extra_wf\" > .github/workflows/zz-extra.yml"
 
 case_ job-needs-skipped          bad "d['jobs']['skip_guard'] = {'runs-on': 'ubuntu-latest', 'if': 'false', 'steps': [{'run': 'true'}]}; d['jobs']['allowlist']['needs'] = 'skip_guard'"
 case_ split-job-if            bad "d['jobs']['allowlist-chain']['if'] = 'false'"
@@ -1733,13 +1761,14 @@ exec(sys.argv[2])
 yaml.safe_dump(d, open(sys.argv[1], "w"), sort_keys=False)
 PYL
 }
-lcase() {  # <name> <ok|bad> <python edit of chain-v030's ci.yml, or empty>: judge mode over a temp commit
+lcase() {  # <name> <ok|bad> <python edit of chain-v030's ci.yml, or empty> [shell edit run in the temp tree]: judge mode over a temp commit
   local r="$work/land-$1"; rm -rf "$r"; mkdir -p "$r/.github/policy" "$r/test-evidence" "$r/tools/govulncheck"
   git archive "$landing_ref" .github/workflows | tar -x -C "$r"
   git show "$landing_ref:.github/policy/required-checks.json" > "$r/.github/policy/required-checks.json"
   git show "$landing_ref:test-evidence/suite-floors.json" > "$r/test-evidence/suite-floors.json"
   git show "$landing_ref:tools/govulncheck/go.mod" > "$r/tools/govulncheck/go.mod"
   [ -z "$3" ] || landing_edit "$r/.github/workflows/ci.yml" "$3"
+  [ -z "${4:-}" ] || ( cd "$r" && eval "$4" )
   ( cd "$r" && git init -q . && git add -A && git_commit )
   head=$(cd "$r" && git rev-parse HEAD)
   # the temp repo lacks the landing commit the judge reads: borrow the clone's objects for this one command
@@ -1788,6 +1817,7 @@ else
   lcase counting-step-env                      bad "x = $COUNTING; x['env'] = {'PINS_DRY': '1'}"
   lcase persona-step-removed                   bad "$J['allowlist-persona']['steps'].pop()"
   lcase pins-auditor-step-removed              bad "$J['allowlist-pins-auditor']['steps'].pop()"
+  lcase landing-form-extra-workflow-refused    bad "" "printf '%b' \"\$extra_wf\" > .github/workflows/zz-extra.yml"
   # main's own single-job allowlist-chain inside chain-v030's ci.yml fits neither form
   MAIN="m = yaml.load(open('$here/.github/workflows/ci.yml'), Loader=yaml.BaseLoader)"
   SINGLE="$MAIN; [$J.pop('allowlist-chain-%d' % k) for k in (1, 2, 3, 4)]; "
