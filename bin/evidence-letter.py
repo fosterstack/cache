@@ -16,12 +16,22 @@ still the placeholder (without --draft).
 import argparse
 import calendar
 import hashlib
+import importlib.util
 import json
 import os
 import re
 import sys
 
-TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")  # v0.3.1 matches; v0.3.1-rc1 and 0.3.1 do not
+# the one tag grammar (REQ-CHAIN-004-AC19), loaded from the file beside this one
+_spec = importlib.util.spec_from_file_location("build_admit", os.path.join(os.path.dirname(os.path.abspath(__file__)), "build-admit.py"))
+_admit = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_admit)
+
+
+def is_final(tag):   # v0.3.1 matches; v0.3.1-rc1 and 0.3.1 do not
+    return bool(_admit.TAG_SYNTAX.fullmatch(tag)) and "-rc" not in tag
+
+
 MONTH = re.compile(r"[0-9]{4}-(0[1-9]|1[0-2])")  # 2026-11 matches; 2026-13 and 2026-1 do not
 SAFE_NAME = re.compile(r"[A-Za-z0-9._:-]+")  # CVE-2026-1111 matches; "CVE 1" and "a;b" do not
 # the only characters a quoted note or summary may hold: no markup, entity or link can be written with them
@@ -107,7 +117,7 @@ def release_dates(rel_dir):
         raise Refuse("the releases folder cannot be read")
     dates = {}
     for name in names:
-        if TAG.fullmatch(name):
+        if is_final(name):
             dates[name] = day(load_json(os.path.join(rel_dir, name, "release.json")).get("published_at"), name)
     return dates
 
