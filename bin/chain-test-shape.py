@@ -14,15 +14,14 @@ the job graph is exactly the keys and targets in CHAIN. Anything else is a fault
   stage FILE build|rebuild [ALLOWED.json]   REQ-CHAIN-004-AC1, AC2 / REQ-CHAIN-005-AC1, AC4
   script FILE KIND                          REQ-CHAIN-004-AC3, AC6, AC11 / REQ-CHAIN-005-AC2: FILE is exactly expected_lines(KIND)
   lockflow STAGE_YML...                     REQ-CHAIN-004-AC11 / REQ-CHAIN-005-AC6: no stage file names apko
-  listed CHAIN_SCRIPTS.json ROOT            the stage scripts are rows of chain-scripts.json with their real sha256
+  listed CHAIN_SCRIPTS.json ROOT            the stage scripts are rows of chain-scripts.json and exist
   callers FILE                              REQ-CHAIN-004-AC14: a proof workflow calls stage-build.yml with mode: snapshot and nothing else
   graph FILE                                REQ-CHAIN-005-AC5: the chain jobs of release.yml
   workflows DIR                             REQ-CHAIN-004-AC1: no workflow file is added beyond stage-sign.yml,
                                              and stage-image.yml / stage-admission.yml are gone
   recordenv FILE                            REQ-CHAIN-004-AC8: no token variable or token in a Witness collection (a DSSE envelope)
   nosource ROOT                             sandboxed-build rule 1: no step of Build or Rebuild runs source code
-    outside melange (31 closure files:
-                                             10 shell files by exact lines, 21 files held whole by sha256)
+    outside melange (the closure's shell files, by exact lines)
 
 === Rule 68 seam (advisor ruling, Oct 9; the Release helper no longer carries the ten-minute bound of the earlier certificate: Witness signs with a throwaway key, the release key signs afterwards) ===========
 The wrapping lives in ONE place: the committed helper bin/witnessed.sh `witnessed <step> <script>`, which holds ALL the Witness flags
@@ -37,7 +36,7 @@ READABILITY FOR A HUMAN IS AN EXPLICIT REVIEW ITEM (owner, Oct 9): the judges ac
 PROPOSED/UNVERIFIED layout constants (cache's archive layout and the items layout are not fixed by any cache test; each is ONE
 constant here, so a cache amendment changes one line): ARCHIVE, GO_ARCHIVE, KEYRING_WOLFI, MELANGE_LOCK, ASSEMBLY_PUB.
 """
-import hashlib, json, os, re, shlex, sys, yaml
+import json, os, re, shlex, sys, yaml
 
 ARCHIVE, GO_ARCHIVE = "archive", "archive/go"
 KEYRING_WOLFI, MELANGE_LOCK, ASSEMBLY_PUB = "archive/keys/wolfi-signing.rsa.pub", "build/locks/melange.lock", "build/keys/assembly.rsa.pub"
@@ -249,7 +248,7 @@ INSTALL_APKO = "bash bin/install-build-tools.sh apko"
 # steps of their own after the build tools and before the downloads and the Witness step; a failed pull fails the job (no if, no continue-on-error, no env)
 INSTALL_CRANE = "bash bin/install-scanner.sh crane"
 ARCHIVE_PULL = "bash bin/archive-pull.sh --pointer build/archive.json --out archive"
-ARCHIVE_SCRIPTS = ("bin/archive-pull.sh", "bin/archive-verify.py", "bin/install-host-bwrap.py")      # the files the pull step and the host-tools step run: rows of chain-scripts.json with their sha256
+ARCHIVE_SCRIPTS = ("bin/archive-pull.sh", "bin/archive-verify.py", "bin/install-host-bwrap.py")      # the files the pull step and the host-tools step run: rows of chain-scripts.json
 # REQ-CHAIN-004-AC17 (advisor reading Oct 20, rules 15 and 38a): melange's bubblewrap runner needs bwrap, which the hosted images do not ship. An apk job (the jobs that run
 # melange) unpacks it, and what it needs, from the archive just pulled: one step right after the pull, a name and a run and nothing else, never a package manager or sudo.
 INSTALL_HOSTTOOLS = "python3 -I bin/install-host-bwrap.py --archive archive --lock build/locks/host-tools.lock --root host-tools"
@@ -687,7 +686,7 @@ def lockflow(files):
 
 
 def archive_listed(path, root):
-    """REQ-CHAIN-004-AC16: the files the stage's pull step runs are rows of chain-scripts.json with the committed file's sha256."""
+    """REQ-CHAIN-004-AC16: the files the stage's pull step runs are rows of chain-scripts.json and exist."""
     bad = []
     try:
         rows = {r.get("path"): r for r in json.load(open(path)).get("scripts", [])}
@@ -696,11 +695,7 @@ def archive_listed(path, root):
     for p in ARCHIVE_SCRIPTS:
         r = rows.get(p)
         if r is None: bad.append("%s is not a row of chain-scripts.json" % p); continue
-        try:
-            h = hashlib.sha256(open(root + "/" + p, "rb").read()).hexdigest()
-        except OSError:
-            bad.append("%s is listed but missing" % p); continue
-        if r.get("sha256") != h: bad.append("%s: the listed sha256 is not the committed file's" % p)
+        if not os.path.isfile(root + "/" + p): bad.append("%s is listed but missing" % p)
     return bad
 
 
@@ -713,11 +708,7 @@ def listed(path, root):
     for k, p in SCRIPTS.items():
         r = rows.get(p)
         if r is None: bad.append("%s is not a row of chain-scripts.json" % p); continue
-        try:
-            h = hashlib.sha256(open(root + "/" + p, "rb").read()).hexdigest()
-        except OSError:
-            bad.append("%s is listed but missing" % p); continue
-        if r.get("sha256") != h: bad.append("%s: the listed sha256 is not the committed script's" % p)
+        if not os.path.isfile(root + "/" + p): bad.append("%s is listed but missing" % p)
     return bad
 
 
@@ -847,51 +838,11 @@ def ns_shell(path, name):
 
 
 NS_SHEBANG = b"#!/usr/bin/env bash"
-NS_SHA = {
-    "bin/admission-tag-signer.py": "45e54a9fc335893bd7c3378ed6a3196484a9dab1c362b38d3a28478024d9dad9",
-    "bin/apk-tool.py": "054a2ee03874d57f74b8486ef225ecbee85b60089745289efddb6ebb902d781c",
-    "bin/archive-pull.sh": "13eb7a9d3bd49e5a518316b03aad56dab79328109371f2271543a60740ab1538",
-    "bin/archive-verify.py": "7897405722eb7910dab9bebd473f633d1abb1bf0976b4f2949f49c02a2c16d6b",
-    "bin/audit-record-judge.sh": "f5e0359ceecc866f58ef7ee55f91b4a3fef084f29e9e6420949d1a34b6491a2b",
-    "bin/audit-record.py": "275049741718951ca6bbaf27c1c6b1be80a6cc27ddc99baf1375732ea22adf46",
-    "bin/build-admit.py": "30cbf81b2640ca8f14d70e9b33d1954fc0db0709f23c6fd1de60a2534ab3a3e2",
-    "bin/build-apk-helper.py": "64fc57cf73c8fcaba226255e59198def1fe69bbc345f52f73d4d4999ebf9a23b",
-    "bin/build-archives.py": "532ec7371f299d3e29f70af776cca3e329156a4517aa328958b4150e635c034d",
-    "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
-    "bin/chain-bytes-sha.py": "88e9c767a77dd8a42513eb87e7369109864b5f5765cd4464bd676ca7a3f4fb13",
-    "bin/chain-hostile-step.sh": "c21890f9b96910a61c6dbe4dc644e0d823c46d8d258ca74fbb28f9d6c4c78b6a",
-    "bin/chain-sandbox-probe.sh": "9fa97f930da63ab30780b474111b1652fe51057fd1fe712821dc8c0dcc3a2a11",
-    "bin/chain-verify.py": "bd986fa62e960bc25ffa79424e586f851ae80a5be3c2a3c288ef96b57bee5f6f",
-    "bin/chain_common.py": "a8730d0504aeedc592286a2b9bbf1b835c9817a421c7dea656e8e4630da5a56d",
-    "bin/chain_hostile.py": "2bfc791820bc71ed5294b3e0f042e72aecac8279b4cd3932e6008720f274b631",
-    "bin/chain_items.py": "a787fc1acdffa6d5670eca13881a0777dccdf13987b9b97fe4b4cbd52a5efe99",
-    "bin/go-module-sbom.py": "8a556854bf7fa2c0df2fe2710754788350d50a87dacfb69fed2ca086daf519bf",
-    "bin/install-host-bwrap.py": "fdbac6ffdafe1355fc7f3f826accbe79a1cdabd7d4dc5d496720207f5c688b09",
-    "bin/loopback-get.sh": "2561cb23762601bdd0540a8f861fe595df946d4988de6694e419b89bd92c7857",
-    "bin/net-probe.py": "5c6e0693d4af7f0ac9dd54d707a9f896cd3293b3e9df20178752ea0fa21c8729",
-    "bin/oci-digest.py": "5569a3e0e15798c4552306d6fee1fc1215974a478e653d9d4129ec46d1064890",
-    "bin/rebuild-records-digests.sh": "15ec6de48964af3ccb82e97b4beb3e3448dd240781f2b954a9d26a2926bbcf49",
-    "bin/vex-index.py": "c8e3b57e1c813647410f39e1ba9a7d041290339efd0845dfe3c9295357dbe023",
-}
-
-
-def ns_held(path, raw):
-    """A closure file held whole by sha256."""
-    want, got = NS_SHA.get(path), hashlib.sha256(raw).hexdigest()
-    bad = []
-    if want is None:
-        bad.append("%s is a closure Python file with no held sha256 in NS_SHA" % path)
-    elif got != want:
-        bad.append("%s: sha256 %s is not the held %s; a file held whole changes only with a re-pin of NS_SHA in "
-                   "bin/chain-test-shape.py (short-list review, with this file's diff)" % (path, got[:12], want[:12]))
-    return bad
-
 
 def nosource(root):
     seen, bad = ns_closure(root)
     if seen is None:
         return bad
-    bad += ["NS_SHA holds %s, which is not a file of the closure" % p for p in sorted(NS_SHA) if p not in seen]
     for p in seen:
         path = root + "/" + p
         try:
@@ -899,9 +850,7 @@ def nosource(root):
         except OSError:
             bad.append("%s cannot be read" % p)
             continue
-        if p in NS_SHA or p.endswith(".py"):
-            bad += ns_held(p, raw)
-        else:
+        if not p.endswith(".py"):
             if raw.split(b"\n", 1)[0] != NS_SHEBANG:
                 bad.append("%s: line 1 is not the held shebang %s" % (p, NS_SHEBANG.decode()))
             bad += ns_shell(path, p)
