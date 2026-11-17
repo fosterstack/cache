@@ -13,5 +13,5 @@ environment:
       - @BUSYBOX@
 pipeline:
   - runs: |
-      if cat @RECORD@ > /dev/null; then exit 1; fi
+      if cat "@RECORD@" > /dev/null; then exit 1; fi
       if cat /home/build/witness-apk/apk-collection.local.json > /dev/null; then exit 1; fi

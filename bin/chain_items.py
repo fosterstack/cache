@@ -23,6 +23,7 @@ from chain_common import b64d, refuse, strict_json
 
 PRODUCT = "https://witness.dev/attestations/product/v0.1/file:"
 HERE = os.path.dirname(os.path.abspath(__file__))
+APK_TOOL = os.path.join(HERE, "..", "bin/apk-tool.py")
 ITEM_LIST = os.path.join(HERE, "..", ".github", "policy", "rebuild-items.json")     # the committed list of the 32 items
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 ARCHES = {"x86_64": "amd64", "aarch64": "arm64"}            # the apk architecture name -> the image and archive name
@@ -202,6 +203,11 @@ def read_input(path):
     return "sha256:" + sha256_file(path)
 
 
+def apk_tool(*args):
+    """bin/apk-tool.py beside this file, run by the interpreter that runs this one, not by a path or a name the working directory decides."""
+    return subprocess.run([sys.executable, "-I", "-B", APK_TOOL, *args], capture_output=True)
+
+
 def cmd_items_apk(a):
     out_dir = a.out_dir.rstrip("/")
     arch, parent = os.path.basename(out_dir), os.path.dirname(out_dir) or "."
@@ -211,15 +217,14 @@ def cmd_items_apk(a):
     items = {}
     for variant, suffix in (("standard", ""), ("fips", "-fips")):
         apk = one_apk(out_dir, variant)
-        digest = subprocess.run(["python3", "-I", "bin/apk-tool.py", "digest", apk], capture_output=True)
+        digest = apk_tool("digest", apk)
         items["apk-%s-%s" % (variant, arch)] = apk_output(digest, "digest").decode().strip()
-        binary = subprocess.run(["python3", "-I", "bin/apk-tool.py", "cat", apk, "usr/bin/fscache"],
-            capture_output=True)
+        binary = apk_tool("cat", apk, "usr/bin/fscache")
         items["binary-%s-%s" % (variant, arch)] = "sha256:" + hashlib.sha256(apk_output(binary, "cat")).hexdigest()
         items["modules-sbom-" + variant] = read_input("%s/fscache-modules%s.spdx.json" % (parent, suffix))
         items["inputs-manifest-" + variant] = read_input("%s/inputs-manifest%s.json" % (parent, suffix))
     baselayout = one_apk(out_dir, "baselayout")      # 0710: assembled into the images only; not a release asset, so not in digests.json
-    digest = subprocess.run(["python3", "-I", "bin/apk-tool.py", "digest", baselayout], capture_output=True)
+    digest = apk_tool("digest", baselayout)
     items["apk-baselayout-" + arch] = apk_output(digest, "digest").decode().strip()
     items["inputs-manifest-baselayout"] = read_input("%s/inputs-manifest-baselayout.json" % parent)
     items["apkindex-" + arch] = read_input(out_dir + "/APKINDEX.tar.gz")
@@ -346,11 +351,15 @@ def archive_items(archives_dir, version):
 
 def archive_checksums(archive_dir):
     """sha256 of the sorted `<sha256>  <path>` lines of every file of the pinned upstream archive directory."""
-    lines = []
-    for here, _, names in os.walk(archive_dir):
+    lines, links = [], []
+    for here, dirs, names in os.walk(archive_dir):
+        links += [os.path.join(here, n) for n in dirs + names if os.path.islink(os.path.join(here, n))]
         for n in names:
             path = os.path.join(here, n)
-            lines.append("%s  %s" % (sha256_file(path), os.path.relpath(path, archive_dir)))
+            if not os.path.islink(path):
+                lines.append("%s  %s" % (sha256_file(path), os.path.relpath(path, archive_dir)))
+    if links:
+        refuse("build", "symlink: " + " ".join(sorted(links)))
     return "sha256:" + hashlib.sha256("\n".join(sorted(lines)).encode()).hexdigest()
 
 
@@ -476,12 +485,9 @@ ENV_ATTESTOR = "https://witness.dev/attestations/environment/v0.1"
 
 
 def env_values(payload):
-    """The values of the variables the environment attestor recorded, one per line ("" when the payload is not a statement that holds
-    one): an arn:aws: value is refused there only, since a KMS-signed record may carry its own key ARN elsewhere."""
-    try:
-        stmt = json.loads(payload)
-    except ValueError:
-        return ""
+    """The values of the variables the environment attestor recorded, one per line ("" when the payload is a statement that holds
+    none; a payload that is not strict JSON raises ValueError): an arn:aws: value is refused there only, since a KMS-signed record may carry its own key ARN elsewhere."""
+    stmt = strict_json(payload)
     pred = stmt.get("predicate") if isinstance(stmt, dict) else None
     atts = pred.get("attestations") if isinstance(pred, dict) else None
     out = []
@@ -504,7 +510,11 @@ def check_record_env(stage, envelope, payload):
         refuse(stage, "env: the record holds a compact JWT")
     if re.search(r"\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}", text):
         refuse(stage, "env: the record holds a GitHub token")
-    if re.search(r"\barn:aws[a-z-]*:", env_values(payload)):
+    try:
+        values = env_values(payload)
+    except ValueError:
+        refuse(stage, "env: the DSSE payload is not strict JSON")
+    if re.search(r"\barn:aws[a-z-]*:", values):
         refuse(stage, "env: the recorded environment holds an arn:aws: value (the signing role is not recorded)")
     if re.search(r"\bdckr_pat_[A-Za-z0-9_-]{20,}", text):
         refuse(stage, "env: the record holds a Docker Hub token")
@@ -521,17 +531,17 @@ def cmd_record_env(a):
     if not isinstance(envelope, dict) or "payload" not in envelope:
         refuse("build", "env: the record is not a DSSE envelope (Witness -o writes {payloadType, payload, signatures})")
     try:
-        statement = strict_json(b64d(envelope["payload"]))
-        predicate = statement.get("predicate") if isinstance(statement, dict) else None
-        name = predicate.get("name") if isinstance(predicate, dict) else None
-    except (ValueError, TypeError):
-        name = None
-    if isinstance(name, str) and SNAPSHOT_NAME.fullmatch(name):
-        refuse("build", "snapshot record")          # nothing can token-check a snapshot record; nothing consumes one (REQ-CHAIN-004-AC13)
-    try:
         payload = b64d(envelope["payload"])
     except ValueError:
         refuse("build", "env: the DSSE payload is not base64")
+    try:
+        statement = strict_json(payload)
+    except ValueError:
+        refuse("build", "env: the DSSE payload is not strict JSON")
+    predicate = statement.get("predicate") if isinstance(statement, dict) else None
+    name = predicate.get("name") if isinstance(predicate, dict) else None
+    if isinstance(name, str) and SNAPSHOT_NAME.fullmatch(name):
+        refuse("build", "snapshot record")          # nothing can token-check a snapshot record; nothing consumes one (REQ-CHAIN-004-AC13)
     check_record_env("build", envelope, payload)
     print("ok")
 

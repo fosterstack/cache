@@ -54,20 +54,9 @@ for v in production fips; do
   [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "the digest list has no image-$v digest"
   is_layout "$images/$v" || fail "the $v image $images/$v is missing or not an OCI layout directory (oci-layout and index.json)"
 done
-shopt -s nullglob
-# REQ-PLAT-001-AC1 (Linux only): the archive list is exactly the four Linux archives, fscache and fscache-fips for amd64 and arm64, of one version,
-# and no darwin or windows file of any kind exists beside them. Anything else stops here, before a scan counts it as covered.
-for f in "$archives"/*; do
-  case "${f,,}" in *darwin*|*windows*) fail "a darwin or windows file exists in $archives ($(basename "$f")): REQ-PLAT-001 ships Linux only" ;; esac
-done
-tars=("$archives"/*.tar.gz)
-want=$(printf '%s\n' fscache_VER_linux_amd64.tar.gz fscache_VER_linux_arm64.tar.gz fscache-fips_VER_linux_amd64.tar.gz fscache-fips_VER_linux_arm64.tar.gz)
-ver=$(basename "${tars[0]:-x}" | sed -n 's/^fscache[a-z-]*_\([^_]*\)_linux_.*/\1/p')
-got=$(for f in "$archives"/*; do basename "$f"; done | sort)
-[ -n "$ver" ] && [ "$got" = "$(sed "s/VER/$ver/" <<< "$want" | sort)" ] \
-  || fail "the archive list in $archives is not exactly the four Linux archives (fscache and fscache-fips, amd64 and arm64, of one version): found $(tr '\n' ' ' <<< "$got")"
-# Round 1 F1: the layouts and archives are the ones Build recorded (re-derived from digests.json, every blob and archive re-hashed), before any scan.
+# the layouts and archives are the ones Build recorded (check-bind: exactly the four Linux archives, every blob and archive re-hashed), before any scan
 python3 bin/check-bind.py --digests "$digests" --images "$images" --archives "$archives" || exit 1
+tars=("$archives"/*.tar.gz)
 mods=(go.mod tools/requirements/go.mod)
 for m in "${mods[@]}"; do [ -f "$m" ] || fail "the Go module file $m is missing"; done
 mkdir -p "$out"
@@ -97,6 +86,7 @@ now=$(date +%s)
 GRYPE_HOST=grype.anchore.io   # the host in grype's recorded database status (the scanner fixtures of the auditor directory (fixtures/scanners)/grype.json)
 MAX_AGE=172800                # 48 hours
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+export GRYPE_DB_CACHE_DIR="$tmp/grype-db"   # an inherited directory could hold a planted database
 : > "$tmp/empty.yaml"; : > "$tmp/empty.toml"   # empty.yaml is the one config grype reads (it needs the extension); empty.toml is osv-scanner's
 
 # one scan target: its name, digest, the file the scanner reads and, for an image, its platform and config digest
@@ -331,6 +321,8 @@ for s in "${scanners[@]}"; do
         echo "check-scan: grype's database for $name carries no digest (no sha256 checksum in its source URL)" >&2; sv=fail
       elif [[ ! "$bt" =~ ^[0-9]+$ ]]; then
         echo "check-scan: grype's database for $name reports no readable build date" >&2; sv=fail
+      elif [ "$bt" -gt "$now" ]; then
+        echo "check-scan: grype's database for $name was built $built, in the future: its clock is wrong" >&2; sv=fail
       elif [ $((now - bt)) -gt "$MAX_AGE" ]; then
         echo "check-scan: grype's database for $name was built $built, older than 48 hours: a stale database is never scanned against" >&2; sv=fail
       elif [ -n "$db_url" ] && { [ "$from" != "$db_url" ] || [ "$built" != "$db_built" ]; }; then

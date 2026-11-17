@@ -2,14 +2,15 @@
 """evidence-letter.py: the monthly evidence letter (REQ-REL-013).
 
 Makes one letter from a template out of the assets of the releases published in a month. Every fact in it is read
-from those assets; the fetch step has already checked the assets' signatures. Any missing or malformed asset makes
+from those assets (the date and the reason from the signed release-manifest.json, the link built from the tag);
+the fetch step has already checked the assets' signatures. The unsigned release.json is never read. Any missing or malformed asset makes
 no letter (exit 1, one line on stderr). No model, no network, no signing: the signing job takes the letter this
 script wrote.
 
   evidence-letter.py --month YYYY-MM --releases DIR --advisories FILE --controls FILE --signatory FILE --out DIR
                      [--draft]
 
-DIR holds one folder per release, named by its tag, with the release page's release.json and the downloaded assets.
+DIR holds one folder per release, named by its tag, with the downloaded assets.
 Exit 0: letter written, or no release that month (nothing written). 1: refused. 2: bad arguments. 3: the signatory is
 still the placeholder (without --draft).
 """
@@ -99,8 +100,12 @@ def controls_versions(controls_text):
     return sorted((int(v), d) for v, d in rows)
 
 
+def manifest_of(rel_dir, name):
+    return load_json(os.path.join(rel_dir, name, "release-manifest.json"))
+
+
 def release_dates(rel_dir):
-    """{tag: published day} of every release folder, from release.json only."""
+    """{tag: published day} of every release folder, from its signed release manifest."""
     try:
         names = sorted(os.listdir(rel_dir))
     except OSError:
@@ -108,22 +113,17 @@ def release_dates(rel_dir):
     dates = {}
     for name in names:
         if TAG.fullmatch(name):
-            dates[name] = day(load_json(os.path.join(rel_dir, name, "release.json")).get("published_at"), name)
+            dates[name] = day(manifest_of(rel_dir, name).get("published_at"), name)
     return dates
 
 
 def release_of(rel_dir, name, date):
     path = os.path.join(rel_dir, name)
-    info = load_json(os.path.join(path, "release.json"))
-    manifest = load_json(os.path.join(path, "release-manifest.json"))
-    if info.get("tag_name") != name:
-        raise Refuse("the release folder %s does not match its release.json" % name)
-    if info.get("html_url") != PAGE + name:
-        raise Refuse("%s: the release page link is not the release's own" % name)
+    manifest = manifest_of(rel_dir, name)
     # a commit is 40 lower-case hex characters: "9eedc51ba83aa198f006394c0a27bfd47a2ab696" matches; "9eedc51" and "9EEDC51..." do not
     if manifest.get("version") != name[1:] or not re.fullmatch(r"[0-9a-f]{40}", str(manifest.get("commit"))):
         raise Refuse("%s: the release manifest names another version or no commit" % name)
-    return {"tag": name, "dir": path, "date": date, "info": info, "manifest": manifest}
+    return {"tag": name, "dir": path, "date": date, "manifest": manifest}
 
 
 def releases_used(rel_dir, month):
@@ -138,10 +138,8 @@ def releases_used(rel_dir, month):
 
 
 def patch_reason(rel):
-    lines = [x.strip() for x in str(rel["info"].get("body") or "").splitlines() if x.strip()]
-    if not lines:
-        raise Refuse("%s is a patch release with no line in its notes" % rel["tag"])
-    return quoted(lines[0].lstrip("# "), "the first notes line of " + rel["tag"])
+    lines = [x.strip() for x in str(rel["manifest"].get("reason") or "").splitlines() if x.strip()]
+    return quoted(lines[0] if lines else None, "the first line of the reason of " + rel["tag"])
 
 
 def vex_statements(rel, month):
@@ -218,7 +216,7 @@ def body_of(rel_dir, month, advisories, controls_text):
     if not releases:
         lines.append(NONE_RELEASED)
     for r in releases:
-        link, commit = r["info"]["html_url"], r["manifest"]["commit"]
+        link, commit = PAGE + r["tag"], r["manifest"]["commit"]
         lines.append("- %s, published %s, %s, commit %s" % (r["tag"], r["date"], link, commit))
     patches = [r for r in releases if not r["tag"].endswith(".0")]
     lines += ["", "## Patch releases"]
