@@ -2054,7 +2054,7 @@ requirements:
       - id: REQ-REL-009-AC8
         given: "a patch release"
         when: "its notes are generated"
-        then: "they list per fix the CVE, package, old and new version, severity and affected image variants, each VEX statement added or changed, and a no-behavior-change line — or, when docs/next-release-notes.md lists changes judged unable to affect supported clients, those changes under Behavior changes; they are posted on the GitHub release by Release's release-assets step, from the notes carried in the generated patch tag's message (patch-decide.py tag-notes; any other tag keeps the fixed evidence text), and in the changelog by the patch-notes job, and name no vendor or model"
+        then: "they list per fix the CVE, package, old and new version, severity and affected image variants, each VEX statement added or changed, and a no-behavior-change line — or, when docs/next-release-notes.md lists changes judged unable to affect supported clients (each citing the decision that judged it), those changes under Behavior changes; they are posted on the GitHub release by Release's release-assets step, from the notes carried in the generated patch tag's message (patch-decide.py tag-notes; any other tag keeps the fixed evidence text), and in the changelog by the patch-notes job, and name no vendor or model"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC9
@@ -2979,6 +2979,12 @@ requirements:
       the five existing rulings keep working, (3) the log of ignored entries, (4) the OSV query by the /vMAJOR path.
     confidence: implementation-only
     acceptance_criteria:
+      - id: REQ-SUP-001-AC1
+        given: "Dependabot's configuration"
+        when: "it is read"
+        then: "no entry sets a cooldown, the product's gomod entry for the root is unchanged, and no docker entry exists (the repository has no container build file for it to watch)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
       - id: REQ-SUP-001-AC2
         given: "a pull request that moves an action pin, or the version of a tool, image or package a workflow downloads (the version inputs of installer actions, install-scanner.sh pins, go install, pip install and release-asset downloads (curl or wget of a GitHub release) in run steps, container images our workflows run, local composite actions under .github/actions, the auditor's hash-pinned Python packages)"
         when: "the pin check runs"
@@ -3592,7 +3598,7 @@ requirements:
       workflow file with one identity; Build is an apk matrix job over the two native runners plus one assemble job.
       (c) Cutover goes through the integration branch chain-v030: the old chain stays live on main until one
       integration-to-main pull request switches it. (d) The GH_TOKEN for bin/build-admit.py reaches only the admission
-      job's Witness step. Every command the building and Check steps run under Witness is wrapped in timeout -k 20 540.
+      job's Witness step. Every command run under Witness is plain `bash SCRIPT ARGS`; GitHub's default job time limit bounds a hung command.
       The wrapping lives in committed helpers, bin/witnessed-local.sh for those steps and bin/witnessed.sh for
       Release's, which hold ALL the Witness flags; the judges are the three functions of the
       Witness-wrapping seam in bin/chain-test-shape.py. The real phase times are about 3 minutes for build-apk.sh
@@ -3727,7 +3733,7 @@ requirements:
       - id: REQ-CHAIN-004-AC2
         given: "the steps of the Build job"
         when: "they are read"
-        then: "the Witness step of each Build job is exactly one line, bash bin/witnessed-local.sh STEP bin/build-stage-KIND.sh (the assemble script is followed by its one word, REQ-CHAIN-004-AC3), with STEP from the closed list apk, build, rapk, rebuild (and the snapshot- forms of the proof workflows); the committed helper bin/witnessed-local.sh is the only place that holds those Witness flags: it unsets the identity-token request variables and the runtime-token variables, makes an ed25519 key in a folder of mode 0700 under the runner temp folder, and runs witness run once with --signer-file-key-path (no Fulcio address, no timestamp authority and no token), the attestors environment, git, material and product only (never github, whose record embeds the raw identity token, and never slsa, which is Sign's alone), the identity-token variables and the GitHub tokens filtered out of the environment record, the record written to witness-STEP/STEP-collection.local.json (the .local name says that nothing trusts it), no working-directory flag so the command runs from the repository root, and the command wrapped in timeout -k 20 540 (a bound on a hung command, with a kill-after of 20 seconds); it removes the key folder when Witness returns or the shell exits and refuses to finish if the folder is still there; the key is key hygiene and not the trust boundary: it is never printed, never written into a record or an upload, and nothing claims that the wrapped build cannot read it; the Check steps (scanners, acceptance, runtime and arm64) use the same helper, and the Release steps stay on bin/witnessed.sh, which never signs keyless, except the verify job's release-verify, which runs through the same helper; every other command of the job is the install, the downloads and the uploads, and no stage file and no stage script names witness run; the Build stage file exposes one workflow_call output, digests, read from the assemble job's output, which one pinned step (id digests, echo of jq -c . digests.json to GITHUB_OUTPUT) fills from the digests.json the Witness step wrote, so Sign receives the digests.json text; the Rebuild stage file has no output"
+        then: "the Witness step of each Build job is exactly one line, bash bin/witnessed-local.sh STEP bin/build-stage-KIND.sh (the assemble script is followed by its one word, REQ-CHAIN-004-AC3), with STEP from the closed list apk, build, rapk, rebuild (and the snapshot- forms of the proof workflows); the committed helper bin/witnessed-local.sh is the only place that holds those Witness flags: it unsets the identity-token request variables and the runtime-token variables, makes an ed25519 key in a folder of mode 0700 under the runner temp folder, and runs witness run once with --signer-file-key-path (no Fulcio address, no timestamp authority and no token), the attestors environment, git, material and product only (never github, whose record embeds the raw identity token, and never slsa, which is Sign's alone), the identity-token variables and the GitHub tokens filtered out of the environment record, the record written to witness-STEP/STEP-collection.local.json (the .local name says that nothing trusts it), no working-directory flag so the command runs from the repository root, and the command run as plain `bash SCRIPT ARGS` (GitHub's default job time limit bounds a hung command); it removes the key folder when Witness returns or the shell exits and refuses to finish if the folder is still there; the key is key hygiene and not the trust boundary: it is never printed, never written into a record or an upload, and nothing claims that the wrapped build cannot read it; the Check steps (scanners, acceptance, runtime and arm64) use the same helper, and the Release steps stay on bin/witnessed.sh, which never signs keyless, except the verify job's release-verify, which runs through the same helper; every other command of the job is the install, the downloads and the uploads, and no stage file and no stage script names witness run; the Build stage file exposes one workflow_call output, digests, read from the assemble job's output, which one pinned step (id digests, echo of jq -c . digests.json to GITHUB_OUTPUT) fills from the digests.json the Witness step wrote, so Sign receives the digests.json text; the Rebuild stage file has no output"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-004-AC3
@@ -4157,70 +4163,39 @@ requirements:
   - id: REQ-CHAIN-006
     title: Check judges the candidates and signs what it found
     statement: >
-      The Check stage shall run, in one stage file beside Rebuild and off Build's output (the job check, and the job check-arm64 for the linux/arm64 artifact checks), every scanner the policy lists, the Gradle and Maven acceptance suites, the no-phone-home test, the FIPS start check and every customer-guide command against the exact candidate digests, as plain scripts that know nothing about signing, under Witness in three plainly named steps (scanners, acceptance, runtime) each limited to 9 minutes by the one shared helper, and sign its results as one Witness record per step under its own identity; it shall hold no registry or key access, and any failure shall stop the release and name Check.
-    source: [.github/workflows/stage-verify.yml, .github/workflows/release.yml, .github/workflows/acceptance.yml, bin/witnessed.sh, bin/check-stage.sh, bin/check-scan.sh, bin/check-fips.sh, bin/check-acceptance.sh, bin/check-guide.sh, bin/acceptance-gradle.sh, bin/acceptance-gradle-capped.sh, bin/acceptance-maven.sh, bin/acceptance-maven-capped.sh, bin/acceptance-egress.sh, bin/acceptance-k8s.sh, bin/acceptance-serve.sh, .github/policy/scanners.json]
+      The Check stage shall run, in one stage file beside Rebuild and off Build's output (the job check, and the job check-arm64 for the linux/arm64 artifact checks), every scanner the policy lists, the Gradle and Maven acceptance suites, the no-phone-home test, the FIPS start check and every customer-guide command against the exact candidate digests, as plain scripts that know nothing about signing, under Witness in four plainly named steps (scanners, acceptance, runtime, arm64), each started as plain `bash SCRIPT ARGS` by the one shared helper, and sign its results as one Witness record per step with a throwaway key and no identity token; it shall hold no registry or key access, and any failure shall stop the release and name Check.
+    source: [.github/workflows/stage-verify.yml, .github/workflows/release.yml, .github/workflows/acceptance.yml, bin/witnessed-local.sh, bin/check-phase-scanners.sh, bin/check-phase-acceptance.sh, bin/check-phase-runtime.sh, bin/check-phase-arm64.sh, bin/check-stage.sh, bin/check-scan.sh, bin/check-fips.sh, bin/check-acceptance.sh, bin/check-guide.sh, bin/acceptance-gradle.sh, bin/acceptance-gradle-capped.sh, bin/acceptance-maven.sh, bin/acceptance-maven-capped.sh, bin/acceptance-egress.sh, bin/acceptance-k8s.sh, bin/acceptance-serve.sh, .github/policy/scanners.json]
     tier: community
     introduced: v0.3.0
     origin: v0.3.0 decisions of Oct 9 2026 (Check), accepted Oct 9
     confidence: implementation-only
     notes: >
-      The helper is bin/witnessed-local.sh (a throwaway key made in the job, the sensitive keys filtered out of
-      the record) with Check's steps in its closed list, so witness-check carries the three record directories; bin/check-stage.sh is judged by the script grammar alone and
-      runs the verifier as python3 -I -B; the Check job downloads the images artifact exactly once; the scanners come
-      from the prebaked runner, no step installs them; package counts come from each tool's own machine output (grype
-      -o json and its CycloneDX SBOM, osv-scanner --format json --all-packages; shapes recorded in the scanner
-      fixtures (fixtures/scanners)) and osv-scanner keeps the Go-module target; the gradle, maven, egress and
-      Kubernetes suites are plain scripts (bin/acceptance-*.sh) shared with acceptance.yml; AC14: the node image
-      kindest/node:v1.37.0@sha256:a1ed56cf...580ae5 comes from the kind v0.33.0 release notes,
-      https://github.com/kubernetes-sigs/kind/releases/tag/v0.33.0 (published 2026-08-26). kind and kubectl are the
-      runner image's own (image 20261012: Kind 0.33.0, Kubectl 1.37.1) and the Check stage has no step for them. AC15:
-      grype's database status is read from the shape recorded in the scanner fixtures (fixtures/scanners)/grype.json
-      (descriptor.db.status: from, built, valid; host grype.anchore.io, digest the sha256 in the download URL's
-      checksum). osv-scanner runs in offline mode with --download-offline-databases into an empty
-      OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY; the evidence is read from the downloaded <ecosystem>/all.zip files: source
-      https://osv-vulnerabilities.storage.googleapis.com/ <ecosystem>/all.zip (the only allowed osv host), digest the
-      zip's sha256, date the newest record `modified`, recorded as db_newest_record_modified: for osv-scanner the date
-      recorded is the newest record `modified` in the downloaded database, not a database build date (grype's
-      db_built_or_published is its database build time). db_source_basis is "observed" for grype (its status output
-      names the URL) and "documented" for osv-scanner: neither its files nor its output name the URL it downloaded
-      from, so a wrong osv host can only be caught on GitHub (a network allow-list on the runner, or osv-scanner's
-      log) and is listed under proof on GitHub. The osv cache directory is empty before the osv runs of this job (made
-      fresh, or, when OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY is already set, refused unless empty), so every database is
-      downloaded in this job. Check makes policy.json per tag itself (chain-verify.py policy make --tag
-      "$GITHUB_REF_NAME"), as Rebuild does; Check needs Build and Sign; Release verifies
-      Sign's provenance and the last stage's job is named release; the guide check is the customer guide word for
-      word: every guide command (cosign, jq; verify forms only) runs against the signed candidate with
-      the candidate's image references and tag substituted (<IMAGE_REF>, <IMAGE_REF_FIPS>, <TAG>); a command that cannot run on a candidate
-      is excused only by an exact entry, with its reason, in the guide's cannot-run list
-      (docs/verify-release.cannot-run.json beside docs/verify-release.md) and is reported as not-run; the guide-check
-      script alone may name the verify-only commands. AC7 is proven on a fixture guide. Placeholders Check knows:
-      <IMAGE_REF> ($CANDIDATE_REPOSITORY@image-production digest), <IMAGE_REF_FIPS> ($CANDIDATE_REPOSITORY@ image-fips
-      digest, the key the digest list uses), <TAG> ($GITHUB_REF_NAME). A verify
-      command on an image reference needs a registry, structurally (the placeholder, a literal host/path with : or @,
-      or oci://), and is never run. AC -> NAMED TEST (every requirement of this stage has at least one named test):
-      AC1 -> bin/chain-check-wiring-test.sh `stage` judge (the s_* cases); AC9 -> the `helper` judge (h_ts) and the
-      scripts test's witness argv case; AC4 and AC5 -> bin/chain-check-scripts-test.sh (the AC4 cases); AC3 -> the
-      `script` judge (c_* cases) and the scripts test's dispatcher cases; AC10 -> the `removed` judge (r* cases); AC9
-      -> the `helper` judge attestor cases (h_gh, h_slsa) and AC13; AC10 -> the `removed` judge (r5, r6) plus the pull
-      request body naming every file; AC13 and AC8 -> the `records` judge (r_* cases) and the `plain`/`listed` judges;
-      AC1, AC11, AC12 -> the `stage` and `helper` judges and the scripts test's helper cases (outlive, failing script,
-      bad step name, three records); AC2 -> the `graph` judge (g_* cases); AC6 -> the scripts test's AC6 cases; AC7 ->
-      the scripts test's AC7 cases. Every Check step is limited to 9 minutes, a bound on a hung command (no
-      certificate is involved). Check's steps run through bin/witnessed-local.sh, where the cap lives; the helper judge in
-      bin/chain-check-shape.py is kept identical to its seam. Check is split into three steps so that none nears the
-      cap. The stage file is four short lines. Existing ACs this must not weaken: REQ-REL-004-AC1 (every scanner
-      reports its package count; zero packages fail) and the REQ-SCAN and REQ-FIPS requirements. The scanner list is
-      .github/policy/scanners.json (grype and osv-scanner); the daily rescan's other scanners (Inspector, Scout,
-      Google, Snyk) are not part of Check. The images reach Check as files (OCI tarballs from Build's artifacts), not
-      from a registry: Check logs in to no registry and holds no packages permission. Anything in the scripts' command
-      lines that no existing file fixes is PROPOSED/UNVERIFIED in the test headers: the guide file name, the
-      acceptance suites' wrapper command lines, and the results file names. CREDENTIALS: Check needs no cloud scanner
-      federation. The release scanners in scanners.json are grype and osv-scanner, which need no credential; the AWS
-      Inspector and GCP trusts serve only scan.yml and main-candidate-rescan.yml. SNYK_TOKEN is not needed by the
-      listed scanners (scanners.json: Snyk runs in the daily rescan only), so Check holds no secret at all. id-token:
-      write exists only so Witness can sign Check's own record. Check's four steps run under bin/witnessed-local.sh,
-      signed with a throwaway key, no identity token and no Sigstore timestamp in the Check jobs; Sign re-signs the
-      records with the release signing key. The Check jobs hold contents read only. AC1, AC4, AC9 and AC11 describe that.
+      Check runs its four steps under bin/witnessed-local.sh as plain `bash SCRIPT ARGS`, with no timeout wrapper; GitHub's default job time limit
+      bounds a hung step. The command line lives in one place, the helper. Records are signed with a throwaway key, with no identity token and no
+      Sigstore timestamp in the Check jobs; Sign re-signs them with the release signing key. The Check jobs hold contents read only and no secret. The images reach Check as
+      OCI tarballs from Build's artifacts (the job downloads the images artifact once), so Check logs in to no registry. Check needs Build and Sign, and
+      makes policy.json per tag itself (chain-verify.py policy make --tag "$GITHUB_REF_NAME"). bin/check-stage.sh runs the verifier as python3 -I -B.
+      The previous chain (stage-verify.yml and the acceptance stages as they are on main) stays live until the one cutover pull request.
+      Scanners: the list is .github/policy/scanners.json (today grype and osv-scanner). They come from the runner image and no step installs them.
+      Package counts come from each tool's own machine output (grype -o json and its CycloneDX SBOM, osv-scanner --format json --all-packages), every
+      scanner reports its package count and zero packages fail (REQ-REL-004-AC1), and osv-scanner keeps the Go-module target.
+      Scanner databases are fresh at scan time and come from the scanners' own hosts only. grype's database status (descriptor.db.status: from,
+      built, valid) is read from its own output: host grype.anchore.io, digest the sha256 in the download URL's checksum. osv-scanner runs in offline
+      mode with --download-offline-databases into an empty OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY (made fresh, or refused unless empty). Its evidence is
+      read from the downloaded <ecosystem>/all.zip files: source https://osv-vulnerabilities.storage.googleapis.com/<ecosystem>/all.zip (the only
+      allowed osv host), digest the zip's sha256, date the newest record `modified`, recorded as db_newest_record_modified. That date is the newest
+      record in the database, not a build date (grype's db_built_or_published is its database build time). db_source_basis is "observed" for grype
+      (its status output names the URL) and "documented" for osv-scanner: neither its files nor its output name the URL it downloaded from, so a
+      wrong osv host can only be caught on GitHub (a network allow-list on the runner, or osv-scanner's log) and is listed under proof on GitHub.
+      Acceptance suites: the gradle, maven, egress and Kubernetes suites are plain scripts (bin/acceptance-*.sh) shared with acceptance.yml. kind and
+      kubectl are the runner image's own (image 20261012: Kind 0.33.0, Kubectl 1.37.1) and no step installs them. The kind node image is given by
+      digest: kindest/node:v1.37.0@sha256:a1ed56cf...580ae5, from the kind v0.33.0 release notes (published 2026-08-26).
+      Guide: every command in the customer verification guide (cosign, jq; verify forms only) runs against the signed candidate with
+      the candidate's image references and tag substituted. A command that cannot run on a candidate is excused only by an exact
+      entry, with its reason, in docs/verify-release.cannot-run.json beside docs/verify-release.md, and is reported as not-run. Only the guide-check
+      script names the verify-only commands. A verify command on an image reference needs a registry (the placeholder, a literal host/path with : or
+      @, or oci://), so it is never run. Placeholders: <IMAGE_REF> ($CANDIDATE_REPOSITORY@image-production digest), <IMAGE_REF_FIPS>
+      ($CANDIDATE_REPOSITORY@image-fips digest), <TAG> ($GITHUB_REF_NAME).
     acceptance_criteria:
       - id: REQ-CHAIN-006-AC1
         given: "stage-verify.yml"
@@ -4284,8 +4259,8 @@ requirements:
         status: approved
       - id: REQ-CHAIN-006-AC11
         given: "the helper bin/witnessed-local.sh and every Witness call of the Check stage"
-        when: "the stage file, the helper and a run of the helper with a command that outlives the limit are read"
-        then: "every command run under Witness goes through the one helper and is wrapped in exactly one timeout of 540 seconds, with a kill-after of 20 seconds (`timeout -k 20 540`), written in the helper alone (no stage repeats it, none calls witness directly), the helper holds all the Witness flags and the throwaway key, a step name outside the helper's closed list is refused before anything runs, and a command that outlives the limit or fails makes the helper fail (a nonzero exit), so a hung command fails the build instead of holding it"
+        when: "the stage file, the helper and a run of the helper with a failing command are read"
+        then: "every command run under Witness goes through the one helper, which runs it as plain `bash SCRIPT ARGS` (no timeout wrapper; GitHub's default job time limit bounds a hung command), written in the helper alone (no stage calls witness directly), the helper holds all the Witness flags and the throwaway key, a step name outside the helper's closed list is refused before anything runs, and a command that fails makes the helper fail (a nonzero exit)"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-006-AC12
@@ -4351,7 +4326,7 @@ requirements:
       request, which names the switch moment. A v* tag is the maintainers' signed tag; the first real run is the
       maintainers' signed rc tag. Release creates no tag. THE WITNESS WRAPPING is the one seam shared with the other
       stages: every Witness step runs through bin/witnessed.sh STEP SCRIPT, except the verify job's release-verify, which
-      runs through bin/witnessed-local.sh; the stage file never repeats Witness flags. Release has six such steps (release-verify, release-apks,
+      runs through bin/witnessed-local.sh, with the command run as plain `bash SCRIPT ARGS` inside it; the stage file never repeats Witness flags. Release has six such steps (release-verify, release-apks,
       release-publish, release-sign, release-assets, release-postverify) so that a credential reaches only the step
       that needs it. PROPOSED/UNVERIFIED: the script
       names and command lines of bin/release-*.sh; the tool that re-signs an apk with the release key (bin/release-sign-apks.sh; no apk key is stored;
@@ -5385,38 +5360,37 @@ requirements:
       When a required CI job of .github/workflows/ci.yml is split into parallel jobs to shorten the pull request wall time, no check is dropped and none runs
       twice: every step of the old job is in exactly one new job, unchanged, and a gate job with the old job's name, which the branch protection requires,
       fails unless every new job succeeded.
-    source: [ci-speed read-back of Oct 23, the pin-wiring judge (pin-wiring-test.sh)]
+    source: [ci-speed read-back of Oct 23]
     tier: community
     introduced: v0.3.0
     origin: CI speed decision of Oct 23 2026 (no check is dropped and every test runs exactly once); first use is allowlist-chain (allowlist-chain-1..4 and the gate allowlist-chain)
     confidence: documented
     notes: >
-      The pin-wiring judge accepts allowlist-chain in exactly two forms: the one job, or four parallel jobs plus the gate. The groups of suites per shard are
-      fixed in the judge; moving a suite to another shard is a reviewed edit of the judge, which the trusted gate runs from main. The gate fails on a missing
-      or empty result as on a failed, skipped or cancelled one.
+      The pin-wiring judge (pin-wiring-test.sh) that held this split was deleted by the release audit ruling of Nov 12, and no check holds it now; the criteria
+      below are listed in test-evidence/unmapped.yaml. The gate fails on a missing or empty result as on a failed, skipped or cancelled one.
     acceptance_criteria:
       - id: REQ-CI-001-AC1
         given: "the CI workflow after a required job is split into parallel jobs"
         when: "the steps of the split jobs are compared with the steps the job had before the split"
-        then: "every step of the old job is in exactly one of the new jobs, unchanged in name, run text and relative order, and no other step exists in them except the checkout, base-ref fetch, Python setup and pip steps each job needs"
+        then: "every step of the old job is in exactly one of the new jobs, unchanged in name, run text and relative order, and no other step exists in them except the checkout, base-ref fetch, Python setup and pip steps each job needs; the pin-wiring judge that held this was withdrawn by the release audit ruling of Nov 12, and no check holds it now"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-CI-001-AC2
         given: "the same workflow"
         when: "the gate job is read"
-        then: "a job with the old job's name exists, needs every new job, has `if: ${{ always() }}`, takes no checkout and no action, and exits non-zero unless the result of every needed job is exactly `success` (failed, skipped, cancelled, missing and empty each count as failure), so the required-check name is unchanged and a skipped shard cannot pass"
+        then: "a job with the old job's name exists, needs every new job, has `if: ${{ always() }}`, takes no checkout and no action, and exits non-zero unless the result of every needed job is exactly `success` (failed, skipped, cancelled, missing and empty each count as failure), so the required-check name is unchanged and a skipped shard cannot pass; the pin-wiring judge that held this was withdrawn by the release audit ruling of Nov 12, and no check holds it now"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-CI-001-AC3
         given: "any job of the split"
         when: "its keys are read"
-        then: "no `if`, `env`, `continue-on-error`, `timeout-minutes`, `container`, `services`, `permissions`, `needs`, id-token or secret is added at job or step level, except the gate's own `needs`, `if` and the result variables of its one step"
+        then: "no `if`, `env`, `continue-on-error`, `timeout-minutes`, `container`, `services`, `permissions`, `needs`, id-token or secret is added at job or step level, except the gate's own `needs`, `if` and the result variables of its one step; the pin-wiring judge that held this was withdrawn by the release audit ruling of Nov 12, and no check holds it now"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-CI-001-AC4
-        given: "the pin-wiring judge"
-        when: "it is run against a copy of the workflow with any one step dropped, duplicated across two jobs, moved, edited, reordered or conditioned, or with the gate weakened"
-        then: "it fails for each of those mutations, and it accepts the real workflow"
+        given: "the pin-wiring judge, withdrawn by the release audit ruling of Nov 12"
+        when: "it was run against a copy of the workflow with any one step dropped, duplicated across two jobs, moved, edited, reordered or conditioned, or with the gate weakened"
+        then: "it failed for each of those mutations, and it accepted the real workflow; no check holds this now, as the notes say"
         verification: { method: unit, release_blocking: false }
         status: approved
 
@@ -5425,15 +5399,14 @@ requirements:
     statement: >
       Every suite named in test-evidence/suite-floors.json is run once per workflow run, by the step that runs it and counts its cases against its floor, and the
       step that re-runs the suites of the floors file runs only those that no counting step runs.
-    source: [ci-speed read-back of Oct 23, the suite guard (bin/suite-guard-run.py), the pin-wiring judge (pin-wiring-test.sh)]
+    source: [ci-speed read-back of Oct 23, the suite guard (bin/suite-guard-run.py)]
     tier: community
     introduced: v0.3.0
     origin: CI speed decision of Oct 23 2026 (the floor re-run of every suite took 4876 s on top of the suites themselves; no check is dropped and every test runs exactly once)
     confidence: documented
     notes: >
       A counting step is `python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json NAME PATH` (NAME the file name of PATH), which runs the suite
-      once, shows its output as `bash PATH` would, requires exit 0 and a case count at or above the floor. The pin-wiring judge reads such a line back to the plain
-      `bash PATH` line it stands for, so the exact-step checks are the same in both forms. `suite-guard-run.py all` skips the suites a trusted counting step runs (one line, the whole step, in a plain job that is a required check or is needed by one, one counting step per suite), runs the rest without echoing their output, and fails on a second counting step for one suite, on a ci.yml whose jobs are not a mapping, and on a counting step that names an unfloored suite, a floors file other than the committed one, or a NAME that
+      once, shows its output as `bash PATH` would, requires exit 0 and a case count at or above the floor. `suite-guard-run.py all` skips the suites a trusted counting step runs (one line, the whole step, in a plain job that is a required check or is needed by one, one counting step per suite), runs the rest without echoing their output, and fails on a second counting step for one suite, on a ci.yml whose jobs are not a mapping, and on a counting step that names an unfloored suite, a floors file other than the committed one, or a NAME that
       is not the file name of its PATH. The floors only rise as before.
     acceptance_criteria:
       - id: REQ-CI-005-AC1
@@ -5445,7 +5418,7 @@ requirements:
       - id: REQ-CI-005-AC2
         given: "a counting step in ci.yml"
         when: "it names an unfloored suite, a floors file other than test-evidence/suite-floors.json, a NAME that is not the file name of its PATH, a PATH that is not the one file of that name, an env prefix other than CHAIN_TEST_REQUIRE_NETCUT=1, or a form other than `run FLOORS NAME PATH`"
-        then: "`suite-guard-run.py all` fails, and the pin-wiring judge (which reads the floors file of the judged commit) treats the line as unknown run text and refuses it"
+        then: "`suite-guard-run.py all` fails"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-CI-005-AC3

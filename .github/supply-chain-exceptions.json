@@ -392,17 +392,17 @@
     {
       "file": ".github/agent/bin/check-action-pins.py",
       "ruling": "text, not a command: Python source of .github/agent/bin/check-action-pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made | text, not a command: a comment in .github/agent/bin/check-action-pins.py that names the tool",
-      "body-sha256": "15a947da1b254e81f2b53ae54a04f55d4d2fcfcb89beb9747cececfb7035531e"
+      "body-sha256": "5376a8612f18f30af994edf552eccd74e0525917d885301af1f0ced052260796"
     },
     {
       "file": ".github/agent/bin/tests/system_path_allowlist.py",
       "ruling": "text, not a command: Python source of .github/agent/bin/tests/system_path_allowlist.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "88cdbffcf3165936402c852ffe65dbca08c48c7885068df7773e5e2274b4b33d"
+      "body-sha256": "2f4aa74dfde731a0423a94154f3d9032572564f610af0b6c97506fad1feb0931"
     },
     {
       "file": ".github/agent/bin/tests/test_check_action_pins.py",
       "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "967a6c9a2a0e3e9b411af494731f176b04c00a9b27bbb112bd3e24754a848bab"
+      "body-sha256": "b74c94eacf10ab4ebddf7dbf9c842a21f5529a1dccadac549b948b21cc752223"
     },
     {
       "file": ".github/agent/bin/tests/test_cov_manifest.py",
@@ -437,7 +437,7 @@
     {
       "file": ".github/agent/supply-chain/pin-inventory.py",
       "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-inventory.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made | text, not a command: the tuple of client module names in .github/agent/supply-chain/pin-inventory.py (data; it runs nothing)",
-      "body-sha256": "46a891d1a5a50464b43b9c1f41c997066f856460fb49be2cc7422e15dbf56a2e"
+      "body-sha256": "36babacf00056bc1ac42e6967b6c0b5db7da5b30c5a4932c97c0ed5983da5680"
     },
     {
       "file": ".github/agent/tests/k8s-harness-fence-test.sh",
@@ -452,7 +452,7 @@
     {
       "file": ".github/agent/tests/pip-pin-test.sh",
       "ruling": "text, not a command: a comment in .github/agent/tests/pip-pin-test.sh that names the tool | text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-sha256": "00e3ef2013fb86a1b8d1893f71ad712cf2ec10beecdd38c8be01145867a5e99a"
+      "body-sha256": "f7e1941ead5a6b2cdac0f40fc2470391a1ff56afe9569a6f4618f07783edcb75"
     },
     {
       "file": ".github/agent/tests/s2-p2-strict-lookups-test.sh",
@@ -467,17 +467,17 @@
     {
       "file": "bin/chain-release-scripts-test.sh",
       "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "83ee64e01f70124d81d056a6bc26569fbaca47a724230c9401be44958b9fe297"
+      "body-sha256": "095eeb3d06c174358f32d808cde74ab9ed13940533a2276bd57f58cd9e872232"
     },
     {
       "file": "bin/chain-release-shape.py",
       "ruling": "text, not a command: Python source of bin/chain-release-shape.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "6802089809c66cf7e5148e84e090f96d186e4d8ace77f94a28ca4ba17d3d7507"
+      "body-sha256": "e33464681830e4771bf49837c765224d834b443b27a4dd04868c372bde0fe0e8"
     },
     {
       "file": "bin/chain-test-signers.py",
       "ruling": "text, not a command: a comment in bin/chain-test-signers.py that names the tool | text, not a command: Python source of bin/chain-test-signers.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "c7e063b3b69e471eaf3598ddd1feb80839b53853f39ccc8ddffc1b140947cd67"
+      "body-sha256": "0fe3a605f3f049029bc0486d5336c3b84d5459125a87716f095ad0a163502bca"
     },
     {
       "file": "bin/chain-verify.py",
@@ -492,7 +492,7 @@
     {
       "file": "bin/persona-uat-wiring-test.sh",
       "ruling": "text, not a command: a comment in the test; nothing runs it | text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "87049d55fbb8c0139932d5f52b111f91d08d4d8c916a479872344128ca42eab5"
+      "body-sha256": "11b4304579aa64d8f9fb1dac2f093f1cded1ce168048d7aff0b177630b78c830"
     },
     {
       "file": "bin/persona-uat.py",
@@ -507,7 +507,7 @@
     {
       "file": "bin/vex-live-test-test.sh",
       "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "5129bfb0b29e86a51ee9a178c51669a6cdbbe7b81f6d5fc22be8a703401f7f1f"
+      "body-sha256": "0ee0f6644e0656ee1779e5e856f0c6fdbfce46a2c930cdee6dac8f68f7aacc0d"
     },
     {
       "file": "bin/vex-live-test.py",

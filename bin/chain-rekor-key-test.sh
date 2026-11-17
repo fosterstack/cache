@@ -736,14 +736,14 @@ SIGN = ["sign", "--check", "--public-key", "k", "--out", "o", "--items", "i", "-
 (ok if not parses(SIGN) else bad)("sign requires --aws (no default aws from PATH)")
 (ok if not parses(["key-ref-check", "--algorithm-guard"]) else bad)("key-ref-check requires --aws (no default aws from PATH)")
 # the scripts that call `chain-verify.py sign-record` pass flags the parser accepts (with-aws-token.sh adds --aws and --public-key for the staged call)
-for script in ("witnessed.sh", "witness-sign-staged.sh"):
+for script in ("witness-sign-staged.sh",):   # bin/witnessed.sh signs nothing: Release's steps record with a throwaway key only
     lines = open(os.path.join(root, "bin", script)).read().split("\n")
     i = [n for n, l in enumerate(lines) if re.search(r"(chain-verify\.py|with-aws-token\.sh) sign-record --payload", l)][0]
     flags = set(re.findall(r" (--[a-z-]+)", "\n".join(lines[i:i + 2]))) | {"--aws", "--public-key"}
     (ok if parses(["sign-record"] + [x for f in sorted(flags) for x in (f, "x")]) else bad)("%s: its sign-record call (%s) is accepted by the parser" % (script, " ".join(sorted(flags))))
 
 print("pass=%d fail=%d" % (passed, failed))
-EXPECT = 176
+EXPECT = 175
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))
     sys.exit(1)
