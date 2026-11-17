@@ -470,12 +470,12 @@
     {
       "file": "bin/chain-release-scripts-test.sh",
       "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "fd7f1edc50b6dbe60f26eb50a92a93ba92492669593735513b03fcf01e6e9157"
+      "body-sha256": "83ee64e01f70124d81d056a6bc26569fbaca47a724230c9401be44958b9fe297"
     },
     {
       "file": "bin/chain-release-shape.py",
       "ruling": "text, not a command: Python source of bin/chain-release-shape.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "383808d886e580a4f488edb58f7d84c630df8b4c994844076da0c91cf23ed0c9"
+      "body-sha256": "6802089809c66cf7e5148e84e090f96d186e4d8ace77f94a28ca4ba17d3d7507"
     },
     {
       "file": "bin/chain-test-signers.py",
@@ -485,7 +485,7 @@
     {
       "file": "bin/chain-verify.py",
       "ruling": "text, not a command: Python source of bin/chain-verify.py (python runs it, no shell reads it): reads and queries the Rekor transparency log",
-      "body-sha256": "171ba2954b66c4683331189d0ef53352949edd3b41a5283b15f24c27cba93677"
+      "body-sha256": "f3cfa7e74aa924781a6716877b0e26a3a928ba699c67e895c230a24fdcd94cd6"
     },
     {
       "file": "bin/loopback-get.sh",
@@ -500,22 +500,22 @@
     {
       "file": "bin/persona-uat.py",
       "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): probes a local endpoint and asks the Actions identity-token endpoint | text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "aaa4e5c03dfd2c252681beb8b78eac44a487b8b35436cc07187d6517baf3472d"
+      "body-sha256": "a86bd08035df06aa178432d939322ebe3be7511596d3c785908fc861e2eaac2c"
     },
     {
       "file": "bin/release-postverify.py",
       "ruling": "text, not a command: Python source of bin/release-postverify.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "8c88a960d1a46be946e1e981edf792009121fe6fbbe8dd0f58c1f6649f56db21"
+      "body-sha256": "c31c24a566053e630e7e1967c2c7b497c0ea0aa8b588fb80552631b2803e3b4c"
     },
     {
       "file": "bin/vex-live-test-test.sh",
       "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "75dadf5d79a4e6cf68a349c8bbd369de0ccf386e8b84421e2100ee15c5380b8d"
+      "body-sha256": "77ff0022ed24a72b5bcbeeb7fcd4bf3003c13c14c2fed90fff8578805d550aaa"
     },
     {
       "file": "bin/vex-live-test.py",
       "ruling": "text, not a command: Python source of bin/vex-live-test.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "1e211b5dbdf01281eeda11746d003fb256a90d83acbc139131b2465f02ff1237"
+      "body-sha256": "a7b0ca7a30c882046839eb26a6b0747ef24da9c870b084d494b103984892e1d0"
     }
   ]
 }
