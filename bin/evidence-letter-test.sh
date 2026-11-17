@@ -944,7 +944,7 @@ def current_manifest(revoked_at, same_key=True):
 pr, lr = present([[V4]], old_manifest=old_key_manifest(), current=current_manifest("2026-11-10T00:00:00Z"))
 check("F7 P1 a1: the current manifest revokes the key (past revoked_at) that the older attached manifest lists without "
       "revoked_at: one line, nothing verified", one_line(pr) and pr.returncode == 1 and verifies(lr) == 0, (pr.stderr, lr))
-pr, lr = present([[V4]], old_manifest=old_key_manifest(), current=current_manifest("2027-06-01T00:00:00Z"))
+pr, lr = present([[V4]], old_manifest=old_key_manifest(), current=current_manifest("2099-01-01T00:00:00Z"))
 check("F7 P1 a2: a revoked_at in the future in the current manifest does not revoke yet: passes",
       pr.returncode == 0 and verifies(lr) == 1, (pr.stderr, lr))
 pr, lr = present([[V4]], old_manifest=old_key_manifest(), current=current_manifest("2026-11-10T00:00:00Z", same_key=False))
