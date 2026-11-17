@@ -799,6 +799,7 @@ def _split_commands(text):
     "…", $'…') and escapes, with comments (# at the start of a word, outside quotes) dropped. A raw split at these
     characters cut quoted text and comments into false commands (Codex #164 adversarial r1, C02 noise)."""
     out, cur, i, q, n = [], [], 0, None, len(text)
+    escaped = -1                                         # len(cur) just after a backslash pair
     while i < n:
         c = text[i]
         if q == "'":
@@ -817,7 +818,7 @@ def _split_commands(text):
             elif c == '"':
                 q = None
         elif c == "\\" and i + 1 < n:
-            cur += [c, text[i + 1]]; i += 1
+            cur += [c, text[i + 1]]; i += 1; escaped = len(cur)
         elif c == "$" and text[i + 1:i + 2] == "'":
             cur += ["$", "'"]; q = "$'"; i += 1
         elif c in "'\"":
@@ -853,7 +854,7 @@ def _split_commands(text):
             cur.append(text[i:j].replace("\n", " "))
             i = j
             continue
-        elif c == "|" and cur and cur[-1] == ">":          # `>|` is a redirection that overrides noclobber, not a pipe
+        elif c == "|" and cur and cur[-1] == ">" and len(cur) != escaped:   # `>|` is a redirection that overrides noclobber, not a pipe
             cur.append(c)
         elif c in ";&|()\n":
             out.append("".join(cur)); cur = []
@@ -2009,8 +2010,9 @@ def _outside(target, script, depth=0):
         return True
     if re.match(r"[\"']?\$\{?HOME\}?/(?!work(/|$))", target):
         return True                                      # $HOME/.docker …: the workspace is under $HOME/work
-    if re.fullmatch(r"[\"']?\$\{?GITHUB_(OUTPUT|ENV|PATH|STATE|STEP_SUMMARY)\}?[\"']?", target):
-        return True                                      # the runner's own files, made outside the checkout
+    runner = re.fullmatch(r"[\"']?\$\{?(GITHUB_(?:OUTPUT|ENV|PATH|STATE|STEP_SUMMARY))\}?[\"']?", target)
+    if runner and not re.search(r"(?:^|[\s;(])" + runner.group(1) + "=", script):
+        return True                                      # the runner's own files, made outside the checkout, until the job assigns one
     m = re.match(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?(/.*)?$", target.strip("\"'"))
     if not m or depth > 4:
         return False

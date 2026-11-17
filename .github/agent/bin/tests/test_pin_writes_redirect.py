@@ -161,6 +161,49 @@ class JobOrder(unittest.TestCase):
                                {"bin/target.sh": "#!/bin/sh\necho hi\n"})
         self.assertTrue(hits, out)
 
+class FixEscapedGreaterAndRunnerFiles(unittest.TestCase):
+    def images(self, script):
+        return M.script_images(script)
+
+    # AC1: an escaped greater-than is a literal, so the pipe after it is real and the next command is inspected
+    def test_fix_escaped_gt_then_pipe_reports_unpinned_image(self):
+        self.assertTrue(self.images("echo \\>| docker run alpine:latest\n"))
+
+    # AC1 guard: escaped backslash then a real clobber redirect: target is docker, no second command exists
+    def test_fix_escaped_backslash_then_clobber_has_no_second_command(self):
+        self.assertTrue(self.images("docker run alpine:latest\n"))
+        self.assertEqual(self.images("echo \\\\>| docker run alpine:latest\n"), [])
+
+    # AC1 guard: a clobber redirect is still one redirection and is a write onto the committed file
+    def test_fix_clobber_redirect_still_one_redirection(self):
+        self.assertTrue(w("echo x >| %s\n" % REL))
+        self.assertFalse(w("echo x >| out.txt\n"))
+
+    # AC2: when the job never assigns the runner file names, they stay exempt
+    def test_fix_runner_files_unassigned_not_write(self):
+        self.assertFalse(w('cp x "$GITHUB_OUTPUT"\n'))
+        self.assertFalse(w('echo y >> "$GITHUB_ENV"\n'))
+
+    # AC2a: an assigned runner-file name is the value assigned: the committed file
+    def test_fix_assigned_runner_file_is_committed_file_write(self):
+        self.assertTrue(M._writes('GITHUB_OUTPUT=bin/target.sh\ncp x "$GITHUB_OUTPUT"\nbash bin/target.sh\n', "bin/target.sh"))
+
+    # AC2a whole-job: the same script as a step reports the finding
+    def test_fix_assigned_runner_file_whole_job_finding(self):
+        hits, out = JobOrder("test_r4_case_d_own_step_text_before_run_is_finding").check(
+            [step('GITHUB_OUTPUT=bin/target.sh\ncp x "$GITHUB_OUTPUT"\nbash bin/target.sh')],
+            {"bin/target.sh": "#!/bin/sh\necho hi\n"})
+        self.assertTrue(hits, out)
+
+    # AC2b: assignment to the file's directory: a copy into it lands in the directory
+    def test_fix_assigned_runner_file_directory_is_write(self):
+        self.assertTrue(M._writes('GITHUB_OUTPUT=bin\ncp x "$GITHUB_OUTPUT"\n', "bin/target.sh"))
+
+    # AC2c: assignment outside the checkout keeps the destination exempt
+    def test_fix_assigned_runner_file_outside_checkout_exempt(self):
+        self.assertFalse(M._writes('GITHUB_ENV=$RUNNER_TEMP/env\ncp x "$GITHUB_ENV"\n', "bin/target.sh"))
+        self.assertFalse(M._writes('GITHUB_ENV=$RUNNER_TEMP/env\necho y >> "$GITHUB_ENV"\n', "bin/target.sh"))
+
 
 if __name__ == "__main__":
     unittest.main()
