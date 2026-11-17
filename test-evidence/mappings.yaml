@@ -1906,3 +1906,7 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
+  - ac: REQ-REL-013-AC11
+    evidence:
+      - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }

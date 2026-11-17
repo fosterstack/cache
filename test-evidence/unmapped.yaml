@@ -61,5 +61,3 @@ unmapped:
     reason: "the check it named was deleted by the release audit ruling of Nov 12; no check holds this criterion now"
   - ac: REQ-REL-013-AC10
     reason: "the check it named was deleted by the release audit ruling of Nov 12; no check holds this criterion now"
-  - ac: REQ-REL-013-AC11
-    reason: "bin/evidence-letter-job-test.sh was deleted by the release audit ruling of Nov 12, and the proves: line of .github/agent/tests/supply-chain-wiring-test.sh no longer claims this criterion; no check holds it now"
