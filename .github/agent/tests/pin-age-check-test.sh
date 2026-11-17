@@ -3535,13 +3535,15 @@ ahead = ("bin/install-scanner.sh",)
 _t = tempfile.mkdtemp(); os_ = __import__("os"); os_.makedirs(_t + "/bin")
 # not built from ahead: a change of ahead must fail the assert below
 _names = ("bin/install-scanner.sh", "bin/build-apk-helper.py", "bin/chain-test-shape.py",
-          "bin/check-govulncheck.py", "bin/release-metadata.py")
+          "bin/check-govulncheck.py")
 for _p in _names: open(_t + "/" + _p, "w").write("nothing here\n")
 _quiet = m.vendor_list_extras(_t, {_p: "nothing here\n" for _p in _names})
 assert _quiet == sorted(_names), _quiet      # the rule itself still reports every quiet listed file
 # ahead drops exactly one path and no other
 assert [p for p in _quiet if p not in ahead] == [
-    "bin/build-apk-helper.py", "bin/chain-test-shape.py", "bin/check-govulncheck.py", "bin/release-metadata.py"]
+    "bin/build-apk-helper.py", "bin/chain-test-shape.py", "bin/check-govulncheck.py"]
+assert "bin/release-metadata.py" not in m._VENDOR_NAMING_FILES, "release-metadata.py no longer names the vendored folder"
+assert {"bin/build-apk-helper.py", "bin/chain-test-shape.py"} <= set(m._VENDOR_NAMING_FILES)
 extra = [p for p in extra if p not in ahead]
 assert not extra, "listed but names nothing: %s" % sorted(extra)
 missing = naming - set(m._VENDOR_NAMING_FILES)
@@ -3913,12 +3915,16 @@ assert n == {"bin/loopback-get.sh": 1, "bin/release-assets.sh": 1, "bin/acceptan
 assert sum(len(v) for v in ac._PINNED_FETCH_SHA.values()) == 20
 assert all("\r" not in l and l == l.rstrip() and "\t" not in l for v in ac.PINNED_FETCH.values() for l in v)
 PY
-# the vendor-folder list: six files that name the vendored folder for a reason are listed, any other new file that names it is still refused
-for pth in bin/chain-check-scripts-test.sh bin/chain-install-witness-test.sh bin/chain-release-scripts-test.sh bin/check-govulncheck.py bin/install-scanner.sh bin/release-metadata.py; do
+# the vendor-folder list: five files that name the vendored folder for a reason are listed (bin/release-metadata.py no longer is), any other new file that names it is still refused
+for pth in bin/chain-check-scripts-test.sh bin/chain-install-witness-test.sh bin/chain-release-scripts-test.sh bin/check-govulncheck.py bin/install-scanner.sh; do
   vfile "vl-$(basename "$pth")" "$pth" "ls vendor/"
   CASE="a file on the vendor-folder list may name the vendored folder: $pth (exit 0)"
   check test "$rc" -eq 0
 done
+vfile vl-relmeta bin/release-metadata.py "ls vendor/"
+CASE="bin/release-metadata.py is off the vendor-folder list: a line that names the vendored folder is refused (exit 1)"
+check test "$rc" -eq 1
+check grep -qF 'FAIL unmeasured:bin/release-metadata.py' "$work/vc-vl-relmeta.out"
 vfile vl-seventh bin/govulncheck-other-test.sh "ls vendor/"
 CASE="a seventh file that names the vendored folder is still refused (exit 1)"
 check test "$rc" -eq 1
