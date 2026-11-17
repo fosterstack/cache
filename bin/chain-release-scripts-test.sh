@@ -86,10 +86,14 @@ fi''',
 if [ "$1 $2" = "cat-file tag" ]; then
   echo "git $*" >> "$LOG"
   # the tag object of the release tag: TAG_OBJECT names a file; no such file = the tag cannot be read
-  if [ -n "${TAG_OBJECT:-}" ] && [ -f "$TAG_OBJECT" ]; then cat "$TAG_OBJECT"; else echo "fatal: not a valid tag" >&2; exit 128; fi
+  if [ -n "${TAG_OBJECT:-}" ] && [ -f "$TAG_OBJECT" ]; then cat "$TAG_OBJECT"; elif [ -n "${TAG_REPO:-}" ]; then GIT_DIR="$TAG_REPO" exec "$REAL_GIT" "$@"; else echo "fatal: not a valid tag" >&2; exit 128; fi
   exit 0
 fi
 echo "git $*" >> "$LOG.git"
+# any other call goes to the REAL git over TAG_REPO (a real repository holding the release tag), so release-sign may read the tag in any standard way
+if [ "$1 $2 $3" != "log -1 --format=%ct" ] && [ -n "${TAG_REPO:-}" ]; then
+  sed -i '$d' "$LOG.git"; echo "git $*" >> "$LOG.gitreal"; GIT_DIR="$TAG_REPO" exec "$REAL_GIT" "$@"
+fi
 [ "$1 $2 $3" = "log -1 --format=%ct" ] || { echo "git: unexpected $*" >&2; exit 2; }
 [ -z "${GIT_FAIL:-}" ] || { echo "fatal: bad object $4" >&2; exit 128; }
 printf '%s\n' "${GIT_EPOCH-1760000000}"''',
@@ -370,6 +374,21 @@ PJX0 = "jq -e '.messageSignature' provenance.bundle.json"
 SBOM0 = "cosign verify-blob " + IDQ0 + " --bundle production.sbom.json.bundle production.sbom.json"
 IMG0 = "cosign verify " + IDQ0 + " <IMAGE_REF>"
 OKB = json.dumps({"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "verificationMaterial": {"publicKey": {"hint": "k"}}, "messageSignature": True})
+REAL_GIT = shutil.which("git")
+GITENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"}
+def tag_repo(kind, msg="", name="v0.3.0"):
+    """a REAL git repository holding the release tag: kind annotated (message msg, as written), lightweight, or none (no such tag)"""
+    d = tempfile.mkdtemp(); g = lambda *a, inp=None: subprocess.run([REAL_GIT, *a], env={**GITENV, "GIT_DIR": d}, input=inp, capture_output=True, text=True, check=True).stdout.strip()
+    g("init", "-q"); tree_id = g("hash-object", "-t", "tree", "-w", "--stdin", inp=""); c = g("commit-tree", tree_id, "-m", "c")
+    if kind == "lightweight": g("update-ref", "refs/tags/" + name, c)
+    elif kind == "annotated":
+        t = g("mktag", inp="object %s\ntype commit\ntag %s\ntagger t <t@example.invalid> 1760000000 +0000\n\n%s" % (c, name, msg)); g("update-ref", "refs/tags/" + name, t)
+    return d
+DEFTAGS = {}
+def deftag(tag):
+    """the default tag repository of a run: an annotated tag of that name, made once"""
+    if tag not in DEFTAGS: DEFTAGS[tag] = tag_repo("annotated", "Release %s: the owner's own words\n\nsecond paragraph\n" % tag[1:], tag)
+    return DEFTAGS[tag]
 def run(t, script, env=None, creds=None, tag="v0.3.0", args=()):
     path = os.path.join(t, "bin", script + ".sh")
     if not os.path.exists(path): LAST[0] = 127; return 127, "", "the script " + script + ".sh does not exist"
@@ -388,6 +407,7 @@ def run(t, script, env=None, creds=None, tag="v0.3.0", args=()):
     if script in ("release-sign", "release-apks"):
         e.setdefault("RELEASE_ROLE_ARN", "arn:aws:iam::111122223333:role/release-signing"); e.setdefault("RELEASE_TOKEN_FILE", os.path.join(t, "idtoken"))
     e.pop("NO_KMS_REF", None)
+    if script == "release-sign": e.setdefault("TAG_REPO", deftag(tag)); e["REAL_GIT"] = REAL_GIT      # the real tag the step reads its reason from
     if script in ("release-sign", "release-apks") and not (env or {}).get("NO_RUNNER_TEMP"): e.setdefault("RUNNER_TEMP", os.path.join(t, "rt"))      # KA-2 p4 group 4: the pinned aws CLI is at RUNNER_TEMP/aws-cli/aws (bin/install-scanner.sh aws-cli puts it there)
     e.pop("NO_RUNNER_TEMP", None)
     if script == "release-apks": stage_before_publish(t)
@@ -779,6 +799,25 @@ tk = tree(); rc, so, se = run(tk, "release-sign", creds=REG, env={"KEYREF_ALG_FA
 check(rc == 2 and "does not support RSASSA_PKCS1_V1_5_SHA_256" in se and not [l for l in log(tk) if l.startswith(("cosign", "vendor-provenance"))], "KA-0 a key that does not list RSASSA_PKCS1_V1_5_SHA_256 stops the step with exit 2 before any cosign call", "rc=%s %s" % (rc, first(se)))
 ta = tree(); rc, so, se = run(ta, "release-sign", creds=REG, env={"KEYREF_AWS_FAIL": "1"})
 check(rc == 1 and "aws CLI failed" in se and not [l for l in log(ta) if l.startswith(("cosign", "vendor-provenance"))], "KA-0 an aws CLI failure in the algorithm guard stops the step with the guard's exit 1 (not the refusal's 2), before any cosign call", "rc=%s %s" % (rc, first(se)))
+# R-A: the manifest's --reason is the first LINE of the release tag's message (the owner's words) and --published-at is the UTC time the step runs
+def mf_of(t):
+    pth = os.path.join(t, "release-metadata/release-manifest.json"); return json.load(open(pth)) if os.path.exists(pth) else {}
+def tagged(msg, label, want):
+    tg = tree(); rc, so, se = run(tg, "release-sign", creds=REG, env={"TAG_REPO": tag_repo("annotated", msg)}); m = mf_of(tg)
+    check(rc == 0 and m.get("reason") == want, "RA %s: the manifest reason is %r" % (label, want), "rc=%s reason=%r %s" % (rc, m.get("reason"), first(se)))
+tagged("first line\n\nsecond paragraph\n", "a subject then a paragraph gives only the first line", "first line")
+tagged("line one\nline two\n\nbody\n", "a two-line subject gives only line one", "line one")
+tagged("only line", "a one-line message with no newline", "only line")
+tp1 = tree(); before = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0); rcp1, sop1, sep1 = run(tp1, "release-sign", creds=REG); after = datetime.datetime.now(datetime.timezone.utc)
+pa = mf_of(tp1).get("published_at", ""); okfmt = bool(re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", pa))
+when = datetime.datetime.strptime(pa, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc) if okfmt else None
+check(rcp1 == 0 and okfmt, "RA published_at is exactly YYYY-MM-DDTHH:MM:SSZ", "rc=%s published_at=%r %s" % (rcp1, pa, first(sep1)))
+check(okfmt and before - datetime.timedelta(seconds=2) <= when <= after + datetime.timedelta(seconds=2), "RA published_at is the UTC time the step ran (within 2 seconds of the test's own clock)", "%r not between %s and %s" % (pa, before, after))
+for label, repo in (("an annotated tag with an empty message", tag_repo("annotated", "")), ("a lightweight tag", tag_repo("lightweight")), ("a tag that cannot be read (no such tag)", tag_repo("none")),
+                    ("a message whose first line is blank", tag_repo("annotated", "\nsecond line\n")), ("a message of blank lines only", tag_repo("annotated", "\n  \n\n"))):
+    tg = tree(); rc, so, se = run(tg, "release-sign", creds=REG, env={"TAG_REPO": repo})
+    check(rc != 0 and se.startswith("release-sign:") and se.strip().count("\n") == 0 and not signs(tg) and not os.path.exists(os.path.join(tg, "release-metadata/release-manifest.json")),
+          "RA %s: release-sign fails with one plain 'release-sign:' line on stderr, before any signing call, and makes no manifest" % label, "rc=%s signs=%s stderr=%r" % (rc, len(signs(tg)), se[:200]))
 # REQ-CHAIN-007-AC21: release-sign.sh makes dist/checksums.txt itself, from the four archives Build recorded,
 # before its first signature
 t21 = tree(); rc21, so21, se21 = run(t21, "release-sign", creds=REG)
@@ -1036,12 +1075,12 @@ check(before and pub_bytes(tb) == before,
 tc = full_assets(); rcc1, soc, sec = run(tc, "release-assets", creds=["GH_TOKEN"])
 for n in sorted(pub_bytes(tc))[3:]: os.remove(os.path.join(pub_of(tc), n))
 three = pub_bytes(tc)
-manifest = os.path.join(tc, "release-metadata", "release-manifest.json")
-man1 = open(manifest, "rb").read()
+mpath = os.path.join(tc, "release-metadata", "release-manifest.json")
+man1 = open(mpath, "rb").read()
 # the job ran again: it signs again, and its manifest carries the new run attempt
 shutil.rmtree(os.path.join(tc, "release-evidence"))     # a re-run is a new job on a fresh workspace: kms-sign never overwrites a bundle, so the first run's bundles are not there
 rcs, sos, ses = run(tc, "release-sign", creds=REG, env={"GITHUB_RUN_ATTEMPT": "2"})
-man2 = open(manifest, "rb").read()
+man2 = open(mpath, "rb").read()
 rcc, soc, sec = run(tc, "release-assets", creds=["GH_TOKEN"])
 check(rcc1 == 0 and rcs == 0 and man2 != man1 and b"attempts/2" in man2 and len(three) == 3
       and rcc != 0 and "already exists" in sec,
@@ -1774,7 +1813,7 @@ for s, creds in (("release-verify", list(SENT)), ("release-apks", KEY), ("releas
 # ---- REQ-CHAIN-006-AC7: bin/check-guide.sh fails when a command of its (one-command) fixture guide fails ------
 def guide_check(command):
     t = tempfile.mkdtemp(); os.makedirs(os.path.join(t, "bin")); os.makedirs(os.path.join(t, "images"))
-    for name in ("check-guide.sh", "check-guide-plan.py"):
+    for name in ("check-guide.sh", "check-guide-plan.py", "guide_plan_judge.py"):
         shutil.copy(os.path.join(BIN, name), os.path.join(t, "bin", name))
     digest = "sha256:" + "a" * 64
     json.dump({"image-production": digest, "image-fips": digest}, open(os.path.join(t, "digests.json"), "w"))
@@ -1794,7 +1833,7 @@ check(rc == 0 and os.path.isfile(os.path.join(t, "out/guide-results.json")),
       "AC7 check-guide.sh passes a passing guide command and writes guide-results.json",
       "rc=%s %s" % (rc, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "665"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "676"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
