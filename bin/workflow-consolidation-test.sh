@@ -406,7 +406,7 @@ case_scan repro-self-hosted      bad "d['jobs']['reproducibility']['runs-on'] = 
 # no workflow sprawls. Today's 19 are the consolidation's "keep" rows, the attestation-signer stages and
 # dependabot-auto-merge.yml. Two files are admitted beyond them: stage-sign.yml (v0.3.0 rule 52, owner Oct 9) and customer-words-edited.yml (decision 98, Oct 3).
 # The history of the count (24, 25, 26, 24, 19) is in the git log of this file.
-ratified="acceptance.yml agent-review-gate.yml auditor.yml ci.yml dependabot-auto-merge.yml dependabot-reviewer.yml
+ratified="acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml dependabot-auto-merge.yml dependabot-reviewer.yml
 go-freshness.yml main-candidate-rescan.yml release.yml reserved-branch-guard.yml scan.yml scorecard.yml
 stage-build.yml stage-promote.yml stage-reproducibility.yml stage-verify.yml
 stage-sign.yml supply-chain.yml customer-words-edited.yml"
@@ -414,8 +414,8 @@ judge_set() {  # $1: the directory's entries as a JSON list (every entry, not on
   python3 - "$1" "$ratified" <<'PY'
 import json, sys
 got, want = json.loads(sys.argv[1]), sys.argv[2].split()
-if len(want) != 19:
-    print("the ratified list is not 19 files (rule 52 and the owner's Oct 3 amendment admit the two new files)")
+if len(want) != 20:
+    print("the ratified list is not 20 files (rule 52 and the owner's Oct 3 amendment admit the two new files)")
     sys.exit(1)
 odd = [n for n in got if "\n" in n or "/" in n]
 extra, missing = sorted(set(got) - set(want)), sorted(set(want) - set(got))
