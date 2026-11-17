@@ -1606,6 +1606,7 @@ UNPINNED_GO=(
   "dqbranch|go install example.com/x@v1.2.3\"branch\""
   "dqvar|go install example.com/x@v1.2.3\"\$S\""
   "bsbranch|go install example.com/x@v1.2.3\\branch"
+  "bsnn|go install example.com/x@v1.2.3\\n\\n      - name y"
 )
 for kind in wf sh; do
   for spec in "${UNPINNED_GO[@]}"; do
@@ -1621,13 +1622,47 @@ for kind in wf sh; do
   done
   for spec in "exact|go install example.com/x@v1.2.3" "rc|go install example.com/x@v1.2.3-rc.1" "sha|go install example.com/x@$SHA4" \
     "sqexact|go install 'example.com/x@v1.2.3'" "dqexact|go install \"example.com/x@v1.2.3\"" "sqsha|go install 'example.com/x@$SHA4'" "dqsha|go install \"example.com/x@$SHA4\"" \
-    "sqrc|go install 'example.com/x@v1.2.3-rc.1'" "bsexact|go install example.com/x@v1.2.\\3"; do
+    "sqrc|go install 'example.com/x@v1.2.3-rc.1'" "bsexact|go install example.com/x@v1.2.\\3" \
+    "and|go install example.com/x@v1.2.3 && echo ok" "or|go install example.com/x@v1.2.3 || true" "pipe|go install example.com/x@v1.2.3 | cat"; do
     form=${spec%%|*}; cmd=${spec#*|}; n="go-$kind-ok-$form"
     gofind "$n" "$kind" "$cmd"
     CASE="AC34: daily audit, $kind file, '$cmd' (an exact version) is no finding: exit 0, example.com/x not flagged, no issue call"
     check test "$rc" -eq 0; check bash -c "! grep -v '^  gotool:' '$work/$n.out' | grep -q 'example\.com/x'"; check no_issue_call "$n"
   done
 done
+# gofblock <name> <wf|sh> <exit code wanted> <multi-line shell text>: like gofind, the text being a whole `run: |` block (wf) or script body (sh)
+gofblock() {
+  local n=$1 kind=$2 want=$3 text=$4 r="$work/r-go-$1"
+  mkrepo "$r" "5:$CLEANSHA"
+  if [ "$kind" = wf ]; then
+    { printf 'on: pull_request\njobs:\n  g:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n'; printf '%s\n' "$text" | sed 's/^/          /'; } >"$r/.github/workflows/go.yml"
+  else
+    printf '#!/usr/bin/env bash\nset -e\n%s\n' "$text" >"$r/bin/get-tool.sh"
+  fi
+  git -C "$r" add -A; git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "go install"
+  run "$n" "$CLEAN" "$r"
+  CASE="AC34: daily audit, $kind file, block '${text//$'\n'/ / }': exit $want"
+  check test "$rc" -eq "$want"
+}
+for kind in wf sh; do
+  gofblock "go-$kind-nl1" "$kind" 0 $'GOTOOLCHAIN=local go install example.com/x@v1.2.3\necho done\necho more'
+  gofblock "go-$kind-nl2" "$kind" 0 $'if GOBIN=/tmp go install example.com/x@v1.2.3; then\n  echo ok\nelse\n  echo no\nfi'
+done
+CASE="AC34: the repository's own files give no unpinned go tool (every gotool item matches pin-audit's GO_EXACT)"
+check test -z "$(python3 - "$root" <<'PY'
+import sys, importlib.util, os, re
+d = os.path.join(sys.argv[1], ".github/agent/supply-chain")
+sys.path.insert(0, d)
+def load(n):
+    s = importlib.util.spec_from_file_location(n.replace("-", "_"), os.path.join(d, n + ".py")); m = importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
+inv = load("pin-inventory")
+src = open(os.path.join(d, "pin-audit.py")).read()
+exact = re.compile(re.search(r'^GO_EXACT = re\.compile\(r"(.*)"\)', src, re.M).group(1))
+for k, i in sorted(inv.load_at(sys.argv[1], None).items()):
+    if i.kind == "gotool" and not exact.fullmatch(i.version):
+        print(k)
+PY
+)"
 mkrepo "$work/r-go-mix" "5:$CLEANSHA"
 printf 'on: pull_request\njobs:\n  g:\n    runs-on: ubuntu-latest\n    steps:\n      - run: go install example.com/loose@latest\n      - run: go install example.com/tight@v1.2.3\n' >"$work/r-go-mix/.github/workflows/go.yml"
 git -C "$work/r-go-mix" add -A; git -C "$work/r-go-mix" -c user.name=t -c user.email=t@x commit -q -m "go install"
