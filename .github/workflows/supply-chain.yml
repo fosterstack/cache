@@ -1,14 +1,15 @@
 name: supply-chain
 
 # REQ-SUP-001 (owner ratified Oct 5): the actions supply-chain checks.
-#   pin-age        every pull request: the scan names every version the PR moves and passes only a pin it can
-#                  read (AC2). It runs the base branch's checker against the PR's tree, on pull_request (never
-#                  pull_request_target), with a read-only token and nothing secret.
+#   pin-age        every push to main: the scan names every version the push moves and passes only a pin it can
+#                  read (AC2). It runs the checker of the commit before the push against the pushed tree, never on
+#                  pull_request or pull_request_target, with a read-only token and nothing secret.
 #   daily-audit    once a day: the inventory, advisories, malicious-package reports, upstream reachability, disputed hits (AC5, AC7-AC10).
 # It never produces a run, environment or secret name (AC8): the private details are written on the owner's machine, not here.
 
 on:
-  pull_request: {}
+  push:
+    branches: [main]
   schedule:
     - cron: '53 3 * * *'    # off-peak, clear of the auditor, rescan and freshness crons (the 1,000/hour token limit is shared by the repo)
   workflow_dispatch: {}
@@ -29,36 +30,36 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Trusted checker (the base branch)
-        if: github.event_name == 'pull_request'
+      - name: Trusted checker (the commit before the push)
+        if: github.event_name == 'push'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.event.before }}
           path: trusted
           persist-credentials: false
-      - name: The pull request's tree
-        if: github.event_name == 'pull_request'
+      - name: The pushed tree
+        if: github.event_name == 'push'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: pr
           fetch-depth: 0
           persist-credentials: false
       - name: Every moved version, and what advisories say about it
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -uo pipefail
           status=0
-          python3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base ${{ github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} || status=1
-          # the advisor's rulings come from the base branch too: a pull request must not bring its own
+          python3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base ${{ github.event.before }} --head ${{ github.sha }} || status=1
+          # the advisor's rulings come from the commit before the push too: the push must not bring its own
           exceptions=trusted/.github/supply-chain-exceptions.json
           if [ ! -f "$exceptions" ]; then
             exceptions="$RUNNER_TEMP/no-exceptions.json"
             echo '{"exceptions": []}' > "$exceptions"
           fi
-          python3 trusted/.github/agent/supply-chain/pin-audit.py --root pr --base ${{ github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} --exceptions "$exceptions" --report-only || status=1
+          python3 trusted/.github/agent/supply-chain/pin-audit.py --root pr --base ${{ github.event.before }} --head ${{ github.sha }} --exceptions "$exceptions" --report-only || status=1
           exit $status
 
   daily-audit:

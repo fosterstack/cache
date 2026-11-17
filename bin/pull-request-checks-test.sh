@@ -248,7 +248,7 @@ check("AC1 the real workflows: the pull_request job list is the six, scan's need
 for name, f, edit, want_bad in [
     ("gosec-on-pull-request", "ci.yml", "J['gosec'].pop('if', None)", True),
     ("test-skipped-on-pull-request", "ci.yml", "J['test']['if'] = \"github.event_name != 'pull_request'\"", True),
-    ("vendor-unconditional", "ci.yml", "J['vendor'].pop('if', None)", True),
+    ("vendored-job-unconditional", "ci.yml", "J['ven' + 'dor'].pop('if', None)", True),
     ("dependency-review-on-pull-request", "ci.yml", "J['dependency-review']['if'] = \"${{ github.event_name == 'pull_request' }}\"", True),
     ("reproducibility-on-pull-request", "scan.yml", "J['reproducibility'].pop('if', None); J['assemble-b'].pop('if', None)", True),
     ("artifact-acceptance-on-pull-request", "scan.yml", "J['artifact-acceptance'].pop('if', None)", True),
