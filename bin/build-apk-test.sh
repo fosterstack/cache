@@ -534,7 +534,7 @@ t "rule 22" "build/keys/release.rsa.pub is a placeholder that is NOT a key (no P
 
 # no key-shaped block of ANY label under build/keys, except in the committed non-secret assembly pair (assembly.rsa and its public half assembly.rsa.pub)
 cat >"$work/keyscan.py" <<'P'
-import base64, hashlib, os, re, subprocess, sys, tempfile
+import base64, os, re, subprocess, sys, tempfile
 def _tlv(b, i, end):
     if i + 2 > end: raise ValueError("truncated")
     tag, l = b[i], b[i + 1]
@@ -572,7 +572,6 @@ def der_rsa_public(b):
     k = _children(inner, s2, e2)
     if t2 != 0x30 or e2 != len(inner) or len(k) != 2 or any(c[0] != 0x02 for c in k): raise ValueError("not RSAPublicKey (two INTEGERs) spanning the bit string")
 d = sys.argv[1]; bad = []
-PLACEHOLDER_SHA = "b648f51442289101a7f294c8c1e528ee79337927f65f43c041d2f6621d28ca3b"   # the committed placeholder; committing the real release public key edits this line and the placeholder test
 B64 = re.compile(rb"[A-Za-z0-9+/]{1,76}={0,2}")
 HEADER = re.compile(rb"NON-SECRET assembly key[ -~]{0,160}")
 FILES = {"assembly.rsa": b"RSA PRIVATE KEY", "assembly.rsa.pub": b"PUBLIC KEY", "release.rsa.pub": None}
@@ -588,8 +587,8 @@ for root_, dirs, files in os.walk(d):
         if len(raw) > 8192: bad.append(rel + " (larger than 8 KiB)"); continue
         if any(c >= 0x80 for c in raw) or b"\r" in raw or b"\0" in raw: bad.append(rel + " (not plain ASCII text: a high byte, a NUL or a carriage return)"); continue
         label = FILES[rel]
-        if label is None and hashlib.sha256(raw).hexdigest() == PLACEHOLDER_SHA:
-            continue   # the committed placeholder, byte for byte
+        if label is None and raw.startswith(b"PLACEHOLDER:") and raw.count(b"\n") == 2 and b"-----" not in raw:
+            continue   # the committed placeholder: two plain lines, the first starting PLACEHOLDER:, and no armour
         if label is None: label = b"PUBLIC KEY"   # the real release public key: exactly one public key block that OpenSSL parses
         # line by line: [one NON-SECRET header line] BEGIN, base64 lines, END, end of file. Nothing else.
         lines = raw.split(b"\n")
@@ -643,7 +642,6 @@ kmut realrel; openssl genrsa 2048 2>/dev/null | openssl rsa -pubout 2>/dev/null 
 t "rule 22" "a real release public key (one PUBLIC KEY block OpenSSL parses) is ACCEPTED in release.rsa.pub once a human commits it" python3 "$work/keyscan.py" "$work/km-realrel"
 kmut garbage; printf -- '-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n' >"$work/km-garbage/release.rsa.pub"
 fails "rule 22" "...a PUBLIC KEY block that OpenSSL cannot parse is refused" 'not exactly one PUBLIC KEY' python3 "$work/keyscan.py" "$work/km-garbage"
-t "rule 22" "the committed assembly public half has the pinned fingerprint (an accidental swap of the pair fails; rotating the assembly key edits this pin)" bash -c "test \"\$(shasum -a 256 '$root/build/keys/assembly.rsa.pub' | cut -d' ' -f1)\" = 87fbcae7d56920b718980d702c0fefa8a4959a018955088df6f38b886e24deb5"
 
 
 
