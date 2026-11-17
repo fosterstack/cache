@@ -350,5 +350,22 @@ class QuotedRedirectionWords(Base):
         self.accepted(self.wf("echo 'A=1'"))
 
 
+class JoinedTextRoutes(Base):
+    """Forms (2) and (3) are read from the same joined text the route scan counts."""
+    def committed_script(self, js):
+        return workflow("      - run: ./bin/setup.sh\n"), {"bin/setup.sh": js + "\n"}
+
+    def test_r3_1_committed_script_backslash_newline_in_string_is_refused(self):
+        js = 'const s = "not\\\nexportVariable(\'A\',";\ncore.exportVariable("LD_PRE" + "LOAD", "x")'
+        wf, files = self.committed_script(js)
+        self.refused(wf, "exportVariable", files)
+
+    def test_r3_1_literal_export_variable_step_is_accepted(self):
+        self.accepted(workflow(script_step("core.exportVariable('A', v)")))
+
+    def test_r3_1_literal_echo_github_env_step_is_accepted(self):
+        self.accepted(workflow(run_step("echo 'A=1' >> \"$GITHUB_ENV\"")))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -3321,8 +3321,9 @@ def env_writes(text):
     """[(name, route)] for the env-file writes of a text whose name is literal: the three plain forms."""
     writes = [] if _REDEFINES.search(text) else \
         [(name, "GITHUB_ENV") for c in _split_commands(text) if (name := _echoed_env_name(c))]
-    writes += [(m.group(2), "exportVariable") for m in _EXPORT_CALL.finditer(text)]
-    return writes + [(m.group(1), "::set-env") for m in _SET_ENV.finditer(text)]
+    joined = re.sub(r"\\\n", "", text)    # forms (2) and (3) are read from the text the route count reads
+    writes += [(m.group(2), "exportVariable") for m in _EXPORT_CALL.finditer(joined)]
+    return writes + [(m.group(1), "::set-env") for m in _SET_ENV.finditer(joined)]
 
 
 def step_write_findings(where, text):
