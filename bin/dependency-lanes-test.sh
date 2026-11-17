@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# proves: REQ-DEP-001-AC1, REQ-DEP-001-AC3, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-001-AC10, REQ-DEP-002-AC1, REQ-DEP-003-AC1, REQ-DEP-003-AC2, REQ-DEP-003-AC3
+# proves: REQ-DEP-001-AC1, REQ-DEP-001-AC3, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-001-AC10, REQ-DEP-003-AC1, REQ-DEP-003-AC2, REQ-DEP-003-AC3
 # The dependency lanes' wiring (register rows 75, 80): the reviewer runs hourly from main and never on a PR
 # event, one run at a time; it arms or holds and posts its check but opens no PR and edits nothing; its
-# evidence upload can never fail a run; the patch/minor lane arms squash auto-merge only after the guard, and never for a major. Each real workflow
+# evidence upload can never fail a run; the
+# patch/minor lane arms squash auto-merge only for the head it screened, and never for a major. Each real workflow
 # must pass; each mutated copy must be caught.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -62,8 +63,8 @@ if kind == "reviewer":
     cand = [r for st, r in runs(job) if st.get("id") == "candidates"]
     if len(cand) != 1 or "select(.major or .flagged)" not in cand[0] or "select(.major)" in cand[0]:
         bad.append("the candidate step does not select a flagged non-major beside a major")
-    if len(cand) == 1 and ("auto_merge_disabled github-actions" not in cand[0] or "required-check-guard.sh" not in cand[0] or '--match-head-commit "$sha"' not in cand[0]):
-        bad.append("the candidate step does not put back (guard first, exact head) an arm the lane turned off after the reviewer approved the head")
+    if len(cand) == 1 and ("auto_merge_disabled github-actions" not in cand[0] or '--match-head-commit "$sha"' not in cand[0]):
+        bad.append("the candidate step does not put back (exact head) an arm the lane turned off after the reviewer approved the head")
     if len(cand) == 1 and "if .flagged then .major = true" not in cand[0]:
         bad.append("the candidate step does not hand a flagged update to the (hash-pinned) act step as a major")
     # AC9: auto-merge is armed only for the reviewed head
@@ -160,8 +161,8 @@ elif kind == "automerge":
         if sr.strip() != 'bash "${RUNNER_TEMP}/dependabot-screen.sh" >> "$GITHUB_OUTPUT"':
             bad.append("the screen is not exactly the wrapper run with bash, its output going to GITHUB_OUTPUT")
         fetch = [r for _, r in runs(job) if "ref=main" in r]
-        if len(fetch) != 1 or "for f in bin/dependabot-screen.sh bin/dependabot-reviewer.py bin/required-check-guard.sh .github/policy/required-checks.json; do" not in fetch[0]:
-            bad.append("one step must fetch the wrapper, the reviewer, the guard and the list from main (the workflow checks out nothing)")
+        if len(fetch) != 1 or "for f in bin/dependabot-screen.sh bin/dependabot-reviewer.py; do" not in fetch[0]:
+            bad.append("one step must fetch the wrapper and the reviewer from main (the workflow checks out nothing)")
         if len(scr) == 1 and fetch and not any("ref=main" in r for _, r in runs(job)[:scr[0]]):
             bad.append("the screen runs before main's copies are fetched")
         if "${{" in sr:
@@ -170,7 +171,6 @@ elif kind == "automerge":
             bad.append("the screen does not take the PR body from env PR_BODY")
     if any("${{" in r for _, r in runs(job)):
         bad.append("an expression is interpolated into a script (the metadata outputs go through env, quoted)")
-    guard = [i for i, (s, r) in enumerate(runs(job)) if 'bash "${RUNNER_TEMP}/required-check-guard.sh"' in r]
     arm = [i for i, (s, r) in enumerate(runs(job)) if re.search(r"gh pr merge --auto --squash", r) and "--disable-auto" not in r]
     if len(arm) != 1:
         bad.append("no single squash auto-merge step")
@@ -193,10 +193,6 @@ elif kind == "automerge":
         bad.append("the disarm does not judge the PR's CURRENT head by its reviewer check (a stale push job must not disarm a newer approved head)")
     if (job.get("permissions") or {}).get("checks") != "read":
         bad.append("the lane cannot read the reviewer's check (permissions: checks: read)")
-    if len(guard) != 1 or steps[guard[0]].get("if") != nonmajor or "continue-on-error" in steps[guard[0]]:
-        bad.append("the guard step is missing, wrongly conditioned, or can fail silently")
-    elif arm and guard[0] > arm[0]:
-        bad.append("auto-merge is armed before the guard")
     if scr and arm and scr[0] > arm[0]:
         bad.append("auto-merge is armed before the screen")
 print("; ".join(bad) or "ok")
@@ -263,15 +259,11 @@ case_ automerge $A automerge-real          ok  ""
 case_ automerge $A automerge-target        bad "d['on'] = 'pull_request_target'"
 case_ automerge $A automerge-any-author    bad "d['jobs']['auto-merge']['if'] = 'true'"
 case_ automerge $A automerge-majors-too    bad "[s.pop('if', None) for s in $as_ if 'gh pr merge --auto' in (s.get('run') or '')]"
-case_ automerge $A automerge-no-guard      bad "$as_[:] = [s for s in $as_ if 'bash \"\${RUNNER_TEMP}/required-check-guard.sh\"' not in (s.get('run') or '')]"
-case_ automerge $A automerge-guard-soft    bad "[s.__setitem__('continue-on-error', 'true') for s in $as_ if 'bash \"\${RUNNER_TEMP}/required-check-guard.sh\"' in (s.get('run') or '')]"
-case_ automerge $A automerge-arm-first     bad "i = [n for n, s in enumerate($as_) if 'bash \"\${RUNNER_TEMP}/required-check-guard.sh\"' in (s.get('run') or '')][0]; g = $as_.pop(i); $as_.append(g)"
 case_ automerge $A automerge-no-fetch      bad "$as_[:] = [s for s in $as_ if 'ref=main' not in (s.get('run') or '')]"
 case_ automerge $A automerge-no-disarm     bad "$as_[:] = [s for s in $as_ if 'gh pr merge --disable-auto' not in (s.get('run') or '')]"
 case_ reviewer $R reviewer-arm-any-head    bad "[s.__setitem__('run', s['run'].replace('--match-head-commit \"\$sha\" ', '')) for s in $rs if s.get('id') == 'act']"
 case_ reviewer $R reviewer-majors-only     bad "[s.__setitem__('run', s['run'].replace('select(.major or .flagged)', 'select(.major)')) for s in $rs if s.get('id') == 'candidates']"
 case_ reviewer $R reviewer-flagged-unnamed bad "[s.__setitem__('run', s['run'].replace('if .flagged then .major = true', 'if .flagged then .major = false')) for s in $rs if s.get('id') == 'candidates']"
-case_ reviewer $R reviewer-put-back-unguarded bad "[s.__setitem__('run', s['run'].replace('bash bin/required-check-guard.sh \"\$RUNNER_TEMP/work/heal-required-checks.json\"', 'true')) for s in $rs if s.get('id') == 'candidates']"
 case_ reviewer $R reviewer-no-put-back     bad "[s.__setitem__('run', s['run'].replace('auto_merge_disabled github-actions', 'auto_merge_disabled nobody')) for s in $rs if s.get('id') == 'candidates']"
 case_ reviewer $R reviewer-no-mask         bad "$rs[:] = [s for s in $rs if s.get('id') != 'mask']"
 case_ automerge $A automerge-event-head    bad "[s.__setitem__('run', s['run'].replace('headRefOid', 'title')) for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"

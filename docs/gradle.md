@@ -169,6 +169,8 @@ A warm *local* cache still serves hits regardless of whether the remote is
 working, so a build can look fast while the remote is rejecting requests (Gradle then switches it off for that build); the
 401 line above is how you notice (see §6).
 
+What the server answers to each request, and why a request is refused: [server responses](server-responses.md).
+
 ## 6. Verify it's actually being used
 
 Run twice. The second build is the one that tells you anything:
@@ -248,8 +250,6 @@ use `https://` or set `isAllowInsecureProtocol = true` as in section 3 (the CI
 acceptance build sets it for its local server).
 
 ## Migrating from the deprecated Build Cache Node
-
-What the server answers to each request, and why a request is refused: [server responses](server-responses.md).
 
 If you're currently running Gradle's own
 [`gradle/build-cache-node`][bcn-hub] Docker image, see

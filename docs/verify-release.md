@@ -1,6 +1,6 @@
 # Verify a FosterStack Cache release (v0.3.0 and later) <!-- pinned: historical -->
 
-DRAFT. Every line marked TO-VERIFY has not been run against a real release.
+Status: draft. A command marked "Not run before release" needs the published image, or a file the pre-release checks do not hold, so the release runs it right after it publishes; a TO-VERIFY mark means we have not yet run the command against a real release.
 
 For v0.2.x releases, use [Verify our images](verify-images.md).
 
@@ -31,7 +31,7 @@ cosign verify --key release.rsa.pub <IMAGE_REF_FIPS>
 
 Download the files named below from the release page for `<TAG>`.
 
-The provenance records how the images were built. It is signed with the release key. TO-VERIFY: the flags against a real bundle.
+The provenance records how the images were built. It is signed with the release key.
 
 ```sh
 # Not run before release.
@@ -41,7 +41,7 @@ cosign verify-blob-attestation --key release.rsa.pub --bundle provenance.bundle.
 
 ## 3. Digests
 
-The provenance names each image by digest. The first command succeeds only if it names your production image. The second lists every digest, to compare with yours. TO-VERIFY: the field names against a real bundle.
+The provenance names each image by digest. The first command succeeds only if it names your production image. The second lists every digest, to compare with yours.
 
 ```sh
 # Not run before release.
@@ -52,7 +52,7 @@ jq -r '.dsseEnvelope.payload | @base64d | fromjson | (.subject[], .predicate.run
 
 ## 4. The SBOM and the inputs
 
-Each SBOM (software bill of materials) lists what is in an image. Each lock lists the packages it was assembled from. TO-VERIFY: the flags against a real bundle.
+Each SBOM (software bill of materials) lists what is in an image. Each lock lists the packages it was assembled from.
 
 ```sh
 # Not run before release.
@@ -65,9 +65,7 @@ cosign verify-blob --key release.rsa.pub --bundle production.full.lock.json.bund
 cosign verify-blob --key release.rsa.pub --bundle fips.full.lock.json.bundle fips.full.lock.json
 ```
 
-## What this shows, and what it does not
-
-TO-VERIFY: what these steps prove and do not prove, written after a real release.
+## What else you can do
 
 To check a file with no network access, add --insecure-ignore-tlog to a cosign verify-blob command. This skips the Rekor entry. TO-VERIFY: not yet run.
 
