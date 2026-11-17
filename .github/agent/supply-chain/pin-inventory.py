@@ -115,6 +115,10 @@ def _hide(text):
     return re.sub(r"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?", "${var}", text)  # a shell variable's name (an env var, maybe a secret's) never prints either
 
 
+class Unparseable(RuntimeError):
+    """A workflow or action file whose YAML does not parse (the history walk reports an old one and goes on)."""
+
+
 class Item:
     def __init__(self, kind, name, version, label="", path=""):
         self.kind, self.name, self.version, self.label, self.path = kind, _hide(name), _hide(version), _hide(label), _hide(path)  # path: an action's subdirectory
@@ -828,7 +832,7 @@ def _file_found(path, text):
             doc = yaml.load(text, Loader=yaml.BaseLoader)
         except yaml.YAMLError as e:
             mark = getattr(e, "problem_mark", None)  # the line number only: the message would quote source text (names that must stay private)
-            raise RuntimeError(f"{path} does not parse (line {mark.line + 1 if mark else '?'})")
+            raise Unparseable(f"{path} does not parse (line {mark.line + 1 if mark else '?'})")
         if isinstance(doc, dict) and isinstance(doc.get("runs"), dict):
             _INPUT_CTX[0] = json.dumps(doc.get("inputs"), sort_keys=True, default=str)   # a composite action's input defaults select what its steps download
         try:

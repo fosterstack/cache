@@ -1234,6 +1234,73 @@ except RuntimeError as e:
 else:
     raise SystemExit("an unrelated error of a listed revision was swallowed")
 PY
+# --- an OLD revision whose workflow does not parse never ends the history read: it is named on stdout and the walk goes on; the CURRENT tree's still ends the run
+r="$work/r-badyaml"; rm -rf "$r"; mkdir -p "$r/.github/workflows" "$r/bin"; git -C "$r" init -q
+printf 'TRIVY_VER=0.74.0\n' >"$r/bin/install-scanner.sh"
+badyaml_ci() { # <checkout sha> <good|bad>: a workflow pinning actions/checkout at that sha; "bad" adds a line YAML cannot read
+  printf 'on: pull_request\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@%s # v4\n' "$1" >"$r/.github/workflows/ci.yml"
+  [ "$2" = good ] || printf '        with: [unclosed\n' >>"$r/.github/workflows/ci.yml"
+}
+by_commit() { git -C "$r" add -A; GIT_AUTHOR_DATE="$(dago "$1")" GIT_COMMITTER_DATE="$(dago "$1")" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "$2"; git -C "$r" rev-parse HEAD; }
+badyaml_ci "$SHA1" good; BY_A=$(by_commit 60 "readable A")
+badyaml_ci "$SHA2" bad;  BY_B=$(by_commit 50 "unparseable B")
+badyaml_ci "$SHA4" good; BY_C=$(by_commit 30 "readable C")
+badyaml_ci "$SHA2" bad;  BY_D=$(by_commit 20 "unparseable D, the same tree as B")
+badyaml_ci "$SHA4" good; BY_E=$(by_commit 5 "readable E (today's tree)")
+BYPY='import contextlib, datetime as dt, importlib.util, io, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+NOW = dt.datetime(2026, 10, 5, 12, tzinfo=dt.timezone.utc)
+def hist():
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        items = pa.history_items(sys.argv[2], "HEAD", NOW)
+    return items, buf.getvalue()
+'
+CASE="unparseable history: an old revision whose workflow does not parse does not raise; the readable revisions before and after it are all in the result"
+check python3 - "$aud" "$r" "$SHA1" "$SHA4" <<PY
+$BYPY
+items, out = hist()
+blob = " ".join(repr(k) for k in items)
+assert sys.argv[3] in blob and sys.argv[4] in blob, blob[:600]
+PY
+CASE="unparseable history: a line on stdout names the revision by its full 40-hex sha and says its file 'does not parse'"
+check python3 - "$aud" "$r" "$BY_B" <<PY
+$BYPY
+items, out = hist()
+lines = [l for l in out.splitlines() if sys.argv[3] in l]
+assert lines and all("does not parse" in l for l in lines), out
+PY
+CASE="unparseable history: two revisions of the same unparseable tree are each named (one line per revision) and the walk still completes with the readable pins"
+check python3 - "$aud" "$r" "$BY_B" "$BY_D" "$SHA4" <<PY
+$BYPY
+items, out = hist()
+for rev in (sys.argv[3], sys.argv[4]):
+    lines = [l for l in out.splitlines() if rev in l and "does not parse" in l]
+    assert len(lines) == 1, (rev, out)
+assert sys.argv[5] in " ".join(repr(k) for k in items)
+PY
+CASE="unparseable history: a revision that parses is never named as unparseable"
+check python3 - "$aud" "$r" "$BY_A" "$BY_C" "$BY_E" <<PY
+$BYPY
+items, out = hist()
+for rev in sys.argv[3:6]:
+    assert rev not in out, (rev, out)
+PY
+run byold "$CLEAN" "$r" --report-only
+CASE="unparseable history: the daily run (--report-only) over it does not end with exit 2 and its output names both unparseable revisions"
+check test "$rc" -ne 2
+check grep -q "$BY_B" "$work/byold.out"
+check grep -q "$BY_D" "$work/byold.out"
+CASE="unparseable history: the daily run's output says 'does not parse' next to the revision's sha"
+check grep -Eq "$BY_B.*does not parse|does not parse.*$BY_B" "$work/byold.out"
+r2="$work/r-badcur"; rm -rf "$r2"; mkdir -p "$r2/.github/workflows" "$r2/bin"; git -C "$r2" init -q   # readable history, only today's tree is bad
+printf 'TRIVY_VER=0.74.0\n' >"$r2/bin/install-scanner.sh"
+r="$r2"; badyaml_ci "$SHA1" good; by_commit 30 "readable" >/dev/null
+badyaml_ci "$SHA4" bad; by_commit 1 "today's tree does not parse" >/dev/null
+run bycur "$CLEAN" "$r2" --report-only
+CASE="unparseable current tree: the daily run still ends with exit 2 (never silently skipped) and names the file that does not parse"
+check test "$rc" -eq 2
+check grep -q "does not parse" "$work/bycur.err" "$work/bycur.out"
 
 
 # --- the total deadline and the phase markers (cache supply-chain.yml timed out at 15 and 20 minutes with an empty log: no scheduled run since Oct 7) --------------

@@ -1056,6 +1056,8 @@ def body_of(f, rb, owner, ran, today):
 # every audit would stop at it for the 90-day lookback.
 # Anything else unreadable, and any other error of a listed revision, still ends the audit (fail closed): a
 # revision is added to this list only by a reviewed change that names it.
+# A revision whose workflow file does not parse is not on that list: it is reported by its sha and the walk goes on
+# (an old file nobody can fix); the tree of today is read apart from the walk and still ends the audit.
 P1P5_REASON = "bin/chain-rekor-key-test.sh held a 4529-character command line, since wrapped (0289dc91)"
 SKIP_UNREADABLE = {
     "792a2c7029de801fa7afbc16ceb36a636215f4b6": "PR 459 round 6 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
@@ -1089,12 +1091,20 @@ def history_items(root, start, now):
     if before:
         revs.append(before)
     items = {}
+    unparsed = {}   # tree key -> the message of the file that does not parse, so a tree is parsed once however many revisions hold it
     memo = {}   # an inventory is a function of the files it reads: a revision whose (path, blob) pairs were already read reuses that inventory, but still merges it in its place (the last merge wins, as with one inventory per revision)
     for r in revs:
         key = inv.tree_key(root, r)
+        if key in unparsed:
+            print(f"information: revision {r} not read: {unparsed[key]}")
+            continue
         if key not in memo:
             try:
                 memo[key] = inv.load_at(root, r)
+            except inv.Unparseable as e:
+                unparsed[key] = str(e)
+                print(f"information: revision {r} not read: {e}")
+                continue
             except RuntimeError as e:
                 # only the named revisions, and only for the cap's own refusal; never remembered under the tree key (an unlisted revision of the same tree must still refuse)
                 if r in SKIP_UNREADABLE and "command line of" in str(e) and "refusing to read it partially" in str(e):
