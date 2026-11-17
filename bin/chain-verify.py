@@ -61,6 +61,7 @@ def load_sibling(name):
 
 
 _common = load_sibling("chain_common")
+_admit = load_sibling("build-admit")      # the one tag grammar (REQ-CHAIN-004-AC19); chain_items reads it from sys.modules
 Refuse, b64d, b64e, load_json, refuse, ssl_done, strict_json = (
     _common.Refuse, _common.b64d, _common.b64e, _common.load_json, _common.refuse, _common.ssl_done,
     _common.strict_json)
@@ -79,7 +80,7 @@ WITNESS_STAGES = ("build", "rebuild", "check")
 ENV_ATTESTOR = "https://witness.dev/attestations/environment/v0.1"
 
 
-TAG_GRAMMAR = r"v[0-9]+\.[0-9]+\.[0-9]+(?:-rc[0-9]+)?"
+TAG_GRAMMAR = _admit.TAG_PATTERN
 
 
 MANIFEST_FILES = ("release-key-root.pub", "release-key-manifest.json", "release-key-manifest.sig")
