@@ -9,8 +9,6 @@ set -euo pipefail
 for name in DOCKERHUB_USERNAME DOCKERHUB_TOKEN GH_TOKEN; do
   printenv "$name" > /dev/null || { echo "release-sign: $name is unset" >&2; exit 2; }
 done
-tag=${GITHUB_REF_NAME:-}
-python3 -I -B bin/build-admit.py tag-ok --final "$tag" || { echo "release-sign: tag refused: $tag is not vX.Y.Z (a release candidate never reaches this step)" >&2; exit 1; }
 repo="fosterstack/cache"
 cfg=.github/policy/cosign-signing-config.json
 pub=build/keys/release.rsa.pub

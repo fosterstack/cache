@@ -5,7 +5,6 @@
 set -euo pipefail
 shopt -s nullglob
 if [ -z "${GH_TOKEN:-}" ]; then echo "release-assets: GH_TOKEN is unset" >&2; exit 2; fi
-python3 -I -B bin/build-admit.py tag-ok --final "${GITHUB_REF_NAME:-}" || { echo "release-assets: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never reaches this step)" >&2; exit 1; }
 rel="$GITHUB_REF_NAME"
 files=()
 for f in release-upload/*.apk release-upload/*.json release-upload/*.txt release-upload/*.sha256 release-upload/*.sig release-upload/*.bundle release-upload/*.gz; do

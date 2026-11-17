@@ -1728,12 +1728,11 @@
         "trap"
       ],
       "runs": [
-        "bin/build-admit.py",
         "bin/release-layout.py"
       ],
       "signs": false,
       "reason": "Release, step release-publish: pushes the exact image bytes by digest to ghcr.io and Docker Hub and reads each registry back (REQ-CHAIN-007-AC7, REQ-REL-009-AC11); it signs nothing",
-      "sha256": "08a7dc33b4cd14aabc165a0dc2ecf05b82e1e55fadf52592173bff76f82894f6",
+      "sha256": "f9d33c8968d12a30c865f9f08895b3c57a5781a96921c2a4f4094de3b6a4a851",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -1774,12 +1773,11 @@
         "trap"
       ],
       "runs": [
-        "bin/build-admit.py",
         "bin/chain-verify.py"
       ],
       "signs": false,
       "reason": "Release, step release-sign: holds no key. It checks the detached KMS signatures Sign made (release-signed/, each with its Rekor entry) against build/keys/release.rsa.pub and pushes them: the images signatures and the release manifest attestations attached by digest in both registries (cosign attach signature and attestation, then cosign verify --key on each), the blobs bundles placed beside the blobs (REQ-CHAIN-007-AC8)",
-      "sha256": "69a21f83c39f11a9491485bb157b967ab0116f342e692fc5eff0f3bff330b578",
+      "sha256": "878b1afacf585ee73ab6925ebfd384f44b70a837ee38c3679193546efccb0ddc",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -1844,12 +1842,11 @@
         "python3"
       ],
       "runs": [
-        "bin/build-admit.py",
         "bin/release-metadata.py"
       ],
       "signs": false,
       "reason": "Release, step release-assets: creates the GitHub release after release-postverify has passed, only with --verify-tag, and attaches release-upload/ (REQ-CHAIN-007-AC9)",
-      "sha256": "1dba259b8b5085e6e5fbbcae720c51b5497fd5f7e89215ca6c912ef9febfd968",
+      "sha256": "fd933102a9e43238d8cc0b0a3b3ea24333964bf5f817cbef40c9aa534b70890b",
       "reads_env": [
         "GH_TOKEN"
       ],
