@@ -6,9 +6,12 @@
 set -euo pipefail
 [[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ ]] || \
   { echo "refused at tag: ${GITHUB_REF_NAME:-} is not vX.Y.Z or vX.Y.Z-rcN" >&2; exit 1; }
-# The signed key manifest and the root key that signs it must be there before any tool or credential step.
+# The signed key manifest, its signature and the offline root key must exist before anything else runs (B-F22): the
+# later steps hold credentials and publish.
 for f in release-key-manifest.json release-key-manifest.sig release-key-root.pub; do \
-  [ -f ".github/policy/$f" ] || { echo "refused at key manifest: .github/policy/$f is missing" >&2; exit 1; }; \
+  [ -f ".github/policy/$f" ] && [ ! -L ".github/policy/$f" ] || \
+  { echo "release-verify: .github/policy/$f is missing: the release is refused before any credential step" >&2; \
+  exit 1; }; \
 done
 python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json \
   --tag "$GITHUB_REF_NAME" --out policy.json

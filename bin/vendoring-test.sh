@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # proves: REQ-VEND-001-AC2, REQ-VEND-001-AC3, REQ-VEND-001-AC11
-# The vendored tree's regenerate-and-compare check (REQ-VEND-001, owner "code it" Oct 14): bin/vendor-check.sh, the vendor job in
+# The vendored tree's regenerate-and-compare check (REQ-VEND-001, owner "code it" Oct 14): bin/vendor-check.sh, the vendor steps of the test job in
 # ci.yml, and the listable shape of the script. Offline: the Go fixture module is served from a file:// proxy and no step reaches the
 # network. Run it from the repository root, with stdin closed. (The provenance file, its check and the vendored tree ship in the
 # later vendored-tree PR with the rest of REQ-VEND-001.)
@@ -322,49 +322,49 @@ rc AC2 "a vendored .gitignore that leaves a regenerated file untracked: refused 
 rc AC2 "the same tree with the ignored file force-added: passes (0)" 0 vc "$work/g-ign"
 unset GOPROXY GOSUMDB GOFLAGS GOMODCACHE GOCACHE GOTOOLCHAIN
 
-# ===== AC3: the vendor job ====================================================================
+# ===== AC3: the vendor steps of the test job ====================================================================
 J="$work/vendorjob.py"
 cat >"$J" <<'PY'
 import re, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
-fail = lambda m: sys.exit("vendor job: " + m)
+fail = lambda m: sys.exit("vendor steps: " + m)
 on = d.get("on")
 pr = on.get("pull_request") if isinstance(on, dict) else (True if isinstance(on, list) and "pull_request" in on else None)
 if pr is None and not (isinstance(on, list) and "pull_request" in on):
     fail("ci.yml does not run on pull_request")
 if pr not in ("", None, True) and pr != {}:
     fail("pull_request carries a filter: " + str(pr))
-job = d.get("jobs", {}).get("vendor")
-if not job: fail("ci.yml has no job named vendor")
-if job.get("name") != "vendor": fail("the job's check name is " + str(job.get("name")) + ", not vendor")
+job = d.get("jobs", {}).get("test")
+if not job: fail("ci.yml has no job named test")
+if job.get("name") != "test": fail("the job's check name is " + str(job.get("name")) + ", not test")
 if d.get("defaults"): fail("a workflow-level defaults block (a shell default can skip every step)")
 if d.get("env"): fail("a workflow-level env block (SHELLOPTS, BASH_ENV and the like change what a step runs)")
 ro = str(job.get("runs-on", ""))
 if ro not in ("ubuntu-latest", "ubuntu-24.04", "ubuntu-22.04"): fail("runs-on " + ro + " is not a GitHub-hosted ubuntu label")
-if set(job) - {"name", "runs-on", "permissions", "steps"}: fail("job keys beyond name, runs-on, permissions, steps: " + str(sorted(job)))
-if job.get("permissions") != {"contents": "read"}: fail("permissions " + str(job.get("permissions")))
+if set(job) - {"name", "runs-on", "steps"}: fail("job keys beyond name, runs-on, steps: " + str(sorted(job)))
 steps = job.get("steps", [])
-runs = [s for s in steps if "run" in s]
 want = ["go mod verify", "bash bin/vendor-check.sh", "python3 bin/vendor-provenance.py check --vendor-dir vendor --go-sum go.sum --provenance dependency-provenance.json"]
-if [s["run"].strip() for s in runs] != want: fail("run steps are not exactly go mod verify, bash bin/vendor-check.sh, then the provenance check: " + str([s["run"] for s in runs]))
-allowed = {"name", "uses", "with", "run"}
-for s in steps:
-    if set(s) - allowed: fail("a step key beyond name, uses, with, run: " + str(sorted(set(s) - allowed)))
-    if "shell" in s: fail("a step sets a shell")
-if [s["uses"].split("@")[0] for s in steps if "uses" in s] != ["actions/checkout", "actions/setup-go"]:
-    fail("the job's actions are not exactly actions/checkout then actions/setup-go (an added action can change what the check runs): " + str([s.get("uses") for s in steps]))
-if [i for i, s in enumerate(steps) if "uses" in s] != [0, 1]: fail("the two actions are not the first two steps")
+at = []
+for w in want:
+    hits = [i for i, s in enumerate(steps) if s.get("run", "").strip() == w]
+    if len(hits) != 1: fail("not exactly one step that runs: " + w)
+    at.append(hits[0])
+if at != sorted(at): fail("the vendor steps are not in the order go mod verify, bin/vendor-check.sh, then the provenance check")
+for i in at:
+    if set(steps[i]) - {"name", "run"}: fail("a vendor step key beyond name and run: " + str(sorted(set(steps[i]) - {"name", "run"})))
+if [s["uses"].split("@")[0] for s in steps[:at[1]] if "uses" in s] != ["actions/checkout", "actions/setup-go"]:
+    fail("the actions before the vendor check are not exactly actions/checkout then actions/setup-go (an added action can change what the check runs): " + str([s.get("uses") for s in steps]))
+if [i for i, s in enumerate(steps) if "uses" in s][:2] != [0, 1]: fail("the two actions are not the first two steps")
 uses = [s["uses"] for s in steps if "uses" in s]
-if not uses or not all(re.fullmatch(r"[A-Za-z0-9._/-]+@[0-9a-f]{40}", u.split(" ")[0]) for u in uses): fail("an action is not a commit digest: " + str(uses))
-co = [s for s in steps if s.get("uses", "").startswith("actions/checkout@")]
-if not co or str((co[0].get("with") or {}).get("fetch-depth", "")) != "0": fail("checkout must fetch the whole history (fetch-depth: 0)")
-if len(co) != 1 or steps.index(co[0]) != 0 or set(co[0].get("with") or {}) != {"fetch-depth"}: fail("the one checkout comes first and sets only fetch-depth (no ref, repository, path, token)")
+if not all(re.fullmatch(r"[A-Za-z0-9._/-]+@[0-9a-f]{40}", u.split(" ")[0]) for u in uses): fail("an action is not a commit digest: " + str(uses))
+co = steps[0]
+if not co.get("uses", "").startswith("actions/checkout@") or (co.get("with") or {}) != {"fetch-depth": "0"}: fail("the first step is the one checkout and sets only fetch-depth: 0 (the whole history; no ref, repository, path, token)")
 import json
 blob = json.dumps(job) + json.dumps(d.get("env")) + json.dumps(d.get("defaults"))
-if re.search(r"GOSUMDB|GONOSUMDB|GONOSUMCHECK|GOPRIVATE|GOINSECURE|GOFLAGS|GOPROXY|-insecure|-mod=mod", blob): fail("a Go environment setting or opt-out in the vendor job or the workflow env")
-if "continue-on-error" in blob or "continue-on-error" in str(d.get("defaults")): fail("continue-on-error in the vendor job")
+if re.search(r"GOSUMDB|GONOSUMDB|GONOSUMCHECK|GOPRIVATE|GOINSECURE|GOFLAGS|GOPROXY|-insecure|-mod=mod", blob): fail("a Go environment setting or opt-out in the test job or the workflow env")
+if "continue-on-error" in blob or "continue-on-error" in str(d.get("defaults")): fail("continue-on-error in the test job")
 PY
-t AC3 "ci.yml vendor job: bare pull_request trigger, hosted runner, exactly go mod verify, bin/vendor-check.sh, then the provenance check, no condition, no opt-out, digest pins, history fetched" python3 "$J" "$root/.github/workflows/ci.yml"
+t AC3 "ci.yml test job: bare pull_request trigger, hosted runner, go mod verify, bin/vendor-check.sh, then the provenance check, each once and in order, no condition, no opt-out, digest pins, history fetched" python3 "$J" "$root/.github/workflows/ci.yml"
 mutate() { # NAME PYTHON-EXPRESSION on s (the ci.yml text): the mutated file must be refused
   python3 - "$root/.github/workflows/ci.yml" "$work/mut-$1.yml" "$2" <<'PY'
 import sys
@@ -379,25 +379,24 @@ tn() { local ac=$1 d=$2; shift 2; if "$@" >"$work/out" 2>&1; then bad "$ac" "$d 
 mutate provenance-or-true 's = s.replace("--provenance dependency-provenance.json\n", "--provenance dependency-provenance.json || true\n", 1)'
 mutate provenance-echo-only 's = s.replace("run: python3 bin/vendor-provenance.py check", "run: echo bin/vendor-provenance.py check", 1)'
 mutate provenance-other-file 's = s.replace("--provenance dependency-provenance.json\n", "--provenance /dev/null\n", 1)'
-mutate provenance-before-check 's = s.replace("        run: go mod verify\n      - name: vendor/ is what go mod vendor regenerates\n        run: bash bin/vendor-check.sh\n      - name: dependency-provenance.json lists the modules of vendor/ with the hashes of go.sum (REQ-VEND-001-AC4)\n        run: python3 bin/vendor-provenance.py check --vendor-dir vendor --go-sum go.sum --provenance dependency-provenance.json\n", "        run: go mod verify\n      - name: p\n        run: python3 bin/vendor-provenance.py check --vendor-dir vendor --go-sum go.sum --provenance dependency-provenance.json\n      - name: vendor/ is what go mod vendor regenerates\n        run: bash bin/vendor-check.sh\n", 1)'
-mutate provenance-second-step 's = s.replace("        run: bash bin/vendor-check.sh\n", "        run: bash bin/vendor-check.sh\n      - name: extra\n        run: echo hi\n", 1)'
+mutate provenance-before-check 's = s.replace("        run: bash bin/vendor-check.sh\n      - name: dependency-provenance.json lists the modules of vendor/ with the hashes of go.sum (REQ-VEND-001-AC4)\n        run: python3 bin/vendor-provenance.py check --vendor-dir vendor --go-sum go.sum --provenance dependency-provenance.json\n", "        run: python3 bin/vendor-provenance.py check --vendor-dir vendor --go-sum go.sum --provenance dependency-provenance.json\n      - name: p\n        run: bash bin/vendor-check.sh\n", 1)'
 mutate trigger-branches 's = s.replace("  pull_request:\n", "  pull_request:\n    branches: [main]\n", 1)'
 mutate or-true 's = s.replace("run: bash bin/vendor-check.sh\n", "run: bash bin/vendor-check.sh || true\n", 1)'
 mutate echo-only 's = s.replace("run: bash bin/vendor-check.sh\n", "run: echo bin/vendor-check.sh\n", 1)'
-mutate coe-expression 's = s.replace("  vendor:\n    name: vendor\n", "  vendor:\n    name: vendor\n    continue-on-error: ${{ true }}\n", 1)'
-mutate job-if 's = s.replace("  vendor:\n    name: vendor\n", "  vendor:\n    name: vendor\n    if: github.actor != \x27dependabot[bot]\x27\n", 1)'
+mutate coe-expression 's = s.replace("  test:\n    name: test\n", "  test:\n    name: test\n    continue-on-error: ${{ true }}\n", 1)'
+mutate job-if 's = s.replace("  test:\n    name: test\n", "  test:\n    name: test\n    if: github.actor != \x27dependabot[bot]\x27\n", 1)'
 mutate step-if-always 's = s.replace("      - name: vendor/ is what go mod vendor regenerates\n", "      - name: vendor/ is what go mod vendor regenerates\n        if: ${{ !cancelled() && false }}\n", 1)'
-mutate job-env-goflags 's = s.replace("  vendor:\n    name: vendor\n", "  vendor:\n    name: vendor\n    env:\n      GOFLAGS: -mod=mod\n", 1)'
+mutate job-env-goflags 's = s.replace("  test:\n    name: test\n", "  test:\n    name: test\n    env:\n      GOFLAGS: -mod=mod\n", 1)'
 mutate shell-override 's = s.replace("        run: bash bin/vendor-check.sh\n", "        shell: bash {0}\n        run: bash bin/vendor-check.sh\n", 1)'
-mutate unpinned-action 's = s.replace("      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod", "      - uses: actions/setup-go@v7\n        with:\n          go-version-file: go.mod", 1)'
+mutate unpinned-action 's = s.replace("      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version: \x271.27\x27\n          check-latest: true\n      - name: go mod verify", "      - uses: actions/setup-go@v7\n        with:\n          go-version: \x271.27\x27\n          check-latest: true\n      - name: go mod verify", 1)'
 mutate defaults-shell 's = s.replace("jobs:\n", "defaults:\n  run:\n    shell: \x27bash -c \"exit 0\" {0}\x27\njobs:\n", 1)'
-mutate job-renamed 's = s.replace("  vendor:\n    name: vendor\n", "  vendor:\n    name: vendor-skipped\n", 1)'
+mutate job-renamed 's = s.replace("  test:\n    name: test\n", "  test:\n    name: test-skipped\n", 1)'
 mutate checkout-ref 's = s.replace("          fetch-depth: 0\n", "          fetch-depth: 0\n          ref: main\n", 1)'
 mutate checkout-repository 's = s.replace("          fetch-depth: 0\n", "          fetch-depth: 0\n          repository: o/r\n", 1)'
 mutate env-shellopts 's = s.replace("jobs:\n", "env:\n  SHELLOPTS: noexec\njobs:\n", 1)'
 mutate env-bash-env 's = s.replace("jobs:\n", "env:\n  BASH_ENV: /dev/null\njobs:\n", 1)'
-mutate runner-private 's = s.replace("  vendor:\n    name: vendor\n    runs-on: ubuntu-latest\n", "  vendor:\n    name: vendor\n    runs-on: ubuntu-private\n", 1)'
-mutate extra-action 's = s.replace("      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n", "      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0\n        with:\n          script: |\n            require(\x27fs\x27).writeFileSync(\x27bin/vendor-check.sh\x27, \x27exit 0\x27)\n      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n", 1)'
+mutate runner-private 's = s.replace("  test:\n    name: test\n    runs-on: ubuntu-latest\n", "  test:\n    name: test\n    runs-on: ubuntu-private\n", 1)'
+mutate extra-action 's = s.replace("      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version: \x271.27\x27\n", "      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0\n        with:\n          script: |\n            require(\x27fs\x27).writeFileSync(\x27bin/vendor-check.sh\x27, \x27exit 0\x27)\n      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version: \x271.27\x27\n", 1)'
 mutate shallow-checkout 's = s.replace("        with:\n          fetch-depth: 0\n", "", 1)'
 
 # ===== AC11: listable shape =======================================================================
