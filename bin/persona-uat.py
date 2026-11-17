@@ -87,8 +87,8 @@ INSTRUCTIONS = {
         "build to this cache from a Jenkins job, using the Jenkins container you are given; a GitLab runner container is given too (see the environment "
         "limits: do not try to run a GitLab job, report what a customer could not do here as friction)."),
     "compliance-reviewer": (
-        "You are a compliance reviewer. Following the documentation's guide, verify the image's signature (with the cosign tool: `cosign verify` of the image under "
-        "test named by the digest reference you are given, with the promotion workflow's certificate identity and the GitHub OIDC issuer the guide shows), fetch and "
+        "You are a compliance reviewer. Following the documentation's guide, verify the image's signature (with the cosign tool: `cosign verify --key release.rsa.pub` of the image under "
+        "test named by the digest reference you are given, with the release key file saved in your working directory, as the guide shows), fetch and "
         "inspect its SBOM, and read its VEX statements, exactly as the guide says, and judge whether the evidence is complete and verifiable."),
     "readme-evaluator": (
         "You are an evaluator who has only the README and ten minutes. Decide, from the README alone, what the product is, and try "
@@ -1409,6 +1409,15 @@ OIDC_ISSUER = "https://token.actions.githubusercontent.com"       # docs/verify-
 PROMOTION_WORKFLOW = "stage-promote.yml"                           # docs/verify-images.md: the current chain signs the public image in stage-promote.yml
 
 
+def key_matches(sandbox, repo):
+    """True when release.rsa.pub in the reviewer's working folder has the same bytes as <repo>/build/keys/release.rsa.pub"""
+    mine = os.path.join(sandbox, RELEASE_KEY_FILE)
+    if os.path.islink(mine) or not os.path.isfile(mine):
+        return False
+    with open(mine, "rb") as f, open(os.path.join(repo, "build", "keys", RELEASE_KEY_FILE), "rb") as g:
+        return f.read() == g.read()
+
+
 def image_repo_path(image):
     """owner/name of the image repository under test (ghcr.io/fosterstack/cache@sha256:... -> fosterstack/cache)"""
     repo = image.split("@")[0]
@@ -1431,11 +1440,11 @@ def identity_documented(value, repo_path):
     return re.fullmatch(r"[0-9][0-9A-Za-z.-]*", v[len(prefix):]) is not None
 
 
-def verified_digest(answer, image):
-    """the compliance reviewer's proof of exercising the RC image, derived from the public guide (docs/verify-images.md): a recorded ACTION whose tool is cosign and whose operation
+def verified_digest(answer, image, key_ok=False):
+    """the compliance reviewer's proof that it verified the image under test, derived from the public guide (docs/verify-images.md): a recorded ACTION whose tool is cosign and whose operation
     PARSES as `cosign verify` (never verify-attestation alone: the guide verifies provenance with gh, and a bare attestation proves nothing about the signature) of exactly ONE
     image argument that IS the image under test (the same registry and repository, @sha256:<the candidate digest>: not another repository with the same digest), carrying the
-    documented promotion-workflow identity and the documented OIDC issuer (or, from v0.3.0, exactly `--key release.rsa.pub` and no identity or issuer), with no flag that changes what is verified (--certificate, --offline, --insecure-ignore-*...),
+    documented promotion-workflow identity and the documented OIDC issuer (or, from v0.3.0, exactly `--key release.rsa.pub`, no identity or issuer, and key_ok: the key file's bytes match the repository's), with no flag that changes what is verified (--certificate, --offline, --insecure-ignore-*...),
     no help/version spelling, exit 0. Words in echo, comments or shell actions are never proof."""
     digest = image.split("@")[-1]
     if not digest.startswith("sha256:") or "@" not in image:
@@ -1452,7 +1461,7 @@ def verified_digest(answer, image):
             continue
         keys = [v for name, v in flags if name == "--key"]
         if keys:   # v0.3.0 and later (docs/verify-images.md): the image is verified with the release public key, exactly `--key release.rsa.pub`, and with no certificate identity or issuer beside it
-            if keys == [RELEASE_KEY_FILE] and all(name in PROOF_FLAGS - IDENTITY_FLAGS or name == "--key" for name, _ in flags):
+            if key_ok and keys == [RELEASE_KEY_FILE] and all(name in PROOF_FLAGS - IDENTITY_FLAGS or name == "--key" for name, _ in flags):
                 return True
             continue
         if any(name not in PROOF_FLAGS for name, _ in flags):
@@ -1787,13 +1796,13 @@ def _main():
         if answer:
             findings, tokens = list(answer["findings"]), answer["tokens"]
             if persona == "compliance-reviewer":
-                proven = verified_digest(answer, a.image)         # the reviewer never calls the endpoint: its proof is a successful verification of the RC's digest
+                proven = verified_digest(answer, a.image, key_ok)   # the reviewer never calls the endpoint
             if extra_blocking:
                 findings.append({"kind": "blocking", "text": extra_blocking})
             elif not proven:
                 # no proof of exercising the RC image blocks the persona whatever else it reported (friction stays information, and stays in the report)
                 findings.append({"kind": "blocking", "text": (
-                    "the persona did not exercise the image under test: no `cosign verify` of the image under test by its digest, with the documented promotion-workflow identity and OIDC issuer, exited 0"
+                    "the persona did not exercise the image under test: no `cosign verify` of the image under test by its digest, with the documented promotion-workflow identity and OIDC issuer (or the release key file), exited 0"
                     if persona == "compliance-reviewer" else
                     "the persona did not exercise the image under test: the endpoint was never exercised (its request counter did not move during this persona's run)")})
             capped = tokens >= budget
@@ -1972,6 +1981,7 @@ def _main():
                 if before is UNSETTLED:
                     before = None
                 answer, transcript, why = run_agent(agent_cmd, args, request, sandbox, persona_timeout, tfile, jfile)
+                key_ok = key_matches(sandbox, a.repo)       # read before cleanup empties the sandbox
                 # the window is closed BEHIND everything of this persona: its action containers are swept by label FIRST (whatever they were still sending is sent), THEN the sidecar is
                 # stopped (so its log holds all of it), then its tool containers and cluster are removed, THEN the counter is read once it has been unchanged for the quiet interval
                 swept = sweep(docker, label)

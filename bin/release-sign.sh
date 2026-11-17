@@ -39,7 +39,13 @@ python3 bin/vex-forms.py --openvex .vex/fosterstack-cache.openvex.json --images 
 # the baseline is the one admission chose (REQ-CHAIN-007-AC19): read from Build's verified admission-baseline.json (bound to Build's record by release-verify), so an
 # owner-signed tag uses its own and a CI patch tag the line's owner baseline; Release never picks one itself
 baseline=$(python3 bin/release-metadata.py baseline --admission witness-build/admission-baseline.json --tag "$GITHUB_REF_NAME" --commit "$GITHUB_SHA")
-python3 bin/release-metadata.py manifest --digests witness-build/digests.json --images-dir images --items witness-build/items.json --modules-dir apks/ubuntu-24.04 --vex-dir release-metadata --baseline-version "$baseline" --repo-root . --version "$GITHUB_REF_NAME" --commit "$GITHUB_SHA" --ci-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --workflow "$GITHUB_WORKFLOW_REF" --out release-metadata/release-manifest.json
+# the manifest's reason is the first line of the annotated release tag's message (the owner's own words); a tag with no message, or no annotation, fails: no default text
+tagobj=$(git cat-file tag "$GITHUB_REF_NAME" 2> /dev/null) || tagobj=""
+reason=${tagobj#*$'\n\n'}; reason=${reason%%$'\n'*}      # the message starts after the header's blank line; its first line
+[[ "$tagobj" == *$'\n\n'* ]] || reason=""
+[[ "$reason" =~ [^[:space:]] ]] || { echo "release-sign: the release tag $GITHUB_REF_NAME has no annotated message to take the manifest's reason from" >&2; exit 1; }
+published_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+python3 bin/release-metadata.py manifest --digests witness-build/digests.json --images-dir images --items witness-build/items.json --modules-dir apks/ubuntu-24.04 --vex-dir release-metadata --baseline-version "$baseline" --repo-root . --version "$GITHUB_REF_NAME" --commit "$GITHUB_SHA" --ci-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --workflow "$GITHUB_WORKFLOW_REF" --published-at "$published_at" --reason "$reason" --out release-metadata/release-manifest.json
 python3 bin/release-metadata.py list --version "$GITHUB_REF_NAME" --dir release-metadata --out release-metadata/release-files.sha256
 # The logins live in a private DOCKER_CONFIG of this step, removed when it ends (round 1 F2).
 DOCKER_CONFIG=$(mktemp -d)

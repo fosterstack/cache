@@ -1186,6 +1186,15 @@ if wrote: os.remove(G + "/audit-record")
 check("prepare: the same pull request opened by anyone else is recorded as before (proceed)",
       r.returncode == 0 and r.stdout.strip().splitlines()[-1] == "proceed" and wrote, said(r, c))
 
+# a sha with a trailing newline is not 40 lower-case hex (a `$` match would let it through)
+NL = HEAD + "\n"
+ok, why = judge(ref=mut(REF, ["ref"], "refs/heads/audit/" + NL), commit=mut(COMMIT, ["parents"], [{"sha": NL}]), head=NL)
+check("verify_record: a head sha with a trailing newline is refused", not ok, (ok, why))
+ok, why = judge(ref=mut(REF, ["object", "sha"], REC + "\n"), commit=mut(COMMIT, ["sha"], REC + "\n"))
+check("verify_record: a record sha with a trailing newline is refused", not ok, (ok, why))
+ok, why = plan_rel(head=NL); check("plan release: a head sha with a trailing newline is refused", not ok, (ok, why))
+ok, why = plan(pr=mut(PR, ["head", "sha"], NL), head=NL)
+check("plan: a head sha with a trailing newline is refused", not ok, (ok, why))
 # the items file never copied: every use of AUDIT_ITEMS inside check_audit_approval removed
 fn_src = ast.get_source_segment(admit_src, [n for n in ast.walk(ast.parse(admit_src)) if isinstance(n, ast.FunctionDef)
     and n.name == "check_audit_approval"][0])

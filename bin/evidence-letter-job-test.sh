@@ -8,7 +8,7 @@ set -euo pipefail
 TMPDIR=$(mktemp -d); export TMPDIR; trap 'rm -rf "$TMPDIR"' EXIT
 here=$(cd "$(dirname "$0")" && pwd); root=$(cd "$here/.." && pwd)
 python3 - "$root" <<'PY'
-import base64, copy, datetime, hashlib, json, os, re, shutil, stat, subprocess, sys, tempfile
+import base64, calendar, copy, datetime, hashlib, json, os, re, shutil, stat, subprocess, sys, tempfile, time
 import yaml
 ROOT = sys.argv[1]
 passed = failed = 0
@@ -358,17 +358,23 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def put_releases(fix, releases):
+def put_releases(fix, releases, signed=None, manifests=None):
     """releases: [(tag, published, draft, prerelease, page)]; every one gets the assets the fetch needs,
-    ids from 100."""
+    ids from 100, and a JSON release-manifest.json. signed: {tag: the published_at its signed manifest holds}
+    (else the listed published date). manifests: {tag: the raw bytes of its manifest, or None for no manifest
+    asset at all}."""
     pages, next_id = {}, 100
     for tag, published, draft, pre, page in releases:
-        manifest, vex = ("manifest of " + tag).encode(), ("vex of " + tag).encode()
-        files = {"release-manifest.json": manifest, "fosterstack-cache.openvex.json": vex,
-                 "release-files.sha256": ("%s  release-manifest.json\n%s  fosterstack-cache.openvex.json\n"
-                                          % (sha(manifest), sha(vex))).encode(),
+        vex = ("vex of " + tag).encode()
+        manifest = json.dumps({"version": tag[1:], "published_at": (signed or {}).get(tag, published)}).encode()
+        if manifests and tag in manifests:
+            manifest = manifests[tag]
+        files = {} if manifest is None else {"release-manifest.json": manifest}
+        listing = "" if manifest is None else "%s  release-manifest.json\n" % sha(manifest)
+        files.update({"fosterstack-cache.openvex.json": vex,
+                 "release-files.sha256": (listing + "%s  fosterstack-cache.openvex.json\n" % sha(vex)).encode(),
                  "release-files.sha256.bundle": b'{"verificationMaterial":{"tlogEntries":[{}]}}',
-                 "digests.json": json.dumps({"image-production": "sha256:" + "a" * 64}).encode()}
+                 "digests.json": json.dumps({"image-production": "sha256:" + "a" * 64}).encode()})
         for step in ("scanners", "acceptance", "runtime", "arm64"):
             files["%s-collection.json" % step] = ("record %s of %s" % (step, tag)).encode()
         assets = []
@@ -386,10 +392,10 @@ RELEASES = [("v0.4.0", "2026-11-20T12:00:00Z", False, False, 1), ("v0.6.0", "202
             ("v0.5.0-rc1", "2026-11-21T12:00:00Z", False, True, 2), ("v0.4.5", "2026-11-22T12:00:00Z", True, False, 2)]
 
 
-def fetch(month, edit=None, today=None, release_list=RELEASES, real_verifier=False):
+def fetch(month, edit=None, today=None, release_list=RELEASES, real_verifier=False, signed=None, manifests=None):
     tmp = tempfile.mkdtemp()
     fix, env = sandbox(tmp)
-    put_releases(fix, release_list)
+    put_releases(fix, release_list, signed, manifests)
     if today:
         open(os.path.join(fix, "today"), "w").write(today + "\n")
     if edit:
@@ -399,7 +405,9 @@ def fetch(month, edit=None, today=None, release_list=RELEASES, real_verifier=Fal
     out = os.path.join(tmp, "work")
     p = subprocess.run(["bash", os.path.join(env["REPO_DIR"], "bin/evidence-letter-fetch.sh"), month, out], cwd=env["REPO_DIR"], env=env,
                        capture_output=True, text=True)
-    got = sorted(os.listdir(out + "/rel")) if os.path.isdir(out + "/rel") else []
+    # every final release from v0.3.0 on is verified (its list and manifest are fetched) before its date is read, so rel/ holds a folder for each of them;
+    # the releases the fetch took for the letter are the ones whose files were fetched in full (digests.json is one of them)
+    got = sorted(d for d in os.listdir(out + "/rel") if os.path.isfile(out + "/rel/%s/digests.json" % d)) if os.path.isdir(out + "/rel") else []
     return p, got, open(os.path.join(tmp, "log")).read().splitlines(), out, fix
 
 
@@ -459,7 +467,7 @@ check("F1 5: each fetched release gets its own policy made for its tag, never fo
       and sum("policy make" in l and "--tag v0.4.0" in l for l in log) == 1
       and not any("policy make" in l and "--ref" in l for l in log), log)
 check("F1 9: the list is verified with the key of the policy that check-list then gets (the key the manifest holds)",
-      log.count(key_of(log)) == 2 and log.count("key-file: -----BEGIN PUBLIC KEY-----") == 2
+      log.count(key_of(log)) == 4 and log.count("key-file: -----BEGIN PUBLIC KEY-----") == 4
       and all(any("check-list --policy " in l and "/rel/%s/policy.json" % t in l for l in log)
               for t in ("v0.3.1", "v0.4.0")), log)
 check("AC10: the Check records are verified with the same command Release runs, under a policy made for the tag",
@@ -479,7 +487,7 @@ for t in ("v0.3.1", "v0.4.0"):
 check("F1 7: per release the policy is made, then the list is verified, then check-list runs", order_ok, log)
 
 
-def helper(edit=None, tag=None):
+def helper(edit=None, tag=None, bundle='{"verificationMaterial":{"tlogEntries":[{}]}}'):
     """The shared check on an UNMODIFIED policy made by the real `chain-verify.py policy make` (a branch ref, or a tag)."""
     tmp = tempfile.mkdtemp()
     fix, env = sandbox(tmp)
@@ -493,7 +501,7 @@ def helper(edit=None, tag=None):
         edit(doc)
         json.dump(doc, open(pol, "w"))
     open(letter, "w").write("a letter\n")
-    open(letter + ".bundle", "w").write('{"verificationMaterial":{"tlogEntries":[{}]}}')
+    open(letter + ".bundle", "w").write(bundle)
     p = subprocess.run(["bash", "bin/evidence-letter-verify.sh", pol, letter], cwd=env["REPO_DIR"], env=env,
                        capture_output=True, text=True)
     return p, open(os.path.join(tmp, "log")).read().splitlines()
@@ -506,6 +514,11 @@ for label, tag in (("a branch ref", None), ("a tag", "v0.3.1")):
 ph, lh = helper(lambda d: d.pop("release_key"))
 check("F1 5b: a policy with no release key ends the helper in one line before any verify",
       one_line(ph) and "release key" in ph.stderr and not any("verify-blob" in l for l in lh), (ph.stderr, lh))
+for field in ("certificate", "x509CertificateChain"):
+    cert = '{"verificationMaterial":{"%s":{"x":"y"},"tlogEntries":[{}]}}' % field
+    ph, lh = helper(bundle=cert)
+    check("F-cert: a bundle whose verificationMaterial holds %s is refused in one line, before any verify" % field,
+          one_line(ph) and "certificate" in ph.stderr and not any("verify-blob" in l for l in lh), (ph.stderr, lh))
 check("R1 c: the pinned log root the helper names is a file in the tree",
       os.path.isfile(os.path.join(ROOT, ".github/policy/rekor-trusted-root.json")))
 
@@ -553,8 +566,9 @@ check("AC10: a release-files list whose signature does not verify ends the fetch
 def other_manifest(fix):
     for name in os.listdir(os.path.join(fix, "assets")):
         path = os.path.join(fix, "assets", name)
-        if open(path, "rb").read().startswith(b"manifest of v0.3.1"):
-            open(path, "wb").write(b"a replaced manifest")
+        body = open(path, "rb").read()
+        if body.startswith(b'{"version": "0.3.1"'):
+            open(path, "wb").write(body[:-1] + b', "replaced": true}')
 
 
 pm = fetch("2026-11", other_manifest)
@@ -730,8 +744,14 @@ pk, lk, upk, _l = publish(FAIL_UPLOAD="letter", FAIL_DELETE="1")
 check("AC9: if the bundle cannot be removed the one line says so",
       one_line(pk) and "could not be removed" in pk.stderr, pk.stderr)
 # ---- the daily presence check (F7): bin/evidence-letter-present.sh, run by a job of supply-chain.yml
-def present(pages, today="2026-12-10", **extra):
-    """pages: [[(tag, draft, [asset name, or (name, 'norekor')])]]; every asset gets an id from 500 and a body."""
+SIGNED_DEC3 = calendar.timegm((2026, 12, 3, 12, 0, 0))
+
+
+def present(pages, today="2026-12-10", old_manifest=None, without=None, signed=SIGNED_DEC3, published=None, promise=True, **extra):
+    """pages: [[(tag, draft, [asset name, or (name, 'norekor')])]]; every asset gets an id from 500 and a body.
+    A release with a letter bundle also gets the key manifest and its signature (today's, or old_manifest's),
+    except the asset named by without. signed: the unix time the letter was signed, which the bundle's Rekor integratedTime
+    carries (3 December unless given; None: the entry has no integratedTime). published: the release's listed published_at when it is not that."""
     tmp = tempfile.mkdtemp()
     fix, env = sandbox(tmp)
     env.update(extra)
@@ -743,19 +763,40 @@ def present(pages, today="2026-12-10", **extra):
             listed = []
             for a in assets:
                 name, kind = (a, "ok") if isinstance(a, str) else a
-                tlog = "[]" if kind == "norekor" else "[{}]"
+                # a Rekor entry as the log returns it: the inclusionPromise (the signed entry timestamp) is what signs integratedTime; the inclusionProof alone does not
+                entry = '{"integratedTime":"%s"%s,"inclusionProof":{"logIndex":"1"}}' % (
+                    signed, ',"inclusionPromise":{"signedEntryTimestamp":"c2V0"}' if promise else "")
+                tlog = "[]" if kind == "norekor" else "[{}]" if signed is None else "[%s]" % entry
                 body = "a letter\n"
                 if name.endswith(".bundle"):
                     body = '{"verificationMaterial":{"tlogEntries":%s}}' % tlog
                 open(os.path.join(fix, "assets", str(next_id)), "w").write(body)
                 listed.append({"id": next_id, "name": name})
                 next_id += 1
+            if any(a["name"].endswith(".md.bundle") for a in listed):
+                for name, data in zip(("release-key-manifest.json", "release-key-manifest.sig"),
+                                      (old_manifest or today_manifest)(tmp)):
+                    if name == without:
+                        continue
+                    open(os.path.join(fix, "assets", str(next_id)), "wb").write(data)
+                    listed.append({"id": next_id, "name": name})
+                    next_id += 1
             rels.append({"tag_name": tag, "draft": draft, "prerelease": False, "assets": listed})
+            if published is not None:
+                rels[-1]["published_at"] = published
+            elif signed is not None:
+                rels[-1]["published_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(signed))
         out.append(rels)
     json.dump(out, open(os.path.join(fix, "pages.json"), "w"))
     script = os.path.join(env["REPO_DIR"], "bin/evidence-letter-present.sh")
     p = subprocess.run(["bash", script], cwd=env["REPO_DIR"], env=env, capture_output=True, text=True)
     return p, open(os.path.join(tmp, "log")).read().splitlines()
+
+
+def today_manifest(tmp):
+    """The (manifest, signature) of the sandbox's own release key, root-signed, as the repository commits them."""
+    pol = os.path.join(tmp, "repo/.github/policy")
+    return (open(pol + "/release-key-manifest.json", "rb").read(), open(pol + "/release-key-manifest.sig", "rb").read())
 
 
 def pair(m):
@@ -810,6 +851,207 @@ twice = [V4, ("v0.4.1", False, pair("2026-11"))]
 pr, lr = present([twice], FAIL_VERIFY_AFTER="1")
 check("F7 15: every copy of last month's pair is verified (the second one fails)",
       pr.returncode == 1 and verifies(lr) == 2, (pr.stderr, lr))
+
+
+# F7 16: last month's letter is checked with the key the root-signed manifest lists for the letter's date, which is
+# the manifest published on the release that carries it, not the key of today's checkout
+def old_key_manifest(root_signed=True):
+    """A function of the sandbox folder: the (manifest, signature) of an older release key, valid in November."""
+    def make(tmp):
+        keys = os.path.join(tmp, "keys")
+        openssl("genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:4096", "-out", keys + "/old.key")
+        openssl("pkey", "-in", keys + "/old.key", "-pubout", "-out", keys + "/old.pub")
+        pub = open(keys + "/old.pub").read()
+        der = openssl("pkey", "-pubin", "-in", keys + "/old.pub", "-outform", "DER")
+        body = json.dumps({"public_key": pub, "key_id": sha(der), "valid_from": "2026-11-01T00:00:00Z",
+                           "valid_to": "2027-01-01T00:00:00Z"}, sort_keys=True, indent=1).encode() + b"\n"
+        open(keys + "/old-m.json", "wb").write(body)
+        signer = keys + ("/root.key" if root_signed else "/old.key")
+        sig = openssl("dgst", "-sha256", "-sign", signer, keys + "/old-m.json")
+        open(os.path.join(tmp, "old-line"), "w").write(pub.splitlines()[1])
+        return body, base64.b64encode(sig) + b"\n"
+    return make
+
+
+pr, lr = present([[V4]], old_manifest=old_key_manifest())
+cur = key_of(lr)
+check("F7 16: the letter is verified with the key its date lists in the root-signed manifest, not today's key",
+      pr.returncode == 0 and verifies(lr) == 1 and lr.count(cur) == 0
+      and lr.count("key-file: -----BEGIN PUBLIC KEY-----") == 1, (pr.stderr, lr))
+pr, lr = present([[V4]], old_manifest=old_key_manifest(root_signed=False))
+check("F7 17: a manifest the root did not sign lists no key: one line, nothing verified",
+      one_line(pr) and "manifest" in pr.stderr and verifies(lr) == 0, (pr.stderr, lr))
+for asset, n in (("release-key-manifest.json", 18), ("release-key-manifest.sig", 19)):
+    pr, lr = present([[V4]], without=asset)
+    check("F7 %d: a release with the letter and its bundle but no %s: one line naming the month, the tag and the asset, "
+          "nothing verified" % (n, asset),
+          one_line(pr) and "2026-11" in pr.stderr and "v0.4.0" in pr.stderr
+          and "the release carries no " + asset in pr.stderr and verifies(lr) == 0, (pr.stderr, lr))
+pr, lr = present([[V4]], without="release-key-manifest.json")
+check("F7 20: with the manifest missing the .json is named first, and today's key is not used",
+      "release-key-manifest.sig" not in pr.stderr and not any("policy make" in l for l in lr), (pr.stderr, lr))
+# the key's window is met at the date the letter was SIGNED (the next month's early days), not by the letter's month
+def window_manifest(valid_from, valid_to):
+    """A function of the sandbox folder: the (manifest, signature) of a release key valid from valid_from to
+    valid_to, root-signed."""
+    def make(tmp):
+        keys = os.path.join(tmp, "keys")
+        openssl("genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:4096", "-out", keys + "/win.key")
+        openssl("pkey", "-in", keys + "/win.key", "-pubout", "-out", keys + "/win.pub")
+        pub = open(keys + "/win.pub").read()
+        der = openssl("pkey", "-pubin", "-in", keys + "/win.pub", "-outform", "DER")
+        m = {"public_key": pub, "key_id": sha(der), "valid_from": valid_from}
+        if valid_to is not None:      # an open-ended window leaves the field out; "valid_to": null is not a valid value
+            m["valid_to"] = valid_to
+        body = json.dumps(m, sort_keys=True, indent=1).encode() + b"\n"
+        open(keys + "/win-m.json", "wb").write(body)
+        sig = openssl("dgst", "-sha256", "-sign", keys + "/root.key", keys + "/win-m.json")
+        open(os.path.join(tmp, "old-line"), "w").write(pub.splitlines()[1])
+        return body, base64.b64encode(sig) + b"\n"
+    return make
+
+
+pr, lr = present([[V4]], old_manifest=window_manifest("2026-12-01T00:00:00Z", None), signed=SIGNED_DEC3)
+check("F7 R8a: a key whose window opens on 1 December signed the November letter on 3 December: it is the usable key",
+      pr.returncode == 0 and verifies(lr) == 1, (pr.stderr, lr))
+ENDED_NOV20 = window_manifest("2026-11-01T00:00:00Z", "2026-11-20T00:00:00Z")
+pr, lr = present([[V4]], old_manifest=ENDED_NOV20, signed=SIGNED_DEC3)
+check("F7 R8b: a key that ended on 20 November met the month but not the signing date of 3 December: "
+      "one line, nothing verified",
+      one_line(pr) and "key" in pr.stderr and verifies(lr) == 0, (pr.stderr, lr))
+# the unsigned publication date of the API decides nothing: the letter's releases are the ones whose SIGNED
+# manifest says they were published in the month
+SIGNED_DECOYS = [("v0.4.0", "2026-12-05T12:00:00Z", False, False, 1),
+                 ("v0.3.1", "2026-11-04T12:00:00Z", False, False, 1)]
+pd_, gotd, _l, _o, _f = fetch("2026-11", release_list=SIGNED_DECOYS,
+                              signed={"v0.4.0": "2026-11-20T12:00:00Z", "v0.3.1": "2026-12-02T12:00:00Z"})
+check("R9 the fetch selects by the signed manifest's date: the release the API dates in December but the "
+      "manifest dates 20 November is taken, the one the API dates 4 November but the manifest dates 2 December "
+      "is not", pd_.returncode == 0 and gotd == ["v0.4.0"], (pd_.stderr, gotd))
+# R9: the month comes from the signed manifest only; a final release whose manifest cannot give a signed date
+# refuses the letter, in one line, and the API date is never a fallback
+one_rel = [("v0.4.0", "2026-11-20T12:00:00Z", False, False, 1)]
+for what, mf in (("has no release-manifest.json asset", None), ("is not JSON", b"not json at all\n"),
+                 ("holds no published_at", b'{"version": "0.4.0"}'),
+                 ("holds a published_at that is not a string", b'{"version": "0.4.0", "published_at": 20261120}')):
+    pm, gotm, _l, _o, _f = fetch("2026-11", release_list=one_rel, manifests={"v0.4.0": mf})
+    check("AC5 / R9 a final release whose manifest %s refuses the fetch in one line naming the tag and "
+          "release-manifest.json, no fallback to the API date" % what,
+          one_line(pm) and "v0.4.0" in pm.stderr and "release-manifest.json" in pm.stderr and gotm == [],
+          (pm.returncode, pm.stderr, gotm))
+pm, gotm, _l, _o, _f = fetch("2026-11", release_list=one_rel + [("v0.3.0", "2026-10-30T12:00:00Z", False, True, 1),
+                                                              ("v0.3.5", "2026-11-04T12:00:00Z", True, False, 1)],
+                             manifests={"v0.3.0": None, "v0.3.5": None})
+check("AC5 / R9 a draft or a prerelease with no manifest does not refuse the fetch",
+      pm.returncode == 0 and gotm == ["v0.4.0"], (pm.stderr, gotm))
+pm, gotm, _l, _o, _f = fetch("2026-11", release_list=[("v0.4.0", "2026-12-05T12:00:00Z", False, False, 1)],
+                             manifests={"v0.4.0": b"not json"})
+check("AC5 / R9 a bad manifest refuses even when the API date lies outside the month",
+      one_line(pm) and "v0.4.0" in pm.stderr and "release-manifest.json" in pm.stderr, (pm.returncode, pm.stderr))
+OCT_AND_DECOY = [("v0.4.0", "2026-11-20T12:00:00Z", False, False, 1), ("v0.3.0", "2026-10-30T12:00:00Z", False, False, 1)]
+pm, gotm, _l, _o, _f = fetch("2026-11", release_list=OCT_AND_DECOY, signed={"v0.4.0": "2026-12-02T12:00:00Z"})
+check("AC5 / R9 the API dates a release in the month but its manifest dates it after: it is not the month's "
+      "release, the newest release before the month is taken instead",
+      pm.returncode == 0 and gotm == ["v0.3.0"], (pm.stderr, gotm))
+pm, gotm, _l, _o, _f = fetch("2026-10", release_list=OCT_AND_DECOY, signed={"v0.4.0": "2026-10-15T12:00:00Z"})
+check("AC5 / R9 the API dates a release in November but its manifest dates it in October: October takes it",
+      pm.returncode == 0 and gotm == ["v0.3.0", "v0.4.0"], (pm.stderr, gotm))
+# R8: the key's window is met at the bundle's integratedTime only
+WIN_DEC = window_manifest("2026-12-01T00:00:00Z", None)
+pr, lr = present([[V4]], old_manifest=window_manifest("2026-11-01T00:00:00Z", "2026-12-01T00:00:00Z"),
+                 signed=None, published="2026-11-25T12:00:00Z")
+check("AC5 / R8 a bundle with no integratedTime is refused in one line, nothing verified, although the "
+      "release's published_at fits the key window", one_line(pr) and "Rekor" in pr.stderr and verifies(lr) == 0,
+      (pr.returncode, pr.stderr, lr))
+pr, lr = present([[V4]], signed=None, published="2026-11-25T12:00:00Z")
+check("AC5 / R8 a bundle with no integratedTime is refused although the reporting month is the key's month",
+      one_line(pr) and verifies(lr) == 0, (pr.returncode, pr.stderr, lr))
+pr, lr = present([[("v0.4.0", False, norekor)]], signed=None, published="2026-11-25T12:00:00Z")
+check("AC5 / R8 a bundle with no tlogEntries is refused in one line", one_line(pr) and verifies(lr) == 0,
+      (pr.returncode, pr.stderr, lr))
+pr, lr = present([[V4]], old_manifest=WIN_DEC, signed=SIGNED_DEC3, published="2026-11-25T12:00:00Z")
+check("AC5 / R8 the signing date of the integratedTime (3 December) selects the key whose window opens on "
+      "1 December, whatever the release's published_at says", pr.returncode == 0 and verifies(lr) == 1,
+      (pr.stderr, lr))
+pr, lr = present([[V4]], old_manifest=ENDED_NOV20, signed=SIGNED_DEC3, published="2026-11-15T12:00:00Z")
+check("AC5 / R8 a key that was valid at the release's published_at but ended before the integratedTime is "
+      "refused in one line", one_line(pr) and "key" in pr.stderr and verifies(lr) == 0, (pr.stderr, lr))
+
+# ---- S2 code fixes: findings 4, 4b, 6a, 6b
+def tamper(tag, old, new):
+    """An edit for fetch(): the tag's manifest asset is changed AFTER the signed release-files list was made, so it no longer matches it."""
+    def edit(fix):
+        for name in os.listdir(os.path.join(fix, "assets")):
+            path = os.path.join(fix, "assets", name)
+            body = open(path, "rb").read()
+            if body.startswith(b'{"version": "%s"' % tag[1:].encode()) and old in body:
+                open(path, "wb").write(body.replace(old, new))
+    return edit
+
+
+# row 4: the selection date is read only from a manifest verified against the signed release-files.sha256
+two_rel = [("v0.4.0", "2026-11-20T12:00:00Z", False, False, 1), ("v0.3.1", "2026-11-04T12:00:00Z", False, False, 1)]
+pd_, gotd, _l, _o, _f = fetch("2026-11", tamper("v0.4.0", b"2026-11-20", b"2026-10-20"), release_list=two_rel)
+check("S2 row 4: a decoy v0.4.0 manifest (replaced after signing, its date moved out of the month) refuses the fetch in one line naming the tag and release-manifest.json, the unsigned date selects nothing",
+      one_line(pd_) and "v0.4.0" in pd_.stderr and "release-manifest.json" in pd_.stderr, (pd_.returncode, pd_.stderr, gotd))
+pd_, gotd, _l, _o, _f = fetch("2026-11", tamper("v0.3.1", b"2026-11-04", b"2026-12-04"), release_list=two_rel)
+check("S2 row 4: v0.3.1 whose manifest date was moved to 4 December (not the signed file's hash) refuses the fetch in one line naming the tag and release-manifest.json, it is not silently left out",
+      one_line(pd_) and "v0.3.1" in pd_.stderr and "release-manifest.json" in pd_.stderr, (pd_.returncode, pd_.stderr, gotd))
+
+# row 4b: below v0.3.0 the letter does not need a manifest date; v0.3.0 and later always do
+pre = [("v0.4.0", "2026-11-20T12:00:00Z", False, False, 1), ("v0.2.3", "2026-09-01T12:00:00Z", False, False, 1)]
+pd_, gotd, _l, _o, _f = fetch("2026-11", release_list=pre, manifests={"v0.2.3": b'{"version":"0.2.3"}'})
+check("S2 row 4b: a v0.2.3 release whose manifest is {\"version\":\"0.2.3\"} does not stop the letter",
+      pd_.returncode == 0 and "v0.4.0" in gotd, (pd_.returncode, pd_.stderr, gotd))
+for tag, mf, what in (("v0.2.9", b'{"version":"0.3.1"}', "a tag named v0.2.9 whose verified manifest says version 0.3.1"),
+                      ("v0.3.0", b'{"version":"0.2.0"}', "a v0.3.0 tag whose manifest says version 0.2.0"),
+                      ("v0.3.0", b'{"version":"0.3.0"}', "a v0.3.0 release with no manifest date (the API date is never the fallback)")):
+    pd_, gotd, _l, _o, _f = fetch("2026-11", release_list=[("v0.4.0", "2026-11-20T12:00:00Z", False, False, 1), (tag, "2026-11-05T12:00:00Z", False, False, 1)],
+                                  manifests={tag: mf})
+    check("S2 row 4b: %s is not pre-v0.3: the fetch refuses in one line naming the tag" % what,
+          one_line(pd_) and tag in pd_.stderr, (pd_.returncode, pd_.stderr, gotd))
+
+
+# row 6a: the key manifest of the release gets the checks of bin/chain-verify.py check_manifest, besides the Rekor-time window
+def custom_manifest(change=None, bits=4096):
+    """A function of the sandbox folder: a root-signed manifest of a fresh key valid from 1 November, changed by change(dict, der)."""
+    def make(tmp):
+        keys = os.path.join(tmp, "keys")
+        openssl("genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:%d" % bits, "-out", keys + "/c.key")
+        openssl("pkey", "-in", keys + "/c.key", "-pubout", "-out", keys + "/c.pub")
+        pub = open(keys + "/c.pub").read()
+        der = openssl("pkey", "-pubin", "-in", keys + "/c.pub", "-outform", "DER")
+        m = {"public_key": pub, "key_id": sha(der), "valid_from": "2026-11-01T00:00:00Z"}
+        if change:
+            change(m)
+        body = json.dumps(m, sort_keys=True, indent=1).encode() + b"\n"
+        open(keys + "/c-m.json", "wb").write(body)
+        sig = openssl("dgst", "-sha256", "-sign", keys + "/root.key", keys + "/c-m.json")
+        return body, base64.b64encode(sig) + b"\n"
+    return make
+
+
+pr, lr = present([[V4]], old_manifest=custom_manifest())
+check("S2 row 6a: the control, a well formed RSA-4096 manifest with the right key_id passes", pr.returncode == 0 and verifies(lr) == 1, (pr.stderr, lr))
+pr, lr = present([[V4]], old_manifest=custom_manifest(lambda m: m.update(revoked_at="2099-01-01T00:00:00Z")))
+check("S2 row 6a: a key whose revoked_at is LATER than the signing time still fails (a letter signed by a revoked key is not accepted), one line, nothing verified",
+      one_line(pr) and verifies(lr) == 0, (pr.returncode, pr.stderr, lr))
+pr, lr = present([[V4]], old_manifest=custom_manifest(lambda m: m.update(key_id="0" * 64)))
+check("S2 row 6a: a manifest whose key_id is not the hash of its key is refused in one line, nothing verified",
+      one_line(pr) and verifies(lr) == 0, (pr.returncode, pr.stderr, lr))
+pr, lr = present([[V4]], old_manifest=custom_manifest(bits=2048))
+check("S2 row 6a: a manifest whose key is RSA-2048, not RSA-4096, is refused in one line, nothing verified",
+      one_line(pr) and verifies(lr) == 0, (pr.returncode, pr.stderr, lr))
+pr, lr = present([[V4]], old_manifest=custom_manifest(lambda m: m.update(note="x")))
+check("S2 row 6a: a manifest with a field outside the closed list is refused in one line, nothing verified",
+      one_line(pr) and verifies(lr) == 0, (pr.returncode, pr.stderr, lr))
+
+# row 6b: only the inclusionPromise signs integratedTime
+pr, lr = present([[V4]], promise=False)
+check("S2 row 6b: a bundle with an inclusion proof but no inclusionPromise is refused in one line, nothing verified",
+      one_line(pr) and "inclusionPromise" in pr.stderr and verifies(lr) == 0, (pr.returncode, pr.stderr, lr))
+pr, lr = present([[V4]])
+check("S2 row 6b: the control, a bundle with the inclusionPromise passes", pr.returncode == 0 and verifies(lr) == 1, (pr.stderr, lr))
 print("%d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
