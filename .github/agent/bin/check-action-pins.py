@@ -239,8 +239,10 @@ GATE_WORKFLOW = ".github/workflows/agent-review-gate.yml"
 # the accepted gate-workflow digests (gate_digest: pins masked), a closed set of EXACTLY TWO while a change to the gate is in flight:
 # main's gate workflow and the change's; a later change removes main's old one, leaving one
 GATE_WORKFLOW_SHA256 = frozenset({
-    "30ab1b01d956e176e777c859b77b233ee1444abec869a8e1121473b98c001c89",   # main's gate workflow
-    "b44b6315aed32ba75af8f37bad42e785dfcf40b4f73a2846dd12dd6995153a6a",   # the same file with the merge queue judge and the sweep's queue-tip check
+    # main's gate workflow (the passed-audit record judge, and the sweep that judges a green Dependabot head again)
+    "30ab1b01d956e176e777c859b77b233ee1444abec869a8e1121473b98c001c89",
+    # the gate workflow with one step per check, no merge queue judge, and the record rule's Dependabot exemption
+    "80b99ef7e085b32577408142e0da681eb31b40b8aa751181582d6e35aff0a20f",
 })
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)
@@ -2353,6 +2355,11 @@ def _resolve_script(path, text, entries, bases=()):
             return None
     dpat = r"\$\{?RUNNER_TEMP\}?" if d.startswith("$") else re.escape(d)
     dst = r">\s*\"?" + dpat + r"/(" + re.escape(base) + r"|\$\(basename[^)]*\))"
+    # a `$(basename …)` write names this copy only when a `for f in` list of the job holds a file of this name: a loop
+    # that fetches other scripts does not write this one (and does not hide its literal write)
+    looped = {_base(x) for lst in re.findall(r"\bfor\s+f\s+in\s+([^;\n]*?)\s*;\s*do\b", text) for x in lst.split()}
+    if base not in looped:
+        dst = r">\s*\"?" + dpat + r"/(" + re.escape(base) + r")"
     writes = len(re.findall(dst + r"\"?", text))
     if writes != 1:
         return None

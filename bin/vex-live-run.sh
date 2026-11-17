@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Scanner-panel rule 12 (REQ-SCAN-012): the live test of our VEX files and of docs/using-our-vex.md against the real
 # services. Runs only in the `live-test` environment, one run at a time (concurrency group vex-live-test), from the
-# release-candidate job of release.yml and the main-push job of ci.yml, as the federated live-test identities.
+# release-candidate and post-publish jobs of release.yml, as the federated live-test identities.
 #
 #   bin/vex-live-run.sh run       sweep the test resources; every guide command block exactly as written (settings
 #                                 blocks take the test's values); our images and the pinned fixture copied by digest to

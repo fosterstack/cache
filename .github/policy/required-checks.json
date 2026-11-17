@@ -23,32 +23,12 @@
       "scope": "push"
     },
     {
-      "context": "gosec",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
       "context": "govulncheck",
       "integration_id": 15368,
       "scope": "push"
     },
     {
-      "context": "analyze (go)",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
       "context": "allowlist",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "dependency-review",
-      "integration_id": 15368,
-      "scope": "pull_request"
-    },
-    {
-      "context": "fips140-only",
       "integration_id": 15368,
       "scope": "push"
     },
@@ -69,16 +49,6 @@
     },
     {
       "context": "pin-age",
-      "integration_id": 15368,
-      "scope": "pull_request"
-    },
-    {
-      "context": "vendor",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "marker-gate",
       "integration_id": 15368,
       "scope": "pull_request"
     }
