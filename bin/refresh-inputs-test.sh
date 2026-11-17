@@ -5,7 +5,6 @@
 # bin/melange-apko-lib.sh. Every assertion runs offline against PATH stubs; nothing here calls a real sudo, sysctl,
 # unshare, melange or apko (the harness refuses to run on a non-Linux host unless the stubs are in front).
 . "$(cd "$(dirname "$0")" && pwd)/melange-apko-lib.sh"
-export FSCACHE_TEST_MODE=1   # gen-recipes.py's own fixture switch (its template pin); bin/refresh-inputs.sh has no test hook and does not read it
 # The production script names its tools by fixed path (TEST-SUBST lines). The suite runs a COPY, beside the real helpers, in which exactly those lines
 # point at dispatchers that exec the tool by NAME on the run's PATH (so the stubs of run_s, run_s2, ...), and checks the copy differs in no other line.
 RF_PROD="$RF"
@@ -34,7 +33,6 @@ for d, over in (("rfcopy", {}), ("rfcopy-nossl", {"/usr/bin/openssl": "/nonexist
         shutil.copy(os.path.dirname(prod) + "/" + h, dst + "/" + h)
 P
 RF="$rfd/rfcopy/bin/refresh-inputs.sh"; RFN="$rfd/rfcopy-nossl/bin/refresh-inputs.sh"
-export FSCACHE_GEN_PIN=$(shasum -a 256 "$fx/melange.yaml.tmpl" | cut -d" " -f1)   # the fixture template's pin: the job asks the generator what the recipes become
 # ---- begin verbatim sections ----
 # ===== rules 44-49: the refresh job ======================================================================================
 t "rule 45" "dependabot.yml has no apk, apko, melange or lock-file entry (this refresh job is their only updater)" bash -c "test -x '$RF' && python3 '$work/chk.py' dependabot '$root/.github/dependabot.yml'"
@@ -1092,12 +1090,12 @@ run_s4 env GH_STUB_OPEN="$wb3" STUB_CURL_DIR="$work/nonexistent-live" "${rfn[@]:
 t "rule 49" "a MISSING apk while a lock-only refresh PR waits (pointer equal to the record, not ahead) and the downloads fail: exit 0 'earlier pull request' (the guard precedes the downloads)" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -qi 'earlier' '$work/log' && ! test -e '$victim'"
 
 # ---- ruling (P3 finding 1): after BOTH daily jobs the generator --check stays green, and the template is never touched ----------------------------------------
-gcheck() { env FSCACHE_TEST_MODE=1 python3 "$root/bin/gen-recipes.py" --template "$1/build/melange.yaml.tmpl" --regular "$1/build/melange.yaml" --fips "$1/build/melange-fips.yaml" --melange-lock "$1/build/locks/melange.lock" --fips-module "$1/build/locks/fips-module.txt" --check; }
+gcheck() { python3 "$root/bin/gen-recipes.py" --template "$1/build/melange.yaml.tmpl" --regular "$1/build/melange.yaml" --fips "$1/build/melange-fips.yaml" --melange-lock "$1/build/locks/melange.lock" --fips-module "$1/build/locks/fips-module.txt" --check; }
 tsha() { shasum -a 256 "$1/build/melange.yaml.tmpl" | cut -d' ' -f1; }
 mkrepo; tpl_before=$(tsha "$work/rp"); gcheck "$work/rp" >/dev/null 2>&1 || echo "FIXTURE: the fixture repo does not pass the generator check before the job" >&2
 run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$fx/live-mel-new.lock.json" STUB_CURL_DIR="$fx/live" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "rule 21" "refresh: after a closure change the generator --check passes on the job's output (the job edits the lock; the recipes are the generator's output)" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -q 'zlib=1.3.2-r0' '$work/rp/build/locks/melange.lock' && grep -q 'zlib=1.3.2-r0' '$work/rp/build/melange.yaml' && grep -q 'zlib=1.3.2-r0' '$work/rp/build/melange-fips.yaml'" && t "rule 21" "...--check passes" gcheck "$work/rp"
-t "rule 21" "...the template is byte-for-byte what it was (an automated change never edits the template or its pin)" test "$(tsha "$work/rp")" = "$tpl_before"
+t "rule 21" "...the template is byte-for-byte what it was (an automated change never edits the template)" test "$(tsha "$work/rp")" = "$tpl_before"
 t "rule 21" "...and the daily PR adds the lock and the two regenerated recipes, never the template" bash -c "$GHPATHS | grep -q 'melange.lock' && $GHPATHS | grep -q 'build/melange.yaml' && ! $GHPATHS | grep -q 'tmpl'"
 fr; tpl_before=$(tsha "$work/rp3" 2>/dev/null || shasum -a 256 "$work/rp3/build/melange.yaml.tmpl" | cut -d' ' -f1)
 mkdir -p "$work/gr3/lib/fips140"; echo "v1.1.0-deadbeef" >"$work/gr3/lib/fips140/certified.txt"
