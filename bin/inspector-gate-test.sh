@@ -228,12 +228,12 @@ row("latest: an alias is the same vulnerability (the later affected statement na
     {"vulnerability": {"name": "CVE-9999-1", "aliases": ["GHSA-x"]}, "status": "not_affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]},
     {"vulnerability": {"name": "GHSA-x"}, "status": "affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]}]}), "CVE-9999-1", PKG, None) is False)
 # round 1 (cache#671): the pair is compared by what the readers match on, not by spelling; aliases are one vulnerability across the whole document; the order is one total order per pair
-def two(first, second, f_prods=None, s_prods=None, f_subs=("pkg:generic/busybox@1.37.0",), s_subs=("pkg:generic/busybox@1.37.0",), f_name="CVE-9999-1", s_name="CVE-9999-1"):
+def two(first, second, f_prods=None, s_prods=None, f_subs=("pkg:generic/busybox@1.37.0",), s_subs=("pkg:generic/busybox@1.37.0",), f_name="CVE-9999-1", s_name="CVE-9999-1", pkg=PKG):
     def stmt(status, name, prods, subs, extra=None):
         v = {"name": name}
         if extra: v["aliases"] = extra
         return {"vulnerability": v, "status": status, "products": [{"@id": q, "subcomponents": [{"@id": x} for x in subs]} for q in prods]}
-    return G.covered(G.vex_index({"statements": [stmt(first, f_name, f_prods or [OCI], f_subs), stmt(second, s_name, s_prods or [OCI], s_subs)]}), "CVE-9999-1", PKG, None)
+    return G.covered(G.vex_index({"statements": [stmt(first, f_name, f_prods or [OCI], f_subs), stmt(second, s_name, s_prods or [OCI], s_subs)]}), "CVE-9999-1", pkg, None)
 SC = OCI + "&variant=production&arch=amd64"
 SC2 = OCI.replace("?repository_url=ghcr.io/fosterstack/cache", "?repository_url=ghcr.io/fosterstack/cache") + "&arch=amd64&variant=production"
 row("latest: the same scope with its qualifiers in another order is the same product (retracted)", two("not_affected", "affected", [SC], [SC2]) is False)
@@ -243,6 +243,12 @@ row("latest: a subcomponent of another purl type is the same package (retracted)
 row("latest: a subcomponent in another case is the same package (retracted)", two("not_affected", "affected", f_subs=("pkg:generic/BusyBox@1.37.0",)) is False)
 row("latest: a percent-encoded subcomponent is the same package (retracted)", two("not_affected", "affected", f_subs=("pkg:generic/busybox@1.37.0",), s_subs=("pkg:generic/%62usybox@1.37.0",)) is False)
 row("latest: another version is another package (not retracted)", two("not_affected", "affected", s_subs=("pkg:generic/busybox@1.36.0",)) is True)
+STD = ("stdlib", "1.27.2")
+GA, GB = "pkg:golang/stdlib@go1.27.2", "pkg:golang/stdlib@1.27.2"
+row("latest: stdlib go1.27.2 then a later affected 1.27.2 is the same package (retracted)", two("not_affected", "affected", f_subs=(GA,), s_subs=(GB,), pkg=STD) is False)
+row("latest: stdlib 1.27.2 then a later affected go1.27.2 is the same package (retracted)", two("not_affected", "affected", f_subs=(GB,), s_subs=(GA,), pkg=STD) is False)
+row("latest: stdlib affected go1.27.2 then not_affected 1.27.2 covers", two("affected", "not_affected", f_subs=(GA,), s_subs=(GB,), pkg=STD) is True)
+row("latest: stdlib affected 1.27.2 then not_affected go1.27.2 covers", two("affected", "not_affected", f_subs=(GB,), s_subs=(GA,), pkg=STD) is True)
 AL = {"statements": [
     {"vulnerability": {"name": "CVE-9999-1", "aliases": ["GHSA-X"]}, "status": "affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]},
     {"vulnerability": {"name": "CVE-9999-1"}, "status": "not_affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]},
@@ -262,7 +268,7 @@ print("index-cases-run")
 PYI
 )"; idx_rc=$?
 echo "$IDXOUT" | sed 's/^/  /'
-[ "$idx_rc" = 0 ] && [ "$(grep -c '^\(ok\|FAIL\):' <<<"$IDXOUT")" = 57 ] && grep -qx 'index-cases-run' <<<"$IDXOUT" || { echo "FAIL: the index section ran $(grep -c '^\(ok\|FAIL\):' <<<"$IDXOUT") cases, want 57, or the section exited non-zero (a crash or a skipped case)"; fail=$((fail+1)); }
+[ "$idx_rc" = 0 ] && [ "$(grep -c '^\(ok\|FAIL\):' <<<"$IDXOUT")" = 61 ] && grep -qx 'index-cases-run' <<<"$IDXOUT" || { echo "FAIL: the index section ran $(grep -c '^\(ok\|FAIL\):' <<<"$IDXOUT") cases, want 61, or the section exited non-zero (a crash or a skipped case)"; fail=$((fail+1)); }
 pass=$((pass + $(grep -c '^ok:' <<<"$IDXOUT"))); fail=$((fail + $(grep -c '^FAIL:' <<<"$IDXOUT")))
 
 # The COMMITTED document (rc-5a G review round 1): the one statement covers the jwt/v4 module at any version, in the image and in the Go product, and nothing else.
@@ -302,6 +308,13 @@ std_case() { # name want_rc regex finding-component-json statement-purl
 }
 std_case "R1 a golang stdlib finding at go1.27.2 is covered by the stdlib@1.27.2 statement" 0 "1 covered" \
   '{"bom-ref":"s0","type":"library","name":"stdlib","version":"go1.27.2","purl":"pkg:golang/stdlib@go1.27.2"}' "pkg:golang/stdlib@1.27.2"
+GO_STD='{"bom-ref":"s0","type":"library","name":"stdlib","version":"go1.27.2",
+"purl":"pkg:golang/stdlib@go1.27.2"}'
+# The package type is compared too: a statement for generic stdlib says nothing about the Go standard library.
+std_case "R1 a golang stdlib finding at go1.27.2 is NOT covered by a generic stdlib@1.27.2 statement" 1 "1 finding" \
+  "$GO_STD" "pkg:generic/stdlib@1.27.2"
+std_case "R1 a golang stdlib finding at go1.27.2 is covered by a golang stdlib@go1.27.2 statement (exact)" 0 "1 covered" \
+  "$GO_STD" "pkg:golang/stdlib@go1.27.2"
 std_case "R1 a golang stdlib finding at go1.27.3 is not covered by the stdlib@1.27.2 statement" 1 "1 finding" \
   '{"bom-ref":"s0","type":"library","name":"stdlib","version":"go1.27.3","purl":"pkg:golang/stdlib@go1.27.3"}' "pkg:golang/stdlib@1.27.2"
 std_case "R1 a stdlib finding with no purl, version go1.27.2, is covered by the stdlib@1.27.2 statement" 0 "1 covered" \
@@ -314,6 +327,18 @@ std_case "R1 a generic stdlib finding at go1.27.2 is covered by a generic stdlib
   '{"bom-ref":"s0","type":"library","name":"stdlib","version":"go1.27.2","purl":"pkg:generic/stdlib@go1.27.2"}' "pkg:generic/stdlib@go1.27.2"
 std_case "R1 a generic stdlib finding at 1.27.2 is covered by a generic stdlib@1.27.2 statement" 0 "1 covered" \
   '{"bom-ref":"s0","type":"library","name":"stdlib","version":"1.27.2","purl":"pkg:generic/stdlib@1.27.2"}' "pkg:generic/stdlib@1.27.2"
+
+# The finding's own package-URL type must equal the statement subcomponent's when either is golang.
+GEN_STD='{"bom-ref":"s0","type":"library","name":"stdlib","version":"go1.27.2","purl":"pkg:generic/stdlib@go1.27.2"}'
+GO_STD_BARE='{"bom-ref":"s0","type":"library","name":"stdlib","version":"1.27.2","purl":"pkg:golang/stdlib@1.27.2"}'
+std_case "R2 a generic stdlib finding is NOT covered by a golang stdlib@1.27.2 statement" 1 "1 finding" \
+  "$GEN_STD" "pkg:golang/stdlib@1.27.2"
+std_case "R2 a golang stdlib finding is NOT covered by a generic stdlib@go1.27.2 statement" 1 "1 finding" \
+  "$GO_STD" "pkg:generic/stdlib@go1.27.2"
+std_case "R2 a golang stdlib finding at go1.27.2 is covered by a golang stdlib@1.27.2 statement" 0 "1 covered" \
+  "$GO_STD" "pkg:golang/stdlib@1.27.2"
+std_case "R2 a golang stdlib finding at 1.27.2 is covered by a golang stdlib@1.27.2 statement" 0 "1 covered" \
+  "$GO_STD_BARE" "pkg:golang/stdlib@1.27.2"
 
 echo "----"
 echo "inspector-gate: ${pass} passed, ${fail} failed"

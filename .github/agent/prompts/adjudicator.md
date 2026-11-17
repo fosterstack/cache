@@ -35,7 +35,7 @@ proposal under a top-level "propose" key in the same JSON object (fields: kind =
 a list of at most 20 objects with exactly scanner, finding_id and purl; package, optional). Every
 text is ASCII only and at most 2000 characters, and names no vendor or model; a proposal that
 breaks any of this is dropped and counted. A proposal is delivered in the draft PR and takes
-effect only after the owner merges it - never assume it is already in force.
+effect only after a maintainer merges it - never assume it is already in force.
 A proposal's evidence is the path of a regular file present in the checked-out repository, relative to the
 repository root and in git's normal form, as `git ls-files` prints it: no leading / or ./, no backslashes, no ..
 segments and no duplicate slashes. A file written after adjudication cannot be named.
@@ -69,7 +69,7 @@ exploit code.
 ## narrative
 Write the audit Conclusion for our own container image from ONLY the structured results below:
 what was examined (image digest, per-scanner package counts, scanners that did not run), what was
-found, what was decided and on what evidence, and what needs the owner. Three to six sentences;
+found, what was decided and on what evidence, and what needs a maintainer. Three to six sentences;
 on a clean day, one sentence with the numbers. Name only CVE/GO ids present in the sections; do
 not contradict a section. Do not produce exploit code.
 

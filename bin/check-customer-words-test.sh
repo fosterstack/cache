@@ -74,13 +74,19 @@ for w in ownership downer plane land elaborate advisory "hand off" "hand-off" RE
   add docs/a.md "text $w text" 0 "T3 added '$w' passes"
 done
 # T4 internal paths, rule numbers, id families
-for w in docs/ratify/x handoffs/ audits/ /srv/ ops#794 "rule 9" "rules 3" SB-3 HS-5 MC-37 CR-23 lane-outbox; do
+for w in docs/ratify/x handoffs/ audits/ /srv/ ops#794 cache#514 Cache#514 CACHE#514 "rule 9" "rules 3" SB-3 HS-5 MC-37 CR-23 lane-outbox; do
   add docs/a.md "see $w now" 1 "T4 added '$w' fails"
 done
 add docs/verify-release.md "see [REQ-REL-001](release-notes.md#req-rel-001)" 0 "T3 a public requirement id (a link to the release notes) passes"
 add docs/a.md "ruler 9" 0 "T4 'ruler 9' passes"
+# T4c cache# needs digits right after it, and no letter right before it
+for w in "the cache" "cache#" "cache #5" "cache# 5" "cache#x" "mycache#12" "#514" "#514 in the cache" "other#514" "cache-514"; do
+  add docs/a.md "see $w now" 0 "T4c added '$w' passes"
+done
+add docs/a.md "see (cache#514)." 1 "T4c cache#514 in parentheses fails"
+add docs/a.md "see cache#5 and cache#6" 1 "T4c two cache# references fail"
 # T4b a word cannot hide behind an underscore, a digit or markup, and "rule N" survives extra white space
-for w in _owner_ '**owner**' the_owner owner2 'rule  9' $'rule\t9' _audits/ _ops#794 _SB-3; do
+for w in _owner_ '**owner**' the_owner owner2 'rule  9' $'rule\t9' _audits/ _ops#794 _cache#514 _SB-3; do
   add docs/a.md "text $w text" 1 "T4b added '$w' fails"
 done
 # T5 lines and files that must not count
@@ -164,7 +170,7 @@ check 0 "T6b a deleted binary file passes"
 mk - "" cmd/x.bin $'fine\n'; printf 'a\0' > cmd/x.bin; git commit -qam bin
 check 0 "T6b a binary file outside the customer paths passes"
 # T10 the workflow files are read like a page: a person reads their comments, job and step names, error text and issue text
-for w in "# the owner decides" "# the lane guard" "echo '::error::see rule 9'" "- name: step (advisor 0084)" "# ops#794"; do
+for w in "# the owner decides" "# the lane guard" "echo '::error::see rule 9'" "- name: step (advisor 0084)" "# ops#794" "# cache#514"; do
   add .github/workflows/ci.yml "$w" 1 "T10 added '$w' to a workflow fails"
 done
 add .github/workflows/x.yaml "# the lane" 1 "T10 a .yaml workflow fails"
@@ -198,6 +204,15 @@ check 1 "T7 a line one character different fails"
 mk - "" README.md $'  Fix the file owner or mode  \n'
 printf '# header\nREADME.md|Fix the file owner or mode\n' > .github/policy/customer-words-allow.txt
 check 0 "T7 leading and trailing whitespace is trimmed"
+mk - "" README.md $'see cache#514\n'
+printf '# header\nREADME.md|see cache#514\n' > .github/policy/customer-words-allow.txt
+check 0 "T7 an exact path|line entry passes a line with cache#514"
+mk - "" docs/a.md $'see cache#514\n'
+printf '# header\nREADME.md|see cache#514\n' > .github/policy/customer-words-allow.txt
+check 1 "T7 the same cache#514 line in another path fails"
+mk - "" README.md $'see cache#514.\n'
+printf '# header\nREADME.md|see cache#514\n' > .github/policy/customer-words-allow.txt
+check 1 "T7 a cache#514 line one character different fails"
 for bad in 'README.md|' 'owner' 'docs/*.md|owner' 'docs/a.md?|owner' '|owner'; do
   mk - "" README.md $'fine\n'; printf '%s\n' "$bad" > .github/policy/customer-words-allow.txt
   check 2 "T7 malformed allowlist line '$bad' exits 2"
@@ -206,6 +221,11 @@ done
 mk - "" README.md $'fine\n'; PR_TITLE="the lane fix" check 1 "T8 a title with lane fails" 'title'
 mk - "" README.md $'fine\n'; PR_BODY=$'one\nthe advisor said' check 1 "T8 a body with advisor fails" 'body'
 mk - "" README.md $'fine\n'; PR_BODY="" PR_TITLE="plain title" check 0 "T8 an empty body and a clean title pass"
+mk - "" README.md $'fine\n'; PR_TITLE="fix for cache#514" check 1 "T8 a title with cache#514 fails" 'title'
+mk - "" README.md $'fine\n'; PR_TITLE="CACHE#514 fix" check 1 "T8 a title with CACHE#514 fails" 'title'
+mk - "" README.md $'fine\n'; PR_BODY=$'one\nsee cache#514' check 1 "T8 a body with cache#514 fails" 'body'
+mk - "" README.md $'fine\n'; PR_TITLE="the cache fix" PR_BODY=$'one\ncache #5 and cache#' check 0 "T8 a title and body with cache but no cache#N pass"
+mk - "" README.md $'fine\n'; PR_TITLE="mycache#12" PR_BODY="#514" check 0 "T8 mycache#12 and #514 alone pass"
 # T8b the edited-title workflow runs the script on empty input, with the title and body in the environment
 cd "$ROOT" || exit 2
 out="$(PR_BODY="a lane here" python3 -I "$SCRIPT" < /dev/null 2>&1)"; rc=$?

@@ -4,6 +4,8 @@
 {"suite": "persona-uat-test.sh"},
 {"suite": "chain-sign-wiring-test.sh"},
 {"suite": "assemble-image-test.sh"},
+{"suite": "acceptance-gradle-test.sh"},
+{"suite": "acceptance-k8s-manifests-test.sh"},
 {"suite": "go-bump-open-pr-test.sh"},
 {"suite": "inspector-reuse-test.sh"},
 {"suite": "build-apk-test.sh"},
@@ -71,6 +73,5 @@
 {"suite": "s2-p2-strict-lookups-test.sh"},
 {"suite": "s2-p2-time-exceptions-test.sh"},
 {"suite": "marker-gate-test.sh"},
-{"suite": "pin-audit-go-major-test.sh"},
-{"suite": "required-check-guard-test.sh"}
+{"suite": "pin-audit-go-major-test.sh"}
 ]

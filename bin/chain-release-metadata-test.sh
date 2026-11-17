@@ -266,9 +266,10 @@ check("and the command run as plain `bash SCRIPT ARGS` (GitHub's default job tim
       "text: REQ-CHAIN-004-AC2 says the command runs as plain bash SCRIPT ARGS, no timeout -k 20 540")
 n4, n7 = REQS["REQ-CHAIN-004"]["notes"], REQS["REQ-CHAIN-007"]["notes"]
 check("Every command run under Witness is plain `bash SCRIPT ARGS`; GitHub's default job time limit bounds a hung command" in n4 and "timeout -k 20 540" not in n4 and "timeout 540" not in n4
-      and "with the command run as plain `bash SCRIPT ARGS` inside it" in n7 and "timeout -k 20 540" not in n7 and "timeout 540" not in n7
+      and "every Witness step runs through bin/witnessed.sh STEP SCRIPT, except the verify job's release-verify, which runs through bin/witnessed-local.sh, with the command run as plain `bash SCRIPT ARGS` inside it; the stage file never repeats Witness flags" in n7
+      and "timeout -k 20 540" not in n7 and "timeout 540" not in n7 and "single helper" not in n7
       and "Release has six such steps (release-verify, release-apks, release-publish, release-sign, release-assets, release-postverify)" in n7 and "Release has five such steps" not in n7,
-      "text: the REQ-CHAIN-004 and REQ-CHAIN-007 notes say plain bash SCRIPT ARGS, no timeout 540, and six Release steps")
+      "text: the REQ-CHAIN-004 and REQ-CHAIN-007 notes say plain bash SCRIPT ARGS, no timeout 540; the REQ-CHAIN-007 note says every Witness step runs through bin/witnessed.sh (release-verify through bin/witnessed-local.sh), no single helper, and six Release steps")
 t1 = ac("REQ-CHAIN-007", 1)["then"]
 check("and nothing else in the step except an `env` block of exactly the credential names AC2 and AC15 give that step and, for every step after release-verify, the one condition" in t1,
       "text: REQ-CHAIN-007-AC1 says the witnessed steps carry an env block of the credentials AC2 and AC15 name")
@@ -325,9 +326,9 @@ check("bind-archives" not in t21 and "bin/release-metadata.py checksums" in t21 
       "text: REQ-CHAIN-007-AC21 names only the checksums command (it makes the archive check itself) and says no test creates the signed file")
 # the texts, comments and the reason say what the scripts do
 t6, t10 = ac("REQ-CHAIN-007", 6)["then"], ac("REQ-CHAIN-007", 10)["then"]
-check("--rebuild-dir" not in t6 and "compares Build's and Rebuild's" not in t6 and "release-sign-apks.sh --build-dir B --key K" in t6 and "release-compare.sh" in t6,
-      "text: REQ-CHAIN-007-AC6 runs release-sign-apks.sh with --build-dir and --key only; the comparison is release-compare.sh's")
-check("release-sign: cosign, git, jq and python3" in t10, "text: REQ-CHAIN-007-AC10 lists git among release-sign's tools")
+check("--rebuild-dir" not in t6 and "compares Build's and Rebuild's" not in t6 and "release-sign-apks.sh --build-dir B` with the key reference from RELEASE_KMS_KEY_REF" in t6 and "--key K" not in t6 and "release-compare.sh" in t6,
+      "text: REQ-CHAIN-007-AC6 runs release-sign-apks.sh with --build-dir and the key reference from RELEASE_KMS_KEY_REF; the comparison is release-compare.sh's")
+check("release-sign: cosign, git, jq, python3, sha256sum and trap;" in t10, "text: REQ-CHAIN-007-AC10 lists git, sha256sum and trap among release-sign's tools")
 b7 = ac("REQ-BUILDAPK-001", 7)["then"]
 check("Build and Rebuild apk" not in b7 and "PROPOSED" not in b7 and "counterpart in Rebuild" not in b7 and "same control AND data sections" not in b7 and "--rebuild-dir" in b7 and "unknown argument" in b7 and "release-compare.sh" in b7,
       "text: REQ-BUILDAPK-001-AC7 signs Build's apks only; a --rebuild-dir is an unknown argument; the comparison is release-compare.sh's")

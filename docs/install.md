@@ -1,20 +1,23 @@
 # Install FosterStack Cache
 
-The server is a single static binary with no runtime dependencies
-(`CGO_ENABLED=0`, nothing to `apt-get`, nothing fetched at startup). Download
-the archive for your platform, verify it, run it.
+The server is a single static binary. It has no runtime dependencies: there is
+nothing to install with `apt-get`, and it fetches nothing at startup. (It is
+built with `CGO_ENABLED=0`.) To install it, download the archive for your
+platform, verify it, and run it.
 
 Prefer containers? See [One-command Docker deploy](docker-deploy.md) or
-[Deploying on Kubernetes](kubernetes.md). Air-gapped? Start here, then read
-[Installing on disconnected networks](offline-install.md) for the transfer
-and verification deltas.
+[Deploying on Kubernetes](kubernetes.md).
+
+Is your network air-gapped (no internet access)? Start here, then read
+[Installing on disconnected networks](offline-install.md). It covers how to
+move the files in and how to verify them offline.
 
 ## Supported platforms
 
-Every release builds both of these, from the same source in the same CI run.
-From v0.3.0 the release carries Linux archives only: there is no macOS <!-- pinned: historical -->
-binary, and no darwin archive on the release page (releases before v0.3.0 <!-- pinned: historical -->
-had one).
+Every release builds both platforms in the table, from the same source, in the
+same CI run. From v0.3.0 the release carries Linux archives only. <!-- pinned: historical -->
+It has no macOS binary and no darwin archive on the release page. Releases before v0.3.0 <!-- pinned: historical -->
+had one.
 
 | Platform | Archive | Notes |
 |---|---|---|
@@ -23,40 +26,42 @@ had one).
 
 **FIPS builds are Linux-only**: `fscache-fips_X.Y.Z_linux_amd64.tar.gz` and
 `fscache-fips_X.Y.Z_linux_arm64.tar.gz`. The `-fips` variant is the same
-source built with `GOFIPS140=v1.0.0` <!-- pinned: upstream -->, selecting Go's CMVP FIPS 140-3
-validated cryptographic module (cert #5247). The compliance buyer this
-serves deploys on Linux, so there is no FIPS build for any other platform.
+source, built with `GOFIPS140=v1.0.0` <!-- pinned: upstream -->. That setting selects Go's
+FIPS 140-3 validated cryptographic module (CMVP certificate #5247). There is no FIPS build for any platform other than Linux.
 
-The FIPS build says so at startup, so the property is observable rather than
-taken on trust:
+The FIPS build reports itself at startup, so you can see it rather than take it
+on trust:
 
 ```json
 {"msg":"fscache: starting","fips140":"active (Go validated module ..., CMVP cert #5247)", ...}
 ```
 
-Standard builds report `"fips140":"off"`. `/statusz` carries the same
-information as two fields: `fips140` (a boolean) and `fips140_note` (the same
-text, with the module version in it). Running a standard build with `GODEBUG=fips140=on` does not claim the
-certificate: the note then reads `active (fips140 mode forced at runtime; not
-the validated-module build)`. An assessor can confirm which build is running
-from the process log and the install path, without access to your build
-pipeline.
+Standard builds report `"fips140":"off"`.
 
-**Container images are multi-arch** (`linux/amd64` + `linux/arm64`), so
-`docker pull` resolves the right one automatically — including on Apple
-Silicon and Graviton. See
+`/statusz` carries the same information as two fields: `fips140` (a boolean)
+and `fips140_note` (the same text, with the module version in it).
+
+If you run a standard build with `GODEBUG=fips140=on`, it does not claim the
+certificate. The note then reads `active (fips140 mode forced at runtime; not
+the validated-module build)`.
+
+An assessor can confirm which build is running from the process log and the
+install path. They do not need access to your build pipeline.
+
+**Container images are multi-arch** (`linux/amd64` and `linux/arm64`), so
+`docker pull` picks the right one for you, including on Apple Silicon and
+Graviton. See
 [docker-deploy.md](docker-deploy.md#platforms-and-multi-arch-images).
 
 **The container images carry no CA certificate bundle.** The server makes no
-outbound connection and verifies no certificate; for HTTPS it uses the
+outbound connection and verifies no certificate. For HTTPS it uses the
 certificate and key you give it ([docker-deploy.md](docker-deploy.md)).
 
 **macOS and Windows are not built.** On a Mac, run the container image
-(Docker Desktop pulls `linux/arm64` on Apple Silicon). **Windows is not
-planned.** This is a server-side cache that
-lives next to your CI runners; there's no meaningful market for a Windows
-build. If you develop on Windows, run the server under WSL2 — that's
-`linux/amd64`.
+(Docker Desktop pulls `linux/arm64` on Apple Silicon).
+
+**Windows is not planned.** If you
+develop on Windows, run the server under WSL2. That is `linux/amd64`.
 
 ## Which archive do I need?
 
@@ -65,9 +70,9 @@ build. If you develop on Windows, run the server under WSL2 — that's
 echo "$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')"
 ```
 
-`uname -m` reports `aarch64` on 64-bit ARM Linux and `x86_64` on Intel/AMD.
-If the command prints `darwin_...`, you are on a Mac: there is no archive for
-it, use the container image.
+`uname -m` reports `aarch64` on 64-bit ARM Linux and `x86_64` on Intel or AMD.
+If the command prints `darwin_...`, you are on a Mac. There is no archive for
+it, so use the container image.
 
 ## Install
 
@@ -87,12 +92,14 @@ sudo install -m 0755 "${BIN}" "/usr/local/bin/${BIN}"
 curl -fsS localhost:8080/healthz             # -> ok
 ```
 
-`BIN` carries through every command on this page, including the systemd unit
-below. Set it once and the standard and FIPS paths are the same instructions.
+`BIN` carries through the shell commands in this section and the next one, "Verify what
+you downloaded"; the systemd unit names its binary itself, so for the FIPS build you
+edit its `ExecStart` as described there. The source build below uses `fscache` in its
+own command.
 
-The FIPS build keeps `-fips` in its filename, its install path, and its process
-name on purpose: which build is running stays visible in `ps`, in the unit file,
-and to anyone auditing the host, rather than being recoverable only from logs.
+The FIPS build keeps `-fips` in its filename, its install path and its process
+name on purpose. That way you can see which build is running in `ps`, in the
+unit file, and to anyone auditing the host. You don't have to dig it out of logs.
 
 Then point your build tool at it: [Gradle setup](gradle.md) ·
 [Maven setup](maven.md).
@@ -102,8 +109,8 @@ To move to another version later, see [upgrading and pinning](upgrading.md).
 ## Verify what you downloaded
 
 Do this before you install it, not after. Every release ships a
-`checksums.txt` covering all four archives plus a signature bundle over that
-file, signed with our release key:
+`checksums.txt` that lists a checksum for each of the four archives. It also
+ships a signature bundle for that file, signed with our release key:
 
 ```sh
 curl -fsSLO "https://github.com/fosterstack/cache/releases/download/v${VERSION}/checksums.txt"
@@ -112,10 +119,10 @@ curl -fsSLO "https://raw.githubusercontent.com/fosterstack/cache/v${VERSION}/bui
 
 cosign verify-blob --key release.rsa.pub --bundle checksums.txt.bundle checksums.txt
 
-sha256sum -c checksums.txt 2>/dev/null | grep OK
+LINE=$(grep -F "${BIN}_${VERSION}_${PLATFORM}.tar.gz" checksums.txt) && echo "$LINE" | sha256sum -c -
 ```
 
-The signature proves the checksums file was signed with our release key; the checksums then cover every archive transitively.
+The signature proves that we signed the checksums file with our release key. The checksums in that file then cover every archive.
 
 To check that this key is the one the release names, follow [Check the release key](verify-key.md).
 
@@ -129,16 +136,15 @@ cosign verify-blob \
   checksums.txt
 ```
 
-Full detail,
-including image signatures and SLSA provenance, is in
+For more detail, including image signatures and SLSA provenance (the signed
+record of how an image was built), see
 [Verify our images](verify-images.md).
 
 ## Run it as a service (systemd)
 
 If the unit fails with `status=203/EXEC`, `ExecStart` points at a path that does
-not exist — almost always the FIPS build installed as `fscache-fips` while the
-unit still names `fscache`. The two must match.
-
+not exist. This is almost always the FIPS build installed as `fscache-fips`
+while the unit still names `fscache`. The two must match.
 
 ```ini
 [Unit]
@@ -170,17 +176,18 @@ sudo systemctl enable --now fscache
 systemctl status fscache
 ```
 
-`DynamicUser=yes` + `StateDirectory=fscache` means systemd creates an
-unprivileged user and `/var/lib/fscache` for you — no manual `useradd`, and
-the data directory is owned correctly on first start.
+With `DynamicUser=yes` and `StateDirectory=fscache`, systemd creates an
+unprivileged user and `/var/lib/fscache` for you. You don't run `useradd`, and
+the data directory has the correct file ownership on first start.
 
-Set `FSCACHE_MAX_BYTES` to your eviction cap and size the disk above it; see
-[Sizing](docker-deploy.md#sizing) for the numbers.
+Set `FSCACHE_MAX_BYTES` to the size at which you want eviction to start, and
+make the disk bigger than that. See [Sizing](docker-deploy.md#sizing) for the
+numbers.
 
 ## Configuration
 
-All configuration is environment variables. The full table, with defaults, is in the
-[README](../README.md#build-and-run-from-source).
+You configure the server with environment variables. The full table, with
+defaults, is in the [README](../README.md#build-and-run-from-source).
 
 ## Build from source
 
@@ -190,6 +197,6 @@ cd cache
 CGO_ENABLED=0 go build -o fscache ./cmd/fscache
 ```
 
-A source build is not a released artifact: releases are built only by this
-repo's CI (see [`RELEASING.md`](../RELEASING.md)), which is what the
-signatures and provenance attest to.
+A build from source is not a released artifact. Only this repo's CI builds
+releases (see [`RELEASING.md`](../RELEASING.md)), and the signatures and
+provenance vouch for those builds.
