@@ -53,7 +53,7 @@ The scanner set is [one list in the repo](.github/policy/scanners.json);
 the check script runs exactly the scanners it knows how to run (today Grype and
 OSV-Scanner), and a scanner on the list that it cannot run fails the run.
 
-What the release workflow does today, stated exactly: there is one build.
+What the release workflow does from v0.3.0, stated exactly: there is one build. <!-- pinned: historical -->
 Its images are assembled as OCI layouts and handed to the later stages as
 workflow artifacts; every scanner in the list scans those exact images, and
 the acceptance suites run against them; the Release stage first verifies the signed
@@ -61,7 +61,7 @@ record of every earlier stage, and only the steps after that one read the
 registry and signing secrets; they push the same image bytes by digest to the
 public registries and read each registry back, and the release stops if a digest read back differs
 from the attested one. The scan verdict attaches to the published digests because they are the
-scanned digests. From v0.3.0 the release's signed Check records bind the scan results file (`scan-results.json`, one file for <!-- pinned: historical -->
+scanned digests. The release's signed Check records bind the scan results file (`scan-results.json`, one file for
 all scanners), by hash, to the image digests (see
 [the signed evidence files](docs/verify-images.md#the-signed-evidence-files)); the results file
 itself is not attached to the release. The daily rescan
@@ -88,7 +88,7 @@ one for that image and scanner) rather than waiting for someone to look.
 
 ## FIPS 140-3
 
-The fscache-fips build uses the Go Cryptographic Module, validated to FIPS 140-3 under CMVP certificate #5247, with FIPS mode on by default. The certificate's vendor-affirmed operating environments include Linux on x86-64 and ARM64, where our images run, so the module keeps its validation inside our images. That gives you a FIPS-validated cryptographic module for control SC-13 in the NIST SP 800-53B low, moderate and high baselines (FedRAMP Low, Moderate and High), where FedRAMP accepts FIPS-validated modules. How to check it, and the certificate links, are in [`docs/fips.md`](docs/fips.md).
+The fscache-fips build uses the Go Cryptographic Module: FIPS 140-3 Inside, Certificate #5247, when the module is operated in approved mode. FIPS mode is on by default. That gives you a FIPS-validated cryptographic module for control SC-13 in the NIST SP 800-53B low, moderate and high baselines. [`docs/fips.md`](docs/fips.md) states the limit that goes with it and how to check it.
 
 ## Approved-only cryptography
 

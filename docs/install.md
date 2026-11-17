@@ -27,8 +27,7 @@ had one.
 **FIPS builds are Linux-only**: `fscache-fips_X.Y.Z_linux_amd64.tar.gz` and
 `fscache-fips_X.Y.Z_linux_arm64.tar.gz`. The `-fips` variant is the same
 source, built with `GOFIPS140=v1.0.0` <!-- pinned: upstream -->. That setting selects Go's
-FIPS 140-3 validated cryptographic module (CMVP certificate #5247). The customers who need
-FIPS deploy on Linux, so there is no FIPS build for any other platform.
+FIPS 140-3 validated cryptographic module (CMVP certificate #5247). There is no FIPS build for any platform other than Linux.
 
 The FIPS build reports itself at startup, so you can see it rather than take it
 on trust:
@@ -61,8 +60,7 @@ certificate and key you give it ([docker-deploy.md](docker-deploy.md)).
 **macOS and Windows are not built.** On a Mac, run the container image
 (Docker Desktop pulls `linux/arm64` on Apple Silicon).
 
-**Windows is not planned.** This is a server-side cache that lives next to your
-CI runners, and there is no meaningful market for a Windows build. If you
+**Windows is not planned.** If you
 develop on Windows, run the server under WSL2. That is `linux/amd64`.
 
 ## Which archive do I need?
@@ -94,8 +92,10 @@ sudo install -m 0755 "${BIN}" "/usr/local/bin/${BIN}"
 curl -fsS localhost:8080/healthz             # -> ok
 ```
 
-`BIN` is used in every command on this page, including the systemd unit below.
-Set it once, and the standard and FIPS builds follow the same instructions.
+`BIN` carries through the shell commands in this section and the next one, "Verify what
+you downloaded"; the systemd unit names its binary itself, so for the FIPS build you
+edit its `ExecStart` as described there. The source build below uses `fscache` in its
+own command.
 
 The FIPS build keeps `-fips` in its filename, its install path and its process
 name on purpose. That way you can see which build is running in `ps`, in the
@@ -119,7 +119,7 @@ curl -fsSLO "https://raw.githubusercontent.com/fosterstack/cache/v${VERSION}/bui
 
 cosign verify-blob --key release.rsa.pub --bundle checksums.txt.bundle checksums.txt
 
-sha256sum -c checksums.txt 2>/dev/null | grep OK
+LINE=$(grep -F "${BIN}_${VERSION}_${PLATFORM}.tar.gz" checksums.txt) && echo "$LINE" | sha256sum -c -
 ```
 
 The signature proves that we signed the checksums file with our release key. The checksums in that file then cover every archive.
