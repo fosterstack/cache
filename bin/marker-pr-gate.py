@@ -18,6 +18,7 @@ own job in ci.yml is stopped by the existing workflow-change rule (both reviews 
 Standard library and the gh and git programs only; every program is run with an argument list, never a shell.
 """
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -30,7 +31,16 @@ MARKER = ".github/policy/rc-proof.json"
 KNOWN_RED = "test-evidence/known-red.json"
 ENTRY = "KR-CUTOVER"
 WORKFLOW = ".github/workflows/release.yml"
-RC_TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+")
+# the one tag grammar (REQ-CHAIN-004-AC19), loaded from the file beside this one
+_spec = importlib.util.spec_from_file_location("build_admit", os.path.join(os.path.dirname(os.path.abspath(__file__)), "build-admit.py"))
+_admit = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_admit)
+
+
+def is_rc(tag):
+    return bool(_admit.TAG_SYNTAX.fullmatch(tag)) and "-rc" in tag
+
+
 RUN_ID = re.compile(r"[0-9]{1,20}")
 # the artifacts of the run and where each one lands in the layout rc-proof reads (the layout of Release's own directories)
 ARTIFACTS = (
@@ -129,7 +139,7 @@ def check_known_red(base_dir, head_dir):
 
 def read_marker(head_dir):
     m = load_json(os.path.join(head_dir, MARKER), "the marker " + MARKER)
-    if not isinstance(m, dict) or not isinstance(m.get("rc_tag"), str) or not RC_TAG.fullmatch(m["rc_tag"]) or not isinstance(m.get("run_id"), str) or not RUN_ID.fullmatch(m["run_id"]):
+    if not isinstance(m, dict) or not isinstance(m.get("rc_tag"), str) or not is_rc(m["rc_tag"]) or not isinstance(m.get("run_id"), str) or not RUN_ID.fullmatch(m["run_id"]):
         refuse("the marker is not an object with an rc tag vX.Y.Z-rcN and a numeric run id")
     return m
 
