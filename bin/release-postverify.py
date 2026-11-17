@@ -22,7 +22,7 @@ accepted only when every file it reads is named by an EARLIER command of the sam
 time only after that verify exited 0. Every command runs without a shell: the words the judge read are the argv,
 so nothing (brace, glob, tilde, variable, backslash-newline) is expanded after the check.
 """
-import hashlib, json, os, re, shlex, shutil, subprocess, sys, tempfile, types
+import hashlib, importlib.util, json, os, re, shlex, shutil, subprocess, sys, tempfile, types
 
 LIST = "docs/verify-release.cannot-run.json"
 ASSETS = "release-published"   # gh release download -D release-published: the files a customer downloads
@@ -32,8 +32,16 @@ LISTED = ".github/policy/chain-scripts.json"   # the sha256 of every file of the
 DIGESTS = "witness-build/digests.json"
 # Constants: releases publish identical digests to both, and no input names a repository.
 REPOSITORIES = ("ghcr.io/fosterstack/cache", "docker.io/fosterstack/cache")
-# v0.3.0 yes, v0.3.0-rc1 no: a release candidate publishes nothing to verify
-TAG = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
+# the one tag grammar (REQ-CHAIN-004-AC19), loaded from bin/ of the checkout the step runs in, as VERIFIER is
+_spec = importlib.util.spec_from_file_location("build_admit", "bin/build-admit.py")
+_admit = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_admit)
+
+
+def is_final(tag):   # v0.3.0 yes, v0.3.0-rc1 no: a release candidate publishes nothing to verify
+    return bool(_admit.TAG_SYNTAX.fullmatch(tag)) and "-rc" not in tag
+
+
 PH = re.compile(r"<([A-Z][A-Z0-9_]*)>")   # <TAG> yes, <tag> no
 # sha256: and 64 lowercase hex digits yes; sha256:abc and an upper-case digest no
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -652,7 +660,7 @@ def place_release_key():
 
 def main():
     tag = os.environ.get("GITHUB_REF_NAME", "")
-    if not TAG.match(tag):
+    if not is_final(tag):
         refuse("refused at tag: %r is not vX.Y.Z" % tag)
     cmds = read_commands()
     plan = make_plan(cmds, read_digests(), tag)
