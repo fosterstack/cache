@@ -437,7 +437,7 @@
     {
       "file": ".github/agent/supply-chain/pin-inventory.py",
       "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-inventory.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made | text, not a command: the tuple of client module names in .github/agent/supply-chain/pin-inventory.py (data; it runs nothing)",
-      "body-sha256": "1b83cdbd864f5a13ed539bc9ee694cf3dae782e6de8dbc4779fc5b568938d740"
+      "body-sha256": "3564af58853ee15660512063b088aa4dc7d04e1ed3b1b90f2a144de93fc24e3c"
     },
     {
       "file": ".github/agent/tests/k8s-harness-fence-test.sh",
@@ -507,7 +507,7 @@
     {
       "file": "bin/vex-live-test-test.sh",
       "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "77ff0022ed24a72b5bcbeeb7fcd4bf3003c13c14c2fed90fff8578805d550aaa"
+      "body-sha256": "5129bfb0b29e86a51ee9a178c51669a6cdbbe7b81f6d5fc22be8a703401f7f1f"
     },
     {
       "file": "bin/vex-live-test.py",

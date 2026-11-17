@@ -904,6 +904,20 @@ fresh; G checkout -q main; G rm -q .github/policy/release-only-checks.json
 G -c user.signingkey="$W/keys/owner" commit -q -S -m "no release-only policy"; G push -q origin main 2> /dev/null; G fetch -q origin
 G checkout -q --detach v0.3.0; run_admit
 expect_refuse "AC1 release-only: release-only-checks.json missing on origin/main (present in the tagged commit) is refused at policy-from-main" policy-from-main release-only
+# main's policy file is what admission reads, so each case rewrites one file on main and pushes it
+set_policy() { # set_policy FILE JSON : replace .github/policy/FILE on main, signed, then go back to the tagged commit
+  G checkout -q main; printf '%s\n' "$2" > "$W/c/repo/.github/policy/$1"; G add ".github/policy/$1"
+  G -c user.signingkey="$W/keys/owner" commit -q -S -m "policy $1"; G push -q origin main 2> /dev/null; G fetch -q origin
+  G checkout -q --detach v0.3.0; }
+EMPTY='{"required_checks":[]}'
+fresh; set_policy release-only-checks.json "$EMPTY"; run_admit
+expect_refuse "AC1 empty list: release-only-checks.json with an empty required_checks is refused and names the file" required-checks release-only-checks.json
+fresh; set_policy required-checks.json "$EMPTY"; run_admit
+expect_refuse "AC1 empty list: required-checks.json with an empty required_checks is refused although release-only-checks.json holds entries" required-checks required-checks.json
+fresh; set_policy required-checks.json "$EMPTY"; set_policy release-only-checks.json "$EMPTY"; run_admit
+expect_refuse "AC1 empty list: both files with an empty required_checks are refused" required-checks checks.json
+fresh; set_policy required-checks.json '{"required_checks":[{"context":"ci","integration_id":15368,"scope":"push"}]}'; run_admit
+expect_ok "AC1 empty list: a non-empty required-checks.json (one context) with a non-empty release-only-checks.json still admits"
 # ---- baseline -------------------------------------------------------------------------------------------------------------------------------
 base_edit() { # base_edit PYCODE : edit requirements/releases/v0.3.0.yaml on main, re-sign, re-tag
   (cd "$W/c/repo" && G checkout -q main && python3 - "$1" <<'PY'
@@ -1151,6 +1165,6 @@ wf_fprs=$(gpg --batch --show-keys --with-colons "$root/.github/policy/github-web
 TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # a skipped or added case fails the suite
-EXPECT_TOTAL=211
+EXPECT_TOTAL=215
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

@@ -388,8 +388,8 @@ def read_required_policy(ctx):
                 reqs = json.load(fh)["required_checks"]
         except (ValueError, KeyError, TypeError, OSError) as e:
             raise Refusal("required-checks", "main's %s is unreadable: %s" % (name, one_line(str(e), 100)))
-        if not isinstance(reqs, list):
-            raise Refusal("required-checks", "main's %s required_checks is not a list" % name)
+        if not isinstance(reqs, list) or not reqs:
+            raise Refusal("required-checks", "main's %s required_checks is not a non-empty list" % name)
         for r in reqs:
             if not isinstance(r, dict) or not isinstance(r.get("context"), str) or not isinstance(r.get("integration_id"), int):
                 raise Refusal("required-checks", "a required check entry in main's policy is malformed: %s" % one_line(json.dumps(r), 100))
