@@ -2,15 +2,11 @@ name: Acceptance
 
 # The client acceptance suites (workflow consolidation 4 of 4): acceptance-gradle.yml and
 # acceptance-maven.yml merged, unchanged. Each job keeps its required check name (acceptance-gradle; acceptance-maven
-# (1.2.0) and (1.2.3) from its matrix), its permissions and its results output. Push to main and pull requests run
-# them from source. The release chain does not call this file (REQ-CHAIN-006-AC10): Check runs the suites through
+# (1.2.0) and (1.2.3) from its matrix), its permissions and its results output. It runs only when called
+# (REQ-REL-014: no push, pull request or merge queue run). The release chain does not call this file (REQ-CHAIN-006-AC10): Check runs the suites through
 # bin/check-acceptance.sh, and this file starts no container image (REQ-SUP-001-AC29).
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-  merge_group:      # REQ-DEP-005: the merge queue runs every required check on its own commit
   workflow_call:
     outputs:
       gradle-results:

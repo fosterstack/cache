@@ -1,8 +1,8 @@
 name: supply-chain
 
 # REQ-SUP-001: the actions supply-chain checks.
-#   pin-age        every pull request: a version the PR moves must be public 7 days by a server-side time (AC2-AC4). It runs the base branch's
-#                  checker against the PR's tree, on pull_request (never pull_request_target), with a read-only token and nothing secret.
+#   pin-age        every push to main (REQ-REL-014): a version the push moves must be public 7 days by a server-side time (AC2-AC4). It runs the
+#                  checker of the commit before the push against the pushed tree, never on pull_request or pull_request_target, with a read-only token and nothing secret.
 #   image-signatures  every pull request: `cosign verify` (reads only) of each pinned third-party image, run by the
 #                  base branch's checker from the pinned cosign image.
 #   daily-audit    once a day: the inventory, advisories, malicious-package reports, upstream reachability, disputed hits (AC5, AC7-AC10).
@@ -12,8 +12,9 @@ name: supply-chain
 # It never produces a run, environment or secret name (AC8): the private details are written on a maintainer's machine, not here.
 
 on:
-  pull_request: {}
-  merge_group: {}   # REQ-DEP-005: the queue's own commits are read in place of the pull request's
+  pull_request: {}   # image-signatures only
+  push:
+    branches: [main]
   schedule:
     - cron: '53 3 * * *'    # off-peak, clear of the auditor, rescan and freshness crons (the 1,000/hour token limit is shared by the repo)
   workflow_dispatch: {}
@@ -29,6 +30,7 @@ permissions: {}
 
 jobs:
   pin-age:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -36,39 +38,34 @@ jobs:
       actions: read   # reads the tag observations of our scheduled runs (an action's age); read-only
       checks: read    # the PR clock reads every check suite of the introducing commit; read-only
     steps:
-      - name: Trusted checker (the base branch)
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+      - name: Trusted checker (the commit before the push)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # in the queue the group's parent commit: main, or the entry ahead of this one (reviewed, audit-gated)
-          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          ref: ${{ github.event.before }}
           path: trusted
           persist-credentials: false
-      - name: The pull request's tree
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+      - name: The pushed tree
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: pr
           fetch-depth: 0
           persist-credentials: false
       - name: Age of every moved version, and what advisories say about it
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -uo pipefail
           status=0
-          # a pull request is read at its own base and head; the merge queue at the queue's (REQ-DEP-005-AC2);
-          # an empty one fails
-          BASE_SHA="${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"
-          HEAD_SHA="${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}"
+          # a push is read from the commit before it to the commit after it; an empty one fails
+          BASE_SHA="${{ github.event.before }}"
+          HEAD_SHA="${{ github.sha }}"
           : "${BASE_SHA:?no base commit to compare: this check fails}" \
             "${HEAD_SHA:?no head commit to compare: this check fails}"
           # 540 s, then pin-audit.py's 600 s --base deadline (deadline_for): fits the 20-minute job; -v names a stop
           timeout -v 540 python3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base "$BASE_SHA" \
             --head "$HEAD_SHA" || status=1
-          # the reviewers' rulings come from the base branch too: a pull request must not bring its own
+          # the reviewers' rulings come from the commit before the push too: the push must not bring its own
           exceptions=trusted/.github/supply-chain-exceptions.json
           if [ ! -f "$exceptions" ]; then
             exceptions="$RUNNER_TEMP/no-exceptions.json"

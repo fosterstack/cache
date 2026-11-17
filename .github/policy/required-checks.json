@@ -59,25 +59,10 @@
     {
       "context": "dependency-review",
       "integration_id": 15368,
-      "scope": "pull_request"
+      "scope": "push"
     },
     {
       "context": "fips140-only",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "acceptance-gradle",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "acceptance-maven (1.2.0)",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "acceptance-maven (1.2.3)",
       "integration_id": 15368,
       "scope": "push"
     },
@@ -104,7 +89,7 @@
     {
       "context": "pin-age",
       "integration_id": 15368,
-      "scope": "pull_request"
+      "scope": "push"
     },
     {
       "context": "auditor-review-gate",
