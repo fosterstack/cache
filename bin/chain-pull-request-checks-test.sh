@@ -157,16 +157,15 @@ res(len(withs) == 1 and withs[0].get("base-ref") == "${{ github.event.before }}"
     "dependency-review compares base-ref ${{ github.event.before }} with head-ref ${{ github.sha }} (%r)" % withs)
 res("merge_group" not in json.dumps(dr.get("steps")), "no dependency-review step names a merge_group field")
 
-# required-checks.json: only the scopes of dependency-review and pin-age change
+# required-checks.json: the three acceptance entries are gone (the release's Check stage runs them), the scopes of dependency-review and pin-age change
 scopes = {c["context"]: c["scope"] for c in json.load(open(root + "/.github/policy/required-checks.json"))["required_checks"]}
 WANT = {"test": "push", "lint": "push", "gosec": "push", "govulncheck": "push", "analyze (go)": "push", "allowlist": "push",
         "allowlist-persona": "push", "allowlist-chain": "push", "allowlist-pins-auditor": "push", "dependency-review": "push",
-        "fips140-only": "push", "acceptance-gradle": "push", "acceptance-maven (1.2.0)": "push", "acceptance-maven (1.2.3)": "push",
-        "requirements": "push", "reproducibility": "push", "coverage": "push", "scan": "push", "pin-age": "push",
+        "fips140-only": "push", "requirements": "push", "reproducibility": "push", "coverage": "push", "scan": "push", "pin-age": "push",
         "auditor-review-gate": "pull_request", "vendor": "push", "marker-gate": "pull_request"}
 res(scopes.get("dependency-review") == "push", "required-checks.json scopes dependency-review to push (%r)" % scopes.get("dependency-review"))
 res(scopes.get("pin-age") == "push", "required-checks.json scopes pin-age to push (%r)" % scopes.get("pin-age"))
-res(scopes == WANT, "no other context or scope of required-checks.json changed (diff: %s)"
+res(scopes == WANT, "required-checks.json lost exactly the three acceptance contexts and changed nothing else (diff: %s)"
     % sorted(k for k in set(scopes) | set(WANT) if scopes.get(k) != WANT.get(k)))
 print("\n".join(results))
 PY

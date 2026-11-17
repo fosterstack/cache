@@ -19,7 +19,7 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Active requirements | 104 |
 | Acceptance criteria | 545 |
 | Release-blocking ACs | 138 |
-| ACs with mapped evidence | 531 |
+| ACs with mapped evidence | 534 |
 | Release-blocking ACs with mapped evidence | 138 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 50 |
@@ -850,9 +850,9 @@ On a pull request into a release branch (chain-v030 today) only these checks sha
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-REL-014-AC1 | Given the workflows under .github/workflows on chain-v030; when the jobs that run on the pull_request or merge_group event are listed; then they are test, lint, govulncheck, analyze (go), fips140-only and scan, the jobs scan needs (build, assemble, the scanner list and the scanners), the two held checks marker-gate and image-signatures, customer-words-edited, and the jobs of agent-review-gate.yml and dependabot-auto-merge.yml; no other job runs on pull_request or merge_group, and acceptance.yml keeps only workflow_call | ci-workflow |  | approved | none mapped |
-| REQ-REL-014-AC2 | Given a push to main that adds a version no one can read (an unpinned action, tool or image); when pin-age runs on that push; then it judges the versions between the commit before the push and the commit after it, and fails | ci-workflow |  | approved | none mapped |
-| REQ-REL-014-AC3 | Given a tag whose commit has a red or missing run of a check that required-checks.json scopes to push (pin-age and dependency-review included); when release admission runs; then it refuses the tag | ci-workflow |  | approved | none mapped |
+| REQ-REL-014-AC1 | Given the workflows under .github/workflows on chain-v030; when the jobs that run on the pull_request or merge_group event are listed; then they are test, lint, govulncheck, analyze (go), fips140-only and scan, the jobs scan needs (build, assemble, the scanner list and the scanners), the two held checks marker-gate and image-signatures, customer-words-edited, and the jobs of agent-review-gate.yml and dependabot-auto-merge.yml; no other job runs on pull_request or merge_group, and acceptance.yml keeps only workflow_call | ci-workflow |  | approved | 1 item(s) |
+| REQ-REL-014-AC2 | Given a push to main that adds a version no one can read (an unpinned action, tool or image); when pin-age runs on that push; then it judges the versions between the commit before the push and the commit after it, and fails | ci-workflow |  | approved | 1 item(s) |
+| REQ-REL-014-AC3 | Given a tag whose commit has a red or missing run of a check that required-checks.json scopes to push (pin-age and dependency-review included); when release admission runs; then it refuses the tag; acceptance-gradle and acceptance-maven are no required-check entries, because the release's Check stage runs the acceptance suites itself | ci-workflow |  | approved | 1 item(s) |
 
 ## SCAN
 

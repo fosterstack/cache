@@ -2253,7 +2253,7 @@ requirements:
       - id: REQ-REL-014-AC3
         given: a tag whose commit has a red or missing run of a check that required-checks.json scopes to push (pin-age and dependency-review included)
         when: release admission runs
-        then: it refuses the tag
+        then: it refuses the tag; acceptance-gradle and acceptance-maven are no required-check entries, because the release's Check stage runs the acceptance suites itself
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
