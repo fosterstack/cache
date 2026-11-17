@@ -575,15 +575,14 @@ EXC_RULES = ("launcher", "evaluator", "deny", "script-name", "witness-target")
 AMBIENT_VALUE = re.compile(r"\$\{\{ ?(?:github\.token|inputs\.[A-Za-z_][\w-]*|matrix\.[A-Za-z_][\w-]*) ?\}\}|[A-Za-z0-9_./:-]+")
 
 # Release's NAMED SECRETS (rule 56: only the release job holds a stored secret or the registry credentials; advisor 0386 J; REQ-REL-011-AC3, REQ-CHAIN-007-AC18): ONE closed list of rows, in code, so that another row, another name, another place
-# or another script is a reviewed edit of this file and nothing else.  name -> {(stage file, job): the listed scripts that may receive it}.  sign-release holds no row at all (no secret, no GH_TOKEN, no DOCKERHUB_*);
-# the registry credentials are bound only in release-publish of the release job.  The wrapper receives every name at the place it is bound, GH_TOKEN being bound at the three places below.
+# or another script is a reviewed edit of this file and nothing else.  name -> {(stage file, job): the listed scripts that may receive it}.  the sign jobs hold no row at all (no secret, no GH_TOKEN, no DOCKERHUB_*);
+# the registry credentials are bound only in release-publish and release-sign of the release job.  The wrapper receives every name at the place it is bound, GH_TOKEN being bound at the three places below.
 _WIT = "bin/witnessed.sh"
 _WITL = "bin/witnessed-local.sh"      # the Witness wrapper of the BUILDING steps (owner Oct 22): Build's apk job binds the admission token to it; Release binds every name to bin/witnessed.sh
-_HUB = {(_R, "release"): {_WITL, "bin/release-publish.sh"}}
+_HUB = {(_R, "release"): {_WIT, "bin/release-publish.sh", "bin/release-sign.sh"}}
 SECRET_ROWS = {
     "GH_TOKEN": {(_R, "build-apk"): {_WITL, "bin/build-stage-apk.sh", "bin/build-admit.py"},                 # the run's own token, admission only
-                 (_R, "release"): {_WITL, "bin/release-publish.sh"},
-                 (_R, "release-evidence"): {_WITL, "bin/release-assets.sh"}},
+                 (_R, "release"): {_WIT, "bin/release-publish.sh", "bin/release-sign.sh", "bin/release-assets.sh"}},
     "DOCKERHUB_USERNAME": _HUB,
     "DOCKERHUB_TOKEN": _HUB,
 }
@@ -592,8 +591,8 @@ SECRET_VALUE = {"GH_TOKEN": "${{ github.token }}",
 # W1 (#822 round 1): the three NON-SECRET federation entries of the signing steps: the AWS role of the release Sign identity, its region and the release key's reference. They are step env
 # literals, allowed only where a step signs through bin/chain-verify.py sign-record or sign (the sign jobs of release.yml), reaching only the scripts below,
 # and each must be exactly the value below; the key reference is the verifier's own RELEASE_KEY_REF, read from bin/chain-verify.py beside this file.
-# the four sign jobs hold the three as their job env (judged beside the job keys); no step repeats them, so no step place is listed
-SIGN_JOBS = {"sign", "sign-rebuild", "sign-check", "sign-release"}
+# the three sign jobs hold the three as their job env (judged beside the job keys); no step repeats them, so no step place is listed
+SIGN_JOBS = {"sign", "sign-rebuild", "sign-check"}
 _FED_AT = {}
 FED_ROWS = {"AWS_ROLE_ARN": _FED_AT, "AWS_REGION": _FED_AT, "RELEASE_KMS_KEY_REF": _FED_AT}
 
@@ -612,9 +611,7 @@ def fed_value(name):
 
 # the job that holds a named credential holds exactly these permissions (Build's apk job: read-only, no identity token since the Witness record is signed outside the build; Release: the three writes)
 PLACE_PERMS = {(_R, "build-apk"): {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read"},
-               (_R, "release"): {"contents": "write", "packages": "write"},
-               (_R, "sign-release"): {"contents": "read", "id-token": "write"},      # exactly contents read and id-token write: no packages, no registry write
-               (_R, "release-evidence"): {"contents": "write"}}
+               (_R, "release"): {"contents": "write", "packages": "write"}}
 CHAIN_STAGE_FILES = {_R}
 # the jobs of release.yml the stage grammar does not judge (they test or report the release, call another workflow, or run no chain script): only the direct signer-call scan reads them
 NON_CHAIN_JOBS = {"live-test", "live-test-release", "hostile-verify", "hostile-verdict", "persona-uat-rc", "patch-failed"}
@@ -1284,7 +1281,7 @@ def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
                     used = set(r) | argp
                     scripts = SECRET_ROWS[k].get((full, jn))
                     if scripts is None or not used <= scripts:
-                        errs.append("%s: %s is allowed only %s (%s): found in %s job %s, reaching %s" % (sp, k, "for the named steps of the build-apk, release and release-evidence jobs of release.yml" if k == "GH_TOKEN" else "in the named step of the release job of release.yml",
+                        errs.append("%s: %s is allowed only %s (%s): found in %s job %s, reaching %s" % (sp, k, "for the named steps of the build-apk and release jobs of release.yml" if k == "GH_TOKEN" else "in the named step of the release job of release.yml",
                                     CLOSED, full, jn, ", ".join(sorted(used - (scripts or set())) or ["no listed script"])))
                     elif v != SECRET_VALUE[k]:
                         errs.append("%s: %s must be exactly %s, found %r" % (sp, k, SECRET_VALUE[k], v))

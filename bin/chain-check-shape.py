@@ -34,7 +34,9 @@ RED until PR 3 is implemented. Finite grammars and allowlists only; no shell ana
                         neither release.yml nor ci.yml calls them.
 Modelled on: in-toto-witness docs/attestors/environment.md and docs/commands.md (the flags), docs/tutorials/artifact-policy.md:58-70 (what a
 collection holds); PR 2's bin/chain-test-shape.py (the same flag allowlist, the same token-fetch lines)."""
-import hashlib, json, os, re, shlex, sys, yaml
+import hashlib, importlib.util, json, os, re, shlex, sys, yaml
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import guide_plan_judge   # noqa: E402
 
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 DOWN = {"signed-witness-build", "digests", "dist", "locks", "images"}   # Build's artifacts (Check's previous stage is Build; Sign's provenance is Release's to verify); images travel as files (OCI tarballs)
@@ -58,58 +60,11 @@ GV_OUTPUT = {"artifact-id": "${{ steps.upload.outputs.artifact-id }}"}   # the C
 GV_IDS = "${{ needs.check-govulncheck.outputs.artifact-id }}"
 SOURCE_SCANNERS = ["govulncheck"]   # ruling G (advisor Oct 12): the source scanners of .github/policy/scanners.json `source_scanners`, installed after Go, run by bin/check-govulncheck.py
 PHASE_LINE = {s: "bash bin/witnessed-local.sh %s bin/check-phase.sh %s" % (s, s) for s in STEPS}   # the one script runs all three phases; the step name is its argument
-STEP_LIST = "release-apks|release-sign"   # the Release helper keeps only the two signing steps (ruling Q-e: release-verify, release-publish, release-assets and release-postverify run under the local helper); Check's steps run under the local helper (REQ-REL-011-AC1)
-SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN"]   # PR 2's with the two AWS variables of handoff 0713 (SIGSTORE_ID_TOKEN is gone); never github or slsa
-RELEASE_SENSITIVE = ["RELEASE_ROLE_ARN", "RELEASE_TOKEN_FILE"]   # the names release-sign and release-apks receive the role and the token path under (witnessed.sh only; the local helper has none)
-
-
-def witnessed_lines():
-    """The canonical bin/witnessed.sh (witnessed_lines in its bin/chain-test-shape.py), with PR 3's three steps in the closed list. Handoff 0713: the collection is signed with the release KMS key
-    by its alias, by the one signing function, after Witness has run with a throwaway key and no token, AWS_ROLE_ARN or AWS_WEB_IDENTITY_TOKEN_FILE of its own (the scripts of release-sign and release-apks, which sign with the key themselves, are handed the sensitive names RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE and map them themselves; the wrapped command is the plain bash SCRIPT); a fresh identity token
-    (audience sts.amazonaws.com) goes to a file in a private directory under RUNNER_TEMP that a trap removes, and the AWS SDK reads it through AWS_WEB_IDENTITY_TOKEN_FILE and
-    AWS_ROLE_ARN for the one signing call."""
-    keys = " ".join("--env-add-sensitive-key %s" % ("'%s'" % k if "*" in k else k) for k in SENSITIVE + RELEASE_SENSITIVE)
-    return ["set -euo pipefail", 'step="$1"', "shift",
-            'case "$step" in %s) ;; *) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac' % STEP_LIST,
-            'mkdir -p "witness-${step#snapshot-}"',
-            ': "${AWS_ROLE_ARN:?witnessed: AWS_ROLE_ARN is missing}"',
-            ': "${AWS_REGION:?witnessed: AWS_REGION is missing}"',
-            ': "${RELEASE_KMS_KEY_REF:?witnessed: RELEASE_KMS_KEY_REF is missing}"',
-            "umask 077",
-            'td=$(mktemp -d "${RUNNER_TEMP:?}/witness-aws.XXXXXX")',
-            "trap 'rm -rf \"$td\"' EXIT HUP INT TERM",
-            "role=$AWS_ROLE_ARN region=$AWS_REGION kref=$RELEASE_KMS_KEY_REF",
-            "req_tok=$ACTIONS_ID_TOKEN_REQUEST_TOKEN req_url=$ACTIONS_ID_TOKEN_REQUEST_URL",
-            "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL",
-            "oidc_token() {",
-            '  sh bin/loopback-get.sh -sSf -H "Authorization: bearer $req_tok" "${req_url}&audience=sts.amazonaws.com" | jq -r .value > "$td/token"',
-            '  tok=$(cat "$td/token")',
-            '  [ -n "$tok" ] && [ "$tok" != null ] || { echo "witnessed: no identity token" >&2; exit 1; }',
-            '  echo "::add-mask::$tok"',
-            "}",
-            'unset AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE',
-            'signers=" release-sign release-apks "',
-            'case "$signers" in *" $step "*) ;; *) unset AWS_REGION RELEASE_KMS_KEY_REF ;; esac',
-            'case "$signers" in *" $step "*) mkdir "$td/step"; oidc_token; mv "$td/token" "$td/step/token"; export RELEASE_ROLE_ARN=$role RELEASE_TOKEN_FILE="$td/step/token" ;; esac',
-            'openssl genpkey -algorithm ed25519 -out "$td/key.pem"',
-            'local_record="$td/$step-collection.json"',
-            "rc=0",
-            'witness run --step "$step" --signer-file-key-path "$td/key.pem" '
-            "-a environment,git,material,product --env-filter-sensitive-vars %s "
-            '-o "$local_record" -- bash "$@" || rc=$?' % keys,
-            'rm -rf "$td/step"',
-            "unset RELEASE_ROLE_ARN RELEASE_TOKEN_FILE",
-            'if [ "$rc" -eq 0 ]; then',
-            '  jq -er .payload "$local_record" | base64 -d > "$td/payload" && [ -s "$td/payload" ] || { echo "witnessed: the collection has no payload" >&2; exit 1; }',
-            "  oidc_token",
-            '  AWS_WEB_IDENTITY_TOKEN_FILE="$td/token" AWS_ROLE_ARN=$role AWS_REGION=$region RELEASE_KMS_KEY_REF=$kref '
-            'python3 -I -B bin/chain-verify.py sign-record --payload "$td/payload" '
-            '--out "witness-${step#snapshot-}/$step-collection.json" --template .github/policy/release-policy.template.json '
-            '--aws "$RUNNER_TEMP/aws-cli/aws" --public-key build/keys/release.rsa.pub || rc=$?',
-            "fi",
-            'rm -rf "$td"',
-            '[ ! -e "$td" ] || { echo "witnessed: the token directory still exists" >&2; exit 1; }',
-            'exit "$rc"']
+_here = os.path.dirname(os.path.abspath(__file__))
+_spec = importlib.util.spec_from_file_location("chain_test_shape", os.path.join(_here, "chain-test-shape.py"))
+_test_shape = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_test_shape)
+witnessed_lines = _test_shape.witnessed_lines      # the one copy of bin/witnessed.sh's lines
 
 
 def commands_of(raw):
@@ -462,11 +417,13 @@ def signcheck(path):
         bad.append("sign-check must need exactly build-assemble and check, got %s" % n)
     steps = j.get("steps") or []
     downs = sorted((s["with"].get("name"), s["with"].get("path")) for s in steps if (s.get("uses") or "").startswith("actions/download-artifact@"))
-    want_d = sorted([("witness-check-" + r, "rec-check/" + r) for r in RUNNERS] + [("check-results-" + r, "artifacts/check-results-" + r) for r in RUNNERS] + [("check-records-" + r, "rec-digests/" + r) for r in RUNNERS])
+    want_d = sorted([("witness-check-" + r, "rec-check/" + r) for r in RUNNERS] + [("check-results-" + r, "artifacts/check-results-" + r) for r in RUNNERS] + [("check-records-" + r, "rec-digests/" + r) for r in RUNNERS]
+                    + [(n, "witness-build") for n in ("digests", "items", "admission-baseline")] + [("images", "images"), ("dist", "dist")]
+                    + [("apk-" + r, "apks/" + r) for r in RUNNERS] + [("check-results-ubuntu-24.04", "check-results/ubuntu-24.04")])   # S2 (cache#912): Build's outputs and the govulncheck stream bin/release-signatures.sh reads
     if downs != want_d:
         bad.append("sign-check must download exactly %s (name, path), found %s" % (want_d, downs))
     ups = [(s["with"].get("name"), s["with"].get("path")) for s in steps if (s.get("uses") or "").startswith("actions/upload-artifact@")]
-    want_u = [("signed-witness-check-" + r, "signed/" + r) for r in RUNNERS]
+    want_u = [("signed-witness-check-" + r, "signed/" + r) for r in RUNNERS] + [("release-signed", "release-signed")]   # S2: the release signatures, on a final tag
     if ups != want_u:
         bad.append("sign-check must upload exactly %s (name, path) in that order, found %s" % (want_u, ups))
     runs = [(i, (s.get("run") or "").strip()) for i, s in enumerate(steps) if s.get("run")]
@@ -487,9 +444,12 @@ def signcheck(path):
     want_s = ["bash bin/witness-sign-staged.sh staged/%s signed/%s" % (r, r) for r in RUNNERS]
     if [r for _, r in signs] != want_s:
         bad.append("sign-check must sign each runner's staged tree once, as %s, found %s" % (want_s, [r for _, r in signs]))
-    if recs and signs and (min(i for i, _ in signs) < recs[0][0] or any(not (s.get("uses") or "").startswith("actions/upload-artifact@") for s in steps[max(i for i, _ in signs) + 1:])):
+    sig = [i for i, r in runs if r == "bash bin/release-signatures.sh"]
+    if len(sig) != 1 or (signs and sig[0] < max(i for i, _ in signs)) or steps[sig[0]].get("if") != "${{ !contains(github.ref_name, '-') }}":
+        bad.append("sign-check must run `bash bin/release-signatures.sh` once, after the staged signing, with exactly the if ${{ !contains(github.ref_name, '-') }} (a release candidate makes no release signatures)")
+    if recs and signs and (min(i for i, _ in signs) < recs[0][0] or any(not (s.get("uses") or "").startswith("actions/upload-artifact@") for s in steps[max(sig + [i for i, _ in signs]) + 1:])):
         bad.append("sign-check must sign after sign-records and upload last")
-    other = [r for i, r in runs if "sign-records" not in r and "witness-sign-staged" not in r and r not in ("bash bin/install-scanner.sh aws-cli", "printf '%s' \"$DIGESTS\" > digests.json")]
+    other = [r for i, r in runs if "sign-records" not in r and "witness-sign-staged" not in r and r not in ("bash bin/install-scanner.sh aws-cli", "printf '%s' \"$DIGESTS\" > digests.json", "bash bin/release-signatures.sh")]
     if other:
         bad.append("sign-check runs a command that is not listed: %s" % other)
     return bad
@@ -667,6 +627,13 @@ def guidelist(guide):
         seen.add(c)
         if not verify_form(c):
             bad.append("the cannot-run entry `%s` is not a verify form" % c)
+        else:
+            segs, _, why = guide_plan_judge.judge(c)
+            if why:
+                bad.append("the cannot-run entry `%s` is refused by the shared judge: %s" % (c, why))
+            elif not guide_plan_judge.image_subject(segs):
+                bad.append("the cannot-run entry `%s` is not an image-reference command: a file command is run by "
+                           "postverify before publishing, never listed" % c)
         if re.sub(r"[ \t]+", " ", c) not in text:
             bad.append("the cannot-run entry `%s` is not in the guide" % c)
     return bad

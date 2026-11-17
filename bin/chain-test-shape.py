@@ -568,57 +568,30 @@ STEPS = ("apk", "build", "rapk", "rebuild",
 # and bin/release-sign.sh and bin/release-sign-apks.sh map them onto the two AWS variables themselves; the wrapped command is the plain `bash SCRIPT`, because the command-run record keeps it and record-env refuses a record that names the variables; the token made for the script is removed when Witness returns;
 # a fresh token is fetched just before the one signing function is called; both variables are sensitive keys of the record.
 SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN"]   # never github (raw OIDC token) and never slsa
-RELEASE_SENSITIVE = ["RELEASE_ROLE_ARN", "RELEASE_TOKEN_FILE"]   # the names release-sign and release-apks receive the role and the token path under (witnessed.sh only; the local helper has none)
 
 
 def witnessed_lines():
     """The exact lines of bin/witnessed.sh (backslash continuations are joined before comparing: the committed file may break the long line)."""
-    keys = " ".join("--env-add-sensitive-key %s" % ("'%s'" % k if "*" in k else k) for k in SENSITIVE + RELEASE_SENSITIVE)
+    keys = " ".join("--env-add-sensitive-key %s" % ("'%s'" % k if "*" in k else k) for k in SENSITIVE)
     return ["set -euo pipefail", 'step="$1"', "shift",
-            'case "$step" in release-apks|release-sign) ;; '      # ruling Q-e: the other four steps of Release run under the local helper
+            'case "$step" in release-verify|release-apks|release-publish|release-sign|release-assets|release-postverify) ;; '
             '*) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac',
             'mkdir -p "witness-${step#snapshot-}"',
-            ': "${AWS_ROLE_ARN:?witnessed: AWS_ROLE_ARN is missing}"',
-            ': "${AWS_REGION:?witnessed: AWS_REGION is missing}"',
-            ': "${RELEASE_KMS_KEY_REF:?witnessed: RELEASE_KMS_KEY_REF is missing}"',
+            "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN",
             "umask 077",
-            'td=$(mktemp -d "${RUNNER_TEMP:?}/witness-aws.XXXXXX")',
-            "trap 'rm -rf \"$td\"' EXIT HUP INT TERM",
-            "role=$AWS_ROLE_ARN region=$AWS_REGION kref=$RELEASE_KMS_KEY_REF",
-            "req_tok=$ACTIONS_ID_TOKEN_REQUEST_TOKEN req_url=$ACTIONS_ID_TOKEN_REQUEST_URL",
-            "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL",
-            "oidc_token() {",
-            '  sh bin/loopback-get.sh -sSf -H "Authorization: bearer $req_tok" "${req_url}&audience=sts.amazonaws.com" | jq -r .value > "$td/token"',
-            '  tok=$(cat "$td/token")',
-            '  [ -n "$tok" ] && [ "$tok" != null ] || { echo "witnessed: no identity token" >&2; exit 1; }',
-            '  echo "::add-mask::$tok"',
-            "}",
-            'unset AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE',
-            'signers=" release-sign release-apks "',
-            'case "$signers" in *" $step "*) ;; *) unset AWS_REGION RELEASE_KMS_KEY_REF ;; esac',
-            'case "$signers" in *" $step "*) mkdir "$td/step"; oidc_token; mv "$td/token" "$td/step/token"; export RELEASE_ROLE_ARN=$role RELEASE_TOKEN_FILE="$td/step/token" ;; esac',
-            'openssl genpkey -algorithm ed25519 -out "$td/key.pem"',
-            'local_record="$td/$step-collection.json"',
+            'kd=$(mktemp -d "${RUNNER_TEMP:?}/witness-key.XXXXXX")',
+            "trap 'rm -rf \"$kd\"' EXIT HUP INT TERM",
+            'openssl genpkey -algorithm ed25519 -out "$kd/key.pem"',
             "rc=0",
-            'witness run --step "$step" --signer-file-key-path "$td/key.pem" '
+            'witness run --step "$step" --signer-file-key-path "$kd/key.pem" '
             "-a environment,git,material,product --env-filter-sensitive-vars %s "
-            '-o "$local_record" -- bash "$@" || rc=$?' % keys,
-            'rm -rf "$td/step"',
-            "unset RELEASE_ROLE_ARN RELEASE_TOKEN_FILE",
-            'if [ "$rc" -eq 0 ]; then',
-            '  jq -er .payload "$local_record" | base64 -d > "$td/payload" && [ -s "$td/payload" ] || { echo "witnessed: the collection has no payload" >&2; exit 1; }',
-            "  oidc_token",
-            '  AWS_WEB_IDENTITY_TOKEN_FILE="$td/token" AWS_ROLE_ARN=$role AWS_REGION=$region RELEASE_KMS_KEY_REF=$kref '
-            'python3 -I -B bin/chain-verify.py sign-record --payload "$td/payload" '
-            '--out "witness-${step#snapshot-}/$step-collection.json" --template .github/policy/release-policy.template.json '
-            '--aws "$RUNNER_TEMP/aws-cli/aws" --public-key build/keys/release.rsa.pub || rc=$?',
-            "fi",
-            'rm -rf "$td"',
-            '[ ! -e "$td" ] || { echo "witnessed: the token directory still exists" >&2; exit 1; }',
+            '-o "witness-${step#snapshot-}/$step-collection.local.json" -- bash "$@" || rc=$?' % keys,
+            'rm -rf "$kd"',
+            '[ ! -e "$kd" ] || { echo "witnessed: the throwaway key directory still exists" >&2; exit 1; }',
             'exit "$rc"']
 
 
-LOCAL_STEPS = "apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|release-verify|release-publish|release-assets|release-postverify|scanners|acceptance|runtime"
+LOCAL_STEPS = "apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|release-verify|scanners|acceptance|runtime"
 
 
 def local_lines():
@@ -636,7 +609,7 @@ def local_lines():
             'openssl genpkey -algorithm ed25519 -out "$kd/key.pem"',
             "rc=0",
             'witness run --step "$step" --signer-file-key-path "$kd/key.pem" -a environment,git,material,product --env-filter-sensitive-vars %s '
-            '-o "witness-${step#snapshot-}/$step-collection.local.json" -- timeout -k 20 540 bash "$@" || rc=$?' % keys,
+            '-o "witness-${step#snapshot-}/$step-collection.local.json" -- bash "$@" || rc=$?' % keys,
             'rm -rf "$kd"',
             '[ ! -e "$kd" ] || { echo "witnessed-local: the throwaway key directory still exists" >&2; exit 1; }',
             'exit "$rc"']
@@ -862,30 +835,30 @@ def ns_shell(path, name):
 
 NS_SHEBANG = b"#!/usr/bin/env bash"
 NS_SHA = {
-    "bin/admission-tag-signer.py": "4f9ea6b8214cc0f8ac3d4b8202edc90b24fbb4e949bf86802afef89fa769c9e7",
+    "bin/admission-tag-signer.py": "45e54a9fc335893bd7c3378ed6a3196484a9dab1c362b38d3a28478024d9dad9",
     "bin/apk-tool.py": "054a2ee03874d57f74b8486ef225ecbee85b60089745289efddb6ebb902d781c",
     "bin/archive-pull.sh": "13eb7a9d3bd49e5a518316b03aad56dab79328109371f2271543a60740ab1538",
     "bin/archive-verify.py": "7897405722eb7910dab9bebd473f633d1abb1bf0976b4f2949f49c02a2c16d6b",
     "bin/audit-record-judge.sh": "0507ac99636b3094100d499a82e43d7a03f2467869748cfe1dc6dfcd21666e77",
-    "bin/audit-record.py": "2a35d832b85ddaf539f54387f51eb8759097ce5fe3aee2b0a8d3a74fa33cf4c9",
+    "bin/audit-record.py": "6967a92af6d1c942665f983d35aec069e4c0b277503e920c9e136ef6a159ca9b",
     "bin/build-admit.py": "30cbf81b2640ca8f14d70e9b33d1954fc0db0709f23c6fd1de60a2534ab3a3e2",
     "bin/build-apk-helper.py": "64fc57cf73c8fcaba226255e59198def1fe69bbc345f52f73d4d4999ebf9a23b",
     "bin/build-archives.py": "532ec7371f299d3e29f70af776cca3e329156a4517aa328958b4150e635c034d",
     "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
-    "bin/chain-bytes-sha.py": "dfd2a6a76e70e8b73e9f2d3b0def18ab2827ee871c47f7e68edd929c1f2c2b2e",
-    "bin/chain-hostile-step.sh": "2e09a11b964cfcfc632bc8da1e0c9cc406525f2aa5dfc44523e83277affbdb2f",
-    "bin/chain-sandbox-probe.sh": "38fcd9e47824c263ade15d7f8c447e7c849f7ccf2e427306ceedbc13b0b253e6",
-    "bin/chain-verify.py": "96631cc7cb6b00fb3a3f3b7b1c5b38f8d9938aea5eb6f668a9035edcd86d96bf",
+    "bin/chain-bytes-sha.py": "29074a70ef188865dbb4bfe28ca34ed85876f789b1020e9ac274447249fb0241",
+    "bin/chain-hostile-step.sh": "74a2c21fa6cdf88c485e8c0e2f89f69ba64c9993fd1ac2c7374674f1591be3c2",
+    "bin/chain-sandbox-probe.sh": "489604b77dbd6c1af95dc5df8a2d14f1116d1142ee054dae6ddc9ae370103061",
+    "bin/chain-verify.py": "1728c10dc20252f451245cffd8953ff86e513c3b2be2a531d88731c4609cd2be",
     "bin/chain_common.py": "a8730d0504aeedc592286a2b9bbf1b835c9817a421c7dea656e8e4630da5a56d",
-    "bin/chain_hostile.py": "096b1cd46903aefc921f2e59c633e5889139bfdb93c39675340cba83672c91ab",
-    "bin/chain_items.py": "3584c2404d40bb5c2b843ae82dc47f15761b838063e11b793ff9f69e907f2918",
+    "bin/chain_hostile.py": "04f7e75313106078771acd6055c1b4bb6cad23a9e52dc5e92856cddd559e6471",
+    "bin/chain_items.py": "9acced3363bbf57e243d7caa7c3b70b59ecea6724270d945a98c4bd82e777cef",
     "bin/go-module-sbom.py": "8a556854bf7fa2c0df2fe2710754788350d50a87dacfb69fed2ca086daf519bf",
     "bin/install-host-bwrap.py": "fdbac6ffdafe1355fc7f3f826accbe79a1cdabd7d4dc5d496720207f5c688b09",
     "bin/loopback-get.sh": "2561cb23762601bdd0540a8f861fe595df946d4988de6694e419b89bd92c7857",
     "bin/net-probe.py": "5c6e0693d4af7f0ac9dd54d707a9f896cd3293b3e9df20178752ea0fa21c8729",
     "bin/oci-digest.py": "5569a3e0e15798c4552306d6fee1fc1215974a478e653d9d4129ec46d1064890",
     "bin/rebuild-records-digests.sh": "6ffbe755ab676d7d58f5831875f2cba9fcdcfafbdabd4fe2b45de7344475272c",
-    "bin/vex-index.py": "3306a83ca4704a9069b44a72bc853d2d9f0c2e668a5454f6b07e0bd52bfbfe3d",
+    "bin/vex-index.py": "c8e3b57e1c813647410f39e1ba9a7d041290339efd0845dfe3c9295357dbe023",
 }
 
 
@@ -1341,7 +1314,7 @@ GATE = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'
 GUARD_S = ("inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && "
            "startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))")      # guard S: a v* tag push of release.yml itself, never in snapshot mode or under a workflow_call
 SIGN_IF = "${{ %s }}" % GUARD_S                                                    # sign, sign-rebuild, sign-check
-AFTER_IF = "${{ %s && !contains(github.ref_name, '-') }}" % GUARD_S                # release, sign-release, release-evidence: a release candidate publishes nothing and never enters the environments release or sign
+AFTER_IF = "${{ %s && !contains(github.ref_name, '-') }}" % GUARD_S                # release: a release candidate publishes nothing and never enters the environment release
 CHECK_IF = "${{ inputs.mode != 'snapshot' }}"                                     # check-govulncheck and check
 PERM_READ = {"contents": "read"}
 SIGN_PERMISSIONS = {"contents": "read", "id-token": "write"}
@@ -1358,9 +1331,7 @@ CHAIN_SPEC = {   # job -> exact needs, permissions, if and environment
     "sign-check": dict(needs=["build-assemble", "check"], perm=SIGN_PERMISSIONS, if_=SIGN_IF, env="sign"),
     "release-compare": dict(needs=["check", "sign", "sign-check", "sign-rebuild"], perm=PERM_READ, if_=None, env=None),
     "release-verify": dict(needs=["release-compare"], perm=PERM_READ, if_=None, env=None),
-    "release": dict(needs=["release-compare", "release-verify", "sign-release"], perm={"contents": "write", "packages": "write"}, if_=AFTER_IF, env="release"),      # no id-token and no KMS role (ruling 1); it needs sign-release, whose signatures it verifies before its first registry login
-    "sign-release": dict(needs=["build-assemble", "release-compare", "release-verify"], perm=SIGN_PERMISSIONS, if_=AFTER_IF, env="sign"),      # runs before release: contents read and id-token write only, no packages write, no registry credential (REQ-REL-011-AC3 (a))
-    "release-evidence": dict(needs=["release"], perm={"contents": "write"}, if_=AFTER_IF, env=None),      # needs release (the publish), attaches what sign-release signed; no environment, no KMS role, no identity token (ruling 2)
+    "release": dict(needs=["release-compare", "release-verify"], perm={"contents": "write", "packages": "write"}, if_=AFTER_IF, env="release"),      # no id-token and no KMS role: every signature it pushes was made by sign-check, and release-sign checks each one before it is used
 }
 CHAIN = sorted(CHAIN_SPEC)
 RELEASE_CONCURRENCY_LINE = re.compile(r"(?m)^  release:\n(?:    .*\n|\n)*?    concurrency:\n      group: release-publish\n      cancel-in-progress: false\n")
@@ -1481,14 +1452,14 @@ def graph(path):
             bad.append("%s must need exactly %s, got %s" % (name, spec["needs"], sorted(needs_of(job))))
         if "uses" in job:
             bad.append("%s has a job-level uses (%s): the jobs of the chain are jobs of this file" % (name, job["uses"]))
-        if name in ("sign", "sign-rebuild", "sign-check", "sign-release") and job.get("env", {}).get("AWS_ROLE_ARN") is None:
+        if name in ("sign", "sign-rebuild", "sign-check") and job.get("env", {}).get("AWS_ROLE_ARN") is None:
             bad.append("%s must carry the KMS role in its job env (AWS_ROLE_ARN): the four sign jobs hold it and no other job does" % name)
-        if name not in ("sign", "sign-rebuild", "sign-check", "sign-release") and "AWS_ROLE_ARN" in json.dumps(job):
+        if name not in ("sign", "sign-rebuild", "sign-check") and "AWS_ROLE_ARN" in json.dumps(job):
             bad.append("%s names AWS_ROLE_ARN: only the four sign jobs ask for the KMS role" % name)
-        if name not in ("sign", "sign-rebuild", "sign-check", "sign-release") and "id-token" in (job.get("permissions") or {}):
+        if name not in ("sign", "sign-rebuild", "sign-check") and "id-token" in (job.get("permissions") or {}):
             bad.append("%s asks for an identity token: only the four sign jobs of the chain do" % name)
         if names_secrets({k: v for k, v in job.items() if k != "steps"}) or ("secrets." in json.dumps(job) and name != "release"):
-            bad.append("%s names the secrets context (only the release job reads the registry credentials; sign-release holds no secret)" % name)
+            bad.append("%s names the secrets context (only the release job reads the registry credentials)" % name)
     for name, job in jobs.items():
         if name in CHAIN_SPEC:
             continue

@@ -17,13 +17,13 @@
 #       (Sign's bundle) and `check-results`/`witness-check` (Check's), the script name and command lines of bin/check-phase.sh, the guide
 #       file docs/verify-release.md (the www lane's customer guide), the results file names.
 #
-# RULE 68: every command run under Witness is limited to 9 minutes (`timeout 540`), because Fulcio's
-# certificate lives 10 minutes and Witness checks it at the TIMESTAMP's time (harness spike (d): a 13-minute command yields a record that never
-# verifies). The cap lives in ONE place, the helper bin/witnessed.sh (judge `helper` below is its seam). Check
-# is split into three plainly named witnessed steps (scanners / acceptance / runtime) so none nears the cap.
-# The owner also asked
-# for code a human can read: the stage file is four short lines, the helper is the only place with Witness flags, the judges accept the plain form
-# and reject variants instead of growing clever.
+# RULE 68 AS AMENDED BY THE OWNER (Oct 9, 16:47 EDT): Fulcio's certificate lives 10 minutes and Witness checks it at
+# the TIMESTAMP's time (harness spike (d): a 13-minute command yields a record that never verifies). The audit removed
+# the 540 s cap: GitHub's default job time limit bounds a hung command. The Witness flags live in ONE place, the helper
+# bin/witnessed.sh (PR 2 defines it; judge `helper` below is its seam and is kept identical to PR 2's). Check is split
+# into three plainly named witnessed steps (scanners / acceptance / runtime) to keep each short. The owner also asked
+# for code a human can read: the stage file is four short lines, the helper is the only place with Witness flags, the
+# judges accept the plain form and reject variants instead of growing clever.
 #
 # CREDENTIALS: Check holds NO secret, no cloud federation and NO identity token: the release scanners need none, and
 # its Witness records are made with a throwaway key and signed by Sign (the sign-check job). A test below refuses a secret, a registry login and a packages/attestations permission.
@@ -166,9 +166,12 @@ sr += [x for r in RUNNERS for s in ("scanners", "acceptance", "runtime") for x i
 sign_check = {"needs": ["build-assemble", "check"], "runs-on": "ubuntu-24.04", "environment": "sign", "permissions": {"contents": "read", "id-token": "write"},
               "steps": [{"uses": CHK, "with": {"persist-credentials": "false"}}]
                        + [dl("witness-check-" + r, "rec-check/" + r) for r in RUNNERS] + [dl("check-results-" + r, "artifacts/check-results-" + r) for r in RUNNERS] + [dl("check-records-" + r, "rec-digests/" + r) for r in RUNNERS]
+                       + [dl(n, "witness-build") for n in ("digests", "items", "admission-baseline")] + [dl("images", "images"), dl("dist", "dist")]
+                       + [dl("apk-" + r, "apks/" + r) for r in RUNNERS] + [dl("check-results-ubuntu-24.04", "check-results/ubuntu-24.04")]
                        + [{"run": "bash bin/install-scanner.sh aws-cli"}, {"run": "printf '%s' \"$DIGESTS\" > digests.json"}, {"run": " ".join(sr)}]
                        + [{"run": "bash bin/witness-sign-staged.sh staged/%s signed/%s" % (r, r)} for r in RUNNERS]
-                       + [ul("signed-witness-check-" + r, "signed/" + r) for r in RUNNERS]}
+                       + [{"if": "${{ !contains(github.ref_name, '-') }}", "run": "bash bin/release-signatures.sh"}]
+                       + [ul("signed-witness-check-" + r, "signed/" + r) for r in RUNNERS] + [dict(ul("release-signed", "release-signed"), **{"if": "${{ !contains(github.ref_name, '-') }}"})]}
 import json
 open(w + "/signcheck.json", "w").write(json.dumps({"jobs": {"sign-check": sign_check}}))
 os.makedirs(w + "/old/.github/workflows", exist_ok=True)
@@ -335,27 +338,22 @@ m s_xupdup '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a8
 m s_xrec 'witness-runtime\n' 'witness-runtime\n            witness-extra\n' 'check step' "AC1 round 1 F6: the witness-check upload holds an extra record directory"
 # ---- AC11: the helper (the rule 68 seam) -----------------------------------------------------------------------------
 hm() { if mutate "$work/witnessed.sh" "$work/$1.sh" "$2" "$3"; then expect caught "$5" "$4" helper "$work/$1.sh"; fi; }
-hm h_twowit  'oidc_token\(\) \{'                                 'witness run --step x -- true\noidc_token() {' 'the helper'     "AC11 a second witness run"
-hm h_dflag   '  -o "\$local_record"'                           '  -d out -o "\$local_record"'                                   'the helper'        "AC9 the working-directory flag"
+hm h_twowit  'openssl genpkey'                                    'witness run --step x -- true\nopenssl genpkey' 'the helper'     "AC11 a second witness run"
+hm h_dflag   '  -o "witness-'                                   '  -d out -o "witness-'                                   'the helper'        "AC9 the working-directory flag"
 hm h_gh      '-a environment,git,material,product'              '-a environment,git,github,product'                      'the helper'        "AC9 the github attestor (it embeds the raw OIDC token)"
 hm h_slsa    '-a environment,git,material,product'              '-a environment,git,material,product,slsa'               'the helper'        "AC9 the slsa attestor (Sign's alone)"
 hm h_nofilt  '  --env-filter-sensitive-vars \\\n'             ''                                                       'the helper'        "AC9 the environment filter dropped"
 hm h_tok     '--env-add-sensitive-key GITHUB_TOKEN'             '--env-add-sensitive-key SOMETHING_ELSE'                  'the helper'        "AC9 a token variable no longer filtered"
-hm h_out     '--out "witness-\$\{step#snapshot-\}/\$step-collection.json"' '--out elsewhere.json'                                'the helper'        "AC9 the record written elsewhere"
-hm h_mask    'echo "::add-mask::\$tok"'                        'echo hi'                                                'the helper'        "AC9 the token is no longer masked"
-hm h_unset   'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL\n' ''                                    'the helper'        "AC9 the request variables stay set for the wrapped script"
+hm h_out     '-o "witness-\$\{step#snapshot-\}/\$step-collection\.local\.json"' '-o elsewhere.json'                                'the helper'        "AC9 the record written elsewhere"
+hm h_unset   'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN\n' ''                                    'the helper'        "AC9 the request variables stay set for the wrapped script"
 hm h_noset   'set -euo pipefail\n'                              ''                                                       'the helper'        "AC11 the helper without set -euo pipefail"
-hm h_nostep  'release-apks\|release-sign\)'                   'release-apks)'                                          'the helper'        "AC11 one of the two release steps missing from the closed list (bin/witnessed.sh lists release-apks and release-sign only)"
+hm h_nostep  'release-verify\|release-apks\|'              ''                                                      'the helper'        "AC11 two of Release's steps missing from the closed list"
 hm h_open    '\*\) echo "witnessed: unknown step \$step" >&2; exit 2 ;;' '*) ;;'                                    'the helper'        "AC11 an unknown step accepted"
-hm h_extra   '\|release-sign\)'                               '|release-sign|extra)'                                   'the helper'        "AC11 a third step in the closed list"
-hm h_chkstep 'release-apks\|release-sign\)'                   'release-apks|release-sign|scanners)'                    'the helper'        "AC11 a Check step in the closed list of the KMS helper (the Check steps run under bin/witnessed-local.sh)"
-hm h_localstep 'release-apks\|release-sign\)'                 'release-apks|release-sign|release-verify)'              'the helper'        "AC11 a local-helper step (release-verify) in the closed list of the KMS helper"
-hm h_kref    '--signer-file-key-path "\$td/key.pem"'    '--signer-file-key-path /etc/signing-key.pem'                 'the helper'        "AC9 Witness told to sign with another key file than the step's throwaway key"
+hm h_extra   '\|release-postverify\)'                          '|release-postverify|extra)'                                       'the helper'        "AC11 a fourth Check step in the closed list"
+hm h_kref    '--signer-file-key-path "\$kd/key.pem"'    '--signer-file-key-path /etc/signing-key.pem'                 'the helper'        "AC9 Witness told to sign with another key file than the step's throwaway key"
 hm h_fulcio  '--signer-file-key-path'                          '--signer-fulcio-url https://fulcio.example.com --signer-file-key-path' 'the helper'  "AC9 a Fulcio flag (keyless signing is gone)"
 hm h_ts      '--signer-file-key-path'                          '-t https://timestamp.example.com/api --signer-file-key-path'  'the helper'        "AC9 a timestamp authority flag"
-hm h_aud     'audience=sts.amazonaws.com'                      'audience=sigstore'                                      'the helper'        "AC9 the token asked for another audience"
 hm h_notrap  'trap [^\n]*EXIT HUP INT TERM\n'                  ''                                                       'the helper'        "AC9 no trap: the token directory outlives an interrupted run"
-hm h_wrap0   'unset AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE\n' ':\n'                                    'the helper'        "AC9 Witness and the wrapped script keep the AWS variables"
 hm h_wrap1   '-- bash "\$@"' '-- env AWS_ROLE_ARN=1 bash "$@"'                                              'the helper'        "AC9 an AWS name in the wrapped command (the command-run record would name it)"
 hm h_sens    '--env-add-sensitive-key AWS_ROLE_ARN'            ''                                                       'the helper'        "AC9 the role variable is not a sensitive key"
 hm h_exec    'witness run --step'                              'exec witness run --step'                                'the helper'        "AC9 witness exec'd (the cleanup after it would never run)"
@@ -432,6 +430,10 @@ scm sc_env     'j["environment"] = "release"'                                   
 scm sc_noenv   'del j["environment"]'                                                                           'environment sign'      "AC1 sign-check without an environment"
 scm sc_noid    'j["permissions"] = {"contents": "read"}'                                                        'permissions'           "AC1 sign-check without the identity token (it cannot reach the KMS key)"
 scm sc_pkgs    'j["permissions"]["packages"] = "write"'                                                         'permissions'           "AC1 sign-check holding packages: write"
+scm sc_nosigs  'j["steps"] = [s for s in j["steps"] if "release-signatures" not in s.get("run", "")]'          'release-signatures.sh' "S2 sign-check does not run bin/release-signatures.sh"
+scm sc_sigsif  'j["steps"] = [dict(s, **{"if": "${{ always() }}"}) if "release-signatures" in s.get("run", "") else s for s in j["steps"]]' 'release-signatures.sh' "S2 the release signing step runs on a release candidate"
+scm sc_nosigd  'j["steps"] = [s for s in j["steps"] if s.get("with", {}).get("name") != "release-signed"]'      'must upload exactly'   "S2 sign-check does not upload release-signed"
+scm sc_noimg   'j["steps"] = [s for s in j["steps"] if s.get("with", {}).get("name") != "images"]'              'must download exactly' "S2 sign-check does not download Build's images"
 scm sc_needs   'j["needs"] = ["check"]'                                                                         'must need exactly'     "AC1 sign-check without build-assemble (Build's digest list is its anchor)"
 scm sc_nodl    'j["steps"] = [s for s in j["steps"] if s.get("with", {}).get("name") != "check-results-ubuntu-24.04-arm"]' 'must download exactly' "AC1 the arm chip's results are not downloaded"
 scm sc_nodl2   'j["steps"] = [s for s in j["steps"] if s.get("with", {}).get("name") != "witness-check-ubuntu-24.04"]'  'must download exactly' "AC1 the amd64 records are not downloaded"
@@ -553,7 +555,8 @@ mkdir -p "$work/gl1/docs" "$work/gl2/docs" "$work/gl3/docs" "$work/gl4/docs" "$w
 for d in gl1 gl2 gl3 gl4 gl5 gl6 gl8; do printf '# guide\n\n```sh\ncosign verify <IMAGE_REF>\n```\n' > "$work/$d/docs/verify-release.md"; done
 printf '# guide\n\n```sh\ngh release view v1\n```\n' > "$work/gl7/docs/verify-release.md"
 R='"reason": "needs the image in a registry; run right after publishing"'
-printf '[{"command": "cosign verify <IMAGE_REF>", %s}]\n' "$R" > "$work/gl1/docs/verify-release.cannot-run.json"
+printf '# guide\n\n```sh\ncosign verify --key release.rsa.pub <IMAGE_REF>\n```\n' > "$work/gl1/docs/verify-release.md"
+printf '[{"command": "cosign verify --key release.rsa.pub <IMAGE_REF>", %s}]\n' "$R" > "$work/gl1/docs/verify-release.cannot-run.json"
 printf '[]\n' > "$work/gl2/docs/verify-release.cannot-run.json"
 printf '[{"command": "cosign verify <IMAGE_REF>", %s}, {"command": "cosign verify <IMAGE_REF>", %s}]\n' "$R" "$R" > "$work/gl4/docs/verify-release.cannot-run.json"
 printf '[{"command": "cosign verify <IMAGE_REF>", "reason": " "}]\n' > "$work/gl5/docs/verify-release.cannot-run.json"
@@ -575,10 +578,29 @@ for n in 9 10; do mkdir -p "$work/gl$n/docs"; done
 printf '# guide\n\n```sh\ncosign verify-evil <IMAGE_REF>\n```\n' > "$work/gl9/docs/verify-release.md"
 printf '[{"command": "cosign verify-evil <IMAGE_REF>", %s}]\n' "$R" > "$work/gl9/docs/verify-release.cannot-run.json"
 expect caught "AC7 round 3 a cannot-run entry whose first words only start with a verify form is refused by the structural judge too" "not a verify form" guidelist "$work/gl9/docs/verify-release.md"
-GJ="cosign verify <IMAGE_REF> --certificate-identity <IDENTITY> | jq -e '.[0] | .critical'"
+GJ="cosign verify <IMAGE_REF> --key release.rsa.pub | jq -e '.[0] | .critical'"
 printf '# guide\n\n```sh\n%s\n```\n' "$GJ" > "$work/gl10/docs/verify-release.md"
 python3 -c 'import json,sys; json.dump([{"command": sys.argv[1], "reason": "needs the image in a registry; run right after publishing"}], open(sys.argv[2], "w"))' "$GJ" "$work/gl10/docs/verify-release.cannot-run.json"
 expect ok "AC7 round 3 a verify form piped to a jq filter that holds a quoted pipe is one verify form (the planner's rule)" "" guidelist "$work/gl10/docs/verify-release.md"
+# a rejection by the shared judge is final: a second command after a verify form is refused,
+# whatever the judge says about why
+mkdir -p "$work/gl11/docs"
+printf '# guide\n\n```sh\ncosign verify <IMAGE_REF>; true\n```\n' > "$work/gl11/docs/verify-release.md"
+printf '[{"command": "cosign verify <IMAGE_REF>; true", %s}]\n' "$R" > "$work/gl11/docs/verify-release.cannot-run.json"
+expect caught "AC7 a cannot-run entry the shared judge rejects (a verify form, then '; true') is refused" \
+  "; true" guidelist "$work/gl11/docs/verify-release.md"
+# the shared judge's rejection is final, whether it is a split rejection or a policy rejection; a reason never overrides it
+for n in 12 13 14; do mkdir -p "$work/gl$n/docs"; done
+GA='cosign verify <IMAGE_REF> --key release.rsa.pub; true'
+GB='cosign verify <IMAGE_REF>'
+GC='cosign verify <IMAGE_REF> --key release.rsa.pub'
+glw() { printf '# guide\n\n```sh\n%s\n```\n' "$2" > "$work/$1/docs/verify-release.md"
+  python3 -c 'import json,sys; json.dump([{"command": sys.argv[1], "reason": "needs the image in a registry; run right after publishing"}], open(sys.argv[2], "w"))' "$2" "$work/$1/docs/verify-release.cannot-run.json"; }
+glw gl12 "$GA"; glw gl13 "$GB"; glw gl14 "$GC"
+expect caught "AC7 row 14 a verify form with a key flag then '; true' is refused by the shared judge" "refused by the shared judge" guidelist "$work/gl12/docs/verify-release.md"
+expect caught "AC7 row 14 a verify form the judge rejects on policy only (no key flag) is refused by the shared judge" "refused by the shared judge" guidelist "$work/gl13/docs/verify-release.md"
+expect caught "AC7 row 14 the policy rejection carries the judge's own reason" "it needs exactly one key flag whose value is release.rsa.pub" guidelist "$work/gl13/docs/verify-release.md"
+expect ok "AC7 row 14 a verify form the judge accepts (with the key flag) passes" "" guidelist "$work/gl14/docs/verify-release.md"
 # ---- AC10: the old acceptance stages --------------------------------------------------------------------------------
 mkdir -p "$work/r/.github/workflows"; cp "$work/release.yml" "$work/r/.github/workflows/release.yml"
 expect ok "fixture: none of the old acceptance stages and no call to them" "" removed "$work/r"
@@ -737,19 +759,19 @@ else
 fi
 if grep -Fq 'scanners|acceptance|runtime) stage=check' "$root/bin/witness-sign-staged.sh"; then ok "REL-011-AC1 witness-sign-staged.sh verifies a signed Check record under the check stage"; else bad "REL-011-AC1 witness-sign-staged.sh has no check stage for the self-check of a signed Check record"; fi
 
-# REQ-CHAIN-004-AC2: the wrapped script runs under `timeout -k 20 540`; a fake witness records its arguments
+# REQ-CHAIN-004-AC2: the wrapped script runs as plain bash SCRIPT ARGS, with no timeout wrapper; a fake witness records its arguments
 fw="$work/fakewit"; mkdir -p "$fw/bin" "$fw/tmp"
 printf '#!/usr/bin/env bash\nprintf "%%s " "$@" > "$FAKE_ARGS"\n' > "$fw/bin/witness"; chmod +x "$fw/bin/witness"
 rc=0
 (cd "$fw" && PATH="$fw/bin:$PATH" RUNNER_TEMP="$fw/tmp" FAKE_ARGS="$fw/args" \
   bash "$root/bin/witnessed-local.sh" apk x.sh) || rc=$?
-if [ "$rc" = 0 ] && grep -Fq -- ' -- timeout -k 20 540 bash x.sh ' "$fw/args"; then
-  ok "AC2 witnessed-local.sh bounds the wrapped script by timeout -k 20 540 (9 minutes)"
+if [ "$rc" = 0 ] && grep -Fq -- ' -- bash x.sh ' "$fw/args" && ! grep -Fq -- 'timeout' "$fw/args"; then
+  ok "AC2 witnessed-local.sh runs the wrapped script as plain bash SCRIPT ARGS (GitHub's default job time limit bounds a hung step)"
 else
   bad "AC2 witnessed-local.sh exit $rc, ran the script under: $(grep -o -- ' -- .*' "$fw/args" 2> /dev/null)"
 fi
 
-EXPECT=347
+EXPECT=351
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

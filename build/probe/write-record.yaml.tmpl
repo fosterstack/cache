@@ -13,4 +13,4 @@ environment:
       - @BUSYBOX@
 pipeline:
   - runs: |
-      if echo forged >> @RECORD@; then exit 1; fi
+      if echo forged >> "@RECORD@"; then exit 1; fi

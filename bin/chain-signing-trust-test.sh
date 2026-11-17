@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-001-AC8
-# REQ-CHAIN-001-AC8: exactly the four jobs sign, sign-rebuild, sign-check and sign-release of release.yml run in the environment sign and request the identity token for the release signing
+# REQ-CHAIN-001-AC8: exactly the three jobs sign, sign-rebuild and sign-check of release.yml run in the environment sign and request the identity token for the release signing
 # role (the job holds id-token: write and names the role: AWS_ROLE_ARN or RELEASE_KMS_KEY_REF); no other job of any workflow file does. The role's trust itself lives in the ops repository,
 # so this suite reads the workflow files only. The real files are judged, then mutated copies of them (each refused for its reason).
 set -euo pipefail
@@ -11,7 +11,7 @@ cat > "$work/jobs.py" <<'PY'
 import copy, glob, json, os, re, sys
 import yaml
 
-FOUR = ["sign", "sign-check", "sign-rebuild", "sign-release"]
+FOUR = ["sign", "sign-check", "sign-rebuild"]
 KMS = re.compile(r"\bAWS_ROLE_ARN|RELEASE_KMS_KEY_REF|release-signing")
 
 def load(root):
@@ -57,8 +57,8 @@ def mutate(wfs, how):
         jobs["live-test"]["env"] = dict(jobs["live-test"].get("env") or {}, RELEASE_KMS_KEY_REF="awskms:///alias/x")
     elif how == "sign-check-leaves-sign":
         jobs["sign-check"]["environment"] = "release"
-    elif how == "sign-release-drops-token":
-        jobs["sign-release"]["permissions"] = {"contents": "read"}
+    elif how == "sign-check-drops-token":
+        jobs["sign-check"]["permissions"] = {"contents": "read"}
     elif how == "sign-rebuild-gone":
         del jobs["sign-rebuild"]
     elif how == "workflow-level-token":
@@ -75,13 +75,13 @@ report() { # report NAME RC TEXT
   if [ "$2" = 0 ]; then pass=$((pass+1)); echo "PASS $1 -> $3"; else failn=$((failn+1)); echo "FAIL $1 -> $3"; fi
 }
 rc=0; out=$(python3 "$work/jobs.py" real "$root" 2>&1) || rc=$?
-report "only sign, sign-rebuild, sign-check and sign-release of release.yml run in the environment sign and request the KMS role's identity token" "$rc" "$out"
+report "only sign, sign-rebuild and sign-check of release.yml run in the environment sign and request the KMS role's identity token" "$rc" "$out"
 mutated() { # mutated NAME
   local rc=0 out; out=$(python3 "$work/jobs.py" "$1" "$root" 2>&1) || rc=$?
   if [ "$rc" = 1 ]; then pass=$((pass+1)); echo "PASS mutation $1 -> refused ($out)"
   else failn=$((failn+1)); echo "FAIL mutation $1 -> rc=$rc, wanted a refusal: $out"; fi
 }
-for m in release-job-signs release-job-in-sign fifth-job-in-release-yml job-of-another-file persona-uat-asks live-test-asks sign-check-leaves-sign sign-release-drops-token sign-rebuild-gone workflow-level-token; do
+for m in release-job-signs release-job-in-sign fifth-job-in-release-yml job-of-another-file persona-uat-asks live-test-asks sign-check-leaves-sign sign-check-drops-token sign-rebuild-gone workflow-level-token; do
   mutated "$m"
 done
 echo "chain-signing-trust: $pass passed, $failn failed"

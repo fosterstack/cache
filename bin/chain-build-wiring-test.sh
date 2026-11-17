@@ -33,12 +33,12 @@
 # and `items-apk`, so the stage names no apk file.
 # bin/build-admit.py gets GH_TOKEN only through the apk job's Witness step env; the script runs `unset
 # GH_TOKEN` right after the admission line.
-# bin/witnessed-local.sh holds all the Witness flags and `timeout 540`; the judge is witness_seam, helper and
+# bin/witnessed-local.sh holds all the Witness flags and runs the command as plain bash SCRIPT ARGS; the judge is witness_seam, helper and
 # directwitness in
 # bin/chain-test-shape.py and the fixture side is witness_block and witnessed_text below.
 # Witness loads its Fulcio signer when the command starts and takes the timestamp when it ends, so a build
 # longer than the 10-minute certificate
-# may not verify; `timeout 540` is the answer in the tests.
+# may not verify; GitHub's default job time limit bounds a hung command.
 # The cache scripts' interface is a given: build-apk.sh refuses (exit 2) RELEASE_KMS_KEY_REF, GOPROXY other
 # than off, HTTPS_PROXY and --signing-key,
 # and exits 4 on a network attempt in the sealed call; assemble-image.sh takes no --apko-config. The CLI of
@@ -114,7 +114,7 @@ def witnessed_text():           # bin/witnessed.sh, the witness line broken at i
     i = next(n for n, l in enumerate(lines) if l.startswith("witness run "))
     for flag in (" --signer-file-key-path", " -a ", " -o "):
         lines[i] = lines[i].replace(flag, " \\\n  " + flag.strip() + " ", 1) if flag.endswith(" ") else lines[i].replace(flag, " \\\n " + flag, 1)
-    comment = "# run one Release script under Witness, signed by the release KMS key through the AWS SDK: the identity token in a private file that a trap removes, the attestors (rule 68)"
+    comment = "# run one Release script under Witness with a throwaway key made in the job (the Release job holds no KMS key, no identity token): the attestors (rule 68)"
     return "#!/usr/bin/env bash\n" + comment + "\n" + "\n".join(lines) + "\n"
 
 
@@ -679,11 +679,11 @@ for st in stage-build.yml stage-sign.yml stage-verify.yml stage-promote.yml stag
   rm -rf "$work/wf-stage"; mkdir -p "$work/wf-stage"; cp "$work/wf-ok"/* "$work/wf-stage/"; : > "$work/wf-stage/$st"
   expect caught "AC1 $st is back: the five stage files are gone, the release is the one file release.yml" "$st" workflows "$work/wf-stage"
 done
-# ---- the Witness seam: bin/witnessed.sh is the only place the Witness flags and `timeout 540` live (REQ-CHAIN-004-AC2; rule 68 as amended) ------------
+# ---- the Witness seam: bin/witnessed.sh alone holds the Witness flags; plain bash SCRIPT ARGS (REQ-CHAIN-004-AC2) ----
 expect ok "AC2 fixture: the known-good bin/witnessed.sh is exactly the canonical helper" "" helper "$work/witnessed.sh"
 expect ok "AC2 fixture: no stage file and no stage script names witness run" "" directwitness "$work/build.yml" "$work/rebuild.yml" "$work"/s-*.sh
 hm() { replace "$work/witnessed.sh" "$work/h_$1.sh" "$3" "$4" && expect caught "$2" "helper command" helper "$work/h_$1.sh"; return 0; }
-hm fdir    "AC2 witness -d (the command must run from the repo root)" '-o "$local_record"' '-d out -o "$local_record"'
+hm fdir    "AC2 witness -d (the command must run from the repo root)" '-o "witness-${step#snapshot-}/$step-collection.local.json"' '-d out -o "witness-${step#snapshot-}/$step-collection.local.json"'
 hm fextra  "AC2 an extra Witness flag" '--env-filter-sensitive-vars' '--enable-archivista --env-filter-sensitive-vars'
 hm fnoflt  "AC8 no environment filter flag (tokens would be recorded)" '--env-filter-sensitive-vars' ''
 hm fnokey  "AC8 no token-variable key pattern" "--env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'" ''
@@ -691,40 +691,34 @@ hm fnogh   "AC8 GH_TOKEN not on the sensitive-key list" '--env-add-sensitive-key
 hm fslsa   "AC2 the slsa attestor (provenance is Sign's alone)" 'environment,git,material,product' 'environment,git,material,slsa'
 hm fgha    "AC8 the github attestor (it embeds the raw OIDC token)" 'environment,git,material,product' 'environment,git,github,material,product'
 hm fstep   "AC2 a fixed --step instead of the closed-list argument" '--step "$step"' '--step build'
-hm fout    "AC2 the signed record written to another path" '--out "witness-${step#snapshot-}/$step-collection.json"' '--out out/x.json'
-hm fopen   "AC2 the step list is open" 'release-apks' '*'
-hm ftee "AC2 the token written elsewhere" '| jq -r .value' '| jq -r .value | tee /tmp/leak'
-hm fexport "AC2 the token exported into the wrapped command's environment" 'echo "::add-mask::$tok"' 'export tok\necho "::add-mask::$tok"'
-hm fnomask "AC2 the token is not masked in the log" 'echo "::add-mask::$tok"' ''
+hm fout    "AC2 the record written to another path than witness-DIR/STEP-collection.local.json" '-o "witness-${step#snapshot-}/$step-collection.local.json"' '-o out/x.json'
+hm fopen   "AC2 the step list is open" 'release-verify' '*'
 hm fnounset "AC2 the identity-token variables are not unset before the wrapped command runs" \
    'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL' ''
-hm kref    "AC2 Witness run with another key file than the step's throwaway key" '--signer-file-key-path "$td/key.pem"' '--signer-file-key-path /etc/signing-key.pem'
+hm kref    "AC2 Witness run with another key file than the step's throwaway key" '--signer-file-key-path "$kd/key.pem"' '--signer-file-key-path /etc/signing-key.pem'
 hm kfulcio "AC2 a Fulcio flag (keyless signing is gone)" '--signer-file-key-path' '--signer-fulcio-url https://fulcio.sigstore.dev --signer-file-key-path'
 hm ktsa    "AC2 a timestamp authority flag (the Rekor entry carries the time)" '--signer-file-key-path' '-t https://tsa.example/ts --signer-file-key-path'
-hm kkms    "AC2 Witness told to sign with the KMS key itself again (the one signing function does it)" '--signer-file-key-path "$td/key.pem"' '--signer-kms-ref "$RELEASE_KMS_KEY_REF"'
-hm knosign "AC2 the collection is not signed with the release key (the signing function is not called)" 'sign-record' 'verify'
-hm kaud    "AC2 the token asked for another audience (the AWS trust requires sts.amazonaws.com)" 'audience=sts.amazonaws.com' 'audience=sigstore'
-hm knotrap "AC2 no trap: the token directory outlives an interrupted run" $'trap \'rm -rf "$td"\' EXIT HUP INT TERM\n' ''
-hm ktmp    "AC2 the token directory outside RUNNER_TEMP" '"${RUNNER_TEMP:?}/witness-aws.XXXXXX"' '/tmp/witness-aws.XXXXXX'
+hm kkms    "AC2 Witness told to sign with the KMS key itself again (the Release job holds no key)" '--signer-file-key-path "$kd/key.pem"' '--signer-kms-ref "$RELEASE_KMS_KEY_REF"'
+hm knosign "AC2 a KMS signing call added after Witness (the Release job holds no key, no token: its record is evidence signed with the throwaway key)" $'rm -rf "$kd"\n[ ! -e' $'bash bin/with-aws-token.sh sign-record --payload x\nrm -rf "$kd"\n[ ! -e'
+hm knotrap "AC2 no trap: the key directory outlives an interrupted run" $'trap \'rm -rf "$kd"\' EXIT HUP INT TERM\n' ''
+hm ktmp    "AC2 the key directory outside RUNNER_TEMP" '"${RUNNER_TEMP:?}/witness-key.XXXXXX"' '/tmp/witness-key.XXXXXX'
 hm kumask  "AC2 no umask: the token file would be group-readable" $'umask 077\n' ''
-hm kwrap0  "AC2 Witness and the wrapped script keep the AWS variables" 'unset AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE\n' ':\n'
-hm kwrap1  "AC2 only some of the AWS variables are removed from the wrapped script" 'unset AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE' 'unset AWS_ROLE_ARN'
-hm kwrap2  "AC2 the release-creds literal (AWS names in the recorded command) in front of the wrapped script: record-env refuses a record that names them" '-o "$local_record" -- bash "$@"' '-o "$local_record" -- bash -c '"'"'AWS_ROLE_ARN=$RELEASE_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE=$RELEASE_TOKEN_FILE exec "$@"'"'"' release-creds bash "$@"'
-hm kwrap3  "AC2 the role in the wrapped command (env AWS_ROLE_ARN=... in front of the script: the value in the recorded argv)" '-o "$local_record" -- bash "$@"' '-o "$local_record" -- env "AWS_ROLE_ARN=$role" bash "$@"'
-hm ksignall "AC2 every step gets the signing variables, not release-sign and release-apks alone" 'signers=" release-sign release-apks "' 'signers=" release-verify release-apks release-publish release-sign release-assets release-postverify "'
+hm kwrap0  "AC2 Witness and the wrapped script keep the identity and AWS variables" $'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN\n' $':\n'
+hm kwrap1  "AC2 only some of the AWS variables are removed from the wrapped script" ' AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN' ' AWS_ROLE_ARN'
+hm kwrap2  "AC2 the release-creds literal (AWS names in the recorded command) in front of the wrapped script: record-env refuses a record that names them" '-o "witness-${step#snapshot-}/$step-collection.local.json" -- bash "$@"' '-o "witness-${step#snapshot-}/$step-collection.local.json" -- bash -c '"'"'AWS_ROLE_ARN=$RELEASE_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE=$RELEASE_TOKEN_FILE exec "$@"'"'"' release-creds bash "$@"'
+hm kwrap3  "AC2 the role in the wrapped command (env AWS_ROLE_ARN=... in front of the script: the value in the recorded argv)" '-o "witness-${step#snapshot-}/$step-collection.local.json" -- bash "$@"' '-o "witness-${step#snapshot-}/$step-collection.local.json" -- env "AWS_ROLE_ARN=$role" bash "$@"'
 hm ksensf  "AC8 the token-file variable is not a sensitive key of the record" '--env-add-sensitive-key AWS_WEB_IDENTITY_TOKEN_FILE' ''
 hm ksensr  "AC8 the role variable is not a sensitive key of the record" '--env-add-sensitive-key AWS_ROLE_ARN' ''
-hm kghenv  "AC2 the token file written to GITHUB_ENV" 'mv "$td/token" "$td/step/token";' 'mv "$td/token" "$td/step/token"; echo "AWS_WEB_IDENTITY_TOKEN_FILE=$td/step/token" >> "$GITHUB_ENV";'
-hm kclean  "AC2 the token directory not removed after Witness returns" $'rm -rf "$td"\n[ ! -e' '[ ! -e'
+hm kclean  "AC2 the key directory not removed after Witness returns" $'rm -rf "$kd"\n[ ! -e' '[ ! -e'
 hm fexec   "AC2 witness exec'd (the cleanup after it would never run)" 'witness run --step' 'exec witness run --step'
 hm fignore "AC2 a failure of the witnessed command is ignored" '|| rc=$?' '|| true'
-hm fnounsetrt "AC2 the runtime-token variables are not unset before the wrapped command runs" 'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL\n' ''
+hm fnounsetrt "AC2 the runtime-token variables are not unset before the wrapped command runs" ' ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL' ''
 hm fsnapdir "AC12 a snapshot record would go to its own directory (the uploads would miss it)" 'mkdir -p "witness-${step#snapshot-}"' 'mkdir -p "witness-$step"'
 hm fsnapout "AC12 the record of a snapshot step is written under the release name (nothing marks it as a snapshot)" \
-    '"witness-${step#snapshot-}/$step-collection.json"' \
-       '"witness-${step#snapshot-}/${step#snapshot-}-collection.json"'
-hm fsnapopen "AC12 the step list admits snapshot-evil (the snapshot names are a closed list)" 'in release-apks|' \
-    'in snapshot-evil|release-apks|'
+    '"witness-${step#snapshot-}/$step-collection.local.json"' \
+       '"witness-${step#snapshot-}/${step#snapshot-}-collection.local.json"'
+hm fsnapopen "AC12 the step list admits snapshot-evil (the snapshot names are a closed list)" 'in release-verify|' \
+    'in snapshot-evil|release-verify|'
 hm fkeep   "AC2 a comment ending in a backslash hides a copy of the token (bash runs the cp line)" \
    'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN' '# token kept \\ncp /dev/null "$RUNNER_TEMP/tok"\nunset ACTIONS_ID_TOKEN_REQUEST_TOKEN'
 { cat "$work/witnessed.sh"; echo "witness run --step x -- true"; } > "$work/h_second.sh"
@@ -762,16 +756,13 @@ lm lcopy    "WIT1 the key copied into the record directory (it would be uploaded
 lm lcat     "WIT1 the key printed" 'rc=0' 'rc=0\ncat "$kd/key.pem"'
 lm lsigned  "WIT1 the record written under the signed name (it must end in .local.json: only Sign signs a trusted one)" '$step-collection.local.json' '$step-collection.json'
 lm lopen    "WIT1 the step list open" 'apk|build|rapk|rebuild|snapshot-apk' '*|apk'
-lm lrelease "WIT1 another Release step in the list (only release-verify, release-publish, release-assets and release-postverify run locally; release-apks and release-sign keep the KMS helper)" 'snapshot-rebuild|release-verify|release-publish|release-assets|release-postverify|scanners' 'snapshot-rebuild|release-verify|release-publish|release-assets|release-postverify|release-sign|scanners'
-lm lnorp    "WIT1 release-publish missing from the list (the release job runs it under the throwaway key, it holds no KMS role)" 'release-verify|release-publish|release-assets' 'release-verify|release-assets'
+lm lrelease "WIT1 another Release step in the list (only release-verify runs locally; the release job's steps run under bin/witnessed.sh)" 'snapshot-rebuild|release-verify|scanners' 'snapshot-rebuild|release-verify|release-sign|scanners'
 lm larm64   "WIT1 an arm64 step in the list (Check has no arm64 step: its steps are scanners, acceptance and runtime on both chips)" '|scanners|acceptance|runtime)' '|scanners|acceptance|runtime|arm64)'
-lm lnorv    "WIT1 release-assets missing from the list (release-evidence runs it under the throwaway key, it holds no KMS role)" 'release-publish|release-assets|release-postverify' 'release-publish|release-postverify'
-lm lnopv    "WIT1 release-postverify missing from the list (release-evidence runs it under the throwaway key)" 'release-assets|release-postverify|scanners' 'release-assets|scanners'
 lm lslsa    "WIT1 the slsa attestor" 'environment,git,material,product' 'environment,git,material,slsa'
 lm lgha     "WIT1 the github attestor (it embeds the raw OIDC token)" 'environment,git,material,product' 'environment,git,github,material,product'
 lm lnoflt   "WIT1 no environment filter" '--env-filter-sensitive-vars' ''
 lm lnounset "WIT1 the token variables not unset" 'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN\n' ''
-lm ltimeout "WIT1 no time limit on the build" '-- timeout -k 20 540 bash' '-- bash'
+lm ltimeout "WIT1 a time limit on the build (the local helper has had no timeout wrapper since handoff 0713)" '-- bash "$@"' '-- timeout -k 20 540 bash "$@"'
 lm lsnapdir "WIT1 a snapshot record in its own directory (the uploads would miss it)" 'mkdir -p "witness-${step#snapshot-}"' 'mkdir -p "witness-$step"'
 { cat "$work/witnessed-local.sh"; echo "witness run --step x -- true"; } > "$work/l_second.sh"
 expect caught "WIT1 a second witness invocation in the local helper" "local helper" localhelper "$work/l_second.sh"
@@ -1522,7 +1513,7 @@ PY
 then ok "AC16 every archive/ path the stage scripts read is held by the stored archive"; else bad "AC16 every archive/ path the stage scripts read is held by the stored archive"; fi
 # ---- the job graph of release.yml (REQ-CHAIN-005-AC5) -----------------------------------------------------------------------------------------
 # The known-good graph, written out from the rulings of cache#921 (not read from the shape file): fifteen chain jobs in one file, each with its needs, its if (gate G on build-freeze, guard S on the sign jobs,
-# S and the candidate rule on release, sign-release and release-evidence, `inputs.mode != 'snapshot'` on the Check jobs), its permissions and its environment; the KMS role as the job env of the four sign jobs only.
+# S and the candidate rule on release, `inputs.mode != 'snapshot'` on the Check jobs), its permissions and its environment; the KMS role as the job env of the three sign jobs only.
 python3 - "$work" <<'PY'
 import sys
 w = sys.argv[1]
@@ -1549,10 +1540,8 @@ text = ("name: Release\non:\n  push:\n    tags: [\"v*\"]\n  workflow_dispatch:\n
         + job("check-govulncheck", None, CHECK_IF) + job("check", "[check-govulncheck, build-assemble, sign]", CHECK_IF)
         + job("sign-check", "[build-assemble, check]", SIGN_IF, SIGNP, "sign", KMS)
         + job("release-compare", "[check, sign, sign-rebuild, sign-check]") + job("release-verify", "release-compare")
-        + job("release", "[release-verify, release-compare, sign-release]", AFTER_IF, {"contents": "write", "packages": "write"}, "release",
+        + job("release", "[release-verify, release-compare]", AFTER_IF, {"contents": "write", "packages": "write"}, "release",
               "    concurrency:\n      group: release-publish\n      cancel-in-progress: false\n")
-        + job("sign-release", "[build-assemble, release-verify, release-compare]", AFTER_IF, SIGNP, "sign", KMS)
-        + job("release-evidence", "release", AFTER_IF, {"contents": "write"})
         + """  decide:
     if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
     runs-on: ubuntu-latest
@@ -1572,7 +1561,7 @@ text = ("name: Release\non:\n  push:\n    tags: [\"v*\"]\n  workflow_dispatch:\n
     steps:
       - run: echo ${{ secrets.AUDITOR_APP_ID }}
   patch-failed:
-    needs: [build-freeze, build-apk, build-assemble, sign, rebuild-apk, rebuild-assemble, sign-rebuild, check-govulncheck, check, sign-check, release-compare, release-verify, release, sign-release, release-evidence]
+    needs: [build-freeze, build-apk, build-assemble, sign, rebuild-apk, rebuild-assemble, sign-rebuild, check-govulncheck, check, sign-check, release-compare, release-verify, release]
     if: ${{ inputs.mode != 'snapshot' && always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
     runs-on: ubuntu-latest
     permissions:
@@ -1619,16 +1608,9 @@ gr n17 "005-AC5 release-compare does not need sign" 'needs: [check, sign, sign-r
 gr n18 "005-AC5 release-compare does not need check" 'needs: [check, sign, sign-rebuild, sign-check]' 'needs: [sign, sign-rebuild, sign-check]' "release-compare must need exactly"
 gr n19 "005-AC5 release-compare also lists build-assemble (build is reached through check)" 'needs: [check, sign, sign-rebuild, sign-check]' 'needs: [build-assemble, check, sign, sign-rebuild, sign-check]' "release-compare must need exactly"
 gr n20 "005-AC5 release-verify does not need release-compare" '  release-verify:\n    needs: release-compare' '  release-verify:\n    needs: check' "release-verify must need exactly"
-gr n21 "005-AC5 release does not need release-verify" 'needs: [release-verify, release-compare, sign-release]' 'needs: [release-compare]' "release must need exactly"
-gr n22 "005-AC5 release does not need release-compare" 'needs: [release-verify, release-compare, sign-release]' 'needs: [release-verify]' "release must need exactly"
-gr n23 "005-AC5 sign-release does not wait for release-compare" '  sign-release:\n    needs: [build-assemble, release-verify, release-compare]' '  sign-release:\n    needs: [build-assemble, release-verify]' "sign-release must need exactly"
-gr n23c "005-AC5 sign-release does not wait for release-verify (it would sign what was not verified)" '  sign-release:\n    needs: [build-assemble, release-verify, release-compare]' '  sign-release:\n    needs: [build-assemble, release-compare]' "sign-release must need exactly"
-gr n23d "005-AC5 sign-release waits for release (it runs before the release job, which needs it)" '  sign-release:\n    needs: [build-assemble, release-verify, release-compare]' '  sign-release:\n    needs: [build-assemble, release-verify, release-compare, release]' "sign-release must need exactly"
-gr n22b "005-AC5 release does not need sign-release (it would publish with nothing to verify)" 'needs: [release-verify, release-compare, sign-release]' 'needs: [release-verify, release-compare]' "release must need exactly"
-gr n23b "ruling Q-e sign-release does not need build-assemble (it reads Build's digest list through that job's output)" '  sign-release:\n    needs: [build-assemble, release-verify, release-compare]' '  sign-release:\n    needs: [release-verify, release-compare]' "sign-release must need exactly"
-gr n24 "005-AC5 release-evidence waits for sign-release instead of release (it would attach before the publish)" '  release-evidence:\n    needs: release' '  release-evidence:\n    needs: sign-release' "release-evidence must need exactly"
-gr n25 "005-AC5 release-evidence waits for sign-release too (it has one need, release)" '  release-evidence:\n    needs: release' '  release-evidence:\n    needs: [release, sign-release]' "release-evidence must need exactly"
-# if: gate G on build-freeze only, guard S on the sign jobs, S and the candidate rule on release, sign-release and release-evidence (REQ-CHAIN-005-AC5, REQ-CHAIN-007-AC14), `inputs.mode != 'snapshot'` on the Check jobs, none elsewhere
+gr n21 "005-AC5 release does not need release-verify" 'needs: [release-verify, release-compare]' 'needs: [release-compare]' "release must need exactly"
+gr n22 "005-AC5 release does not need release-compare" 'needs: [release-verify, release-compare]' 'needs: [release-verify]' "release must need exactly"
+# if: gate G on build-freeze only, guard S on the sign jobs, S and the candidate rule on release (REQ-CHAIN-005-AC5, REQ-CHAIN-007-AC14), `inputs.mode != 'snapshot'` on the Check jobs, none elsewhere
 gr i1  "005-AC5 build-freeze without the gate G (it would run on every push and the daily cron)" "  build-freeze:\n    if: $GATE\n" "  build-freeze:\n" "build-freeze must carry exactly the if"
 gr i2  "005-AC5 build-freeze gated by always()" "  build-freeze:\n    if: $GATE\n" "  build-freeze:\n    if: always()\n" "build-freeze must carry exactly the if"
 gr i3  "005-AC5 build-freeze gated by the tag test alone (a dry run on a branch would never run)" "  build-freeze:\n    if: $GATE\n" "  build-freeze:\n    if: $TAGONLY\n" "build-freeze must carry exactly the if"
@@ -1646,36 +1628,26 @@ gr i14 "005-AC5 sign without the workflow_ref test (a caller's tag push could si
 gr i15 "005-AC5 sign-rebuild without the guard S" "  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble]\n    if: $SIGNIF\n" "  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble]\n" "sign-rebuild must carry exactly the if"
 gr i16 "005-AC5 sign-check without the guard S" "  sign-check:\n    needs: [build-assemble, check]\n    if: $SIGNIF\n" "  sign-check:\n    needs: [build-assemble, check]\n" "sign-check must carry exactly the if"
 gr i17 "005-AC5 sign-check with the candidate rule too (only the jobs after the signatures carry it)" "  sign-check:\n    needs: [build-assemble, check]\n    if: $SIGNIF\n" "  sign-check:\n    needs: [build-assemble, check]\n    if: \${{ $GUARD_S$RCS }}\n" "sign-check must carry exactly the if"
-gr i18 "005-AC5 release without the candidate rule (a release candidate would enter the environment release)" "  release:\n    needs: [release-verify, release-compare, sign-release]\n    if: \${{ $GUARD_S$RCS }}\n" "  release:\n    needs: [release-verify, release-compare, sign-release]\n    if: $SIGNIF\n" "release must carry exactly the if"
-gr i19 "005-AC5 sign-release without the candidate rule (a release candidate would enter the environment sign again)" "  sign-release:\n    needs: [build-assemble, release-verify, release-compare]\n    if: \${{ $GUARD_S$RCS }}\n" "  sign-release:\n    needs: [build-assemble, release-verify, release-compare]\n    if: $SIGNIF\n" "sign-release must carry exactly the if"
-gr i20 "005-AC5 release-evidence without the candidate rule" "  release-evidence:\n    needs: release\n    if: \${{ $GUARD_S$RCS }}\n" "  release-evidence:\n    needs: release\n    if: $SIGNIF\n" "release-evidence must carry exactly the if"
-gr i21 "005-AC5 release without the guard S (a branch run would not be refused by its own if)" "  release:\n    needs: [release-verify, release-compare, sign-release]\n    if: \${{ $GUARD_S$RCS }}\n" "  release:\n    needs: [release-verify, release-compare, sign-release]\n    if: \${{ !contains(github.ref_name, '-') }}\n" "release must carry exactly the if"
-gr i22 "005-AC5 release runs when a stage failed (if: always())" "  release:\n    needs: [release-verify, release-compare, sign-release]\n    if: \${{ $GUARD_S$RCS }}\n" "  release:\n    needs: [release-verify, release-compare, sign-release]\n    if: always()\n" "release must carry exactly the if"
-gr i23 "005-AC5 release runs when a predecessor was skipped (!cancelled())" "  release:\n    needs: [release-verify, release-compare, sign-release]\n    if: \${{ $GUARD_S$RCS }}\n" "  release:\n    needs: [release-verify, release-compare, sign-release]\n    if: \${{ !cancelled() }}\n" "release must carry exactly the if"
+gr i18 "005-AC5 release without the candidate rule (a release candidate would enter the environment release)" "  release:\n    needs: [release-verify, release-compare]\n    if: \${{ $GUARD_S$RCS }}\n" "  release:\n    needs: [release-verify, release-compare]\n    if: $SIGNIF\n" "release must carry exactly the if"
+gr i21 "005-AC5 release without the guard S (a branch run would not be refused by its own if)" "  release:\n    needs: [release-verify, release-compare]\n    if: \${{ $GUARD_S$RCS }}\n" "  release:\n    needs: [release-verify, release-compare]\n    if: \${{ !contains(github.ref_name, '-') }}\n" "release must carry exactly the if"
+gr i22 "005-AC5 release runs when a stage failed (if: always())" "  release:\n    needs: [release-verify, release-compare]\n    if: \${{ $GUARD_S$RCS }}\n" "  release:\n    needs: [release-verify, release-compare]\n    if: always()\n" "release must carry exactly the if"
+gr i23 "005-AC5 release runs when a predecessor was skipped (!cancelled())" "  release:\n    needs: [release-verify, release-compare]\n    if: \${{ $GUARD_S$RCS }}\n" "  release:\n    needs: [release-verify, release-compare]\n    if: \${{ !cancelled() }}\n" "release must carry exactly the if"
 gr i24 "005-AC5 release-compare with an if (it runs after Check and the sign jobs through needs)" '  release-compare:\n    needs: [check, sign, sign-rebuild, sign-check]\n' '  release-compare:\n    needs: [check, sign, sign-rebuild, sign-check]\n    if: always()\n' "release-compare must carry no if"
 gr i25 "005-AC5 release-verify with an if" '  release-verify:\n    needs: release-compare\n' '  release-verify:\n    needs: release-compare\n    if: ${{ !contains(github.ref_name, '"'-'"') }}\n' "release-verify must carry no if"
 gr i26 "005-AC5 check without its mode condition (it would run in a snapshot call)" "  check:\n    needs: [check-govulncheck, build-assemble, sign]\n    if: \${{ inputs.mode != 'snapshot' }}\n" "  check:\n    needs: [check-govulncheck, build-assemble, sign]\n" "check must carry exactly the if"
 gr i27 "005-AC5 check with the guard S (the Check jobs carry exactly inputs.mode != 'snapshot')" "  check:\n    needs: [check-govulncheck, build-assemble, sign]\n    if: \${{ inputs.mode != 'snapshot' }}\n" "  check:\n    needs: [check-govulncheck, build-assemble, sign]\n    if: $SIGNIF\n" "check must carry exactly the if"
 gr i28 "005-AC5 check-govulncheck without its mode condition" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' }}\n" "  check-govulncheck:\n" "check-govulncheck must carry exactly the if"
 gr i29 "005-AC5 check that survives a failed sign (if: always())" "  check:\n    needs: [check-govulncheck, build-assemble, sign]\n    if: \${{ inputs.mode != 'snapshot' }}\n" "  check:\n    needs: [check-govulncheck, build-assemble, sign]\n    if: \${{ always() }}\n" "check must carry exactly the if"
-# environment and permissions (ruling 1: the four sign jobs are the only ones in the environment sign; the release job holds no KMS role and no id-token; ruling 2: release-evidence holds contents write only)
+# environment and permissions (ruling 1: the three sign jobs are the only ones in the environment sign; the release job holds no KMS role and no id-token)
 AFTERIF="\${{ $GUARD_S$RCS }}"
 gr e-sign   "ruling 1 sign is in another environment than sign (the KMS role's trust names the environment sign)" "  sign:\n    needs: build-assemble\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: sign\n" "  sign:\n    needs: build-assemble\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: other\n" "sign must be in the environment sign"
 gr e-signr  "ruling 1 sign-rebuild is in another environment than sign" "  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble]\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: sign\n" "  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble]\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: other\n" "sign-rebuild must be in the environment sign"
 gr e-signc  "ruling 1 sign-check is in another environment than sign" "  sign-check:\n    needs: [build-assemble, check]\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: sign\n" "  sign-check:\n    needs: [build-assemble, check]\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: other\n" "sign-check must be in the environment sign"
-gr e-signrel "ruling 1 sign-release is in the environment release (it is in the environment sign)" "  sign-release:\n    needs: [build-assemble, release-verify, release-compare]\n    if: $AFTERIF\n    runs-on: ubuntu-24.04\n    environment: sign\n" "  sign-release:\n    needs: [build-assemble, release-verify, release-compare]\n    if: $AFTERIF\n    runs-on: ubuntu-24.04\n    environment: release\n" "sign-release must be in the environment sign"
-gr e-signnone "ruling 1 sign-release without an environment" "  sign-release:\n    needs: [build-assemble, release-verify, release-compare]\n    if: $AFTERIF\n    runs-on: ubuntu-24.04\n    environment: sign\n" "  sign-release:\n    needs: [build-assemble, release-verify, release-compare]\n    if: $AFTERIF\n    runs-on: ubuntu-24.04\n" "sign-release must be in the environment sign"
 gr e1  "ruling 1 release-compare in the environment sign" '  release-compare:\n' '  release-compare:\n    environment: sign\n' "release-compare must be in no environment"
 gr e2  "ruling 1 release in the environment sign (it is in the environment release)" '    environment: release\n' '    environment: sign\n' "release must be in the environment release"
-gr e3  "ruling 2 release-evidence in the environment sign" '  release-evidence:\n' '  release-evidence:\n    environment: sign\n' "release-evidence must be in no environment"
-gr e4  "ruling 2 release-evidence in the environment release" '  release-evidence:\n' '  release-evidence:\n    environment: release\n' "release-evidence must be in no environment"
 gr e5  "ruling 1 check in the environment sign (a build or check job never reaches the KMS key)" '  check:\n' '  check:\n    environment: sign\n' "check must be in no environment"
 gr p1  "ruling 1 the release job holds an id-token (it holds no KMS role)" '      contents: write\n      packages: write\n' '      contents: write\n      packages: write\n      id-token: write\n' "release must hold exactly the permissions"
-gr p2  "ruling 1 the release job without packages write (it could not publish)" '      contents: write\n      packages: write\n    steps: []\n  sign-release:' '      contents: write\n    steps: []\n  sign-release:' "release must hold exactly the permissions"
-gr p3  "ruling 2 release-evidence holds an id-token" '  release-evidence:\n    needs: release\n    if: ${{ '"$GUARD_S$RCS"' }}\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: write\n' '  release-evidence:\n    needs: release\n    if: ${{ '"$GUARD_S$RCS"' }}\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: write\n      id-token: write\n' "release-evidence must hold exactly the permissions"
-gr p4  "ruling 2 release-evidence without contents write (it could not attach the evidence)" '  release-evidence:\n    needs: release\n    if: ${{ '"$GUARD_S$RCS"' }}\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: write\n' '  release-evidence:\n    needs: release\n    if: ${{ '"$GUARD_S$RCS"' }}\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n' "release-evidence must hold exactly the permissions"
-gr p5  "ruling 1 sign-release without id-token (it could not reach the KMS key)" '      contents: read\n      id-token: write\n    steps: []\n  release-evidence:' '      contents: read\n    steps: []\n  release-evidence:' "sign-release must hold exactly the permissions"
-gr p6  "REQ-REL-011-AC3 sign-release holds packages write (it holds exactly contents read and id-token write: no registry write)" '      contents: read\n      id-token: write\n    steps: []\n  release-evidence:' '      contents: read\n      id-token: write\n      packages: write\n    steps: []\n  release-evidence:' "sign-release must hold exactly the permissions"
+gr p2  "ruling 1 the release job without packages write (it could not publish)" '      contents: write\n      packages: write\n    steps: []\n  decide:' '      contents: write\n    steps: []\n  decide:' "release must hold exactly the permissions"
 gr p7  "ruling 1 sign with contents write" '      contents: read\n      id-token: write\n    steps: []' '      contents: write\n      id-token: write\n    steps: []' "sign must hold exactly the permissions"
 gr p8  "ruling 1 sign without id-token (it could not reach the KMS key)" '      contents: read\n      id-token: write\n    steps: []' '      contents: read\n    steps: []' "sign must hold exactly the permissions"
 gr p9  "ruling 1 check holds an id-token (only the four sign jobs ask for one in the chain)" '  check:\n    needs: [check-govulncheck, build-assemble, sign]\n    if: ${{ inputs.mode != '"'snapshot'"' }}\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n' '  check:\n    needs: [check-govulncheck, build-assemble, sign]\n    if: ${{ inputs.mode != '"'snapshot'"' }}\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n      id-token: write\n' "check must hold exactly the permissions"
@@ -1684,7 +1656,6 @@ gr p11 "005-AC5 workflow-level permissions that write (every job would inherit t
 gr p12 "005-AC5 workflow-level permissions of contents: read (the workflow-level block is empty, every job declares its own)" 'permissions: {}\njobs' 'permissions:\n  contents: read\njobs' "workflow-level permissions must be empty"
 # the KMS role: the job env of the four sign jobs and of no other job
 gr k1  "ruling 1 the release job carries the KMS role as a job env (it holds no KMS role)" '    environment: release\n' '    environment: release\n    env:\n      AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n' "release names AWS_ROLE_ARN"
-gr k2  "ruling 2 release-evidence carries the KMS role as a job env" '  release-evidence:\n' '  release-evidence:\n    env:\n      AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n' "release-evidence names AWS_ROLE_ARN"
 gr k3  "ruling 1 build-assemble carries the KMS role as a job env" '  build-assemble:\n' '  build-assemble:\n    env:\n      AWS_ROLE_ARN: x\n' "build-assemble names AWS_ROLE_ARN"
 gr k4  "ruling 1 sign without the KMS role in its job env" '      AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n' '' "must carry the KMS role"
 # keys and calls: a chain job runs steps of its own and holds no continue-on-error, secrets, container or job-level uses; the release job holds the one concurrency group
@@ -1697,14 +1668,12 @@ gr g14 "R3 the release concurrency group cancels in progress (a running publicat
 gr g15 "R3 the release concurrency group is shared with something else, or not constant" 'group: release-publish' 'group: ${{ github.ref }}' "release must hold exactly the concurrency"
 gr r3c "R3 audit: cancel-in-progress written as the quoted string (actionlint rejects it; the loader cannot tell it from the boolean)" 'cancel-in-progress: false' 'cancel-in-progress: "false"' "unquoted line"
 gr g11 "005-AC5 the Rebuild job is not named rebuild-apk (a failure would not name the stage)" '  rebuild-apk:' '  rebuild-one:' "rebuild-apk is missing"
-gr g12 "005-AC5 release-evidence is missing (the evidence would be attached by no job)" '  release-evidence:' '  release-extra:' "release-evidence is missing"
 # patch-failed watches every chain job; the other jobs of release.yml
 PF_IF="\${{ inputs.mode != 'snapshot' && always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}"
 PF_OLD="\${{ failure() && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}"
 gr r3a "R3 audit: patch-failed with the old failure()-only if (a cancelled/replaced pending release would open no issue)" "if: $PF_IF" "if: $PF_OLD" "patch-failed must carry exactly the if"
 gr r3b "R3 audit: patch-failed without any if" "    if: $PF_IF\n    runs-on: ubuntu-latest" "    runs-on: ubuntu-latest" "patch-failed must carry exactly the if"
-gr g44 "005-AC5 patch-failed that needs only build-freeze (it would open an issue for a stage it does not watch)" "    needs: [build-freeze, build-apk, build-assemble, sign, rebuild-apk, rebuild-assemble, sign-rebuild, check-govulncheck, check, sign-check, release-compare, release-verify, release, sign-release, release-evidence]" "    needs: [build-freeze]" "patch-failed must need exactly"
-gr g44b "ruling 2 patch-failed does not watch release-evidence (a failed evidence job would open no issue)" ", sign-release, release-evidence]\n    if: $PF_IF" ", sign-release]\n    if: $PF_IF" "patch-failed must need exactly"
+gr g44 "005-AC5 patch-failed that needs only build-freeze (it would open an issue for a stage it does not watch)" "    needs: [build-freeze, build-apk, build-assemble, sign, rebuild-apk, rebuild-assemble, sign-rebuild, check-govulncheck, check, sign-check, release-compare, release-verify, release]" "    needs: [build-freeze]" "patch-failed must need exactly"
 FAST='  release-fast:\n    needs: [build-assemble, sign]\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n    steps:\n      - run: gh release create v1\n  decide:'
 EARLY='  publish-early:\n    needs: [build-assemble, sign]\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n'
 EARLY="$EARLY"'    steps:\n      - run: gh release create v1 dist/*\n  decide:'
@@ -2613,7 +2582,7 @@ for kind in assemble rebuild-assemble; do
   done
 done
 # Release candidates (advisor 0383/0386, REQ-CHAIN-007-AC14, ruling 2 of cache#921): an rc tag runs the chain as a final tag does and ends after release-verify: release-verify (its own job, no if) runs on it,
-# and the three jobs after it, release, sign-release and release-evidence, carry guard S followed by `&& !contains(github.ref_name, '-')` as their job if, so a candidate publishes nothing, signs nothing and attaches nothing.
+# and the job after it, release, carries guard S followed by `&& !contains(github.ref_name, '-')` as their job if, so a candidate publishes nothing, signs nothing and attaches nothing.
 cat > "$work/rcgate.py" <<'PY'
 import sys, yaml
 d = yaml.load(open(sys.argv[1]).read(), Loader=yaml.BaseLoader); jobs = d.get("jobs") or {}
@@ -2623,7 +2592,7 @@ S = ("inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(git
 AFTER = "${{ " + S + " && !contains(github.ref_name, '-') }}"
 if "rc-refusal" in jobs: bad.append("an rc-refusal job is still there: the candidate rule in the job if replaces it (an rc tag must reach release-verify)")
 if "if" in (jobs.get("release-verify") or {}): bad.append("release-verify has an if (%r): it runs on a release candidate too" % jobs["release-verify"]["if"])
-for n in ("release", "sign-release", "release-evidence"):
+for n in ("release",):
     c = str((jobs.get(n) or {}).get("if", "")).strip()
     if c != AFTER: bad.append("the job %s must carry exactly guard S followed by && !contains(github.ref_name, '-') (a release candidate publishes, signs and attaches nothing), got %r" % (n, c))
 print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
@@ -2634,8 +2603,8 @@ rcg() { # rcg ok|caught LABEL [sed-expr]
   if [ -n "${3:-}" ] && cmp -s "$f" "$root/.github/workflows/release.yml"; then bad "AC12/rc $2 -> the mutation did not change the file"; return 0; fi
   out=$(python3 "$work/rcgate.py" "$f") || rc=$?
   if { [ "$1" = ok ] && [ "$rc" = 0 ]; } || { [ "$1" = caught ] && [ "$rc" != 0 ]; }; then ok "AC12/rc $2${out:+ ($out)}"; else bad "AC12/rc $2 -> $out"; fi; }
-rcg ok "the real release.yml has no rc-refusal job, release-verify runs on an rc tag, and release, sign-release and release-evidence end it (guard S and the candidate rule)"
-for jn in release sign-release release-evidence; do
+rcg ok "the real release.yml has no rc-refusal job, release-verify runs on an rc tag, and the release job ends it (guard S and the candidate rule)"
+for jn in release; do
   rcg caught "the job $jn without the candidate rule is caught (a release candidate would enter it)" "/^  $jn:/,/^  [a-z]/ s/ \&\& !contains(github.ref_name, '-') }}/ }}/"
   rcg caught "the job $jn that runs always() (it would run after a failed Check) is caught" "/^  $jn:/,/^  [a-z]/ s/^    if: .*/    if: \${{ always() }}/"
   rcg caught "the job $jn that spells the candidate rule another way is caught" "/^  $jn:/,/^  [a-z]/ s/ \&\& !contains(github.ref_name, '-') }}/ \&\& !contains(github.ref_name, '-rc') }}/"
@@ -4020,24 +3989,6 @@ printf '%s\n' '#!/usr/bin/env bash' 'echo "$*" >> "$FAKE_LOG"' \
   '  digest) if [ -e "$FAKE_STATE" ]; then echo "$WRONG"; else echo MANIFEST_UNKNOWN >&2; exit 1; fi ;; esac' \
   > "$rp/fake/crane"
 chmod +x "$rp/fake/crane"
-# the signatures sign-release hands over (REQ-CHAIN-007-AC22): release-publish verifies them before its first login, so this fixture holds them for both registries and both digests, and a cosign
-# that accepts verify-blob (the signatures here are well-formed and genuine for the digests; the rule under test is the wrong registry digest, not the hand-over)
-build_pub_sigs() { python3 - "$rp" "$DA" "$DB" <<'PYS'
-import base64, hashlib, json, os, sys
-rp, da, db = sys.argv[1:4]
-for host in ("ghcr.io", "docker.io"):
-    d = os.path.join(rp, "release-evidence/registry", host); os.makedirs(d, exist_ok=True)
-    for dig in (da, db):
-        h = dig[len("sha256:"):]
-        body = json.dumps({"critical": {"identity": {"docker-reference": host + "/fosterstack/cache"}, "image": {"docker-manifest-digest": dig}, "type": "cosign container image signature"}, "optional": None}, sort_keys=True).encode()
-        open(os.path.join(d, h + ".payload"), "wb").write(body); open(os.path.join(d, h + ".sig"), "w").write("c2ln")
-        tl = [{"logIndex": "1"}]
-        open(os.path.join(d, h + ".bundle"), "w").write(json.dumps({"verificationMaterial": {"tlogEntries": tl}, "messageSignature": {"messageDigest": {"algorithm": "SHA2_256", "digest": hashlib.sha256(body).hexdigest()}, "signature": "c2ln"}}))
-        stm = json.dumps({"_type": "https://in-toto.io/Statement/v1", "subject": [{"name": host + "/fosterstack/cache", "digest": {"sha256": h}}], "predicateType": "https://fosterstack.com/attestations/release-manifest/v1", "predicate": {}}).encode()
-        open(os.path.join(d, h + ".attestation.bundle"), "w").write(json.dumps({"verificationMaterial": {"tlogEntries": tl}, "dsseEnvelope": {"payloadType": "application/vnd.in-toto+json", "payload": base64.b64encode(stm).decode(), "signatures": [{"sig": "c2ln"}]}}))
-PYS
-}
-build_pub_sigs; mkdir -p "$rp/build/keys"; printf -- '-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----\n' > "$rp/build/keys/release.rsa.pub"
 printf '%s\n' '#!/usr/bin/env bash' 'echo "cosign $*" >> "$FAKE_LOG.cosign"' 'exit 0' > "$rp/fake/cosign"; chmod +x "$rp/fake/cosign"
 rc=0; out=$(cd "$rp" && PATH="$rp/fake:$PATH" FAKE_LOG="$rp/log" FAKE_STATE="$rp/pushed" WRONG="$DF" \
   DOCKERHUB_USERNAME=u DOCKERHUB_TOKEN=t GH_TOKEN=g GITHUB_REF_NAME=v1.2.3 bash bin/release-publish.sh 2>&1) || rc=$?
@@ -4050,7 +4001,7 @@ if [ "$rc" = 1 ] \
 else
   bad "AC7 release-publish.sh with a wrong registry digest: exit $rc, pushes $pushes: ${out:0:140}"
 fi
-EXPECT=1398
+EXPECT=1361
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

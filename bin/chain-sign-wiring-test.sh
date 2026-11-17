@@ -6,6 +6,9 @@
 # steps of the build jobs; judge_tree: the tracked files of the repository; judge_calls: who may call release.yml
 # and which of its jobs carry the guard), each first shown to pass a known-good fixture and to fail every mutated
 # copy, then applied to the real tree.
+# sign-check also signs the release files on a final tag (cache#912): after Check's records it runs bin/release-signatures.sh over Build's
+# verified outputs, which it downloads, and uploads release-signed/ as the artifact release-signed; those two steps alone carry
+# `if: ${{ !contains(github.ref_name, '-') }}`.
 # The signer table is bin/chain-test-signers.json, shared with chain-records-test.sh. Needs python3 with
 # PyYAML.
 set -euo pipefail
@@ -48,6 +51,9 @@ R_PRINTF_REC = r"printf '%s' \"\$RECORDS\" > rebuild-records\.json"
 R_INSTALL_AWS = r"bash bin/install-scanner\.sh aws-cli"      # KA-2 p4 group 4: the pinned aws CLI, installed in the three jobs that reach KMS
 R_SIGNSTAGED = r"bash bin/witness-sign-staged\.sh staged signed"
 R_SIGNSTAGED_RUNNER = r"bash bin/witness-sign-staged\.sh staged/(ubuntu-24\.04|ubuntu-24\.04-arm) signed/(ubuntu-24\.04|ubuntu-24\.04-arm)"      # Check: one tree per runner, each signed on its own
+R_INSTALL_WIT = r"bash bin/install-scanner\.sh witness"
+R_SIGNATURES = r"bash bin/release-signatures\.sh"      # sign-check's release signing step
+RC_IF = "${{ !contains(github.ref_name, '-') }}"      # the if of that step and of the release-signed upload: a release candidate makes no release signatures
 # the Witness records of the building jobs carry a throwaway key's signature only (owner Oct 22, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md): Sign checks them against
 # the artifacts it receives and signs each one keyless; the Rebuild records in their own job, which receives no Rebuild apk or image (the owner's separation rule)
 R_REC_BUILD = r"env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify\.py sign-records --stage build --template \.github/policy/release-policy\.template\.json --digests digests\.json --artifacts-dir artifacts --out staged --record-dir witness-build --record-dir witness-apk-ubuntu-24\.04 --record-dir witness-apk-ubuntu-24\.04-arm"
@@ -61,7 +67,9 @@ EXPECT_STEPS = {
             + [("download", "images", "artifacts/witness-build/out"), ("download", "dist", "artifacts/witness-build/dist")]
             + [("download", "apk-" + r, "artifacts/witness-apk-" + r + "/out") for r in RUNNERS]
             + [("install", "aws-cli"), ("printf",), ("records", "build"), ("signstaged",), ("sign",), ("upload", "provenance", "provenance"),
-               ("upload", "signed-witness-build", "signed/witness-build")],
+               ("upload", "signed-witness-build", "signed/witness-build")]
+            # ROW 2: Build's signed apk records leave Sign too, each as its own artifact (apk-compare --build-apk reads them in Release)
+            + [("upload", "signed-witness-apk-" + r, "signed/witness-apk-" + r) for r in RUNNERS],
     "sign-rebuild": [("checkout",)]
             + [("download", "witness-rapk-" + r, "witness-rapk-" + r) for r in RUNNERS]
             + [("download", "witness-rebuild", "witness-rebuild"), ("install", "aws-cli"), ("printf",), ("printfrec",), ("records", "rebuild"), ("signstaged",)]
@@ -72,11 +80,15 @@ EXPECT_STEPS = {
             + [("download", "witness-check-" + r, "rec-check/" + r) for r in RUNNERS]
             + [("download", "check-results-" + r, "artifacts/check-results-" + r) for r in RUNNERS]
             + [("download", "check-records-" + r, "rec-digests/" + r) for r in RUNNERS]
+            + [("download", n, "witness-build") for n in ("digests", "items", "admission-baseline")]
+            + [("download", "images", "images"), ("download", "dist", "dist")]
+            + [("download", "apk-" + r, "apks/" + r) for r in RUNNERS]
+            + [("download", "check-results-ubuntu-24.04", "check-results/ubuntu-24.04")]
             + [("install", "aws-cli"), ("printf",), ("records", "check")]
-            + [("signstaged", r) for r in RUNNERS]
-            + [("upload", "signed-witness-check-" + r, "signed/" + r) for r in RUNNERS],
+            + [("signstaged", r) for r in RUNNERS] + [("signatures",)]
+            + [("upload", "signed-witness-check-" + r, "signed/" + r) for r in RUNNERS] + [("upload", "release-signed", "release-signed")],
 }
-R_SIGN = r"bash bin/with-aws-token\.sh sign --check --signer cosign --digests digests\.json --items witness-build/items\.json --build-record signed/witness-build/build-collection\.json --template \.github/policy/release-policy\.template\.json --out provenance"
+R_SIGN = r"bash bin/with-aws-token\.sh sign --check --digests digests\.json --items witness-build/items\.json --build-record signed/witness-build/build-collection\.json --template \.github/policy/release-policy\.template\.json --out provenance"
 SIGN_ROLE = "arn:aws:iam::821302803867:role/fosterstack-cache-release-signing"      # the role of the release Sign identity (ops/terraform/aws-apply/main.tf :382, README :62)
 def want_sign_env():
     m = re.search(r'^RELEASE_KEY_REF = "([^"]+)"$', open(os.path.join(os.environ["CHAIN_ROOT"], "bin/chain-verify.py")).read(), re.M)
@@ -118,7 +130,7 @@ def judge_sign(path):
         seq = []
         for s in j.get("steps") or []:
             sn = s.get("name") or s.get("uses") or s.get("run")
-            extra = set(s) - {"name", "uses", "with", "run", "env", "id"}
+            extra = set(s) - {"name", "uses", "with", "run", "env", "id", "if"}
             if extra: bad.append("AC2: step %r has %s" % (sn, sorted(extra)))
             u, w, run, env = s.get("uses"), s.get("with") or {}, s.get("run"), s.get("env") or {}
             if (u is None) == (run is None): bad.append("AC2: step %r must have exactly one of uses/run" % sn); continue
@@ -135,11 +147,11 @@ def judge_sign(path):
                 elif act == "actions/download-artifact":
                     seq.append(("download", w.get("name"), w.get("path")))
                     if set(w) - {"name", "path"} or ("download", w.get("name"), w.get("path")) not in EXPECT_STEPS.get(name, []):
-                        bad.append("AC2: step %r downloads %s; Sign downloads only the records and the artifacts it signs, at the fixed paths (data, never run); sign-rebuild receives no Rebuild apk or image" % (sn, w))
+                        bad.append("AC2: step %r downloads %s; Sign downloads only the records and the artifacts it signs, at the fixed paths (data, never run); sign-check also takes Build's verified outputs for bin/release-signatures.sh, each at its fixed path; sign-rebuild receives no Rebuild apk or image" % (sn, w))
                 elif act == "actions/upload-artifact":
                     seq.append(("upload", w.get("name"), w.get("path")))
                     if ("upload", w.get("name"), w.get("path")) not in EXPECT_STEPS.get(name, []) or set(w) - {"name", "path", "if-no-files-found", "retention-days"}:
-                        bad.append("AC3 (artifact sink): step %r uploads %s; only provenance and the signed-witness-* directories may leave Sign" % (sn, w))
+                        bad.append("AC3 (artifact sink): step %r uploads %s; only provenance, the signed-witness-* directories and release-signed (sign-check's release files) may leave Sign" % (sn, w))
                 else:
                     bad.append("AC2: step %r uses %s, which Sign may not" % (sn, act))
             else:
@@ -158,6 +170,9 @@ def judge_sign(path):
                 elif "\n" not in line and re.fullmatch(R_SIGN, line):
                     seq.append(("sign",))
                     if env != want_sign_env(): bad.append("W1: the provenance signing step must have exactly the step env %s (literals; the key reference is the verifier's RELEASE_KEY_REF), found %s" % (want_sign_env(), env))
+                elif "\n" not in line and re.fullmatch(R_SIGNATURES, line):
+                    seq.append(("signatures",))
+                    if env != want_sign_env(): bad.append("S3: the release signing step must have exactly the step env %s (literals, as the other signing steps), found %s" % (want_sign_env(), env))
                 elif "\n" not in line and re.fullmatch(R_SIGNSTAGED, line):
                     seq.append(("signstaged",))
                     if env != want_sign_env(): bad.append("W1: the staged-signing step must have exactly the step env %s (literals; the key reference is the verifier's RELEASE_KEY_REF), found %s" % (want_sign_env(), env))
@@ -171,19 +186,23 @@ def judge_sign(path):
                 else:
                     sinks = [n for n, rx in (("file", r">>?\s*\S|\btee\b|\bcp\b|\bmv\b"), ("log", r"\becho\b|\bprintf\b|\bcat\b|\bset\s+-\w*x"),
                                              ("step output", r"GITHUB_(OUTPUT|ENV|STEP_SUMMARY|PATH)"), ("artifact", os.environ["SINK_ARTIFACT_RX"])) if re.search(rx, run)]
-                    why = "touches the identity token request (sinks reachable: %s)" % (", ".join(sinks) or "none, but no step may touch it") if re.search(TOKEN, run, re.I) else "is not one of the allowed command lines (install witness or the aws CLI; printf an env value into one of the four record/digest files; the three sign-records forms; witness-sign-staged.sh; the one chain-verify.py sign --check ... --out provenance)"
+                    why = "touches the identity token request (sinks reachable: %s)" % (", ".join(sinks) or "none, but no step may touch it") if re.search(TOKEN, run, re.I) else "is not one of the allowed command lines (install witness or the aws CLI; printf an env value into one of the four record/digest files; the three sign-records forms; witness-sign-staged.sh; bin/release-signatures.sh in sign-check; the one chain-verify.py sign --check ... --out provenance)"
                     bad.append("AC2/AC3: run step %r %s" % (sn, why))
                 if "${{" in run or ".." in run: bad.append("AC2: run step %r interpolates an expression or uses `..`" % sn)
+            # S3: only sign-check's release signing step and its release-signed upload carry an if, exactly the release-candidate one; no step of sign or sign-rebuild may
+            has_rc_if = name == "sign-check" and bool(seq) and seq[-1] in (("signatures",), ("upload", "release-signed", "release-signed"))
+            if has_rc_if and s.get("if") != RC_IF: bad.append("S3: step %r of sign-check must carry exactly `if: %s` (a release candidate makes no release signatures), found %r" % (sn, RC_IF, s.get("if")))
+            if not has_rc_if and "if" in s: bad.append("S3: step %r of %s carries an if; only sign-check's release signing step and its release-signed upload may, with the release candidate if" % (sn, name))
         want = EXPECT_STEPS.get(name)
         if want is not None and seq != want: bad.append("AC2: job %s's steps must be exactly %s in that order (check-then-sign: the records step and, in sign, the provenance step are the only signers), found %s" % (name, want, seq))
     return bad
 
-SIGN_JOBS = ("sign", "sign-rebuild", "sign-check", "sign-release")
+SIGN_JOBS = ("sign", "sign-rebuild", "sign-check")
 APK_RUN = "bash bin/witnessed-local.sh apk bin/build-stage-apk.sh"
 APK_STEP = "apk under Witness"
 APK_JOB = "build-apk"
-# release and release-evidence run no signing tool: their secrets and GH_TOKEN are governed by REQ-REL-011-AC3 and REQ-CHAIN-001, not judged here (the environment sign is still refused to them)
-NOT_SIGNING_JOBS = ("release", "release-evidence")
+# release runs no signing tool: its secrets and GH_TOKEN are governed by REQ-REL-011-AC3 and REQ-CHAIN-001, not judged here (the environment sign is still refused to them)
+NOT_SIGNING_JOBS = ("release",)
 
 def judge_build(path):
     if not os.path.exists(path): return []
@@ -488,13 +507,13 @@ def judge_tree(base):
     return bad
 
 SIGN_GUARD = "inputs.mode!='snapshot'&&github.event_name=='push'&&startsWith(github.ref,'refs/tags/v')&&startsWith(github.workflow_ref,format('{0}/.github/workflows/release.yml@',github.repository))"
-FINAL_GUARD = SIGN_GUARD + "&&!contains(github.ref_name,'-')"      # the jobs that run for a final tag only (REQ-CHAIN-007): sign-release, release-evidence and release
-GUARDED = {"sign": SIGN_GUARD, "sign-rebuild": SIGN_GUARD, "sign-check": SIGN_GUARD, "sign-release": FINAL_GUARD, "release-evidence": FINAL_GUARD, "release": FINAL_GUARD}
+FINAL_GUARD = SIGN_GUARD + "&&!contains(github.ref_name,'-')"      # the job that runs for a final tag only (REQ-CHAIN-007): release
+GUARDED = {"sign": SIGN_GUARD, "sign-rebuild": SIGN_GUARD, "sign-check": SIGN_GUARD, "release": FINAL_GUARD}
 def judge_calls(root):
     """REQ-CHAIN-003-AC5 (the release is the one file release.yml; owner rule workflow-grouped-by-purpose, Nov 13): no workflow file other than scan.yml and
     main-candidate-rescan.yml calls release.yml, each only with `with: mode: snapshot`; no workflow calls a stage-*.yml file (by local path or by repository path and digest);
     and each of sign, sign-rebuild and sign-check carries the guard S that skips it in snapshot mode and under workflow_call (a called release.yml's token names the caller's file,
-    so the guard, not the file name, keeps every sign job out of a caller's run); sign-release, release-evidence and release carry S followed by && !contains(github.ref_name, '-')
+    so the guard, not the file name, keeps every sign job out of a caller's run); release carries S followed by && !contains(github.ref_name, '-')
     (final tags only). One finding per job."""
     bad = []
     wd = os.path.join(root, ".github/workflows")
@@ -714,7 +733,7 @@ jobs:
           AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
           AWS_REGION: us-east-1
           RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
-        run: bash bin/with-aws-token.sh sign --check --signer cosign --digests digests.json --items witness-build/items.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
+        run: bash bin/with-aws-token.sh sign --check --digests digests.json --items witness-build/items.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
       - uses: actions/upload-artifact@$sha # v7
         with:
           name: provenance
@@ -723,6 +742,14 @@ jobs:
         with:
           name: signed-witness-build
           path: signed/witness-build
+      - uses: actions/upload-artifact@$sha # v7
+        with:
+          name: signed-witness-apk-ubuntu-24.04
+          path: signed/witness-apk-ubuntu-24.04
+      - uses: actions/upload-artifact@$sha # v7
+        with:
+          name: signed-witness-apk-ubuntu-24.04-arm
+          path: signed/witness-apk-ubuntu-24.04-arm
   sign-rebuild:
     if: \${{ inputs.stage == 'rebuild' }}
     runs-on: ubuntu-24.04
@@ -809,6 +836,38 @@ jobs:
         with:
           name: check-records-ubuntu-24.04-arm
           path: rec-digests/ubuntu-24.04-arm
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: digests
+          path: witness-build
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: items
+          path: witness-build
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: admission-baseline
+          path: witness-build
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: images
+          path: images
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: dist
+          path: dist
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: apk-ubuntu-24.04
+          path: apks/ubuntu-24.04
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: apk-ubuntu-24.04-arm
+          path: apks/ubuntu-24.04-arm
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: check-results-ubuntu-24.04
+          path: check-results/ubuntu-24.04
       - name: install the aws CLI (pinned by checksum)
         run: bash bin/install-scanner.sh aws-cli
       - name: write the digest list to a file
@@ -829,6 +888,13 @@ jobs:
           AWS_REGION: us-east-1
           RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
         run: bash bin/witness-sign-staged.sh staged/ubuntu-24.04-arm signed/ubuntu-24.04-arm
+      - name: sign the release files
+        if: \${{ !contains(github.ref_name, '-') }}
+        env:
+          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          AWS_REGION: us-east-1
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
+        run: bash bin/release-signatures.sh
       - uses: actions/upload-artifact@$sha # v7
         with:
           name: signed-witness-check-ubuntu-24.04
@@ -837,6 +903,11 @@ jobs:
         with:
           name: signed-witness-check-ubuntu-24.04-arm
           path: signed/ubuntu-24.04-arm
+      - uses: actions/upload-artifact@$sha # v7
+        if: \${{ !contains(github.ref_name, '-') }}
+        with:
+          name: release-signed
+          path: release-signed
 EOF
 # mutate LABEL  python-regex  replacement : writes $work/LABEL.yml, or counts a FAILURE if the mutation did not apply
 mutate() {
@@ -852,7 +923,7 @@ PY
 caught() { # LABEL regex replacement
   if mutate "$1" "$2" "$3"; then expect caught "$1" sign "$work/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _).yml"; fi
 }
-SIGNLINE='run: bash bin/with-aws-token.sh sign --check --signer cosign --digests digests.json --items witness-build/items.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance'
+SIGNLINE='run: bash bin/with-aws-token.sh sign --check --digests digests.json --items witness-build/items.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance'
 expect ok "fixture: known-good Sign passes the judge" sign "$good"
 caught "F11 a digest-shaped download-artifact pin that is not on the allowed-actions list" 'download-artifact@a{40}' "download-artifact@$(printf 'b%.0s' $(seq 40))"
 caught "F1 Sign no longer downloads Build's digest list into witness-build" 'name: digests\n          path: witness-build' 'name: dist\n          path: witness-build'
@@ -880,7 +951,12 @@ caught "REL-011 sign-check takes a records input (Check's lists come as artifact
 caught "REL-011 sign-check holds a write permission beyond id-token" '(  sign-check:.*?permissions:\n      contents: read\n      id-token: write)' '\1\n      packages: write'
 caught "R2 the Rebuild call drops the expected record digests" ' --expect-digests rebuild-records.json' ''
 caught "R2 the Rebuild records step reads the digests from another file" '--expect-digests rebuild-records.json' '--expect-digests digests.json'
-caught "item 4 the unused signed apk records are uploaded again" 'name: signed-witness-build\n          path: signed/witness-build' 'name: signed-witness-build\n          path: signed/witness-build\n      - uses: actions/upload-artifact@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n        with:\n          name: signed-witness-apk-ubuntu-24.04\n          path: signed/witness-apk-ubuntu-24.04'
+caught "ROW2 an extra artifact of the apk record folder under another name" 'name: signed-witness-apk-ubuntu-24.04-arm\n          path: signed/witness-apk-ubuntu-24.04-arm' 'name: signed-witness-apk-ubuntu-24.04-arm\n          path: signed/witness-apk-ubuntu-24.04-arm\n      - uses: actions/upload-artifact@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa # v7\n        with:\n          name: signed-witness-apk-evil\n          path: signed/witness-apk-ubuntu-24.04'
+caught "ROW2 Sign does not upload the amd64 signed Build apk record" '      - uses: actions/upload-artifact@a{40} # v7\n        with:\n          name: signed-witness-apk-ubuntu-24.04\n          path: signed/witness-apk-ubuntu-24.04\n' ''
+caught "ROW2 Sign does not upload the arm64 signed Build apk record" '      - uses: actions/upload-artifact@a{40} # v7\n        with:\n          name: signed-witness-apk-ubuntu-24.04-arm\n          path: signed/witness-apk-ubuntu-24.04-arm\n' ''
+caught "ROW2 the amd64 signed apk record is uploaded from the unsigned folder" 'name: signed-witness-apk-ubuntu-24.04\n          path: signed/witness-apk-ubuntu-24.04' 'name: signed-witness-apk-ubuntu-24.04\n          path: witness-apk-ubuntu-24.04'
+caught "ROW2 both apk records in one artifact" 'name: signed-witness-apk-ubuntu-24.04\n          path: signed/witness-apk-ubuntu-24.04' 'name: signed-witness-apk-ubuntu-24.04\n          path: |-\n            signed/witness-apk-ubuntu-24.04\n            signed/witness-apk-ubuntu-24.04-arm'
+caught "ROW2 the sign job gains a write permission for the apk record uploads" '(  sign:.*?permissions:\n      contents: read\n      id-token: write)' '\1\n      actions: write'
 caught "AC1 self-hosted runner" 'ubuntu-24.04' 'self-hosted'
 caught "AC1 extra trigger" 'workflow_call:' 'push:\n  workflow_call:'
 caught "AC1 second job" '    steps:' '    steps: []\n  other:\n    runs-on: ubuntu-24.04\n    steps:'
@@ -943,6 +1019,14 @@ NBSP=$(printf '\xc2\xa0'); ZWSP=$(printf '\xe2\x80\x8b')
 caught "AC1 run line: a trailing NBSP after the sign line (str.strip() would drop it; bash keeps it in the last word)" "$SIGNLINE" "$SIGNLINE$NBSP"
 caught "AC1 run line: a leading NBSP before the install line" 'run: bash bin/install-scanner.sh aws-cli' "run: ${NBSP}bash bin/install-scanner.sh aws-cli"
 caught "AC1 run line: a trailing U+200B after the sign line" "$SIGNLINE" "$SIGNLINE$ZWSP"
+# ---- S2/S3 (cache#912): sign-check runs bin/release-signatures.sh and uploads release-signed, on a final tag only
+caught "S2 sign-check does not run bin/release-signatures.sh" '      - name: sign the release files\n        if: [^\n]*\n        env:\n(?:          [^\n]*\n)+        run: bash bin/release-signatures\.sh\n' ''
+caught "S2 sign-check does not upload release-signed" '      - uses: actions/upload-artifact@a{40} # v7\n        if: [^\n]*\n        with:\n          name: release-signed\n          path: release-signed\n' ''
+caught "S2 sign-check does not download images" '      - uses: actions/download-artifact@a{40} # v8\n        with:\n          name: images\n          path: images\n' ''
+caught "S2 sign-check downloads the govulncheck results into another path" 'name: check-results-ubuntu-24.04\n          path: check-results/ubuntu-24.04' 'name: check-results-ubuntu-24.04\n          path: elsewhere'
+caught "S3 the release signing step has no if (a release candidate would sign)" '(      - name: sign the release files\n)        if: [^\n]*\n' '\1'
+caught "S3 the release-signed upload has no if" '        if: [^\n]*\n(        with:\n          name: release-signed\n)' '\1'
+caught "S2 sign-check runs bin/release-signatures.sh with arguments" 'run: bash bin/release-signatures\.sh\n' 'run: bash bin/release-signatures.sh --force\n'
 okmut() { if mutate "$1" "$2" "$3"; then expect ok "$1" sign "$work/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _).yml"; fi; }
 caught "AC1 Sign judge: runs-on ubuntu-. is not in the closed runner set (Sonnet #249 r7 R2)" 'ubuntu-24.04' 'ubuntu-.'
 caught "AC1 Sign judge: runs-on ubuntu-24..04 is not in the closed runner set (Sonnet #249 r7 R2)" 'ubuntu-24.04' 'ubuntu-24..04'
@@ -972,17 +1056,17 @@ caught "AC2 two commands in one run step" "out provenance" "$FXD_45"
 caught "AC2 unpinned action" "actions/checkout@$sha" 'actions/checkout@v4'
 caught "AC2 github-script step" "      - uses: actions/checkout" "      - uses: actions/github-script@$sha\n        with:\n          script: core.setOutput('t', await core.getIDToken())\n      - uses: actions/checkout"
 caught "AC2 the Sign step does not check (no --check)" ' --check' ''
-caught "AC2 the Sign step only verifies (verify, not sign --check)" 'bash bin/with-aws-token.sh sign --check --signer cosign' 'python3 -I -B bin/chain-verify.py verify --record witness-build/build-collection.json #'
+caught "AC2 the Sign step only verifies (verify, not sign --check)" 'bash bin/with-aws-token.sh sign --check' 'python3 -I -B bin/chain-verify.py verify --record witness-build/build-collection.json #'
 caught "AC2 the Sign step has no Build record" ' --build-record signed/witness-build/build-collection.json' ''
 caught "AC2 the Sign step reads the digests inline, not from the file" '--digests digests.json' '--digests "\$DIGESTS"'
-caught "AC2 the Sign step uses another signer" '--signer cosign' '--signer witness'
+caught "AC2 the Sign step passes --signer cosign (the verifier's sign has no such flag)" '--check --digests' '--check --signer cosign --digests'
 cat > "$FXDIR/FXD_44" <<'FXEOF'
 run: curl -sL https://example.com/cosign -o cosign
 FXEOF
 FXD_44=$(cat "$FXDIR/FXD_44")
 caught "AC2 a cosign tool downloaded in the sign job (no pinned installer, no cosign at all)" 'run: bash bin/install-scanner.sh aws-cli' "$FXD_44"
 caught "AC2 a cosign install added to the sign job (the job installs no cosign)" '      - name: install the aws CLI \(pinned by checksum\)\n' '      - name: install the signing tool\n        run: bash bin/install-scanner.sh cosign\n      - name: install the aws CLI \(pinned by checksum\)\n'
-caught "AC2 two signing steps" "        $SIGNLINE" "        $SIGNLINE\n      - run: python3 bin/chain-verify.py sign --check --signer cosign --digests digests.json --items witness-build/items.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance"
+caught "AC2 two signing steps" "        $SIGNLINE" "        $SIGNLINE\n      - run: python3 bin/chain-verify.py sign --check --digests digests.json --items witness-build/items.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance"
 # 0707 fix 4: Sign names its SBOM input, the items.json the Build record holds, downloaded to witness-build/
 caught "AC2 the signing step without --items" ' --items witness-build/items\.json' ''
 caught "AC2 --items names a file in the workspace root" ' --items witness-build/items\.json' ' --items items.json'
@@ -1050,7 +1134,7 @@ printf '%s\n' "jobs:" "  build:" "    runs-on: ubuntu-24.04" "    steps:" "     
 expect caught "002-AC4 a secret written to GITHUB_ENV by an earlier step of a job that signs" build "$work/build-ghenv.yml"
 # Sign's four jobs sign with the KMS release key and run in the environment sign (REQ-CHAIN-001-AC9); nothing else that signs has an environment
 SIGNSTEP="      - run: bash bin/with-aws-token.sh sign --check --signer cosign --digests digests.json"
-for j in sign sign-rebuild sign-check sign-release; do
+for j in sign sign-rebuild sign-check; do
   printf '%s\n' "jobs:" "  $j:" "    runs-on: ubuntu-24.04" "    environment: sign" "    env:" "      AWS_REGION: us-east-1" "    steps:" "$SIGNSTEP" > "$work/build-sign-$j.yml"
   expect ok "002-AC4 the $j job signs in the environment sign with its non-secret federation env" build "$work/build-sign-$j.yml"
   printf '%s\n' "jobs:" "  $j:" "    runs-on: ubuntu-24.04" "    environment: release" "    steps:" "$SIGNSTEP" > "$work/build-sign-other-env-$j.yml"
@@ -1058,9 +1142,9 @@ for j in sign sign-rebuild sign-check sign-release; do
   printf '%s\n' "jobs:" "  $j:" "    runs-on: ubuntu-24.04" "    environment: sign" "    env:" '      K: ${{ secrets.KEY }}' "    steps:" "$SIGNSTEP" > "$work/build-sign-secret-$j.yml"
   expect caught "002-AC4 the $j job takes a secret into its env (the environment sign is no exemption for a secret)" build "$work/build-sign-secret-$j.yml"
 done
-for j in release release-evidence build-apk persona-uat-rc; do
+for j in release build-apk persona-uat-rc; do
   printf '%s\n' "jobs:" "  $j:" "    runs-on: ubuntu-24.04" "    environment: sign" "    steps:" "$SIGNSTEP" > "$work/build-notsign-$j.yml"
-  expect caught "002-AC4 the $j job signs in the environment sign (only Sign's four jobs may)" build "$work/build-notsign-$j.yml"
+  expect caught "002-AC4 the $j job signs in the environment sign (only Sign's three jobs may)" build "$work/build-notsign-$j.yml"
 done
 # 002-AC4: the one binding a signing step may take: GH_TOKEN with the run token, on job build-apk's apk step
 bfix() {  # bfix FILE JOB STEP-NAME ENV-LINE... : one job whose one step runs bin/witnessed-local.sh with that env
@@ -1106,14 +1190,14 @@ expect caught "002-AC4 the binding on the apk step name with a cosign sign comma
   printf '%s\n' "      - name: apk under Witness" "        env:" "          $TOK" "        run: $RUN_APK"
 } > "$work/tok-twice.yml"
 expect caught "002-AC4 the binding on two steps both named apk under Witness" build "$work/tok-twice.yml"
-# release and release-evidence are not signing jobs: their secrets and GH_TOKEN are not judged as a signing job's
-for j in release release-evidence; do
+# release is not a signing job: its secrets and GH_TOKEN are not judged as a signing job's
+for j in release; do
   bfix "$work/notsign-$j.yml" "$j" "publish" 'DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}' "$TOK"
   expect ok "002-AC4 the $j job is not a signing job: its secret and GH_TOKEN are governed by other rules" build "$work/notsign-$j.yml"
 done
 # the sign jobs hold no secret and no token at all (failing-label mutations)
-printf '%s\n' "jobs:" "  sign-release:" "    runs-on: ubuntu-24.04" "    environment: sign" "    steps:" "      - name: sign" "        env:" "          $TOK" "        run: bash bin/with-aws-token.sh sign --check --signer cosign --digests digests.json" > "$work/mut-signrel-tok.yml"
-expect caught "002-AC4 mutation: GH_TOKEN bound in sign-release" build "$work/mut-signrel-tok.yml"
+printf '%s\n' "jobs:" "  sign-check:" "    runs-on: ubuntu-24.04" "    environment: sign" "    steps:" "      - name: sign" "        env:" "          $TOK" "        run: bash bin/with-aws-token.sh sign --check --signer cosign --digests digests.json" > "$work/mut-signrel-tok.yml"
+expect caught "002-AC4 mutation: GH_TOKEN bound in sign-check" build "$work/mut-signrel-tok.yml"
 printf '%s\n' "jobs:" "  sign:" "    runs-on: ubuntu-24.04" "    environment: sign" "    steps:" "      - name: sign" "        env:" '          K: ${{ secrets.KEY }}' "        run: bash bin/with-aws-token.sh sign --check --signer cosign --digests digests.json" > "$work/mut-sign-secret.yml"
 expect caught "002-AC4 mutation: a secret passed to a sign step" build "$work/mut-sign-secret.yml"
 bfix "$work/mut-apk-value.yml" build-apk "apk under Witness" 'GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}'
@@ -1136,6 +1220,7 @@ cat > "$FXDIR/spec_good.json" <<'FXEOF'
  {"path":"bin/chain-verify.py","tools":[],"signs":"provenance","sign_subcommand":"sign","reason":"only `chain-verify.py sign` in the sign jobs of release.yml signs provenance","runs":[]},
  {"path":"bin/build-stage.sh","tools":["witness"],"signs":"other","reason":"Build's own Witness collection (rule 51)","runs":["bin/build-apk.sh"]},
  {"path":"bin/witness-sign-staged.sh","tools":[],"signs":"other","reason":"Sign's staged-record signer (REQ-CHAIN-005-AC4)","runs":[]},
+ {"path":"bin/release-signatures.sh","tools":[],"signs":"other","reason":"Sign's release signer (cache#912): sign-check signs the release files from Build's verified outputs","runs":[]},
  {"path":"bin/with-aws-token.sh","tools":[],"signs":"other","reason":"Sign's token fetch for one signing call (the provenance signature; wording pending the owner's approval for REQ-CHAIN-001-AC2)","runs":[]},
  {"path":"bin/build-apk.sh","tools":[],"signs":false,"runs":[]}]
 FXEOF
@@ -1147,11 +1232,10 @@ mk() {
   printf 'jobs: {}\n' > "$d/.github/workflows/persona-uat.yml"      # the other added file: the persona proof has its own workflow file
   printf 'jobs:\n  b:\n    steps:\n      - run: |\n          set -euo pipefail\n          bash bin/build-stage.sh apk\n' > "$d/.github/workflows/stage-build.yml"
   { printf 'jobs:\n  hostile-verify:\n    steps:\n      - run: git -c gpg.x509.program=gitsign tag -s v1\n'
-    for j in sign sign-rebuild sign-check sign-release; do      # Sign's four jobs: the only jobs of release.yml that sign provenance
+    for j in sign sign-rebuild sign-check; do      # Sign's three jobs: the only jobs of release.yml that sign provenance
       printf '  %s:\n    runs-on: ubuntu-24.04\n    environment: sign\n' "$j"
       printf '    env:\n      AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n      AWS_REGION: us-east-1\n      RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n'      # the chain jobs are judged by the stage grammar: each sign job holds the KMS role's three literals as its job env
-      if [ "$j" = sign-release ]; then printf '    permissions:\n      contents: read\n      id-token: write\n'      # exactly contents read and id-token write: no packages write
-      else printf '    permissions:\n      id-token: write\n'; fi
+      printf '    permissions:\n      id-token: write\n'
       printf '    steps:\n      - run: bash bin/with-aws-token.sh sign --check --signer cosign --digests digests.json\n'; done; } > "$d/.github/workflows/release.yml"
   printf '#!/usr/bin/env bash\nset -euo pipefail\ncurl -fsSL "$1" -o x\nsha256sum -c x\n' > "$d/bin/install-scanner.sh"
   printf '#!/usr/bin/env python3\nprint("chain-verify")\n' > "$d/bin/chain-verify.py"
@@ -1159,8 +1243,9 @@ mk() {
   printf '#!/usr/bin/env bash\nset -euo pipefail\necho built\n' > "$d/bin/build-apk.sh"
   printf '#!/usr/bin/env bash\nset -euo pipefail\necho staged\n' > "$d/bin/witness-sign-staged.sh"
   printf '#!/usr/bin/env bash\nset -euo pipefail\necho fetched\n' > "$d/bin/with-aws-token.sh"
+  printf '#!/usr/bin/env bash\nset -euo pipefail\necho release-signed\n' > "$d/bin/release-signatures.sh"
   printf '{"signers":[{"file":"release.yml","tool":"gitsign","reason":"CI patch tag (REQ-REL-009-AC5)"}]}\n' > "$d/.github/policy/chain-signers.json"
-  printf '{"jobs":[{"workflow":"release.yml","job":"sign","reason":"Sign, the one provenance signer"},{"workflow":"release.yml","job":"sign-rebuild","reason":"Sign, the signer of the Rebuild records"},{"workflow":"release.yml","job":"sign-check","reason":"Sign, the signer of the Check records"},{"workflow":"release.yml","job":"sign-release","reason":"Sign, the signer of the published images and apks"}]}\n' > "$d/.github/policy/id-token-jobs.json"
+  printf '{"jobs":[{"workflow":"release.yml","job":"sign","reason":"Sign, the one provenance signer"},{"workflow":"release.yml","job":"sign-rebuild","reason":"Sign, the signer of the Rebuild records"},{"workflow":"release.yml","job":"sign-check","reason":"Sign, the signer of the Check records"}]}\n' > "$d/.github/policy/id-token-jobs.json"
   printf '%s\n' "$SPEC_GOOD" > "$d/.spec.json"
   gen "$d"; echo "$d"
 }
@@ -1171,7 +1256,7 @@ badcase() { d=$(mk "$1"); stage "$d" "$2"; expect caught "AC1 grammar: $3" tree 
 okcase g_ok1 $'set -euo pipefail\nbash bin/build-stage.sh apk' "set -euo pipefail then a listed script"
 badcase g_ok2 $'bash bin/build-stage.sh \\\n  --flag=1 \\\n  two' "a backslash-newline continuation, even with literal arguments (advisor: refused outright; Sonnet #249 continuation)"
 okcase g_ok3 $'python3 -I bin/chain-verify.py stage-start --stage rebuild --previous build --record r.json' "chain-verify.py stage-start from a non-Sign stage (only its sign subcommand is a signer)"
-badcase g_wats $'bash bin/with-aws-token.sh sign --check --signer cosign --digests digests.json --items witness-build/items.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance' "the provenance token wrapper line (a signing call) in a stage other than Sign (#822 round 3, B3)"
+badcase g_wats $'bash bin/with-aws-token.sh sign --check --digests digests.json --items witness-build/items.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance' "the provenance token wrapper line (a signing call) in a stage other than Sign (#822 round 3, B3)"
 badcase g_envu5 $'env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I bin/chain-verify.py stage-start --stage rebuild --previous build --record r.json' "the env form in front of any other python3 command (round 2 finding 2)"
 badcase g_envu2 $'env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN python3 -I bin/chain-verify.py stage-start --stage rebuild --previous build --record r.json' "env that unsets only one of the two variables"
 badcase g_envu3 $'env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL bash bin/build-stage.sh apk' "the env form in front of bash (it admits python3 only)"
@@ -2940,7 +3025,7 @@ d=$(mk t_puatgone); rm "$d/.github/workflows/persona-uat.yml"
 expect caught "AC1 the added set is exact: without persona-uat.yml it is wrong too" tree "$d"
 d=$(mk t_stagesign); printf 'jobs: {}\n' > "$d/.github/workflows/stage-sign.yml"
 expect caught "AC1 a stage-sign.yml file is a new workflow file: no stage-*.yml file is added" tree "$d"
-for j in sign sign-rebuild sign-check sign-release; do
+for j in sign sign-rebuild sign-check; do
   d=$(mk "t_nosign_$j"); python3 - "$d/.github/workflows/release.yml" "$j" <<'PY'
 import re, sys
 p, j = sys.argv[1:3]
@@ -2951,7 +3036,7 @@ PY
 done
 d=$(mk t_prov_release_job); printf '  release:\n    steps:\n      - run: bash bin/with-aws-token.sh sign --check --signer cosign --digests digests.json\n' >> "$d/.github/workflows/release.yml"
 out=$(judge tree "$d" 2>&1) || true
-if grep -F -q "release.yml signs provenance (with-aws-token sign" <<< "$out" && grep -F -q "only the jobs sign, sign-rebuild, sign-check, sign-release of release.yml may" <<< "$out"; then pass=$((pass + 1)); echo "ok   AC1 the provenance signing call in the release job of release.yml is caught: only Sign's four jobs may (caught: ${out:0:140})"
+if grep -F -q "release.yml signs provenance (with-aws-token sign" <<< "$out" && grep -F -q "only the jobs sign, sign-rebuild, sign-check of release.yml may" <<< "$out"; then pass=$((pass + 1)); echo "ok   AC1 the provenance signing call in the release job of release.yml is caught: only Sign's four jobs may (caught: ${out:0:140})"
 else failn=$((failn + 1)); echo "FAIL AC1 the provenance signing call in the release job of release.yml -> ${out:0:300}"; fi
 # a third new workflow file is refused by the workflow-name rule alone: stage-extra.yml signs nothing, so that is the only finding (F3 of the cache#777 round-one ruling)
 d=$(mk t_third)
@@ -3017,17 +3102,17 @@ expect caught "AC1 a signer row naming stage-sign.yml, a file that no longer exi
 # in snapshot mode and under workflow_call (a called release.yml's token names the caller's file)
 GUARD="\${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}"
 FINAL_GUARD="\${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) && !contains(github.ref_name, '-') }}"
-rel_fixture() { # rel_fixture DIR [JOB-WITHOUT-GUARD]: release.yml with the six guarded jobs (sign-release, release-evidence and release for final tags only)
+rel_fixture() { # rel_fixture DIR [JOB-WITHOUT-GUARD]: release.yml with the four guarded jobs (release for final tags only)
   local j
-  { printf 'jobs:\n'; for j in sign sign-rebuild sign-check sign-release release-evidence release; do
+  { printf 'jobs:\n'; for j in sign sign-rebuild sign-check release; do
       printf '  %s:\n' "$j"
-      if [ "$j" != "${2:-}" ]; then case $j in sign-release|release-evidence|release) printf '    if: %s\n' "$FINAL_GUARD" ;; *) printf '    if: %s\n' "$GUARD" ;; esac; fi
+      if [ "$j" != "${2:-}" ]; then case $j in release) printf '    if: %s\n' "$FINAL_GUARD" ;; *) printf '    if: %s\n' "$GUARD" ;; esac; fi
       printf '    runs-on: ubuntu-24.04\n'; done; } > "$1/.github/workflows/release.yml"
 }
 snap_caller() { printf 'on: push\njobs:\n  build:\n    uses: ./.github/workflows/release.yml\n    with:\n      mode: snapshot\n' > "$1"; }
 d=$(mk c_good); rel_fixture "$d"; snap_caller "$d/.github/workflows/scan.yml"; snap_caller "$d/.github/workflows/main-candidate-rescan.yml"
-expect ok "003-AC5 fixture: scan.yml and main-candidate-rescan.yml call release.yml in snapshot mode, the six jobs carry the guard" calls "$d"
-for j in sign sign-rebuild sign-check sign-release release-evidence release; do
+expect ok "003-AC5 fixture: scan.yml and main-candidate-rescan.yml call release.yml in snapshot mode, the four jobs carry the guard" calls "$d"
+for j in sign sign-rebuild sign-check release; do
   d=$(mk "c_noguard_$j"); rel_fixture "$d" "$j"
   expect caught "003-AC5 $j without the guard that skips it in snapshot mode and under workflow_call" calls "$d"
   d=$(mk "c_partguard_$j"); rel_fixture "$d"; sed -i.bak "/^  $j:\$/,/^  [a-z]/ s/inputs.mode != 'snapshot' && //" "$d/.github/workflows/release.yml"
@@ -3035,7 +3120,7 @@ for j in sign sign-rebuild sign-check sign-release release-evidence release; do
   d=$(mk "c_nopush_$j"); rel_fixture "$d"; sed -i.bak "/^  $j:\$/,/^  [a-z]/ s/github.event_name == 'push' && //" "$d/.github/workflows/release.yml"
   expect caught "003-AC5 $j with a guard that does not require a push" calls "$d"
 done
-for j in sign-release release-evidence release; do
+for j in release; do
   d=$(mk "c_rc_$j"); rel_fixture "$d"; sed -i.bak "/^  $j:\$/,/^  [a-z]/ s/ && !contains(github.ref_name, '-')//" "$d/.github/workflows/release.yml"
   expect caught "003-AC5 $j with the guard S alone (it must also leave out release candidates: && !contains(github.ref_name, '-'))" calls "$d"
 done
@@ -3043,8 +3128,6 @@ for j in sign sign-rebuild sign-check; do
   d=$(mk "c_final_$j"); rel_fixture "$d"; sed -i.bak "/^  $j:\$/,/^  [a-z]/ s/ }}\$/ \&\& !contains(github.ref_name, '-') }}/" "$d/.github/workflows/release.yml"
   expect caught "003-AC5 $j with the final-tag guard (the jobs that sign for a release candidate carry S alone)" calls "$d"
 done
-d=$(mk c_guard_noevidence); rel_fixture "$d"; sed -i.bak '/^  release-evidence:$/,$d' "$d/.github/workflows/release.yml"
-expect caught "003-AC5 release.yml without its release-evidence job (it must exist and carry the final-tag guard)" calls "$d"
 d=$(mk c_second); rel_fixture "$d"; printf 'on: push\njobs:\n  x:\n    uses: ./.github/workflows/release.yml\n    with:\n      mode: snapshot\n' > "$d/.github/workflows/ci.yml"
 expect caught "003-AC5 a second workflow (ci.yml) calls release.yml" calls "$d"
 d=$(mk c_remote); rel_fixture "$d"; printf 'jobs:\n  x:\n    uses: fosterstack/cache/.github/workflows/release.yml@%s\n    with:\n      mode: snapshot\n' "$sha" > "$d/.github/workflows/auditor.yml"
@@ -3456,7 +3539,7 @@ PY
 tg caught "$work/rel-unneeded.yml" "R8 mutation: release-compare with no needs (it no longer reaches the tag gate) is caught"
 
 # ---- PR 1b (judge exceptions): (A) reviewed exact-text exceptions, (B) ambient env names, (C) the path-named deny test at command position only.
-# REQ-CHAIN-001-AC1 (listed-script clause), REQ-CHAIN-004-AC2 (timeout 540 around the wrapped command), REQ-CHAIN-004-AC8 (GH_TOKEN through the step's env), REQ-CHAIN-004-AC3 (--go-archive archive/go).
+# REQ-CHAIN-001-AC1 (listed-script clause), REQ-CHAIN-004-AC2 (the wrapped command runs as plain bash SCRIPT ARGS), REQ-CHAIN-004-AC8 (GH_TOKEN through the step's env), REQ-CHAIN-004-AC3 (--go-archive archive/go).
 expm() { # expm ok|caught DIR FRAGMENT LABEL : the tree judge with stderr merged; a caught case must name FRAGMENT and must not be a traceback
   local out rc=0
   out=$(judge tree "$2" 2>&1) || rc=$?
@@ -3467,13 +3550,13 @@ expm() { # expm ok|caught DIR FRAGMENT LABEL : the tree judge with stderr merged
 }
 DEF='D=lambda l,c=1,w="x":{"rule":"deny","line":l,"line_sha256":__import__("hashlib").sha256(l.encode()).hexdigest(),"count":c,"why":w};'
 export WT='timeout 540 bash "$@"'
-wfix() { # wfix NAME [more script lines] : bin/witnessed.sh with the AC2 line and its one witness-target exception
+wfix() { # wfix NAME [more script lines] : bin/witnessed.sh with an invented `timeout 540` line and its one witness-target exception
   local d; d=$(mk "$1")
   printf '#!/usr/bin/env bash\nset -euo pipefail\nwitness run -a environment,material -- timeout 540 bash "$@"\n%b' "${2:-}" > "$d/bin/witnessed.sh"
-  edit_spec "$d" 'import os;rows["bin/witnessed.sh"]={"path":"bin/witnessed.sh","tools":["timeout","bash"],"signs":"other","reason":"the Witness wrapper","runs":[],"exceptions":[{"rule":"witness-target","text":os.environ["WT"],"why":"REQ-CHAIN-004-AC2"}]}'
+  edit_spec "$d" 'import os;rows["bin/witnessed.sh"]={"path":"bin/witnessed.sh","tools":["timeout","bash"],"signs":"other","reason":"the Witness wrapper","runs":[],"exceptions":[{"rule":"witness-target","text":os.environ["WT"],"why":"fixture wrapper line"}]}'
   echo "$d"
 }
-d=$(wfix x_ok); expm ok "$d" - "REQ-CHAIN-004-AC2 exception: witness run -- timeout 540 bash \"\$@\" with a witness-target exception for exactly that text and tools timeout, bash"
+d=$(wfix x_ok); expm ok "$d" - "exception: witness run -- timeout 540 bash \"\$@\" with a witness-target exception for exactly that text and tools timeout, bash"
 d=$(wfix x_none); edit_spec "$d" 'del rows["bin/witnessed.sh"]["exceptions"]'; expm caught "$d" 'witness run' "exception: the same script without the exception entry is refused (the finding is real)"
 d=$(wfix x_exec 'exec bash "$@"\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["tools"].append("exec")'; expm caught "$d" 'launches another program' "exception: the same script with exec bash \"\$@\" added stays refused (launcher; the witness-target exception covers its own span only)"
 d=$(wfix x_stale); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"][0]["text"]+="x"'; expm caught "$d" 'stale' "exception: the exception text changed by one character is a stale-entry error"
@@ -3628,7 +3711,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='f454382f3e50cf73e23db01766b5744d7c464901bb2307578e4b747825587db5'
+FX_PIN='87315482e575875f2ab3d8971334d30bcea2a1f94bf418f2ea0adde7166a0338'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -5206,8 +5289,8 @@ d=$(crf cr_e '#!/usr/bin/env bash\necho a\r\n'); out=$(python3 "$work/loadcr.py"
 
 # ---- the named secrets of Release (rule 56: only Release holds a stored secret; advisor 0386 J, the corrected binding list) ----------------------------
 # ONE closed list: (1) GH_TOKEN, the run's own token, Build job apk, admission only (witnessed-local.sh -> build-stage-apk.sh), job permissions exactly contents/checks/statuses/
-# pull-requests read; in release.yml job release (contents/packages write): (2) DOCKERHUB_USERNAME and (3) DOCKERHUB_TOKEN -> release-publish.sh alone, (4) GH_TOKEN (the run's own) -> release-publish.sh;
-# in job release-evidence (contents write): (5) GH_TOKEN -> release-assets.sh (release-postverify.sh holds no token). The job sign-release holds no row at all: no secret, no GH_TOKEN, no DOCKERHUB_*,
+# pull-requests read; in release.yml job release (contents/packages write): (2) DOCKERHUB_USERNAME and (3) DOCKERHUB_TOKEN -> release-publish.sh and release-sign.sh, (4) GH_TOKEN (the run's own) -> release-publish.sh,
+# release-sign.sh and release-assets.sh (release-postverify.sh holds no token), all through bin/witnessed.sh. The sign jobs hold no row at all: no secret, no GH_TOKEN, no DOCKERHUB_*,
 # and exactly contents read and id-token write (REQ-REL-011-AC3, REQ-CHAIN-007-AC18). Every other name, place or script is refused.
 repl() { python3 -c 'import sys;p,a,b=sys.argv[1:4];a=a.replace("\\n","\n");t=open(p).read();assert a in t,"not found: "+a;open(p,"w").write(t.replace(a,b.replace("\\n","\n"),1))' "$@"; }
 probe sec_release_extra "stored secret outside the named env entries" "a stored secret (secrets.X_KEY) in a step env of an added job of release.yml" "printf '  extra:\n    runs-on: ubuntu-24.04\n    steps:\n      - name: x\n        env:\n          X_KEY: \${{ secrets.X_KEY }}\n        run: bash bin/install-scanner.sh cosign\n' >> .github/workflows/release.yml"
@@ -5220,7 +5303,7 @@ probe perm_apk "must hold exactly the permissions" "a write permission (packages
 probe perm_gh_release "must hold exactly the permissions" "the run's token with another permission (attestations: write) in Release" \
   "repl .github/workflows/release.yml '      contents: write\n      packages: write\n    steps:' '      contents: write\n      packages: write\n      attestations: write\n    steps:'"
 probe sixth_name "not in the closed secret list" "a sixth secret name (FIFTH_KEY) in a Release step" \
-  "repl .github/workflows/release.yml '      - name: release-publish under Witness (a throwaway key, no identity token)\n        env:\n' '      - name: release-publish under Witness (a throwaway key, no identity token)\n        env:\n          FIFTH_KEY: \${{ secrets.FIFTH_KEY }}\n'"
+  "repl .github/workflows/release.yml '      - name: release-publish under Witness\n        env:\n' '      - name: release-publish under Witness\n        env:\n          FIFTH_KEY: \${{ secrets.FIFTH_KEY }}\n'"
 probe apk_wrong_step "not in the closed secret list" "a secret that no row names on the verify step" \
   "repl .github/workflows/release.yml '      - name: release-verify under Witness (a throwaway key, no identity token)\n' '      - name: release-verify under Witness (a throwaway key, no identity token)\n        env:\n          OTHER_KEY: \${{ secrets.OTHER_KEY }}\n'"
 probe token_unlisted_script "not in the closed secret list" "DOCKERHUB_TOKEN bound to release-apks.sh (an unlisted script)" \
@@ -5244,21 +5327,19 @@ jstep() { python3 -c 'import re,sys;p,j,t=sys.argv[1:4];s=open(p).read();n=re.su
 # wfenv FILE TEXT: puts TEXT (a top-level block) before the top-level permissions: of FILE
 wfenv() { python3 -c 'import re,sys;p,t=sys.argv[1:3];s=open(p).read();n=re.sub(r"^permissions:",lambda m:t.replace("\\n","\n")+"permissions:",s,count=1,flags=re.M);assert n!=s,"wfenv: no change";open(p,"w").write(n)' "$@"; }
 REL=.github/workflows/release.yml
-# sign-release holds no row (REQ-REL-011-AC3 (a), REQ-CHAIN-007-AC2, AC18): the run's token, either registry credential, any other stored secret and packages write are each refused in it
-probe sg_gh_token "GH_TOKEN is allowed only" "the run's token (GH_TOKEN) in a step of sign-release: it holds no secret row" \
-  "jstep $REL sign-release '      - name: x\n        env:\n          GH_TOKEN: \${{ github.token }}\n        run: bash bin/install-scanner.sh cosign\n'"
-probe sg_hub_user "in the named step of the release job" "DOCKERHUB_USERNAME in a step of sign-release: the registry credentials are the release job's alone" \
-  "jstep $REL sign-release '      - name: x\n        env:\n          DOCKERHUB_USERNAME: \${{ secrets.DOCKERHUB_USERNAME }}\n        run: bash bin/install-scanner.sh cosign\n'"
-probe sg_hub_token "in the named step of the release job" "DOCKERHUB_TOKEN in a step of sign-release: the registry credentials are the release job's alone" \
-  "jstep $REL sign-release '      - name: x\n        env:\n          DOCKERHUB_TOKEN: \${{ secrets.DOCKERHUB_TOKEN }}\n        run: bash bin/install-scanner.sh cosign\n'"
-probe sg_any_secret "stored secret outside the named env entries" "a stored secret of another name in a step of sign-release" \
-  "jstep $REL sign-release '      - name: x\n        env:\n          X_KEY: \${{ secrets.X_KEY }}\n        run: bash bin/install-scanner.sh cosign\n'"
-probe sg_packages "must hold exactly the permissions" "packages write on sign-release (it holds contents read and id-token write only: no registry write)" \
-  "jrepl $REL sign-release '      id-token: write\n' '      id-token: write\n      packages: write\n'"
+# the sign jobs hold no row (REQ-REL-011-AC3 (a), REQ-CHAIN-007-AC2, AC18): the run's token, either registry credential, any other stored secret and packages write are each refused in it
+probe sg_gh_token "GH_TOKEN is allowed only" "the run's token (GH_TOKEN) in a step of sign-check: it holds no secret row" \
+  "jstep $REL sign-check '      - name: x\n        env:\n          GH_TOKEN: \${{ github.token }}\n        run: bash bin/install-scanner.sh cosign\n'"
+probe sg_hub_user "in the named step of the release job" "DOCKERHUB_USERNAME in a step of sign-check: the registry credentials are the release job's alone" \
+  "jstep $REL sign-check '      - name: x\n        env:\n          DOCKERHUB_USERNAME: \${{ secrets.DOCKERHUB_USERNAME }}\n        run: bash bin/install-scanner.sh cosign\n'"
+probe sg_hub_token "in the named step of the release job" "DOCKERHUB_TOKEN in a step of sign-check: the registry credentials are the release job's alone" \
+  "jstep $REL sign-check '      - name: x\n        env:\n          DOCKERHUB_TOKEN: \${{ secrets.DOCKERHUB_TOKEN }}\n        run: bash bin/install-scanner.sh cosign\n'"
+probe sg_any_secret "stored secret outside the named env entries" "a stored secret of another name in a step of sign-check" \
+  "jstep $REL sign-check '      - name: x\n        env:\n          X_KEY: \${{ secrets.X_KEY }}\n        run: bash bin/install-scanner.sh cosign\n'"
 probe secret_in_if "stored secret outside" "a stored secret read in a step condition of Release" \
-  "repl .github/workflows/release.yml '      - name: release-publish under Witness (a throwaway key, no identity token)\n' '      - name: release-publish under Witness (a throwaway key, no identity token)\n        if: \${{ secrets.DOCKERHUB_TOKEN != \"\" }}\n'"
+  "repl .github/workflows/release.yml '      - name: release-publish under Witness\n' '      - name: release-publish under Witness\n        if: \${{ secrets.DOCKERHUB_TOKEN != \"\" }}\n'"
 
-# ---- the sign jobs' federation env (REQ-CHAIN-001-AC1 job keys, REQ-CHAIN-001-AC9): in release.yml the four jobs sign, sign-rebuild, sign-check and sign-release, and no other job of any
+# ---- the sign jobs' federation env (REQ-CHAIN-001-AC1 job keys, REQ-CHAIN-001-AC9): in release.yml the three jobs sign, sign-rebuild and sign-check, and no other job of any
 # workflow file, carry a job-level env of exactly three non-secret literals (AWS_ROLE_ARN, AWS_REGION, RELEASE_KMS_KEY_REF); no step of them repeats the literals; the release job and every
 # other job hold none; workflow-level env stays refused.
 okprobe() {  # okprobe NAME LABEL EDIT(shell, run in the copy): a copy of the real tree with ONE change the tree judge must pass
@@ -5272,7 +5353,7 @@ ROLE_LINE='      AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-
 REGION_LINE='      AWS_REGION: us-east-1\n'
 KEY_LINE='      RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n'
 # 1. each sign job carries that env: the real tree passes (the real-tree case above), and so does the same three keys in another order
-for sj in sign sign-rebuild sign-check sign-release; do
+for sj in sign sign-rebuild sign-check; do
   okprobe "pje_order_$sj" "the $sj job's three federation entries in another order" "jrepl $REL $sj '$ROLE_LINE$REGION_LINE$KEY_LINE' '$KEY_LINE$REGION_LINE$ROLE_LINE'"
   probe "pje_noenv_$sj" "env" "the $sj job without the env (all three entries gone)" "jrepl $REL $sj '    env:\n$FED3' ''"
   probe "pje_fourth_$sj" "env" "a fourth key in the $sj job env" "jrepl $REL $sj '$KEY_LINE' '$KEY_LINE      GH_TOKEN: x\n'"
@@ -5285,7 +5366,7 @@ for sj in sign sign-rebuild sign-check sign-release; do
   probe "pje_step_key_$sj" "RELEASE_KMS_KEY_REF" "a step of $sj that repeats RELEASE_KMS_KEY_REF as step env" \
     "jstep $REL $sj '      - name: repeat\n        env:\n          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n        run: echo x\n'"
 done
-for sj in sign sign-release; do
+for sj in sign sign-check; do
   probe "pje_no_role_$sj" "env" "the $sj job env without AWS_ROLE_ARN" "jrepl $REL $sj '$ROLE_LINE' ''"
   probe "pje_no_region_$sj" "env" "the $sj job env without AWS_REGION" "jrepl $REL $sj '$REGION_LINE' ''"
   probe "pje_no_key_$sj" "env" "the $sj job env without RELEASE_KMS_KEY_REF" "jrepl $REL $sj '$KEY_LINE' ''"
@@ -5298,7 +5379,7 @@ for sj in sign sign-release; do
   probe "pje_empty_val_$sj" "env" "the $sj job env whose region is empty" "jrepl $REL $sj 'AWS_REGION: us-east-1' 'AWS_REGION: \"\"'"
 done
 # 2. any job env on any other job of release.yml, the release job included, is refused (job key env not allowed there), even the three federation entries
-for oj in build-freeze build-apk build-assemble rebuild-apk rebuild-assemble check-govulncheck check release-compare release-verify release release-evidence; do
+for oj in build-freeze build-apk build-assemble rebuild-apk rebuild-assemble check-govulncheck check release-compare release-verify release; do
   probe "pje_other_$oj" "job key" "a job env on the $oj job of release.yml" "jobenv $REL $oj '    env:\n      X1: y\n'"
   probe "pje_other_fed_$oj" "job key" "the three federation entries as the job env of the $oj job of release.yml" "jobenv $REL $oj '    env:\n$FED3'"
 done
@@ -5470,6 +5551,12 @@ t=$(ws_tree empty); : > "$t/staged/plan.txt"; wsno "F4 an empty plan signs nothi
 t=$(ws_tree link); rm "$t/staged/witness-build/build-collection.payload"; echo x > "$t/real-target"; ln -s "$t/real-target" "$t/staged/witness-build/build-collection.payload"; wsno "F4 a symlink payload is refused" "$t"
 t=$(ws_tree stray); echo x > "$t/staged/stray.txt"; wsno "F4 a stray file in the staged root is refused" "$t"
 t=$(ws_tree badstep); mv "$t/staged/witness-build/build-collection.payload" "$t/staged/witness-build/evil-collection.payload"; printf 'staged/witness-build/evil-collection.payload\tsigned/witness-build/evil-collection.json\n' > "$t/staged/plan.txt"; wsno "F4 a payload of a step name outside apk/build/rapk/rebuild is refused" "$t"
+# the plan is read once: a plan.txt rewritten after it was judged adds no record to the signing
+t=$(ws_tree rewrite); sed -i.bak 's#^if a\[:2\] == \["policy", "make"\]:#if a[:2] == ["policy", "make"]:\n    os.makedirs("staged/witness-evil", exist_ok=True); open("staged/witness-evil/build-collection.payload", "w").write("{}")\n    open("staged/plan.txt", "a").write("staged/witness-evil/build-collection.payload\\tsigned/witness-evil/build-collection.json\\n")#' "$t/bin/chain-verify.py"
+ws_run "$t" || true
+if ! grep -q 'witness-evil' "$t/log" 2> /dev/null; then pass=$((pass + 1)); echo "ok   F4 a plan rewritten after it was judged is not signed"; else failn=$((failn + 1)); echo "FAIL F4 a record added to the plan after it was judged was signed: [$(tr '\n' ' ' < "$t/log")]"; fi
+# a plan entry is matched whole: a staged file whose name only contains a planned name is not on the plan
+t=$(ws_tree longer); echo '{}' > "$t/staged/witness-build/build-collection.payload.payload"; wsno "F4 a staged payload whose name only contains a planned payload's name is refused" "$t"
 
 # ---- round 2 (Codex terra, cache#586): the repository-wide action-pin gate (a required CI step) reads the Sign helper; it must stay clean on the real tree ----
 if (cd "$root" && python3 -I ".github/ag""ent/bin/check-action-pins.py" . > "$work/pins.out" 2>&1); then pass=$((pass + 1)); echo "ok   the real tree passes the repository-wide action-pin gate (stage-sign.yml and the staged signer bind)"
@@ -5533,7 +5620,7 @@ wr_mutant "the token is fetched before a caller's option is refused" \
   's#^case "\${1:-}" in sign-record|sign|kms-sign) ;;#sh bin/loopback-get.sh\n&#'
 wr_mutant "a caller-passed --aws is accepted" 's/--aws|--aws=\*|--public-key|--public-key=\*)/--no-such-flag)/'
 
-EXPECT=2314
+EXPECT=2302
 if [ -e "$work/judge-dead" ]; then
   failn=$((failn + 1))
   echo "FAIL the persistent judge died, was silent or leaked state between cases (see the line above)"

@@ -33,7 +33,7 @@
  "chain-signing-trust-test.sh": 47,
  "chain-snapshot-test.sh": 160,
  "chain-trust-files-test.sh": 24,
- "chain-verify-test.sh": 793,
+ "chain-verify-test.sh": 800,
  "check-action-pins-test.sh": 1327,
  "check-customer-words-test.sh": 131,
  "check-file-allowlist-test.sh": 1049,
@@ -74,7 +74,7 @@
  "s2-p2-series-rule-test.sh": 8,
  "s2-p2-strict-lookups-test.sh": 12,
  "s2-p2-time-exceptions-test.sh": 14,
- "suite-guard-test.sh": 67,
+ "suite-guard-test.sh": 70,
  "supply-chain-wiring-test.sh": 160,
  "vendor-provenance-test.sh": 199,
  "vendoring-test.sh": 175,
@@ -87,6 +87,7 @@
  "vex-live-pins-test.sh": 3,
  "vex-live-test-test.sh": 397,
  "vex-scope-test.sh": 21,
- "witness-kms-test.sh": 58,
- "workflow-consolidation-test.sh": 128
+ "witness-kms-test.sh": 36,
+ "workflow-consolidation-test.sh": 128,
+ "guide-judge-test.sh": 153
 }

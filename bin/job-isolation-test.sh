@@ -27,7 +27,7 @@ CREDENTIAL_CALLEES = ("release.yml", "persona-uat.yml")
 # the build side of release.yml (REQ-CHAIN-004-AC1, REQ-CHAIN-005-AC1, REQ-CHAIN-006-AC1): each its own job, each declaring its OWN permissions block (the workflow-level block is empty) and holding no credential
 BUILD_SIDE_JOBS = ("build-freeze", "build-apk", "build-assemble", "rebuild-apk", "rebuild-assemble", "check-govulncheck", "check")
 # the sign jobs of release.yml (REQ-CHAIN-001-AC9): the only jobs that may hold the sign environment; they build nothing (AC1 above applies to them like to every credential holder)
-SIGN_JOBS = ("sign", "sign-rebuild", "sign-check", "sign-release")
+SIGN_JOBS = ("sign", "sign-rebuild", "sign-check")
 EXCLUDED_AC1 = {}
 # ci.yml test: the one required Go test job builds twice, without a credential, to /dev/null and to /tmp (neither is shipped): the static build and the -fips variant build, which had
 # their own jobs until the test, coverage, vendor and fips140-only jobs became one (audit row C-F7). Neither build is a release artifact.
@@ -208,11 +208,11 @@ for f in sorted(glob.glob(os.path.join(wf, "*.y*ml"))):
                     n_ = re.sub(r"\$\{?(?:RUNNER_TEMP|GITHUB_WORKSPACE)\}?", "/runner", n_)   # the runner's own fixed directories are not a hidden path
                     if re.search(r"\bbin/[^\s;&|)]*[$`]", n_) or re.search(r"(?:(?<![\w./-])(?:bash|sh|source|exec)\s+|(?<![\w.])\.\s+|(?<![\w.])\./)[^\s;&|)]*[$`]", n_) or re.search(r"\b\w+=[^\s$(`]*\bbin/", n_) or re.search(r"^\s*\w+:\s+\S*\bbin/", n_):
                         bad.append("%s/%s holds %s and names a script path under bin/ through a variable: %r" % (key[0], jn, ", ".join(w), l_.strip()[:100]))
-        # AC3 (a): sign-release references no secrets.* at all, GITHUB_TOKEN/GH_TOKEN/github.token included, and its permissions are exactly contents: read and id-token: write
-        if key == ("release.yml", "sign-release"):
+        # AC3 (a): the sign jobs reference no secrets.* at all, GITHUB_TOKEN/GH_TOKEN/github.token included, and its permissions are exactly contents: read and id-token: write
+        if key[0] == "release.yml" and key[1] in SIGN_JOBS:
             jt_ = yaml.safe_dump(j) + wf_lv
             if re.search(r"\bsecrets\b|\bGH_TOKEN\b|\bGITHUB_TOKEN\b|\bgithub\s*\.\s*token\b", jt_) or j.get("permissions") != {"contents": "read", "id-token": "write"}:
-                bad.append("%s/%s references a secret or a token, or its permissions are not exactly contents: read and id-token: write: sign-release hands signatures over as artifacts and holds no credential" % key)
+                bad.append("%s/%s references a secret or a token, or its permissions are not exactly contents: read and id-token: write: the sign jobs hand signatures over as artifacts and hold no credential" % key)
         # AC3 (b): the registry secret and packages: write, in every job but the release job of release.yml, except the three probe holders (keyed on workflow, job and environment)
         if key != ("release.yml", "release"):
             perms_ = j.get("permissions", d.get("permissions"))
@@ -266,7 +266,7 @@ if EXCLUDED_AC1:
     bad.append("EXCLUDED_AC1 is not empty: no job is exempt from AC1 (REQ-REL-011-AC1: there is no exclusion)")
 # the release chain's jobs all exist under the names the English gives them, and release.yml reaches no reusable workflow
 rel_jobs = {k[1] for k in jobs_seen if k[0] == "release.yml"}
-for need in BUILD_SIDE_JOBS + SIGN_JOBS + ("release-compare", "release-verify", "release", "release-evidence"):
+for need in BUILD_SIDE_JOBS + SIGN_JOBS + ("release-compare", "release-verify", "release"):
     if need not in rel_jobs:
         bad.append("release.yml has no job %s" % need)
 for k_, j_ in jobs_seen.items():
@@ -420,20 +420,6 @@ edit("release.yml", lambda s: in_job(s, "'$job'", r"(    permissions:\n)", r"\1 
   mutate "release.yml job $job runs bin/witnessed.sh (keyless) instead of witnessed-local.sh" '
 edit("release.yml", lambda s: in_job(s, "'$job'", r"(    steps:\n)", r"\1      - name: mutant\n        run: bash bin/witnessed.sh x bin/x.sh\n", regex=True))'
 done
-# ruling Q-e: the release job records release-verify and release-publish with witnessed-local.sh (environment release and packages write allowed, no identity token), never the keyless witnessed.sh
-want_msg="records its steps with witnessed-local.sh (a build-side job) and holds id-token: write"
-mutate "release.yml job release is granted id-token: write (it runs witnessed-local.sh)" '
-edit("release.yml", lambda s: in_job(s, "release", r"(    permissions:\n)", r"\1      id-token: write\n", regex=True))'
-want_msg="records its steps with witnessed-local.sh (a build-side job) and holds a secret"
-mutate "release.yml job release reads another stored secret (ruling R5: only the registry secret)" '
-edit("release.yml", lambda s: in_job(s, "release", r"(    steps:\n)", r"\1      - name: leak\n        env:\n          K: ${{ secrets.DOCKERHUB_SCOUT_TOKEN }}\n        run: echo x\n", regex=True))'
-mutate "release.yml job release reads a bracket-form secret" '
-edit("release.yml", lambda s: in_job(s, "release", r"(    steps:\n)", r"\1      - name: leak\n        env:\n          K: ${{ secrets[DOCKERHUB_TOKEN] }}\n        run: echo x\n", regex=True))'
-mutate "release.yml job release-evidence reads the registry secret (ruling R5: release job alone)" '
-edit("release.yml", lambda s: in_job(s, "release-evidence", r"(    steps:\n)", r"\1      - name: leak\n        env:\n          K: ${{ secrets.DOCKERHUB_TOKEN }}\n        run: echo x\n", regex=True))'
-want_msg="also runs the keyless witnessed.sh"
-mutate "release.yml job release runs bin/witnessed.sh (keyless) beside witnessed-local.sh" '
-edit("release.yml", lambda s: in_job(s, "release", r"(    steps:\n)", r"\1      - name: mutant\n        run: bash bin/witnessed.sh x bin/x.sh\n", regex=True))'
 for job in build-freeze build-apk build-assemble rebuild-apk rebuild-assemble check-govulncheck check; do
   want_msg="is a build-side job of release.yml and holds"
   mutate "release.yml build-side job $job holds the environment sign" '
@@ -444,7 +430,7 @@ edit("release.yml", lambda s: in_job(s, "'$job'", r"(    steps:\n)", r"\1      -
   mutate "release.yml build-side job $job declares no permissions of its own (the workflow-level block is empty)" '
 edit("release.yml", lambda s: in_job(s, "'$job'", r"    permissions:\n(?:      [a-z-]+: [a-z]+\n)+", "", regex=True))'
 done
-for job in sign sign-rebuild sign-check sign-release; do
+for job in sign sign-rebuild sign-check; do
   want_msg="and builds in the step"
   mutate "release.yml sign job $job builds (go build): a credential holder never compiles" '
 edit("release.yml", lambda s: in_job(s, "'$job'", r"(    steps:\n)", r"\1      - name: mutant\n        run: go build ./...\n", regex=True))'
@@ -454,8 +440,6 @@ done
 want_msg="is in the environment sign but is not one of the four sign jobs"
 mutate "release.yml release job is placed in the environment sign" '
 edit("release.yml", lambda s: in_job(s, "release", r"    environment: release\n", "    environment: sign\n", regex=True))'
-mutate "release.yml release-evidence job is placed in the environment sign (ruling 2: it holds no environment)" '
-edit("release.yml", lambda s: in_job(s, "release-evidence", r"(    runs-on:)", "    environment: sign\n\\1", regex=True))'
 want_msg="and builds in the step"
 for job in release; do
   mutate "release.yml the $job job builds (go build): it holds the release environment and packages write" '
@@ -678,27 +662,25 @@ edit("auditor.yml", lambda s: re.sub(r"(  panel-probe:.*?    steps:\n)", lambda 
 mutate "install-scanner.sh govulncheck added to go-freshness refresh (App key, packages: write)" '
 edit("go-freshness.yml", lambda s: in_refresh(s, "./bin/install-scanner.sh crane\n", "./bin/install-scanner.sh crane\n          bash bin/install-scanner.sh govulncheck\n"))'
 
-# AC3: sign-release holds no registry credential, no GH_TOKEN and no packages write; a stored secret in any other job is refused whatever the script, under witnessed-local.sh or not
-want_msg="sign-release hands signatures over as artifacts"
-mutate "release.yml sign-release names DOCKERHUB_TOKEN" '
-edit("release.yml", lambda s: in_job(s, "sign-release", r"(    steps:\n)", r"\1      - name: leak\n        env:\n          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}\n        run: echo x\n", regex=True))'
-mutate "release.yml sign-release names GH_TOKEN" '
-edit("release.yml", lambda s: in_job(s, "sign-release", r"(    steps:\n)", r"\1      - name: leak\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: echo x\n", regex=True))'
-mutate "release.yml sign-release is granted packages: write" '
-edit("release.yml", lambda s: in_job(s, "sign-release", r"(    permissions:\n)", r"\1      packages: write\n", regex=True))'
+# AC3: the sign jobs hold no registry credential, no GH_TOKEN and no packages write; a stored secret in any other job is refused whatever the script, under witnessed-local.sh or not
+want_msg="the sign jobs hand signatures over as artifacts"
+mutate "release.yml sign-check names DOCKERHUB_TOKEN" '
+edit("release.yml", lambda s: in_job(s, "sign-check", r"(    steps:\n)", r"\1      - name: leak\n        env:\n          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}\n        run: echo x\n", regex=True))'
+mutate "release.yml sign-check names GH_TOKEN" '
+edit("release.yml", lambda s: in_job(s, "sign-check", r"(    steps:\n)", r"\1      - name: leak\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: echo x\n", regex=True))'
+mutate "release.yml sign-check is granted packages: write" '
+edit("release.yml", lambda s: in_job(s, "sign-check", r"(    permissions:\n)", r"\1      packages: write\n", regex=True))'
 want_msg="holds the registry secret"
 mutate "ci.yml lint reads secrets.DOCKERHUB_TOKEN under a plain script" '
 edit("ci.yml", lambda s: re.sub(r"(  lint:.*?    steps:\n)", lambda m: m.group(1) + "      - name: leak\n        env:\n          K: ${{ secrets.DOCKERHUB_TOKEN }}\n        run: bash bin/release-publish.sh\n", s, count=1, flags=re.S))'
 mutate "ci.yml lint reads secrets.DOCKERHUB_USERNAME under bin/witnessed-local.sh" '
 edit("ci.yml", lambda s: re.sub(r"(  lint:.*?    steps:\n)", lambda m: m.group(1) + "      - name: leak\n        env:\n          K: ${{ secrets.DOCKERHUB_USERNAME }}\n        run: bash bin/witnessed-local.sh release-publish bin/release-publish.sh\n", s, count=1, flags=re.S))'
-mutate "release.yml release-evidence reads secrets.DOCKERHUB_TOKEN under bin/witnessed-local.sh" '
-edit("release.yml", lambda s: in_job(s, "release-evidence", r"(    steps:\n)", r"\1      - name: leak\n        env:\n          K: ${{ secrets.DOCKERHUB_TOKEN }}\n        run: bash bin/witnessed-local.sh release-assets bin/release-assets.sh\n", regex=True))'
-# AC3 (a): sign-release names no secrets.* at all and its permissions are exactly contents: read and id-token: write
-want_msg="sign-release hands signatures over as artifacts"
-mutate "release.yml sign-release references secrets.GITHUB_TOKEN" '
-edit("release.yml", lambda s: in_job(s, "sign-release", r"(    steps:\n)", r"\1      - name: leak\n        env:\n          T: ${{ secrets.GITHUB_TOKEN }}\n        run: echo x\n", regex=True))'
-mutate "release.yml sign-release is granted an extra permission (actions: read)" '
-edit("release.yml", lambda s: in_job(s, "sign-release", r"(    permissions:\n)", r"\1      actions: read\n", regex=True))'
+# AC3 (a): the sign jobs name no secrets.* at all and its permissions are exactly contents: read and id-token: write
+want_msg="the sign jobs hand signatures over as artifacts"
+mutate "release.yml sign-check references secrets.GITHUB_TOKEN" '
+edit("release.yml", lambda s: in_job(s, "sign-check", r"(    steps:\n)", r"\1      - name: leak\n        env:\n          T: ${{ secrets.GITHUB_TOKEN }}\n        run: echo x\n", regex=True))'
+mutate "release.yml sign-check is granted an extra permission (actions: read)" '
+edit("release.yml", lambda s: in_job(s, "sign-check", r"(    permissions:\n)", r"\1      actions: read\n", regex=True))'
 # AC3 (b): the three probe holders are keyed on (workflow, job, environment); each holds no packages: write and runs no login for a push, push, signature or attach
 want_msg="holds the registry secret or packages: write"
 mutate "release.yml live-test (a probe holder) has its environment switched to release" '
@@ -751,7 +733,7 @@ want_msg="runs a signature or an attach"
 mutate "release.yml live-test (a probe holder) signs with cosign sign" '
 edit("release.yml", lambda s: in_job(s, "live-test", r"(    steps:\n)", r"\1      - name: mutant\n        run: cosign sign --key k docker.io/x/y@sha256:0\n", regex=True))'
 want_msg=""
-# the judge's own rows: DOCKERHUB_* is bound at the release job alone and GH_TOKEN is not bound at sign-release
+# the judge's own rows: DOCKERHUB_* is bound at the release job alone and GH_TOKEN is not bound at a sign job
 rows_case() { local out rc=0
   out=$(CHAIN_ROOT="$root" python3 - <<'PY' 2>&1
 import importlib.util, os, sys
@@ -762,12 +744,12 @@ bad = []
 for n in ("DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN"):
     if set(R.get(n, {})) != {(rel, "release")}:
         bad.append("%s rows are %s, not the release job alone" % (n, sorted(j for _f, j in R.get(n, {}))))
-if (rel, "sign-release") in R.get("GH_TOKEN", {}):
-    bad.append("GH_TOKEN is still bound at sign-release")
+if any((rel, j) in R.get("GH_TOKEN", {}) for j in ("sign", "sign-rebuild", "sign-check")):
+    bad.append("GH_TOKEN is bound at a sign job")
 print("; ".join(bad)); sys.exit(1 if bad else 0)
 PY
   ) || rc=$?
-  if [ "$rc" = 0 ]; then echo "ok   the judge's secret rows list the release job alone for DOCKERHUB_* and not sign-release for GH_TOKEN"
+  if [ "$rc" = 0 ]; then echo "ok   the judge's secret rows list the release job alone for DOCKERHUB_* and no sign job for GH_TOKEN"
   else echo "FAIL the judge's secret rows: $out"; fi; }
 slot rows_case
 

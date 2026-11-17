@@ -51,6 +51,13 @@ expect 0 "count: with no summary, the ok/PASS lines are the count" "3" -- count 
 expect 1 "count: a count of zero fails" "zero" -- count "$work/l4"
 expect 1 "count: an empty log fails" "no case count" -- count "$work/l5"
 expect 0 "count: failures do not change the count (the suite's own exit code says them)" "12" -- count "$work/l6"
+# the count is read from the suite's own summary line: a look-alike line before or after it must not win
+printf 'a note: an old run said pass=999 fail=0\npass=55 fail=0\nsee 888 passed in the log above\n' > "$work/l11"
+printf 'case 3 expects 777 passed, 0 failed\nx: 53 passed, 0 failed\nthe next run may print 666 passed\n' > "$work/l12"
+expect 0 "count: a look-alike line before or after a pass=N summary is not the count" "55" -- count "$work/l11"
+expect 0 "count: a look-alike line before or after a N passed summary is not the count" "53" -- count "$work/l12"
+printf 'x: 40 passed, 0 failed\nx act step: 44 passed, 0 failed\n' > "$work/l13"
+expect 0 "count: a summary line whose label has several words is the count (dependabot-reviewer act step)" "44" -- count "$work/l13"
 
 # ---- floor: a suite below its committed floor, or unlisted, fails ---------------------------------------------------------------
 printf '{"suite-a": 50, "suite-b": 10}\n' > "$work/floors.json"
@@ -152,7 +159,7 @@ printf '{"chatty": 70}\n' > "$work/rc2.json"
 expect 1 "REQ-CI-005-AC3 run: a counted suite that lost cases (below its floor) fails its step" "below its floor" -- run "$work/rc2.json" chatty "$work/s/chatty.sh"
 expect 1 "REQ-CI-005-AC3 run: a counted suite that prints no count fails its step" "no case count" -- run "$work/rc.json" silent "$work/s/silent.sh"
 
-EXPECT=67
+EXPECT=70
 echo "suite-guard: $pass passed, $failn failed"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT"; exit 1; fi
 [ "$failn" = 0 ]

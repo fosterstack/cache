@@ -101,7 +101,8 @@ def strict_object(raw, what):
 
 def chain_paths(repo, commit):
     rc, out = finished(lambda: subprocess.run(["git", "-C", repo, "ls-tree", "-r", "-z", "--full-tree", commit, "--",
-        ".github/workflows", ".github/policy"], capture_output=True, check=False))
+        ".github/workflows", ".github/policy", "build/sealed-env.json", "build/locks/melange.lock",
+        "build/probe"], capture_output=True, check=False))
     if rc != 0:
         refuse("cannot list the files of commit %s" % commit)
     tree = {}
@@ -119,6 +120,8 @@ def chain_paths(repo, commit):
             paths.add(name)
         elif name.startswith(".github/policy/") and name != MARKER:
             paths.add(name)
+        elif name in ("build/sealed-env.json", "build/locks/melange.lock") or re.fullmatch(r"build/probe/[^/]+\.yaml\.tmpl", name):
+            paths.add(name)
     paths.update(BUILD_INPUTS)
     raw = blob(repo, commit, SCRIPTS)
     if raw is None:
@@ -129,7 +132,7 @@ def chain_paths(repo, commit):
         refuse("%s has no `scripts` list" % SCRIPTS)
     for r in rows:
         p = r.get("path") if isinstance(r, dict) else None
-        if not isinstance(p, str) or not SCRIPT_PATH.fullmatch(p) or p in (".", ".."):
+        if not isinstance(p, str) or not SCRIPT_PATH.fullmatch(p) or p.split("/")[1] in (".", ".."):
             refuse("%s lists the path %r, which is not a file directly under bin/" % (SCRIPTS, p))
         paths.add(p)
     return sorted(close_over(repo, commit, paths))

@@ -4,7 +4,7 @@
 # /srv/handoffs/briefs/cache-921-signer-identity-ruling.md and kvm-postponed-one-build-path.md). This suite judges that file from the PARSED workflow (never from substrings of
 # the text), once on the real file, which must pass, and on mutated copies, each of which must be refused FOR THE REASON NAMED (a refusal for another reason, or a crash, counts as a failure).
 # What it pins is what the English rows say and nothing more:
-#   REQ-CHAIN-005-AC5  the job graph: the chain jobs and their needs, the gate G on build-freeze, the guard S on sign, sign-rebuild, sign-check and (followed by && !contains(github.ref_name, '-')) sign-release and release, the Check jobs'
+#   REQ-CHAIN-005-AC5  the job graph: the chain jobs and their needs, the gate G on build-freeze, the guard S on sign, sign-rebuild, sign-check and (followed by && !contains(github.ref_name, '-')) release, the Check jobs'
 #                      condition, no if on the Rebuild jobs, workflow-level permissions {}, the allowed other jobs, the dry-run input a boolean
 #   REQ-CHAIN-001-AC9  the four sign jobs: environment sign, exactly contents read and id-token write, the three KMS federation literals as job env, the only jobs that run a signing
 #                      command; the release job holds no AWS role and no id-token; no other file's job names the key role
@@ -28,13 +28,13 @@ import glob, json, os, re, sys, yaml
 path, root = sys.argv[1], sys.argv[2]
 WF = os.path.join(root, ".github/workflows")
 RUNNERS = ["ubuntu-24.04", "ubuntu-24.04-arm"]
-SIGN_JOBS = ["sign", "sign-rebuild", "sign-check", "sign-release"]
+SIGN_JOBS = ["sign", "sign-rebuild", "sign-check"]
 BUILD_JOBS = ["build-freeze", "build-apk", "build-assemble"]
 REBUILD_JOBS = ["rebuild-apk", "rebuild-assemble"]
 CHECK_JOBS = ["check-govulncheck", "check"]
 RELEASE_JOBS = ["release-compare", "release-verify", "release"]
-EVIDENCE_STEPS = [("release-assets", "bin/release-assets.sh"), ("release-postverify", "bin/release-postverify.sh")]
-CHAIN = BUILD_JOBS + ["sign"] + REBUILD_JOBS + ["sign-rebuild"] + CHECK_JOBS + ["sign-check"] + RELEASE_JOBS + ["sign-release", "release-evidence"]
+RELEASE_STEPS = [(x, "bin/%s.sh" % x) for x in ("release-verify", "release-apks", "release-publish", "release-sign", "release-postverify", "release-assets")]   # postverify before assets
+CHAIN = BUILD_JOBS + ["sign"] + REBUILD_JOBS + ["sign-rebuild"] + CHECK_JOBS + ["sign-check"] + RELEASE_JOBS
 OTHER_ALLOWED = {"decide", "patch-notes", "patch-failed", "live-test", "live-test-release"}   # and the hostile-* jobs; persona-uat has its own file
 KMS_ENV = ["AWS_ROLE_ARN", "AWS_REGION", "RELEASE_KMS_KEY_REF"]
 NEEDS = {   # exactly, as REQ-CHAIN-005-AC5 lists them
@@ -42,7 +42,7 @@ NEEDS = {   # exactly, as REQ-CHAIN-005-AC5 lists them
     "rebuild-assemble": ["rebuild-apk"], "sign-rebuild": ["build-assemble", "rebuild-assemble"],
     "sign-check": ["build-assemble", "check"],
     "release-compare": ["check", "sign", "sign-rebuild", "sign-check"], "release-verify": ["release-compare"],
-    "release": ["release-verify", "release-compare", "sign-release"], "sign-release": ["build-assemble", "release-verify", "release-compare"], "release-evidence": ["release"],
+    "release": ["release-verify", "release-compare"],
 }
 NEEDS_AT_LEAST = {"check": ["check-govulncheck", "build-assemble", "sign"]}
 
@@ -62,7 +62,7 @@ def norm(expr):
     return "".join(out)
 G = norm("(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true || inputs.mode == 'snapshot'")
 S = norm("inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))")
-S_TAG = S + norm(" && !contains(github.ref_name, '-')")   # sign-release, release and release-evidence: S, then the release-candidate rule, in the job's if
+S_TAG = S + norm(" && !contains(github.ref_name, '-')")   # release: S, then the release-candidate rule, in the job's if
 NOT_SNAPSHOT = norm("inputs.mode != 'snapshot'")
 
 def load(p): return yaml.load(open(p), Loader=yaml.BaseLoader)
@@ -146,11 +146,11 @@ for jn in CHAIN:
 # the gate G on build-freeze, the guard S on the five jobs, the Check jobs' condition, no if on the others of Build and Rebuild
 if "build-freeze" in jobs and norm(jobs["build-freeze"].get("if", "")) != G:
     bad.append("build-freeze does not carry the gate G exactly: %s" % jobs["build-freeze"].get("if"))
-for jn in SIGN_JOBS + ["release", "release-evidence"]:
-    want = S_TAG if jn in ("sign-release", "release", "release-evidence") else S
+for jn in SIGN_JOBS + ["release"]:
+    want = S_TAG if jn == "release" else S
     if jn in jobs and norm(jobs[jn].get("if", "")) != want:
         bad.append("guard S: %s does not carry the guard S exactly%s (it must run only on a v* tag push of release.yml itself, never in snapshot mode or under workflow_call): %s" % (jn, " followed by && !contains(github.ref_name, '-') (a release candidate never enters the environment)" if want == S_TAG else "", jobs[jn].get("if")))
-for jn in ("sign-release", "release", "release-evidence"):
+for jn in ("release",):
     for s in steps_of(jobs.get(jn) or {}):
         if "contains(github.ref_name,'-')" in norm(s.get("if", "")):
             bad.append("candidate rule: a step of %s carries the release-candidate condition (it belongs in the job's if)" % jn)
@@ -176,7 +176,7 @@ for jn, j in jobs.items():
             bad.append("job %s: the action %s is not pinned by a full digest" % (jn, u))
 
 # ---- the sign jobs and the key (REQ-CHAIN-001-AC9) --------------------------------------------------------------------------------------------------
-SIGNING = re.compile(r"bin/release-sign\.sh|bin/release-apks\.sh|bin/release-sign-apks\.sh|witness-sign-staged\.sh|with-aws-token\.sh|chain-verify\.py\s+(?:-\S+\s+)*sign(?:-records)?(?:\s|$)")
+SIGNING = re.compile(r"bin/release-signatures\.sh|witness-sign-staged\.sh|with-aws-token\.sh|chain-verify\.py\s+(?:-\S+\s+)*sign(?:-records)?(?:\s|$)")
 for jn in SIGN_JOBS:
     j = jobs.get(jn)
     if not j:
@@ -185,7 +185,7 @@ for jn in SIGN_JOBS:
         bad.append("sign job %s is not in the environment sign: %s" % (jn, j.get("environment")))
     p = j.get("permissions")
     want = {"contents": "read", "id-token": "write"}
-    if p != want:     # sign-release too: no packages, no registry write (REQ-REL-011-AC3 (a), REQ-CHAIN-005-AC5)
+    if p != want:     # no packages, no registry write (REQ-REL-011-AC3 (a), REQ-CHAIN-005-AC5)
         bad.append("sign job %s does not hold exactly contents read and id-token write: %s" % (jn, p))
     env = j.get("env")
     if not isinstance(env, dict) or sorted(env) != sorted(KMS_ENV) or any(not str(env[k]).strip() or "${{" in str(env[k]) for k in KMS_ENV):
@@ -199,33 +199,17 @@ for jn in SIGN_JOBS:
         bad.append("sign job %s does not read Build's digests through needs.build-assemble.outputs.digests" % jn)
     if not SIGNING.search(runs_of(j)):
         bad.append("sign job %s runs no signing command" % jn)
-if "sign-release" in jobs:
-    r = runs_of(jobs["sign-release"])
-    if "bin/release-apks.sh" not in r or "bin/release-sign.sh" not in r:
-        bad.append("sign-release does not run bin/release-apks.sh and bin/release-sign.sh")
-    if re.search(r"bin/release-(publish|assets|postverify|verify|compare)\.sh", r):
-        bad.append("sign-release runs more of Release than its two signing scripts")
-    sr = jobs["sign-release"]
-    one = re.sub(r"\s+", " ", r.replace("\\\n", " "))
-    # REQ-CHAIN-007-AC1: it signs no Witness record: no sign-records, no bin/witness-sign-staged.sh, no signed-witness-release artifact
-    if "sign-records" in one or "witness-sign-staged" in one:
-        bad.append("sign-release signs a Witness record (sign-records or witness-sign-staged.sh): it signs none, the release job's records are unsigned local evidence")
-    ups = {(s.get("with") or {}).get("name"): str((s.get("with") or {}).get("path", "")).strip() for s in steps_of(sr) if "actions/upload-artifact@" in str(s.get("uses"))}
-    if any(str(u).startswith("signed-witness-release") for u in ups):
-        bad.append("sign-release uploads signed-witness-release: it signs no Witness record and has no such artifact")
-    for name, want_path in (("release-evidence-signatures", "release-evidence"), ("release-checksums", "dist/checksums.txt"), ("release-dist-bundles", "dist/bundles"), ("witness-release-signatures", None), ("release-apks", None), ("release-metadata", None)):
-        if name not in ups:
-            bad.append("sign-release does not upload the artifact %s: %s" % (name, sorted(map(str, ups))))
-        elif want_path and ups[name].rstrip("/") != want_path:
-            bad.append("sign-release uploads the artifact %s from %s, it must be %s" % (name, ups[name], want_path))
-    pol = [s for s in steps_of(sr) if "actions/download-artifact@" in str(s.get("uses")) and (s.get("with") or {}).get("name") == "release-policy"]
-    if len(pol) != 1 or str((pol[0].get("with") or {}).get("path", "")).rstrip("/") != "release-policy":
-        bad.append("sign-release does not download the artifact release-policy into release-policy/ exactly once: %s" % [(s.get("with"), s.get("if")) for s in pol])
-    # REQ-REL-011-AC3 (a), REQ-CHAIN-007-AC3: no secret, no registry credential, no packages write, no token of the run
-    if re.search(r"\bsecrets\.|DOCKERHUB|GH_TOKEN|GITHUB_TOKEN|github\.token|packages", text_of(sr)):
-        bad.append("sign-release names a secret, a registry credential (DOCKERHUB_*, GH_TOKEN), the run's token or packages write: it holds none")
-    if [(n, sc) for n, sc, _ in witness_lines(sr)] != [("release-apks", "bin/release-apks.sh"), ("release-sign", "bin/release-sign.sh")] or re.search(r"bin/witnessed-local\.sh", r):
-        bad.append("sign-release does not run release-apks and release-sign through bin/witnessed.sh and nothing else witnessed")
+# S2: sign-check makes every signature of the release on a final tag (bin/release-signatures.sh), from Build's outputs, and hands them over as the artifact release-signed
+sc = jobs.get("sign-check")
+if sc:
+    rs = [s for s in steps_of(sc) if (s.get("run") or "").strip() == "bash bin/release-signatures.sh"]
+    if len(rs) != 1 or norm(rs[0].get("if", "")) != norm("!contains(github.ref_name, '-')") or rs[0].get("env"):
+        bad.append("sign-check does not run `bash bin/release-signatures.sh` exactly once, on a final tag only (if: ${{ !contains(github.ref_name, '-') }}) and with no step env")
+    ups = [s for s in steps_of(sc) if "actions/upload-artifact@" in str(s.get("uses")) and (s.get("with") or {}).get("name") == "release-signed"]
+    if len(ups) != 1 or str((ups[0].get("with") or {}).get("path", "")).rstrip("/") != "release-signed" or norm(ups[0].get("if", "")) != norm("!contains(github.ref_name, '-')"):
+        bad.append("sign-check does not upload release-signed from release-signed/ exactly once, on a final tag only")
+    if re.search(r"\bsecrets\.|DOCKERHUB|GH_TOKEN|GITHUB_TOKEN|github\.token|packages", text_of(sc)):
+        bad.append("sign-check names a secret, a registry credential (DOCKERHUB_*, GH_TOKEN), the run's token or packages write: it holds none")
 for jn in ("sign", "sign-rebuild", "sign-check"):
     if jn in jobs and "chain-verify.py sign-records" not in re.sub(r"\s+", " ", runs_of(jobs[jn]).replace("\\\n", " ")):
         bad.append("sign job %s does not run chain-verify.py sign-records" % jn)
@@ -234,46 +218,30 @@ for jn, j in jobs.items():
         continue
     t = text_of(j)
     if j.get("environment") == "sign":
-        bad.append("job %s is in the environment sign, which only the four sign jobs carry" % jn)
+        bad.append("job %s is in the environment sign, which only the three sign jobs carry" % jn)
     for k in KMS_ENV:
         if re.search(r"\b%s\b" % k, t):
-            bad.append("job %s names %s: only the four sign jobs carry the KMS federation" % (jn, k))
+            bad.append("job %s names %s: only the three sign jobs carry the KMS federation" % (jn, k))
     if SIGNING.search(runs_of(j)):
-        bad.append("job %s runs a signing command (the signing subcommand, bin/release-sign.sh and bin/release-apks.sh belong to the sign jobs)" % jn)
+        bad.append("job %s runs a signing command (the signing subcommand and bin/release-signatures.sh belong to the sign jobs)" % jn)
 rel = jobs.get("release") or {}
-if re.search(r"bin/release-(assets|postverify)\.sh", runs_of(rel)):
-    bad.append("the release job runs release-assets or release-postverify (they belong to release-evidence, after the signatures exist)")
-ev = jobs.get("release-evidence")
-if ev:
-    if ev.get("permissions") != {"contents": "write"}:
-        bad.append("release-evidence does not hold exactly contents write (no id-token): %s" % ev.get("permissions"))
-    if "environment" in ev:
-        bad.append("release-evidence carries an environment: %s" % ev.get("environment"))
-    local_steps = re.findall(r"bash bin/witnessed-local\.sh (\S+) (\S+)", runs_of(ev))
-    if local_steps != EVIDENCE_STEPS:
-        bad.append("release-evidence does not run exactly the witnessed-local steps release-assets and release-postverify in that order: %s" % local_steps)
-    if re.search(r"bin/witnessed\.sh", runs_of(ev)):
-        bad.append("release-evidence uses bin/witnessed.sh, which needs the KMS role (it has none): it uses bin/witnessed-local.sh")
-# the release job runs release-verify and release-publish under bin/witnessed-local.sh, holds no KMS role, only contents write and packages write (ruling Q-e)
+# S2: the release job runs its six steps under bin/witnessed.sh (a throwaway key), postverify before assets, holds no KMS role, only contents write and packages write, and downloads Sign's release-signed
 if rel:
-    if [(n, sc) for n, sc, _ in witness_lines(rel)] != [("release-verify", "bin/release-verify.sh"), ("release-publish", "bin/release-publish.sh")] or re.search(r"bin/witnessed\.sh", runs_of(rel)) or len(re.findall(r"bin/witnessed-local\.sh", runs_of(rel))) != 2:
-        bad.append("the release job does not run exactly release-verify then release-publish through bin/witnessed-local.sh (never bin/witnessed.sh)")
+    if [(n, sc_) for n, sc_, _ in witness_lines(rel)] != RELEASE_STEPS or re.search(r"bin/witnessed-local\.sh", runs_of(rel)):
+        bad.append("the release job does not run exactly release-verify, release-apks, release-publish, release-sign, release-postverify and release-assets, in that order, through bin/witnessed.sh")
     if rel.get("permissions") != {"contents": "write", "packages": "write"}:
         bad.append("the release job does not hold exactly contents write and packages write: %s" % rel.get("permissions"))
-    pub = [s for n, sc, s in witness_lines(rel) if n == "release-publish"]
-    if pub and sorted(pub[0].get("env") or {}) != ["DOCKERHUB_TOKEN", "DOCKERHUB_USERNAME", "GH_TOKEN"]:
-        bad.append("the release-publish step of the release job does not carry exactly DOCKERHUB_USERNAME, DOCKERHUB_TOKEN and GH_TOKEN as env: %s" % sorted((pub[0].get("env") or {})))
+    for st in ("release-publish", "release-sign"):
+        pub = [s for n, sc_, s in witness_lines(rel) if n == st]
+        if pub and sorted(pub[0].get("env") or {}) != ["DOCKERHUB_TOKEN", "DOCKERHUB_USERNAME", "GH_TOKEN"]:
+            bad.append("the %s step of the release job does not carry exactly DOCKERHUB_USERNAME, DOCKERHUB_TOKEN and GH_TOKEN as env: %s" % (st, sorted((pub[0].get("env") or {}))))
 def downloads(j): return [((s.get("with") or {}).get("name"), str((s.get("with") or {}).get("path", "")).rstrip("/")) for s in steps_of(j) if "actions/download-artifact@" in str(s.get("uses"))]
-if rel and ("release-evidence-signatures", "release-evidence") not in downloads(rel):
-    bad.append("the release job does not download release-evidence-signatures into release-evidence (it verifies what sign-release handed over before its first registry login)")
-if ev and ("release-dist-bundles", "dist") not in downloads(ev):
-    bad.append("release-evidence does not download release-dist-bundles into dist (it attaches the signatures sign-release made)")
-if rel:      # REQ-CHAIN-007-AC2: no step up to and including the release job's release-verify has an env key; the credentials reach release-publish only
+if rel and ("release-signed", "release-signed") not in downloads(rel):
+    bad.append("the release job does not download release-signed into release-signed (the signatures Sign made, which release-sign checks before it pushes them)")
+if rel:      # REQ-CHAIN-007-AC2: no step up to and including the release job's release-verify has an env key; the credentials reach release-publish, release-sign and release-assets only
     for s in steps_of(rel):
-        if s.get("env") and "witnessed-local.sh release-publish" not in (s.get("run") or ""):
-            bad.append("a step of the release job other than release-publish carries env: %s" % sorted(s["env"]))
-        if "witnessed-local.sh release-verify" in (s.get("run") or ""):
-            break
+        if s.get("env") and not re.search(r"witnessed\.sh release-(publish|sign|assets) ", s.get("run") or ""):
+            bad.append("a step of the release job other than release-publish, release-sign and release-assets carries env: %s" % sorted(s["env"]))
 if isinstance(rel.get("permissions"), dict) and "id-token" in rel["permissions"]:
     bad.append("the release job holds an identity token (id-token): it holds no key role")
 if rel.get("permissions") == "write-all":
@@ -521,7 +489,7 @@ case_ workflow-env            bad "workflow-level env" "d['env'] = {'X': 'y'}"
 case_ workflow-defaults       bad "workflow-level defaults" "d['defaults'] = {'run': {'shell': 'bash'}}"
 
 # the job set and the graph (REQ-CHAIN-005-AC5)
-for jn in build-freeze build-apk build-assemble sign rebuild-apk rebuild-assemble sign-rebuild check-govulncheck check sign-check release-compare release-verify release sign-release release-evidence; do
+for jn in build-freeze build-apk build-assemble sign rebuild-apk rebuild-assemble sign-rebuild check-govulncheck check sign-check release-compare release-verify release; do
   case_ "job-$jn-gone"        bad "no chain job $jn" "$J.pop('$jn')"
 done
 for old in rapk rapk-arm check-arm64 govulncheck-build apk assemble freeze rebuild build compare verify; do
@@ -540,15 +508,7 @@ case_ sign-check-no-check     bad "job sign-check needs" "$J['sign-check']['need
 case_ release-compare-no-sign-check bad "job release-compare needs" "$J['release-compare']['needs'] = ['check', 'sign', 'sign-rebuild']"
 case_ release-verify-no-compare bad "job release-verify needs" "$J['release-verify'].pop('needs')"
 case_ release-no-verify       bad "job release needs" "$J['release']['needs'] = ['release-compare']"
-case_ release-no-sign-release bad "job release needs" "$J['release']['needs'] = ['release-verify', 'release-compare']"
-case_ release-no-compare      bad "job release needs" "$J['release']['needs'] = ['release-verify', 'sign-release']"
-case_ sign-release-no-release-verify bad "job sign-release needs" "$J['sign-release']['needs'] = ['build-assemble', 'release-compare']"
-case_ sign-release-no-release-compare bad "job sign-release needs" "$J['sign-release']['needs'] = ['build-assemble', 'release-verify']"
-case_ sign-release-no-build-assemble bad "job sign-release needs" "$J['sign-release']['needs'] = ['release-verify', 'release-compare']"
-case_ sign-release-after-release bad "job sign-release needs" "$J['sign-release']['needs'] = ['build-assemble', 'release-verify', 'release-compare', 'release']"
-case_ release-evidence-needs-sign-release bad "job release-evidence needs" "$J['release-evidence']['needs'] = ['sign-release']"
-case_ release-evidence-needs-both bad "job release-evidence needs" "$J['release-evidence']['needs'] = ['release', 'sign-release']"
-case_ release-evidence-no-needs bad "job release-evidence needs" "$J['release-evidence'].pop('needs')"
+case_ release-no-compare      bad "job release needs" "$J['release']['needs'] = ['release-verify']"
 case_ check-not-after-govulncheck bad "job check must need at least" "$J['check']['needs'] = ['build-assemble', 'sign']"
 case_ check-not-after-sign    bad "job check must need at least" "$J['check']['needs'] = ['check-govulncheck', 'build-assemble']"
 case_ rebuild-apk-not-after-build bad "job rebuild-apk needs" "$J['rebuild-apk'].pop('needs')"
@@ -566,7 +526,7 @@ case_ gate-gone               bad "gate G" "$J['build-freeze'].pop('if')"
 case_ gate-without-dry-run    bad "gate G" "$J['build-freeze']['if'] = \"\${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.mode == 'snapshot' }}\""
 case_ gate-without-snapshot   bad "gate G" "$J['build-freeze']['if'] = \"\${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}\""
 case_ gate-dispatch-on-tag    bad "gate G" "$J['build-freeze']['if'] = \"\${{ startsWith(github.ref, 'refs/tags/v') || inputs.dry-run == true || inputs.mode == 'snapshot' }}\""
-for jn in sign sign-rebuild sign-check sign-release release release-evidence; do
+for jn in sign sign-rebuild sign-check release; do
   case_ "guard-$jn-gone"           bad "guard S: $jn" "$J['$jn'].pop('if')"
   case_ "guard-$jn-no-snapshot"    bad "guard S: $jn" "$J['$jn']['if'] = \"\${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}\""
   case_ "guard-$jn-no-push"        bad "guard S: $jn" "$J['$jn']['if'] = \"\${{ inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}\""
@@ -574,11 +534,11 @@ for jn in sign sign-rebuild sign-check sign-release release release-evidence; do
   case_ "guard-$jn-no-workflow-ref" bad "guard S: $jn" "$J['$jn']['if'] = \"\${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}\""
   case_ "guard-$jn-always"         bad "guard S: $jn" "$J['$jn']['if'] = 'always()'"
 done
-# the release-candidate rule is in the job's if of sign-release and release (guard S followed by && !contains(github.ref_name, '-')), nowhere else
+# the release-candidate rule is in the job's if of release (guard S followed by && !contains(github.ref_name, '-')), nowhere else
 for jn in sign sign-rebuild sign-check; do
   case_ "guard-$jn-with-candidate-rule" bad "guard S: $jn" "$J['$jn']['if'] = $J['$jn']['if'] + \" && !contains(github.ref_name, '-')\""
 done
-for jn in sign-release release release-evidence; do
+for jn in release; do
   case_ "guard-$jn-without-candidate-rule" bad "guard S: $jn" "$J['$jn']['if'] = $J['sign']['if']"
   case_ "guard-$jn-candidate-rule-other" bad "guard S: $jn" "$J['$jn']['if'] = $J['sign']['if'] + \" && !contains(github.ref_name, '-rc')\""
   case_ "guard-$jn-candidate-rule-first" bad "guard S: $jn" "$J['$jn']['if'] = \"\${{ !contains(github.ref_name, '-') && \" + $J['sign']['if'].replace('\${{ ', '', 1)"
@@ -592,8 +552,8 @@ for jn in build-apk build-assemble rebuild-apk rebuild-assemble; do
 done
 case_ patch-notes-ungated     bad "patch-notes does not run only if" "$J['decide'] = {'runs-on': 'ubuntu-24.04', 'permissions': {'contents': 'read'}, 'steps': []}; $J['patch-notes'] = {'needs': 'decide', 'if': 'always()', 'runs-on': 'ubuntu-24.04', 'permissions': {'contents': 'read'}, 'steps': []}"
 
-# the four sign jobs and the key (REQ-CHAIN-001-AC9)
-for jn in sign sign-rebuild sign-check sign-release; do
+# the three sign jobs and the key (REQ-CHAIN-001-AC9)
+for jn in sign sign-rebuild sign-check; do
   case_ "$jn-no-environment"  bad "$jn is not in the environment sign" "$J['$jn'].pop('environment')"
   case_ "$jn-environment-release" bad "$jn is not in the environment sign" "$J['$jn']['environment'] = 'release'"
   w="$jn does not hold"
@@ -606,70 +566,33 @@ for jn in sign sign-rebuild sign-check sign-release; do
   case_ "$jn-step-carries-role" bad "a step of $jn carries a KMS federation literal" "$J['$jn']['steps'][-1].setdefault('env', {})['AWS_REGION'] = 'us-east-1'"
   case_ "$jn-takes-input"     bad "$jn takes an input or a secret" "$J['$jn']['with'] = {'x': 'y'}"
 done
-case_ sign-release-packages-write bad "sign-release does not hold" "$J['sign-release']['permissions']['packages'] = 'write'"
-case_ sign-release-packages-read bad "sign-release does not hold" "$J['sign-release']['permissions']['packages'] = 'read'"
 for jn in sign sign-rebuild sign-check; do
   case_ "$jn-digests-not-from-build" bad "$jn does not read Build's digests" "$J['$jn']['steps'] = [dict(s, **{'env': {k: v.replace('needs.build-assemble.outputs.digests', 'needs.sign.outputs.digests') for k, v in (s.get('env') or {}).items()}}) if s.get('env') else s for s in $J['$jn']['steps']]"
 done
-case_ sign-release-no-release-sign bad "sign-release does not run bin/release-apks.sh and bin/release-sign.sh" "$J['sign-release']['steps'] = [s for s in $J['sign-release']['steps'] if 'release-sign.sh' not in (s.get('run') or '')]"
-case_ sign-release-has-sign-records bad "sign-release signs a Witness record" "$J['sign-release']['steps'].insert(-1, {'run': 'python3 -I -B bin/chain-verify.py sign-records --stage release --record-dir rec-release/witness-release-verify'})"
-case_ sign-release-has-staged-sign bad "sign-release signs a Witness record" "$J['sign-release']['steps'].insert(-1, {'run': 'bash bin/witness-sign-staged.sh staged signed'})"
-case_ sign-release-uploads-signed-witness-release bad "sign-release uploads signed-witness-release" "$J['sign-release']['steps'].append({'uses': 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02', 'with': {'name': 'signed-witness-release', 'path': 'signed-witness-release'}})"
-for art in release-evidence-signatures release-checksums release-dist-bundles witness-release-signatures release-apks release-metadata; do
-  case_ "sign-release-no-upload-$art" bad "sign-release does not upload the artifact $art" "$J['sign-release']['steps'] = [s for s in $J['sign-release']['steps'] if (s.get('with') or {}).get('name') != '$art' or 'upload-artifact' not in str(s.get('uses'))]"
-done
-case_ sign-release-signatures-path bad "sign-release uploads the artifact release-evidence-signatures from" "hit(s['with'].__setitem__('path', 'release-evidence/registry') for s in $J['sign-release']['steps'] if (s.get('with') or {}).get('name') == 'release-evidence-signatures')"
-case_ sign-release-checksums-path bad "sign-release uploads the artifact release-checksums from" "hit(s['with'].__setitem__('path', 'release-evidence/checksums.txt') for s in $J['sign-release']['steps'] if (s.get('with') or {}).get('name') == 'release-checksums')"
-case_ sign-release-dist-bundles-path bad "sign-release uploads the artifact release-dist-bundles from" "hit(s['with'].__setitem__('path', 'release-evidence/*.bundle') for s in $J['sign-release']['steps'] if (s.get('with') or {}).get('name') == 'release-dist-bundles')"
-case_ sign-release-dist-bundles-path-glob-bundle bad "sign-release uploads the artifact release-dist-bundles from" "hit(s['with'].__setitem__('path', 'dist/*.bundle') for s in $J['sign-release']['steps'] if (s.get('with') or {}).get('name') == 'release-dist-bundles' and 'upload-artifact' in str(s.get('uses')))"
-case_ sign-release-dist-bundles-path-glob-dir bad "sign-release uploads the artifact release-dist-bundles from" "hit(s['with'].__setitem__('path', 'dist/bundles/*') for s in $J['sign-release']['steps'] if (s.get('with') or {}).get('name') == 'release-dist-bundles' and 'upload-artifact' in str(s.get('uses')))"
-case_ sign-release-dist-bundles-path-beside-files bad "sign-release uploads the artifact release-dist-bundles from" "hit(s['with'].__setitem__('path', 'dist') for s in $J['sign-release']['steps'] if (s.get('with') or {}).get('name') == 'release-dist-bundles' and 'upload-artifact' in str(s.get('uses')))"
-case_ sign-release-no-policy-download bad "sign-release does not download the artifact release-policy into release-policy/" "$J['sign-release']['steps'] = [s for s in $J['sign-release']['steps'] if (s.get('with') or {}).get('name') != 'release-policy']"
-case_ sign-release-policy-elsewhere bad "sign-release does not download the artifact release-policy into release-policy/" "hit(s['with'].__setitem__('path', 'policy') for s in $J['sign-release']['steps'] if (s.get('with') or {}).get('name') == 'release-policy')"
-case_ sign-release-gh-token bad "sign-release names a secret, a registry credential" "$J['sign-release']['steps'][-1].setdefault('env', {})['GH_TOKEN'] = \"\${{ github.token }}\""
-case_ sign-release-dockerhub bad "sign-release names a secret, a registry credential" "$J['sign-release']['steps'][-1].setdefault('env', {})['DOCKERHUB_TOKEN'] = \"\${{ secrets.DOCKERHUB_TOKEN }}\""
-case_ sign-release-any-secret bad "sign-release names a secret, a registry credential" "$J['sign-release']['steps'][-1].setdefault('env', {})['X'] = \"\${{ secrets.X }}\""
-case_ sign-release-no-digests bad "sign job sign-release does not read Build's digests" "$J['sign-release'].update(__import__('json').loads(__import__('json').dumps($J['sign-release']).replace('needs.build-assemble.outputs.digests', 'needs.release-verify.outputs.digests')))"
-case_ sign-release-local-witness bad "does not run release-apks and release-sign through bin/witnessed.sh" "hit(s.__setitem__('run', s['run'].replace('witnessed.sh', 'witnessed-local.sh')) for s in $J['sign-release']['steps'] if 'witnessed.sh release-apks' in (s.get('run') or ''))"
-case_ release-job-witnessed-kms bad "does not run exactly release-verify then release-publish through bin/witnessed-local.sh" "hit(s.__setitem__('run', s['run'].replace('witnessed-local.sh', 'witnessed.sh')) for s in $J['release']['steps'] if 'witnessed-local.sh release-publish' in (s.get('run') or ''))"
-case_ release-job-verify-kms bad "does not run exactly release-verify then release-publish through bin/witnessed-local.sh" "hit(s.__setitem__('run', s['run'].replace('witnessed-local.sh', 'witnessed.sh')) for s in $J['release']['steps'] if 'witnessed-local.sh release-verify' in (s.get('run') or ''))"
-case_ release-job-no-publish bad "does not run exactly release-verify then release-publish through bin/witnessed-local.sh" "$J['release']['steps'] = [s for s in $J['release']['steps'] if 'release-publish' not in (s.get('run') or '')]"
 case_ release-job-packages-gone bad "the release job does not hold exactly contents write and packages write" "$J['release']['permissions'].pop('packages')"
 case_ release-job-extra-permission bad "the release job does not hold exactly contents write and packages write" "$J['release']['permissions']['actions'] = 'read'"
-case_ release-no-signature-download bad "the release job does not download release-evidence-signatures into release-evidence" "$J['release']['steps'] = [s for s in $J['release']['steps'] if (s.get('with') or {}).get('name') != 'release-evidence-signatures']"
-case_ release-signature-download-elsewhere bad "the release job does not download release-evidence-signatures into release-evidence" "hit(s['with'].__setitem__('path', 'signatures') for s in $J['release']['steps'] if (s.get('with') or {}).get('name') == 'release-evidence-signatures')"
-case_ release-evidence-no-dist-bundles bad "release-evidence does not download release-dist-bundles into dist" "$J['release-evidence']['steps'] = [s for s in $J['release-evidence']['steps'] if (s.get('with') or {}).get('name') != 'release-dist-bundles']"
-case_ release-evidence-dist-bundles-elsewhere bad "release-evidence does not download release-dist-bundles into dist" "hit(s['with'].__setitem__('path', 'bundles') for s in $J['release-evidence']['steps'] if (s.get('with') or {}).get('name') == 'release-dist-bundles')"
-case_ release-verify-step-env bad "a step of the release job other than release-publish carries env" "hit(s.__setitem__('env', {'X': 'y'}) for s in $J['release']['steps'] if 'witnessed-local.sh release-verify' in (s.get('run') or ''))"
-case_ release-publish-env-extra bad "does not carry exactly DOCKERHUB_USERNAME, DOCKERHUB_TOKEN and GH_TOKEN" "hit(s['env'].__setitem__('X', 'y') for s in $J['release']['steps'] if 'witnessed-local.sh release-publish' in (s.get('run') or ''))"
-case_ sign-release-publishes  bad "sign-release runs more of Release" "$J['sign-release']['steps'].append({'run': 'bash bin/release-publish.sh'})"
+case_ release-no-signed-download bad "the release job does not download release-signed into release-signed" "$J['release']['steps'] = [s for s in $J['release']['steps'] if (s.get('with') or {}).get('name') != 'release-signed']"
+case_ release-signed-download-elsewhere bad "the release job does not download release-signed into release-signed" "hit(s['with'].__setitem__('path', 'signatures') for s in $J['release']['steps'] if (s.get('with') or {}).get('name') == 'release-signed')"
+case_ release-verify-step-env bad "a step of the release job other than release-publish, release-sign and release-assets carries env" "hit(s.__setitem__('env', {'X': 'y'}) for s in $J['release']['steps'] if 'witnessed.sh release-verify' in (s.get('run') or ''))"
+case_ release-publish-env-extra bad "does not carry exactly DOCKERHUB_USERNAME, DOCKERHUB_TOKEN and GH_TOKEN" "hit(s['env'].__setitem__('X', 'y') for s in $J['release']['steps'] if 'witnessed.sh release-publish' in (s.get('run') or ''))"
+case_ release-job-local-witness bad "through bin/witnessed.sh" "hit(s.__setitem__('run', s['run'].replace('witnessed.sh', 'witnessed-local.sh')) for s in $J['release']['steps'] if 'witnessed.sh release-publish' in (s.get('run') or ''))"
+case_ release-job-no-publish bad "does not run exactly release-verify, release-apks, release-publish" "$J['release']['steps'] = [s for s in $J['release']['steps'] if 'release-publish' not in (s.get('run') or '')]"
+case_ release-job-assets-first bad "does not run exactly release-verify, release-apks, release-publish" "a = [i for i, s in enumerate($J['release']['steps']) if 'release-assets.sh' in (s.get('run') or '')][0]; b = [i for i, s in enumerate($J['release']['steps']) if 'release-postverify.sh' in (s.get('run') or '')][0]; $J['release']['steps'][a], $J['release']['steps'][b] = $J['release']['steps'][b], $J['release']['steps'][a]"
+case_ release-runs-signatures bad "job release runs a signing command" "$J['release']['steps'].append({'run': 'bash bin/release-signatures.sh'})"
+case_ sign-check-no-signatures bad "sign-check does not run" "$J['sign-check']['steps'] = [s for s in $J['sign-check']['steps'] if 'release-signatures.sh' not in (s.get('run') or '')]"
+case_ sign-check-signatures-on-rc bad "sign-check does not run" "hit(s.pop('if') for s in $J['sign-check']['steps'] if 'release-signatures.sh' in (s.get('run') or ''))"
+case_ sign-check-no-release-signed bad "sign-check does not upload release-signed" "$J['sign-check']['steps'] = [s for s in $J['sign-check']['steps'] if (s.get('with') or {}).get('name') != 'release-signed']"
+case_ sign-check-gh-token bad "sign-check names a secret" "$J['sign-check']['steps'][-1].setdefault('env', {})['GH_TOKEN'] = \"\${{ github.token }}\""
 case_ sign-runs-no-sign-records bad "does not run chain-verify.py sign-records" "$J['sign']['steps'] = [s for s in $J['sign']['steps'] if 'sign-records' not in (s.get('run') or '')]"
 # no other job holds the key, the environment or a signing command
 for jn in build-assemble rebuild-assemble check release release-verify release-compare; do
   case_ "$jn-environment-sign"  bad "job $jn is in the environment sign" "$J['$jn']['environment'] = 'sign'"
   case_ "$jn-names-the-role"    bad "job $jn names AWS_ROLE_ARN" "$J['$jn'].setdefault('env', {}); $J['$jn']['env']['AWS_ROLE_ARN'] = 'arn:aws:iam::1:role/x'"
-  case_ "$jn-runs-release-sign" bad "job $jn runs a signing command" "$J['$jn']['steps'].append({'run': 'bash bin/release-sign.sh'})"
+  case_ "$jn-runs-release-signatures" bad "job $jn runs a signing command" "$J['$jn']['steps'].append({'run': 'bash bin/release-signatures.sh'})"
 done
-case_ release-runs-release-apks bad "job release runs a signing command" "$J['release']['steps'].append({'run': 'bash bin/release-apks.sh'})"
 case_ release-runs-sign-subcommand bad "job release runs a signing command" "$J['release']['steps'].append({'run': 'python3 -I -B bin/chain-verify.py sign --check'})"
 case_ release-holds-id-token  bad "the release job holds an identity token" "$J['release']['permissions']['id-token'] = 'write'"
 case_ release-holds-id-token-read bad "the release job holds an identity token" "$J['release']['permissions']['id-token'] = 'read'"
-# release-evidence (Q-c): assets and post-verify run after the signatures exist, with contents write and no key
-case_ release-evidence-id-token bad "release-evidence does not hold exactly contents write" "$J['release-evidence']['permissions']['id-token'] = 'write'"
-case_ release-evidence-contents-read bad "release-evidence does not hold exactly contents write" "$J['release-evidence']['permissions']['contents'] = 'read'"
-case_ release-evidence-packages bad "release-evidence does not hold exactly contents write" "$J['release-evidence']['permissions']['packages'] = 'write'"
-case_ release-evidence-environment-sign bad "job release-evidence is in the environment sign" "$J['release-evidence']['environment'] = 'sign'"
-case_ release-evidence-environment-release bad "release-evidence carries an environment" "$J['release-evidence']['environment'] = 'release'"
-case_ release-evidence-names-role bad "job release-evidence names AWS_ROLE_ARN" "$J['release-evidence'].setdefault('env', {}); $J['release-evidence']['env']['AWS_ROLE_ARN'] = 'arn:aws:iam::1:role/x'"
-case_ release-evidence-names-key bad "job release-evidence names RELEASE_KMS_KEY_REF" "$J['release-evidence']['steps'][-1].setdefault('env', {})['RELEASE_KMS_KEY_REF'] = 'x'"
-case_ release-evidence-runs-release-sign bad "job release-evidence runs a signing command" "$J['release-evidence']['steps'].append({'run': 'bash bin/release-sign.sh'})"
-case_ release-evidence-assets-gone bad "release-evidence does not run exactly the witnessed-local steps" "$J['release-evidence']['steps'] = [s for s in $J['release-evidence']['steps'] if 'witnessed-local.sh release-assets' not in (s.get('run') or '')]"
-case_ release-evidence-postverify-gone bad "release-evidence does not run exactly the witnessed-local steps" "$J['release-evidence']['steps'] = [s for s in $J['release-evidence']['steps'] if 'witnessed-local.sh release-postverify' not in (s.get('run') or '')]"
-case_ release-evidence-kms-witness bad "release-evidence uses bin/witnessed.sh" "hit(s.__setitem__('run', s['run'].replace('witnessed-local.sh', 'witnessed.sh')) for s in $J['release-evidence']['steps'] if 'witnessed-local.sh release-assets' in (s.get('run') or ''))"
-case_ release-assets-back-in-release bad "the release job runs release-assets or release-postverify" "$J['release']['steps'].append({'run': 'bash bin/witnessed.sh release-assets bin/release-assets.sh'})"
-case_ release-postverify-back-in-release bad "the release job runs release-assets or release-postverify" "$J['release']['steps'].append({'run': 'bash bin/witnessed.sh release-postverify bin/release-postverify.sh'})"
-case_ release-postverify-in-sign-release bad "sign-release runs more of Release" "$J['sign-release']['steps'].append({'run': 'bash bin/witnessed.sh release-postverify bin/release-postverify.sh'})"
-case_ release-assets-in-sign-release bad "sign-release runs more of Release" "$J['sign-release']['steps'].append({'run': 'bash bin/witnessed.sh release-assets bin/release-assets.sh'})"
 case_ live-test-names-kms     bad "names RELEASE_KMS_KEY_REF" "$J['live-test'].setdefault('env', {}); $J['live-test']['env']['RELEASE_KMS_KEY_REF'] = 'x'"
 case_ live-test-release-env-sign bad "job live-test-release is in the environment sign" "$J['live-test-release']['environment'] = 'sign'"
 

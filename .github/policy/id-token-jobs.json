@@ -39,12 +39,7 @@
   {
    "workflow": "release.yml",
    "job": "sign-check",
-   "reason": "Sign's third job: checks and signs the Check records of both chips with the release key (REQ-REL-011-AC1)"
-  },
-  {
-   "workflow": "release.yml",
-   "job": "sign-release",
-   "reason": "Sign's fourth job, after release publishes: it alone holds the release key's role for the signatures and attestations of the published images and apks (REQ-CHAIN-007-AC3); the release job holds no identity token"
+   "reason": "Sign's third job: checks and signs the Check records of both chips with the release key (REQ-REL-011-AC1), and on a final tag makes every release signature the release job pushes (bin/release-signatures.sh); the release job holds no identity token"
   },
   {
    "workflow": "scan.yml",
