@@ -8,7 +8,7 @@ set -euo pipefail
 TMPDIR=$(mktemp -d); export TMPDIR; trap 'rm -rf "$TMPDIR"' EXIT
 here=$(cd "$(dirname "$0")" && pwd)
 python3 - "$here/evidence-letter.py" <<'PY'
-import base64, calendar, datetime, hashlib, json, os, shutil, subprocess, sys, tempfile, time
+import base64, calendar, hashlib, json, os, shutil, subprocess, sys, tempfile, time
 SCRIPT = sys.argv[1]
 passed = failed = 0
 
@@ -335,7 +335,7 @@ def throwaway_repo(tmp):
         openssl("pkey", "-in", keys + "/%s.key" % name, "-pubout", "-out", keys + "/%s.pub" % name)
     pub = open(keys + "/rel.pub").read()
     der = openssl("pkey", "-pubin", "-in", keys + "/rel.pub", "-outform", "DER")
-    when = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    when = "2026-11-01T00:00:00Z"  # fixed, before the fixed signing time of 3 December (SIGNED_DEC3), whatever today is
     body = json.dumps({"public_key": pub, "key_id": hashlib.sha256(der).hexdigest(), "valid_from": when},
                       sort_keys=True, indent=1).encode() + b"\n"
     pol = os.path.join(repo, ".github/policy")
