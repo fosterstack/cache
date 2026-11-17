@@ -2,7 +2,6 @@
 # One entry per line: <path>|<the added line, trimmed>. No globs, no word-only entries. See bin/check-customer-words.py.
 # Workflow files: GitHub's own field names (repository_owner, context.repo.owner), program and file names that carry the word, and one check name other files read.
 .github/workflows/auditor.yml|for (const k of ['sub','aud','ref','job_workflow_ref','environment','repository','repository_owner_id']) {
-.github/workflows/ci.yml|run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json dependency-lanes-test.sh bin/dependency-lanes-test.sh
 .github/workflows/dependabot-auto-merge.yml|# heredoc because this workflow checks out nothing and fetches no script; bin/dependency-lanes-test.sh
 .github/workflows/dependabot-reviewer.yml|('sub', 'aud', 'ref', 'job_workflow_ref', 'environment', 'repository', 'repository_owner_id')}))
 .github/workflows/go-freshness.yml|REGISTRY_OWNER: ${{ github.repository_owner }}

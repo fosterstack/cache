@@ -11,7 +11,7 @@
 # go-freshness.yml opens its bump PR with the auditor App's token (owner, Oct 2; advisor 0055): the check job's own token
 # is read-only; it runs in the main-only agent environment; the App token is minted with exactly the auditor's scope
 # (repositories: cache; contents and pull-requests write; nothing else) and only the bump step uses it; the checkout
-# keeps no credential. The mutation job gets none of it. The real workflow must pass; each mutated copy must be caught.
+# keeps no credential. The real workflow must pass; each mutated copy must be caught.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
@@ -32,16 +32,6 @@ ALLOWED = {("agent-review-gate.yml", "publish"), ("agent-review-gate.yml", "swee
            ("auditor.yml", "panel-probe"), ("dependabot-reviewer.yml", "review"), ("go-freshness.yml", "check"), ("go-freshness.yml", "refresh"),
            ("main-candidate-rescan.yml", "panel-scout"),
            ("main-candidate-rescan.yml", "panel-google"),  # the release.yml promotion job (scans) is gone: Check holds no secret (PR 3), Release is the release job (PR 4)
-           # the Scout root-cause round (#176): the agent environment for its own Docker Hub token, same reason as
-           # panel-scout/panel-google above; it never mints or uses the auditor App's token
-           ("main-candidate-rescan.yml", "scout-root-cause"), ("main-candidate-rescan.yml", "scout-older-versions"),
-           # automatic patch releases (REQ-REL-009): decide holds no environment and no secret and cuts no tag
-           # (handoff 0713 P8); patch-notes alone mints the auditor App's token (contents + pull-requests) for the
-           # changelog PR
-           ("release.yml", "patch-notes"),
-           # REQ-DEP-005-AC3: queue-publish mints the App token with checks:write only to publish the merge-queue
-           # verdict (queue-judge holds no credential) - a new consumer, reviewed and listed here
-           ("agent-review-gate.yml", "queue-publish"),
            # the records sweep (handoff 0681): mints the auditor App's token (contents write, this repository) to add
            # the vendored tree and provenance records to a dependency-bump branch; the agent environment keeps it
            # on main
@@ -84,8 +74,8 @@ jobs = d.get("jobs") or {}
 got = hashlib.sha256(json.dumps(mask(jobs.get("check") or {}), sort_keys=True).encode()).hexdigest()
 if got != REVIEWED_CHECK_JOB:
     bad.append("the privileged check job differs from its reviewed form (%s)" % got[:12])
-if sorted(jobs) not in (["check", "mutation", "refresh"], ["check", "mutation", "persona-uat", "refresh"]):      # persona-uat's PRESENCE is persona-uat-wiring-test.sh's job
-    bad.append("jobs other than check, mutation, refresh and persona-uat: %s" % sorted(jobs))
+if sorted(jobs) not in (["check", "refresh"], ["check", "persona-uat", "refresh"]):      # persona-uat's PRESENCE is persona-uat-wiring-test.sh's job
+    bad.append("jobs other than check, refresh and persona-uat: %s" % sorted(jobs))
 if d.get("env") or d.get("defaults"):
     bad.append("a workflow-level env/defaults reaches the privileged job")
 for j, v in jobs.items():
@@ -105,7 +95,6 @@ for j, v in jobs.items():
     if "secrets" in t or "app-token" in t or "create-github-app-token" in t or v.get("environment") or "check" in str(v.get("needs", "")):
         bad.append("job %s touches secrets, the App token, the environment or the check job's outputs" % j)
 c = (d.get("jobs") or {}).get("check") or {}
-m = (d.get("jobs") or {}).get("mutation") or {}
 if c.get("permissions") != {"contents": "read"}:
     bad.append("the check job's own token is not read-only: %s" % c.get("permissions"))
 if c.get("environment") != "agent":
@@ -122,8 +111,6 @@ if [s.get("name") for s in users] != ["open (or recover) the bump PR"]:
 co = [s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@")]
 if not co or (co[0].get("with") or {}).get("persist-credentials") != "false":
     bad.append("the checkout keeps a credential")
-if m.get("environment") or "app-token" in str(m) or (m.get("permissions") or {}) != {"contents": "read"}:
-    bad.append("the mutation job gets the environment, the App token or more than read")
 # ---- the refresh job (REQ-REFRESH-001-AC24 to AC30; owner's rules 4 to 9 of Oct 14)
 r = jobs.get("refresh") or {}
 rsteps = r.get("steps") or []
@@ -263,7 +250,6 @@ case_ app-widened-checks     bad "$MINT['with']['permission-checks'] = 'write'"
 case_ app-all-repos          bad "$MINT['with'].pop('repositories')"
 case_ token-to-compare-step  bad "[s.setdefault('env', {}).__setitem__('GH_TOKEN', '\${{ steps.app-token.outputs.token }}') for s in $C['steps'] if s.get('id') == 'cmp']"
 case_ checkout-keeps-cred    bad "[s.setdefault('with', {}).__setitem__('persist-credentials', 'true') for s in $C['steps'] if str(s.get('uses','')).startswith('actions/checkout@')]"
-case_ mutation-in-agent      bad "d['jobs']['mutation']['environment'] = 'agent'"
 # Codex #345 r3 (AC31): a copy that changes the meaning of AC25 or AC27 while keeping the words the old judge looked for
 R='d["jobs"]["refresh"]'
 case_ refresh-ref-inverted   bad "$R['if'] = $R['if'].replace(\"github.ref == 'refs/heads/main'\", \"github.ref != 'refs/heads/main'\")"
@@ -291,7 +277,7 @@ case_ second-checkout-cred   bad "$C['steps'].append({'uses': 'actions/checkout@
 case_ token-printed          bad "[s.__setitem__('run', s['run'] + 'printf %s \"\$GH_TOKEN\" | od -An -tx1\\n') for s in $C['steps'] if 'go-bump-open-pr.sh' in (s.get('run') or '')]"
 case_ another-agent-job      bad "d['jobs']['x'] = {'runs-on': 'ubuntu-latest', 'environment': 'agent', 'steps': [{'uses': 'actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1', 'with': {'permission-checks': 'write'}}]}"
 case_ secrets-to-json        bad "$C.setdefault('env', {})['AGENT_SECRETS'] = '\${{ toJSON(secrets) }}'"
-case_ key-through-outputs    bad "$C['outputs'] = {'k': '\${{ secrets.AUDITOR_APP_PRIVATE_KEY }}'}; d['jobs']['mutation']['needs'] = 'check'"
+case_ key-through-outputs    bad "$C['outputs'] = {'k': '\${{ secrets.AUDITOR_APP_PRIVATE_KEY }}'}; d['jobs']['persona-uat']['needs'] = 'check'"
 case_ bump-gutted            bad "[s.__setitem__('run', ':') for s in $C['steps'] if 'go-bump-open-pr.sh' in (s.get('run') or '')]"
 case_ github-env-write       bad "[s.__setitem__('run', s['run'] + 'echo INPUT_PERMISSION-checks=write >> \"\$GITHUB_ENV\"\\n') for s in $C['steps'] if s.get('id') == 'cmp']"
 case_ workflow-env           bad "d['env'] = {'INPUT_PERMISSION-checks': 'write'}"

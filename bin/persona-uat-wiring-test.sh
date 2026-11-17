@@ -805,7 +805,7 @@ def judge_release(r, bad):
             bad.append("release persona-uat loads the registry AFTER running the driver")
 
 REG_IMG = re.compile(r"registry:2@sha256:[0-9a-f]{64}")
-DL_ACTION = re.compile(r"actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c")
+DL_ACTION = re.compile(r"actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333")
 
 def judge_rc_registry(j, bad):
     """REQ-UAT-001-AC1 (advisor reading Oct 17): the rc job tests Build's own image from a registry that lives on the runner and nothing else. One registry:2 service pinned by digest and
@@ -1089,7 +1089,7 @@ def synth_persona_job(weekly):
                  "run": 'set -euo pipefail\ntag=$(gh release view --json tagName -q .tagName)\nd=$(crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")\n'
                         'echo "tag=$tag" >> "$GITHUB_OUTPUT"\necho "image=ghcr.io/${REGISTRY_OWNER}/cache@$d" >> "$GITHUB_OUTPUT"'}] if weekly else []
     # the weekly job: the root checkout (it provides bin/install-scanner.sh), the pinned crane, the resolver, then the docs checkout; the rc job has the one checkout
-    rc_load = [{"uses": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c", "with": {"name": "images", "path": "candidate/images"}},
+    rc_load = [{"uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333", "with": {"name": "images", "path": "candidate/images"}},
                {"run": "./" + pre + "bin/install-scanner.sh crane"},
                {"name": "load", "env": {"DIGESTS": "${{ needs.build.outputs.digests }}"}, "run": RC_LOAD_RUN}]
     head = ([co[0], {"run": "./" + pre + "bin/install-scanner.sh crane"}] + resolver + [co[1]]) if weekly else co + rc_load
