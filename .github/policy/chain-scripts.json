@@ -583,6 +583,13 @@
           "line_sha256": "78edad5dc6aa9da95bcd6bfcbefa8e57f47dc8b413af1269c9c2af7e503b731b",
           "count": 1,
           "why": "admission runs first, so it runs bash at its fixed location and never searches PATH (a path constant, the test suites substitute it)"
+        },
+        {
+          "rule": "deny",
+          "line": "    (\"analyze (go)\", \"codeql.yml\"),",
+          "line_sha256": "cd2a382e70104aafa8c00bf998ed9130cf7378fe26a6848ce7e2fa1bd1dd6205",
+          "count": 1,
+          "why": "the name of a CodeQL context in the table of bound contexts (analyze (go)), a string read as data; no go command is named or run"
         }
       ]
     },
