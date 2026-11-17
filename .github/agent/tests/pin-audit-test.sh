@@ -1585,24 +1585,32 @@ UNPINNED_GO=(
   "short|go install example.com/x@abc1234"
   "vsuffix|go install example.com/x@v1.2.3branch"
   "shasuffix|go install example.com/x@${SHA4}branch"
-  # no range case: the inventory does not read a quoted range (go install 'example.com/x@>=1.0.0'), so the rule cannot judge it
+  "sqlatest|go install 'example.com/x@latest'"
+  "dqlatest|go install \"example.com/x@latest\""
+  "sqrange|go install 'example.com/x@>=1.0.0'"
+  "dqrange|go install \"example.com/x@>=1.0.0\""
   "bare|go install example.com/x"
   "var|go install \"\$TOOL\""
   "varat|go install example.com/x@\$TOOL_VERSION"
+  "qvarat|go install 'example.com/x@'\"\$V\""
+  "dqvarat|go install \"example.com/x@\$V\""
+  "cmdsub|go install \"\$(cat tool.txt)\""
 )
 for kind in wf sh; do
   for spec in "${UNPINNED_GO[@]}"; do
     form=${spec%%|*}; cmd=${spec#*|}; n="go-$kind-$form"
     gofind "$n" "$kind" "$cmd"
-    if [ "$form" = var ]; then
-      CASE="AC34: daily audit, $kind file, '$cmd' (a variable names no version): exit 1, a line is printed, no issue create/edit call"
+    if [ "$form" = var ] || [ "$form" = qvarat ] || [ "$form" = dqvarat ] || [ "$form" = cmdsub ]; then
+      CASE="AC34: daily audit, $kind file, '$cmd' (a variable or substitution names no version, an unmeasured item): exit 1, a line is printed, no issue create/edit call"
       check test "$rc" -eq 1; check test -s "$work/$n.out"; check no_issue_call "$n"
     else
       CASE="AC34: daily audit, $kind file, '$cmd' (not an exact version): exit 1, the line names example.com/x, no issue create/edit call"
       check test "$rc" -eq 1; check bash -c "grep -v '^  gotool:' '$work/$n.out' | grep -q 'example\.com/x'"; check no_issue_call "$n"
     fi
   done
-  for spec in "exact|go install example.com/x@v1.2.3" "rc|go install example.com/x@v1.2.3-rc.1" "sha|go install example.com/x@$SHA4"; do
+  for spec in "exact|go install example.com/x@v1.2.3" "rc|go install example.com/x@v1.2.3-rc.1" "sha|go install example.com/x@$SHA4" \
+    "sqexact|go install 'example.com/x@v1.2.3'" "dqexact|go install \"example.com/x@v1.2.3\"" "sqsha|go install 'example.com/x@$SHA4'" "dqsha|go install \"example.com/x@$SHA4\"" \
+    "sqrc|go install 'example.com/x@v1.2.3-rc.1'" "bsexact|go install example.com/x@v1.2.\\3"; do
     form=${spec%%|*}; cmd=${spec#*|}; n="go-$kind-ok-$form"
     gofind "$n" "$kind" "$cmd"
     CASE="AC34: daily audit, $kind file, '$cmd' (an exact version) is no finding: exit 0, example.com/x not flagged, no issue call"

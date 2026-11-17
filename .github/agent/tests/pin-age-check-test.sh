@@ -340,6 +340,22 @@ u = lambda v: {".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - uses
 assert set(inv.inventory(u(".python-version"))) != set(inv.inventory(u(".python-version-new")))
 PY
 
+CASE="AC34: a quoted go install argument (single, double, backslash) is read after quote removal: the same gotool item (name example.com/x, its version) as the unquoted one"
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+wf = lambda run: {".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: " + run + "\n"}
+sh = lambda ln: {"bin/t.sh": "#!/usr/bin/env bash\n" + ln + "\n"}
+def read(files):
+    return sorted((v.name, v.version) for v in inv.inventory(files).values() if v.kind == "gotool")
+for mk in (wf, sh):
+    for ver, forms in (("latest", ["'example.com/x@latest'", '"example.com/x@latest"']), (">=1.0.0", ["'example.com/x@>=1.0.0'", '"example.com/x@>=1.0.0"']),
+                       ("v1.2.3", ["'example.com/x@v1.2.3'", '"example.com/x@v1.2.3"', "example.com/x@v1.2.\\3", "'example.com/x@'v1.2.3"])):
+        want = [("example.com/x", ver)]
+        for f in forms:
+            assert read(mk("go install " + f)) == want, (f, read(mk("go install " + f)))
+PY
+
 CASE="a download SOURCE is an item: url=/URL=/*_BASE_URL assignments in a script and *_BASE_URL/*_URL env at any level; retargeting one (an env override, a url template line) is a changed key and is refused"
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys
