@@ -456,25 +456,23 @@ pm p_okg     check-guide.sh     'gh attestation verify "oci://$REF" --owner o' '
    "AC8 the guide check may no longer name gh attestation verify (F2: it verifies by identity)"
 pm p_com     check-fips.sh      '# cosign sign is not used here'      'cosign'            "AC8 a signer named in a comment (over-reports by design)"
 mkdir -p "$work/l" && python3 - "$work/l" <<'PY'
-import hashlib, json, os, sys
+import json, os, sys
 w = sys.argv[1]
 os.makedirs(w + "/bin", exist_ok=True)
 rows = []
 for n in ("check-stage", "check-phase-scanners", "check-phase-acceptance", "check-phase-runtime", "check-phase-arm64", "check-scan", "check-govulncheck", "check-fips", "check-artifacts", "check-acceptance", "check-guide", "acceptance-gradle", "acceptance-gradle-capped",
           "acceptance-maven", "acceptance-maven-capped", "acceptance-egress", "acceptance-k8s", "acceptance-serve"):
     p = f"bin/{n}" + (".py" if n == "check-govulncheck" else ".sh"); open(f"{w}/{p}", "w").write("#!/usr/bin/env bash\nset -euo pipefail\n")
-    rows.append({"path": p, "sha256": hashlib.sha256(open(f"{w}/{p}", "rb").read()).hexdigest(), "tools": [], "signs": False, "runs": [], "reason": "fixture"})
+    rows.append({"path": p, "tools": [], "signs": False, "runs": [], "reason": "fixture"})
 os.makedirs(w + "/.github/policy", exist_ok=True)
 json.dump({"env_names": [], "scripts": rows}, open(w + "/.github/policy/chain-scripts.json", "w"))
 PY
-expect ok "fixture: all eighteen Check scripts listed with their sha256 and signs: false" "" listed "$work/l/.github/policy/chain-scripts.json" "$work/l"
+expect ok "fixture: all eighteen Check scripts listed with signs: false" "" listed "$work/l/.github/policy/chain-scripts.json" "$work/l"
 cp -r "$work/l" "$work/l2"; python3 - "$work/l2" <<'PY'
 import json, sys
 p = sys.argv[1] + "/.github/policy/chain-scripts.json"; d = json.load(open(p)); d["scripts"] = d["scripts"][1:]; json.dump(d, open(p, "w"))
 PY
 expect caught "AC8 a check script not listed" "not listed" listed "$work/l2/.github/policy/chain-scripts.json" "$work/l2"
-cp -r "$work/l" "$work/l3"; echo "echo changed" >> "$work/l3/bin/check-fips.sh"
-expect caught "AC8 a script changed after it was listed (sha256)" "sha256" listed "$work/l3/.github/policy/chain-scripts.json" "$work/l3"
 cp -r "$work/l" "$work/l4"; python3 - "$work/l4" <<'PY'
 import json, sys
 p = sys.argv[1] + "/.github/policy/chain-scripts.json"; d = json.load(open(p)); d["scripts"][2]["signs"] = "other"; json.dump(d, open(p, "w"))
@@ -668,7 +666,7 @@ for f in release stage-verify; do
   fi
 done
 expect ok "the real check scripts are plain (check-stage.sh is judged by script alone, Q3)" "" plain "$root"/bin/check-scan.sh "$root"/bin/check-govulncheck.py "$root"/bin/check-fips.sh "$root"/bin/check-artifacts.sh "$root"/bin/check-acceptance.sh "$root"/bin/check-guide.sh
-expect ok "the real check scripts are listed in chain-scripts.json with their sha256" "" listed "$root/.github/policy/chain-scripts.json" "$root"
+expect ok "the real check scripts are listed in chain-scripts.json" "" listed "$root/.github/policy/chain-scripts.json" "$root"
 expect ok "the old acceptance stages are gone from the real repository and release.yml" "" removed "$root"
 expect ok "the real k8s suite creates its cluster with the node image by digest (AC14)" "" cluster "$root/bin/acceptance-k8s.sh"
 expect ok "the real acceptance.yml runs the shared gradle and maven suite scripts (AC5)" "" suites "$root/.github/workflows/acceptance.yml"

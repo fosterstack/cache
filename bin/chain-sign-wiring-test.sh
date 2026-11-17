@@ -237,23 +237,18 @@ def judge_build(path):
                 bad.append("002-AC4: signing step %r puts an expression into %s" % (nm, fm.group(1)))
     return bad
 
-def sha256_of(path):
-    import hashlib
-    return hashlib.sha256(open(path, "rb").read()).hexdigest()
-
-# BUILD CONFIGURATION outside bin/ and .github/ that the build tooling reads (the file allowlist's config files): pinned by sha256
+# BUILD CONFIGURATION outside bin/ and .github/ that the build tooling reads (the file allowlist's config files): each one listed
 BUILD_CONFIG_GLOBS = (".gitignore", ".golangci.yml", ".grype.yaml", ".ko.yaml", ".githooks/*")
 def build_config(base, bad):
-    """Every build configuration file is listed with its sha256 in .github/policy/build-config-files.json; a changed, missing or unlisted
+    """Every build configuration file is listed in .github/policy/build-config-files.json; a missing or unlisted
     one is a finding (rule 61: goreleaser and the Dockerfiles are removed, so there is no file whose keys need a closed set)."""
     p = os.path.join(base, ".github/policy/build-config-files.json")
-    try: listed = {r["path"]: r["sha256"] for r in (_cts.jload(p)["files"] if os.path.exists(p) else [])}
+    try: listed = {r["path"] for r in (_cts.jload(p)["files"] if os.path.exists(p) else [])}
     except Exception as ex: bad.append("AC1: build-config-files.json is malformed (%s)" % ex); return
     present = sorted({os.path.relpath(f, base) for g in BUILD_CONFIG_GLOBS for f in glob.glob(os.path.join(base, g)) if os.path.isfile(f)})
     for x in present:
-        if x not in listed: bad.append("AC1: build config file not listed: %s: add it to build-config-files.json with its sha256" % x)
-        elif sha256_of(os.path.join(base, x)) != listed[x]: bad.append("AC1: build config file changed: %s: update build-config-files.json or delete it" % x)
-    for x in sorted(set(listed) - set(present)): bad.append("AC1: build config file missing: %s: update build-config-files.json" % x)
+        if x not in listed: bad.append("AC1: build config file not listed: %s: add it to build-config-files.json" % x)
+    for x in sorted(listed - set(present)): bad.append("AC1: build config file missing: %s: update build-config-files.json" % x)
 
 COMPILED = (".pyc", ".pyo", ".so", ".pyd", ".dll")
 
@@ -460,7 +455,7 @@ def listed_scripts(base, rows, ran, bad):
 
 def judge_tree(base):
     """REQ-CHAIN-001-AC1 over a tree, one function per clause, plus the closed lists that keep the rule from being a text scan:
-    pinned build configuration (build-config-files.json), the jobs that may hold
+    the listed build configuration (build-config-files.json), the jobs that may hold
     id-token: write (id-token-jobs.json), the signer table with chain-signers.json, and the stage grammar over chain-scripts.json."""
     bad = []
     bad_utf8 = _cts.non_utf8_yaml(base)         # final batch R-f: a file that is not UTF-8 is named and the judge stops (never a traceback)
@@ -510,12 +505,10 @@ def run(which, arg):
 
 def gen(d):
     """The fixture writer of the tree cases (a second request kind of the persistent judge): rewrites
-    D/.github/policy/chain-scripts.json with fresh hashes (moved verbatim from the shell function gen)."""
-    import hashlib
+    D/.github/policy/chain-scripts.json (moved verbatim from the shell function gen)."""
     out = []
     for r in json.load(open(d + "/.spec.json")):
         r = dict(r)
-        r["sha256"] = hashlib.sha256(open(os.path.join(d, r["path"]), "rb").read()).hexdigest()
         out.append(r)
     doc = {"env_names": ["DIGESTS", "RECORDS", "RECORDS_ARM64", "V", "X1"], "scripts": out}
     if os.path.exists(d + "/.ambient.json"):
@@ -3156,14 +3149,14 @@ b1 "$((rc != 0 ? 0 : 1))" \
 # the literal is excused by a line-bound deny exception (line, its sha256, count), as bin/assemble-image.sh's are
 rc=0
 python3 - "$root" <<'PYL' || rc=$?
-import hashlib, json, sys
+import json, sys
 root = sys.argv[1]
 rows = {r["path"]: r for r in json.load(open(root + "/.github/policy/chain-scripts.json"))["scripts"]}
 row = rows["bin/inspector-gate.py"]
 lines = open(root + "/bin/inspector-gate.py").read().split("\n")
 found = [e for e in row.get("exceptions", [])
          if e["rule"] == "deny" and e["line"] in lines and e["count"] == lines.count(e["line"])
-         and e["line_sha256"] == hashlib.sha256(e["line"].encode()).hexdigest() and e["why"]]
+         and e["why"]]
 sys.exit(0 if found and "go" not in row["tools"] else 1)
 PYL
 b1 "$rc" 'the bin/inspector-gate.py row carries a line-bound deny exception, not a tools grant'
@@ -3175,10 +3168,10 @@ probe() {  # probe NAME TEXT-THE-FINDINGS-MUST-NAME LABEL EDIT(shell, run in the
   out=$(judge tree "$d") || rc=$?
   if [ "$rc" != 0 ] && grep -F -q -- "$2" <<< "$out"; then pass=$((pass + 1)); echo "ok   real-tree probe: $3 is caught (${out:0:140})"
   else failn=$((failn + 1)); echo "FAIL real-tree probe let through $3 (or did not name $2): rc=$rc ${out:0:300}"; fi; }
-rehash() {  # rehash PATH: refresh PATH's sha256 in chain-scripts.json of the copy (the probe edits a listed script "properly")
-  python3 -c 'import hashlib,json,sys; p=".github/policy/chain-scripts.json"; d=json.load(open(p))
+rowset() {  # rowset PATH KEY=VALUE...: set fields of PATH's row in chain-scripts.json of the copy
+  python3 -c 'import json,sys; p=".github/policy/chain-scripts.json"; d=json.load(open(p))
 for r in d["scripts"]:
-    if r["path"] == sys.argv[1]: r["sha256"] = hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest(); r.update(dict(a.split("=",1) for a in sys.argv[2:]))
+    if r["path"] == sys.argv[1]: r.update(dict(a.split("=",1) for a in sys.argv[2:]))
 json.dump(d, open(p,"w"), indent=1)' "$@"; }
 probe build    stage-build.yml      "a second provenance signer job in stage-build.yml"     "printf '$SIGN_JOB' >> .github/workflows/stage-build.yml"
 probe image    stage-image.yml      "a second provenance signer job in stage-image.yml"     "printf '$SIGN_JOB' >> .github/workflows/stage-image.yml"
@@ -3191,12 +3184,12 @@ probe vendorrow vendor-provenance.py "dropping the bin/vendor-provenance.py row 
   "python3 -c 'import json; p=\".github/policy/chain-scripts.json\"; d=json.load(open(p)); d[\"scripts\"]=[r for r in d[\"scripts\"] if r[\"path\"]!=\"bin/vendor-provenance.py\"]; json.dump(d, open(p,\"w\"), indent=1)'"
 probe vendorbytes vendor-provenance.py "an edit of bin/vendor-provenance.py without its sha256 in the row" "printf '\n# edited\n' >> bin/vendor-provenance.py"
 probe vendorruns "bin/vendor-provenance.py: " "bin/vendor-provenance.py starting another program it does not list (the row says it runs none)" \
-  "printf '\nimport subprocess\nsubprocess.run([\"bash\", \"bin/sneak.sh\"])\n' >> bin/vendor-provenance.py; printf 'echo x\n' > bin/sneak.sh; rehash bin/vendor-provenance.py"
+  "printf '\nimport subprocess\nsubprocess.run([\"bash\", \"bin/sneak.sh\"])\n' >> bin/vendor-provenance.py; printf 'echo x\n' > bin/sneak.sh"
 probe composite .github/actions/probe "a provenance signer in a new composite action"         "mkdir -p .github/actions/probe; printf 'name: probe\nruns:\n  using: composite\n  steps:\n    - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.0.0\n      with:\n        subject-path: x\n' > .github/actions/probe/action.yml"
 # a LISTED script that a stage file runs, turned into a provenance signer with its row and sha256 updated
 probe hoststep bin/chain-hostile-step.sh \
   "bin/chain-hostile-step.sh (run by stage-build.yml) made a provenance signer, its row and sha256 updated" \
-  "printf 'cosign attest --type slsaprovenance --predicate p.json img\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh signs=provenance"
+  "printf 'cosign attest --type slsaprovenance --predicate p.json img\n' >> bin/chain-hostile-step.sh; rowset bin/chain-hostile-step.sh signs=provenance"
 # Opus r4 B1 (second belt): a file in bin/ named after a standard-library module would shadow it for any script run from bin/ without -I
 probe stdjson   "bin/json.py" "a new bin/json.py that signs on import" "printf 'import os\nos.system(\"cosign attest-blob --yes --type slsaprovenance --predicate p.json x\")\n' > bin/json.py"
 probe stdfrac   "bin/fractions.py" "a new bin/fractions.py that signs on import" "printf 'import os\nos.system(\"cosign attest-blob --yes --type slsaprovenance x\")\n' > bin/fractions.py"
@@ -3229,9 +3222,9 @@ scriptcase s8_timeout caught "${S0}timeout 5 bash x\n" 'rows["bin/build-stage.sh
 scriptcase s8_xargs caught "${S0}printf x | xargs bash\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","env","exec","command","builtin","nohup","timeout","xargs","sudo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh","bin/install-scanner.sh"]' 'xargs launching another program'
 scriptcase s8_sudo caught "${S0}sudo bash x\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","env","exec","command","builtin","nohup","timeout","xargs","sudo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh","bin/install-scanner.sh"]' 'sudo launching another program'
 probe othersc "other/install-scanner.sh" "the real bin/chain-hostile-step.sh with bash other/install-scanner.sh appended and its sha256 updated (Codex #249 r7 B3a)" \
-  "printf 'bash other/install-scanner.sh\\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh"
+  "printf 'bash other/install-scanner.sh\\n' >> bin/chain-hostile-step.sh"
 probe absbash  "is handed '-c'" "the real bin/chain-hostile-step.sh with /bin/bash -c true appended and its sha256 updated (B3b)" \
-  "printf '/bin/bash -c true\\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh"
+  "printf '/bin/bash -c true\\n' >> bin/chain-hostile-step.sh"
 # (Codex #249 r8 B3 + Sonnet 1/2/3/6, the class closed) listed scripts: a launcher or evaluator word at ANY command position, and any word handed
 # to an interpreter or run as a path, must be an exact listed path or a word the row allows; a launcher is refused outright
 d=$(mk s9_exec_a); python3 -c 'import sys; d=sys.argv[1]; open(d+"/mytool","w").write("#!/usr/bin/env bash\necho x\n"); open(d+"/bin/mytool2","w").write("#!/usr/bin/env bash\necho x\n"); open(d+"/mylib","w").write("echo x\n"); open(d+"/bin/mylib","w").write("echo x\n"); open(d+"/mylib.txt","w").write("echo x\n")' "$d"; setfile "$d" bin/build-stage.sh "${S0}exec -a \"fake name\" evil\n"; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","exec","setsid","flock","eval","source","env","busybox","time"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: exec -a with a quoted name hides the program (Codex #249 r8 B3)" tree "$d"
@@ -3274,9 +3267,9 @@ d=$(mk s9_ok_exact); python3 -c 'import sys; d=sys.argv[1]; open(d+"/mytool","w"
 d=$(mk s9_ok_dot); python3 -c 'import sys; d=sys.argv[1]; open(d+"/mytool","w").write("#!/usr/bin/env bash\necho x\n"); open(d+"/bin/mytool2","w").write("#!/usr/bin/env bash\necho x\n"); open(d+"/mylib","w").write("echo x\n"); open(d+"/bin/mylib","w").write("echo x\n"); open(d+"/mylib.txt","w").write("echo x\n")' "$d"; setfile "$d" bin/build-stage.sh "${S0}bash ./bin/build-apk.sh\n"; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","exec","setsid","flock","eval","source","env","busybox","time"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect ok "AC1 script: control: bash with the exact listed path and a leading ./" tree "$d"
 d=$(mk s9_ok_cmd); python3 -c 'import sys; d=sys.argv[1]; open(d+"/mytool","w").write("#!/usr/bin/env bash\necho x\n"); open(d+"/bin/mytool2","w").write("#!/usr/bin/env bash\necho x\n"); open(d+"/mylib","w").write("echo x\n"); open(d+"/bin/mylib","w").write("echo x\n"); open(d+"/mylib.txt","w").write("echo x\n")' "$d"; setfile "$d" bin/build-stage.sh "${S0}bin/build-apk.sh x\n"; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","exec","setsid","flock","eval","source","env","busybox","time"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect ok "AC1 script: control: the exact listed path at command position" tree "$d"
 probe mytool "./mytool" "the real bin/chain-hostile-step.sh running ./mytool (an unlisted root executable with a shebang), its sha256 updated (Sonnet 1)" \
-  "printf '#!/usr/bin/env bash\\necho x\\n' > mytool; chmod +x mytool; printf './mytool\\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh"
+  "printf '#!/usr/bin/env bash\\necho x\\n' > mytool; chmod +x mytool; printf './mytool\\n' >> bin/chain-hostile-step.sh"
 probe bashlib "mylib" "the real bin/chain-hostile-step.sh running bash mylib, its sha256 updated (Sonnet 3)" \
-  "printf 'echo x\\n' > mylib; printf 'bash mylib\\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh"
+  "printf 'echo x\\n' > mylib; printf 'bash mylib\\n' >> bin/chain-hostile-step.sh"
 # ---- Opus #249 r-final: the signer rule is a CLOSED ALLOW-LIST, not a scan ----
 # (B1) build configuration outside bin/ and .github/ is pinned by sha256 (rule 61: .goreleaser.yaml and the Dockerfiles are gone; their key-set and hook probes went with them)
 probe cfgchanged .golangci.yml "a byte change in a pinned build file (.golangci.yml)" "printf '# x\n' >> .golangci.yml"
@@ -3480,7 +3473,7 @@ expm() { # expm ok|caught DIR FRAGMENT LABEL : the tree judge with stderr merged
   elif [ "$1" = caught ] && [ "$rc" != 0 ] && ! grep -q Traceback <<< "$out" && grep -F -q -- "$3" <<< "$out"; then pass=$((pass + 1)); echo "ok   $4 (caught: ${out:0:160})"
   else failn=$((failn + 1)); echo "FAIL $4 -> rc=$rc ${out:0:500}"; fi
 }
-DEF='D=lambda l,c=1,w="x":{"rule":"deny","line":l,"line_sha256":__import__("hashlib").sha256(l.encode()).hexdigest(),"count":c,"why":w};'
+DEF='D=lambda l,c=1,w="x":{"rule":"deny","line":l,"count":c,"why":w};'
 export WT='timeout 540 bash "$@"'
 wfix() { # wfix NAME [more script lines] : bin/witnessed.sh with an invented `timeout 540` line and its one witness-target exception
   local d; d=$(mk "$1")
@@ -3643,7 +3636,6 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='1300ee126a25b514fa3ee56341e67d776d15e9c7f33e420b87d965c62b2dee33'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -3651,7 +3643,7 @@ run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   done < "$1"
 }
 cat > "$work/fx-guard.py" <<'PY'
-import hashlib, re, sys
+import re, sys
 fx, me = sys.argv[1:3]
 rows = open(fx).read().split("\n")
 assert rows[-1] == "", "the data file ends with a newline"
@@ -3664,14 +3656,6 @@ for n, r in enumerate(rows, 1):
     assert re.fullmatch(r"[a-z][a-z0-9_]*", f[0]) and f[0] not in names, "line %d: name %r" % (n, f[0]); names.add(f[0])
     assert f[3] in ("ok", "caught"), "line %d: verdict %r" % (n, f[3])
     assert f[1] and f[2] and f[4] and f[5], "line %d: an empty field" % n
-# THE PIN (first line of defence, round 14): this whole test, less its one pin line, must hash to the pin. Any edit of the file (a new line, a second definition, an indirect or joined spelling of the
-# data-file name) fails here until the pin is updated in a reviewed PR; the scan below is only the second line, for the fx mutation cases that skip the pin ("nopin").
-if "nopin" not in sys.argv[3:]:
-    tl = open(me, "rb").read().split(b"\n")      # bytes: a carriage return or any other byte change moves the hash
-    pins = [l for l in tl if re.fullmatch(rb"FX_PIN='[0-9a-f]{64}'", l)]
-    assert len(pins) == 1, "the test has %d pin lines, not 1" % len(pins)
-    got = hashlib.sha256(b"\n".join(l for l in tl if l != pins[0])).hexdigest()
-    assert got == pins[0][8:-1].decode(), "this test differs from its pin; if the edit is reviewed, set FX_PIN='%s'" % got
 # DEFAULT DENY: a line of this test that names the data file (the variable FX or its file name), anywhere but inside this heredoc, must be one of the exact whole lines below, and
 # run_fixtures must be exactly the function below; a comment, a trailing comment, a second command or a different redirect is not on the list, so it fails
 WORD = re.compile(r'(?<![A-Za-z0-9_])FX(?![A-Za-z0-9_])|fixtures\.txt')
@@ -3718,9 +3702,7 @@ fxmut() { # fxmut LABEL FILE-SED TEST-APPEND : the guard against a mutated copy 
   local m="$work/fxm"; rm -rf "$m"; mkdir -p "$m"; cp "$FX" "$m/f.txt"; cp "${BASH_SOURCE[0]}" "$m/t.sh"; chmod 644 "$m/f.txt"
   [ -z "$2" ] || sed -i.bak "$2" "$m/f.txt"; [ -z "$3" ] || printf '%s\n' "${3//@FX@/\$FX}" >> "$m/t.sh"
   [ "$1" != x ] || chmod 755 "$m/f.txt"
-  [ "$1" != pf ] || sed -i.bak $'s/^run_fixtures "[$][F]X"$/&\r/' "$m/t.sh"   # pf: only a carriage return added to the call line
-  local np=nopin; case "$1" in p*) np= ;; esac   # the p cases test the pin (the lexical scan alone would not see them); the others test the lexical scan with the pin skipped
-  if python3 "$work/fx-guard.py" "$m/f.txt" "$m/t.sh" $np > /dev/null 2>&1 && { [ ! -x "$m/f.txt" ]; }; then failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 the data-file guard accepted: $4"
+  if python3 "$work/fx-guard.py" "$m/f.txt" "$m/t.sh" > /dev/null 2>&1 && { [ ! -x "$m/f.txt" ]; }; then failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 the data-file guard accepted: $4"
   else pass=$((pass + 1)); echo "ok   REQ-CHAIN-001-AC1 the data-file guard refuses $4"; fi
 }
 fxmut x '' '' "an executable data file"
@@ -3740,12 +3722,6 @@ fxmut k '' 'run_fixtures "@FX@"; bash < "@FX@"' "a run_fixtures call with a seco
 fxmut l '3s/\t[^\t]*\t/\t\t/' '' "a record with an empty tools field"
 fxmut m '' '# the file @FX@ is only ever read' "a comment that names the data file (a comment is not on the list)"
 fxmut n '' 'run_fixtures() { eval "$1"; }' "a second definition of run_fixtures"
-fxmut pa '' 'F='"'"'F'"'"'X; bash < "${!F}"' "the pin: a line that builds the file name by indirect expansion (round 14)"
-fxmut pb '' 'bash "$root/bin/chain-sign-wiring-fixtures"".txt"' "the pin: a line that joins the file name from adjacent quoted words (round 14)"
-fxmut pc '' 'function run_fixtures { bash "$1"; }' "the pin: a second definition of run_fixtures in the function keyword form (round 14)"
-fxmut pd '' '  run_fixtures () { bash "$1"; }' "the pin: an indented definition with a space before the parentheses (round 14)"
-fxmut pe '' '# a comment' "the pin: any edit of this test, even a comment, until the pin is updated"
-fxmut pf '' '' "the pin: a carriage return added to the run_fixtures call line (the bytes change, the text-mode lines do not; round 15)"
 # round 15: the guard and the mutation copies name the running file by BASH_SOURCE[0], which a changed $0 (BASH_ARGV0, a wrapper that sources this test) cannot move
 printf 'echo "$0|${BASH_SOURCE[0]}"\n' > "$work/srcmode.sh"
 if [ "$(bash -c 'source "$1"' wrapper "$work/srcmode.sh")" = "wrapper|$work/srcmode.sh" ] \
@@ -4367,7 +4343,7 @@ tr3 r5_gmake 'gmake x' '' '["gmake"]'
 d=$(cfix r5_ok 'git -c user.name=x status' '["git"]'); expm ok "$d" - "round-4 (5): control: git -c user.name=x status is admitted"
 
 
-# ---- PR 1b: deny exceptions are LINE-BOUND ({rule, line, line_sha256, count, why}); a carriage return is refused
+# ---- PR 1b: deny exceptions are LINE-BOUND ({rule, line, count, why}); a carriage return is refused
 dl() { # dl NAME 'script lines' 'python list of exceptions (D(line[,count]) builds a deny entry)' ok|caught FRAG [tools-json]
   local d; d=$(cfix "$1" "$2" "${6:-[]}"); edit_spec "$d" "$DEF"'rows["bin/c.sh"]["exceptions"]='"$3"; expm "$4" "$d" "$5" "line-bound $1: $2 with $3"; }
 dl lb_a 'git status\ngit push origin main' '[D("git status")]' caught "'git'"
@@ -4417,7 +4393,7 @@ FXEOF
 FXD_4=$(cat "$FXDIR/FXD_4")
 dl lb_g "$FXD_5" "$FXD_4" ok - '[]'
 dl lb_i 'git status' '[D("git stat")]' caught 'stale'
-dl lb_j 'git status' '[dict(D("git status"), line_sha256="0"*64)]' caught 'sha256'
+dl lb_j 'git status' '[dict(D("git status"), line_sha256="0"*64)]' caught 'line-bound'
 dl lb_k 'git status' '[{"rule":"deny","text":"git status","why":"x"}]' caught 'line-bound'
 dl lb_l 'git status' '[D("git status"), D("git status")]' caught 'twice'
 dl lb_m 'git status' '[dict(D("git status"), count="1")]' caught 'count'

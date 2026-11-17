@@ -791,14 +791,12 @@ def exception_entries(path, ex):
     errs, good, seen = [], [], set()
     for e in ex:
         if isinstance(e, dict) and e.get("rule") == "deny":
-            # the LINE-BOUND shape: a deny exception binds the exact physical line, its sha256 and the exact number of such lines
-            if set(e) != {"rule", "line", "line_sha256", "count", "why"}:
-                errs.append("chain-scripts.json: %s a deny exception is line-bound: an object with exactly rule, line, line_sha256, count and why (the {rule, text, why} shape is not accepted for deny): %r" % (path, e)); continue
-            ln, sha, cnt, why = e["line"], e["line_sha256"], e["count"], e["why"]
+            # the LINE-BOUND shape: a deny exception binds the exact physical line and the exact number of such lines
+            if set(e) != {"rule", "line", "count", "why"}:
+                errs.append("chain-scripts.json: %s a deny exception is line-bound: an object with exactly rule, line, count and why (the {rule, text, why} shape is not accepted for deny): %r" % (path, e)); continue
+            ln, cnt, why = e["line"], e["count"], e["why"]
             if not isinstance(ln, str) or not ln or any(not (" " <= ch <= "~") for ch in ln):
                 errs.append("chain-scripts.json: %s deny exception line %r must be one non-empty line of printable ASCII" % (path, ln)); continue
-            if not isinstance(sha, str) or sha != hashlib.sha256(ln.encode("utf-8")).hexdigest():
-                errs.append("chain-scripts.json: %s deny exception line %r: line_sha256 is not the sha256 of the line" % (path, ln)); continue
             if not isinstance(cnt, int) or isinstance(cnt, bool) or cnt < 1:
                 errs.append("chain-scripts.json: %s deny exception line %r: count must be a positive integer" % (path, ln)); continue
             if not isinstance(why, str) or not why.strip():

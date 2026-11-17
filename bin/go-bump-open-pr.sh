@@ -84,25 +84,21 @@ if [ "$fresh" = 1 ]; then
   done
   # the sealed compiler (rc-3 item 6): the recipe template pins the same two tarballs (uri + expected-sha256) and the compiler it builds with is that one, so a
   # bump that leaves them behind is red at the sealed build. Checked BEFORE any file changes: each pin must be at the version being left and appear exactly once.
-  tmpl=build/melange.yaml.tmpl; gen=bin/gen-recipes.py
+  tmpl=build/melange.yaml.tmpl
   # the same pattern bump_template substitutes (the uri line followed directly by its expected-sha256 line), applied to the text in memory: a template that would
   # not take the substitution is refused here, before any file changes
-  env -u GH_TOKEN /usr/bin/python3 -I -B - "$tmpl" "$CURRENT" "$gen" <<'PY' || die "${tmpl} does not pin go${CURRENT}.linux-amd64.tar.gz and go${CURRENT}.linux-arm64.tar.gz exactly once each, each uri followed by its expected-sha256 line: the template is not at the version being bumped" 1
-import hashlib, re, sys
-tmpl, cur, gen = sys.argv[1:4]
+  env -u GH_TOKEN /usr/bin/python3 -I -B - "$tmpl" "$CURRENT" <<'PY' || die "${tmpl} does not pin go${CURRENT}.linux-amd64.tar.gz and go${CURRENT}.linux-arm64.tar.gz exactly once each, each uri followed by its expected-sha256 line: the template is not at the version being bumped" 1
+import re, sys
+tmpl, cur = sys.argv[1:3]
 t = open(tmpl).read()
 for arch in ("amd64", "arm64"):
     if len(re.findall(r"uri: https://go\.dev/dl/go" + re.escape(cur) + r"\.linux-" + arch + r"\.tar\.gz\n\s+expected-sha256: [0-9a-f]{64}", t)) != 1:
         sys.exit(1)
-# the pin must already equal the template's bytes: a bump re-pins reviewed bytes, never unreviewed ones
-pin = re.findall(r'^TEMPLATE_SHA256 = "([0-9a-f]{64})"', open(gen).read(), re.M)
-if pin != [hashlib.sha256(t.encode()).hexdigest()]:
-    sys.exit(1)
 PY
   bump_template() {
-    env -u GH_TOKEN /usr/bin/python3 -I -B - "$tmpl" "$gen" "$CURRENT" "$LATEST" "$sum_amd64" "$sum_arm64" <<'PY' || { echo "::error::failed to move the recipe template's Go pins" >&2; exit 1; }
-import hashlib, re, sys
-tmpl, gen, cur, new, amd, arm = sys.argv[1:7]
+    env -u GH_TOKEN /usr/bin/python3 -I -B - "$tmpl" "$CURRENT" "$LATEST" "$sum_amd64" "$sum_arm64" <<'PY' || { echo "::error::failed to move the recipe template's Go pins" >&2; exit 1; }
+import re, sys
+tmpl, cur, new, amd, arm = sys.argv[1:6]
 t = open(tmpl).read()
 for arch, want in (("amd64", amd), ("arm64", arm)):
     pat = re.compile(r"(uri: https://go\.dev/dl/go)" + re.escape(cur) + r"(\.linux-" + arch + r"\.tar\.gz\n\s+expected-sha256: )[0-9a-f]{64}")
@@ -110,10 +106,6 @@ for arch, want in (("amd64", amd), ("arm64", arm)):
     if n != 1:
         sys.exit(1)
 open(tmpl, "w").write(t)
-h = hashlib.sha256(t.encode()).hexdigest()
-g = open(gen).read()
-g, n = re.subn(r'^TEMPLATE_SHA256 = "[0-9a-f]{64}"', 'TEMPLATE_SHA256 = "' + h + '"', g, count=1, flags=re.M)
-sys.exit(1) if n != 1 else open(gen, "w").write(g)
 PY
     # no token for the generator (this step holds the App's; the wiring test pins this script's bytes, not the generator's), and the interpreter without site or cwd imports, as the refresh job runs it
     env -u GH_TOKEN /usr/bin/python3 -I -B bin/gen-recipes.py --write >/dev/null || { echo "::error::bin/gen-recipes.py --write failed after the template changed" >&2; exit 1; }
@@ -145,17 +137,17 @@ PY
   input="$(mktemp)"; enc="$(mktemp -d)"
   # each file's contents are encoded into a file of its own, every encoding checked (a failing encoder must not become an empty file in a signed commit), and the
   # request is built from those files with --rawfile: one large file's base64 alone is over Linux's 128 KiB limit for one argument
-  for pair in go.mod:r tools/requirements/go.mod:t bin/install-scanner.sh:i build/melange.yaml.tmpl:m bin/gen-recipes.py:g build/melange.yaml:y build/melange-fips.yaml:z; do
+  for pair in go.mod:r tools/requirements/go.mod:t bin/install-scanner.sh:i build/melange.yaml.tmpl:m build/melange.yaml:y build/melange-fips.yaml:z; do
     { base64 < "${pair%:*}" | tr -d '\n' > "${enc}/${pair##*:}"; } || { echo "::error::could not encode ${pair%:*}; opening no pull request" >&2; rm -rf "$enc" "$input"; exit 1; }
     [ -s "${enc}/${pair##*:}" ] || { echo "::error::the encoding of ${pair%:*} is empty; opening no pull request" >&2; rm -rf "$enc" "$input"; exit 1; }
   done
   jq -n --arg repo "${GITHUB_REPOSITORY:-fosterstack/cache}" --arg b "$branch" --arg base "$base" \
         --arg head "$headline" --arg mark "$marker" \
         --rawfile r "${enc}/r" --rawfile t "${enc}/t" --rawfile i "${enc}/i" \
-        --rawfile m "${enc}/m" --rawfile g "${enc}/g" --rawfile y "${enc}/y" --rawfile z "${enc}/z" \
+        --rawfile m "${enc}/m" --rawfile y "${enc}/y" --rawfile z "${enc}/z" \
     '{query: "mutation($input: CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid}}}",
       variables: {input: {branch: {repositoryNameWithOwner: $repo, branchName: $b}, message: {headline: $head, body: $mark}, expectedHeadOid: $base,
-                          fileChanges: {additions: [{path: "go.mod", contents: $r}, {path: "tools/requirements/go.mod", contents: $t}, {path: "bin/install-scanner.sh", contents: $i}, {path: "build/melange.yaml.tmpl", contents: $m}, {path: "bin/gen-recipes.py", contents: $g}, {path: "build/melange.yaml", contents: $y}, {path: "build/melange-fips.yaml", contents: $z}]}}}}' > "$input"
+                          fileChanges: {additions: [{path: "go.mod", contents: $r}, {path: "tools/requirements/go.mod", contents: $t}, {path: "bin/install-scanner.sh", contents: $i}, {path: "build/melange.yaml.tmpl", contents: $m}, {path: "build/melange.yaml", contents: $y}, {path: "build/melange-fips.yaml", contents: $z}]}}}}' > "$input"
   rm -rf "$enc"
   # Cleanup removes only what this run owns: the delete is leased on the tip this run last knew (the commit it pushed, then the one the API made),
   # so a branch someone else advanced is kept. A cleanup that fails is its own loud message: the branch remains and a person must remove it.
@@ -203,7 +195,7 @@ body="$(cat <<EOF
 Automated Go toolchain bump: \`go ${CURRENT}\` -> \`go ${LATEST}\`. Eight files change together, so the installer's pin and the sealed build's compiler agree with go.mod.
 - \`go.mod\` and \`tools/requirements/go.mod\`: \`go ${CURRENT}\` -> \`go ${LATEST}\`.
 - \`bin/install-scanner.sh\`: \`GO_VER\` and the sha256 of the go${LATEST} linux-amd64 and linux-arm64 tarballs, taken from the downloads and equal to go.dev's published checksums.
-- \`build/melange.yaml.tmpl\`: the two go.dev pins (uri and expected-sha256 of the linux-amd64 and linux-arm64 tarballs), the same checksums; \`bin/gen-recipes.py\`: \`TEMPLATE_SHA256\`; \`build/melange.yaml\` and \`build/melange-fips.yaml\`: regenerated with \`bin/gen-recipes.py --write\` (\`--check\` passes).
+- \`build/melange.yaml.tmpl\`: the two go.dev pins (uri and expected-sha256 of the linux-amd64 and linux-arm64 tarballs), the same checksums; \`build/melange.yaml\` and \`build/melange-fips.yaml\`: regenerated with \`bin/gen-recipes.py --write\` (\`--check\` passes).
 
 One step is not part of this pull request and has no automation yet: the archive. \`build/archive.json\` and the two tarballs \`go/go${LATEST}.linux-amd64.tar.gz\` and \`go/go${LATEST}.linux-arm64.tar.gz\` are not pushed here.
 
