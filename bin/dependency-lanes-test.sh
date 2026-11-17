@@ -533,8 +533,8 @@ case "$1 $2" in
   "api repos/o/r/commits/HEAD1/check-runs?check_name=dependabot-reviewer"*) %(lookup)s jq -r "$f" %(bd)s/runs.json ;;
   "api repos/o/r/rules/branches/main") %(rfail)s cat %(bd)s/rules.json ;;
   "api repos/o/r/contents/"*)
-    case "$2" in *"?ref=main") ;; *) exit 1 ;; esac
-    p=${2#*contents/}; p=${p%%%%"?ref=main"}
+    case "$2" in *"?ref=refs/heads/main") ;; *) exit 1 ;; esac
+    p=${2#*contents/}; p=${p%%%%"?ref=refs/heads/main"}
     %(cfail)s
     case " %(fails)s " in *" $p "*) %(half)s echo 'gh: HTTP 503' >&2; exit 1 ;; esac
     [ -f %(bd)s/main/"$p" ] || exit 1
@@ -616,7 +616,7 @@ for what, runs in (("another version", [("success", OLDVER)]), ("no external_id"
 for what, runs in (("the current version", [("success", VER)]), ("another version replaced by a newer one of the "
         "current version", [("success", OLDVER), ("success", VER)])):
     rc, log = go(last, runs, waits="true")
-    if rc != 0 or "--disable-auto" in log or any("contents/%s?ref=main" % p not in log for p in PATHS):
+    if rc != 0 or "--disable-auto" in log or any("contents/%s?ref=refs/heads/main" % p not in log for p in PATHS):
         bad.append("a success with %s on a major's head, read against main's copies of the program, the prompt and "
                 "the workflow: auto-merge stands (rc %s)\n%s" % (what, rc, log))
 # a plain patch or minor needs no verdict: its step reads no version, and says it needs none
@@ -680,13 +680,15 @@ for path in PATHS:
         bad.append("a success of the version with main's changed %s: auto-merge stands (rc %s)\n%s" % (path, rc, log))
 # the script is fetched from main and run there: then the files it lists
 rc, log = go(last, [("success", VER)], waits="true")
-if rc != 0 or "--disable-auto" in log or "contents/%s?ref=main" % SCRIPT not in log or log.index("contents/%s?ref=main"
-        % SCRIPT) > log.index("contents/%s?ref=main" % PATHS[0]):
+if (rc != 0 or "--disable-auto" in log
+        or "contents/%s?ref=refs/heads/main" % SCRIPT not in log
+        or log.index("contents/%s?ref=refs/heads/main" % SCRIPT)
+        > log.index("contents/%s?ref=refs/heads/main" % PATHS[0])):
     bad.append("the script is read from main before the files it lists (rc %s)\n%s" % (rc, log))
 # the script is fetched by one literal gh api line into RUNNER_TEMP and run from there, with no cd
 # a command wrapped with a backslash-newline is one line, as the pin checker reads it
 code = [" ".join(l.split()) for l in last.replace("\\\n", " ").splitlines() if not l.strip().startswith("#")]
-fetches = [l for l in code if "contents/%s?ref=main" % SCRIPT in l]
+fetches = [l for l in code if "contents/%s?ref=refs/heads/main" % SCRIPT in l]
 FETCH_INTO = '--jq .content | base64 -d > "$RUNNER_TEMP/dependabot-reviewer-version.sh"'
 if len(fetches) != 1 or "gh api " not in fetches[0] or FETCH_INTO not in fetches[0]:
     bad.append("the script is fetched by ONE literal gh api line with %s; got %s" % (FETCH_INTO, fetches))
@@ -1003,6 +1005,27 @@ sys.exit(1 if bad else 0)
 PY
 then pass=$((pass+1)); echo "PASS reviewer-version-script"
 else failn=$((failn+1)); echo "FAIL reviewer-version-script"; fi
+
+# g3: a tag named main must not answer a read of main, so every read of main's files names the branch ref
+am="$root/.github/workflows/dependabot-auto-merge.yml"
+reads_main_branch() { # file: its ?ref= words, to the end of the shell word, are exactly two copies of the one string
+  local want='?ref=refs/heads/main"'
+  [ "$(grep -o '?ref=[^[:space:]]*' "$1")" = "$(printf '%s\n%s' "$want" "$want")" ]
+}
+if reads_main_branch "$am"
+then pass=$((pass+1)); echo "PASS g3-auto-merge-reads-refs-heads-main"
+else failn=$((failn+1)); echo "FAIL g3-auto-merge-reads-refs-heads-main"; fi
+
+# bash joins text after the closing quote into the same word, so the ref would no longer end at main
+joins=$(mktemp -d -t cache5-tests.XXXXXX)
+sed '0,\|?ref=refs/heads/main"|s||?ref=refs/heads/main"${GITHUB_REF_NAME:+-x}|' "$am" > "$joins/quote-join-a.yml"
+sed '0,\|?ref=refs/heads/main"|s||?ref=refs/heads/main"-x|' "$am" > "$joins/quote-join-b.yml"
+for m in quote-join-a quote-join-b; do
+  if reads_main_branch "$joins/$m.yml"
+  then failn=$((failn+1)); echo "FAIL g3-auto-merge-refuses-$m"
+  else pass=$((pass+1)); echo "PASS g3-auto-merge-refuses-$m"; fi
+done
+[ -d "$joins" ] && rm -rf -- "$joins"
 
 echo "dependency-lanes: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

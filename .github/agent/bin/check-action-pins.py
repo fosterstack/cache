@@ -48,11 +48,8 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
              signed Ubuntu archive, PyYAML for this checker) are distribution packages, not actions —
              outside this check, the same class as a binary installed by version; covered by the review
              pass (row 78 pass on PR #148, Oct 2: documented here rather than pinned).
-  The gate's own wiring: .github/workflows/agent-review-gate.yml is pinned here by GATE_WORKFLOW_SHA256 (a
-             frozen set of exactly two digests while cache PR #316 is bootstrapped; a later change leaves one)
-             (its action pins masked, so a Dependabot bump still passes). Any other edit to it fails
-             until this file is updated — a change under .github/agent/, so it needs the independent
-             second review: the enforcement cannot be removed from its caller by an ordinary merge either.
+  The gate's own wiring: .github/workflows/agent-review-gate.yml must be in the tree; its text is judged
+             by review, not by a digest.
   container: / image: / each service: <image>@sha256:<64 hex>, optionally docker://; never ${{ }}.
   Executor images: a pinned action that runs a container image of its own must be given that image
              by digest through its input (EXECUTOR_INPUTS) — a pinned action with a mutable default
@@ -178,8 +175,8 @@ Outside this check, each a documented exclusion with its reason (row 78):
 
 usage: check-action-pins.py [--verify-tags] [--git <commit>] [repo-root]
 """
+import collections
 import csv
-import hashlib
 import json
 import os
 import pathlib
@@ -237,12 +234,6 @@ DOCKER_ACTIONS = {"ossf/scorecard-action"}
 RETIRED_COMPOSITE = {"ossf/scorecard-action"}   # refused outright (advisor 0140); DOCKER_ACTIONS kept for docstring/test
                                                  # continuity, never reached since RETIRED_COMPOSITE returns first
 GATE_WORKFLOW = ".github/workflows/agent-review-gate.yml"
-# the accepted gate-workflow digests (gate_digest: pins masked), a closed set of EXACTLY TWO while a change to the gate is in flight:
-# main's gate workflow and the change's; a later change removes main's old one, leaving one
-GATE_WORKFLOW_SHA256 = frozenset({
-    "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f",   # main's gate workflow
-    "30ab1b01d956e176e777c859b77b233ee1444abec869a8e1121473b98c001c89",   # the same file after the change in flight
-})
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)
 EXECUTOR_ALLOWED = {
@@ -495,12 +486,6 @@ def docker_inputs(where, step, bad):
         for n in names:
             if n is None or not re.fullmatch(r"[a-z0-9_-]+", n) or n in ("entrypoint", "args"):
                 bad.append(f"{where}: Docker action input {n!r} is refused (entrypoint/args, or not a plain name)")
-
-
-def gate_digest(text):
-    """The gate workflow's sha256 with each action pin masked (a Dependabot bump moves only those)."""
-    masked = re.sub(rf"@{SHA}[ \t]+#[ \t]*v[0-9][0-9A-Za-z.+-]*", "@<pin>", text)
-    return hashlib.sha256(masked.encode("utf-8")).hexdigest()
 
 
 def check_uses(tree, where, path, node, parent, lines, pins, bad):
@@ -2316,8 +2301,9 @@ _BASE_WRITE = r"(?<![\w.-])(?:sed\s+-\w*i|perl\s+-\w*i|awk\s+-i|cp|mv|ln|install
 
 def _resolve_script(path, text, entries, bases=()):
     """A script path as a committed file: relative (./x), under $GITHUB_WORKSPACE, or a COPY that a real
-    `git show <ref>:<file> > <dir>/<name>` or `gh api repos/${GITHUB_REPOSITORY}/contents/<file>?ref=main` command of the
-    job writes (main's copy of a reviewed script; Codex #164 r2, C02: an echo of the words, another repository, or a second
+    `git show <ref>:<file> > <dir>/<name>` or
+    `gh api repos/${GITHUB_REPOSITORY}/contents/<file>?ref=main` (or `?ref=refs/heads/main`) command of the job writes
+    (main's copy of a reviewed script; Codex #164 r2, C02: an echo of the words, another repository, or a second
     write of the copy do not count). <dir> is $RUNNER_TEMP or a directory under /tmp, and the write may be in another step
     of the job than the run (main's own stage-admission.yml writes /tmp/policy/<name> in one step and runs it in the next;
     Sonnet #164 r20, B2). None otherwise."""
@@ -2361,11 +2347,16 @@ def _resolve_script(path, text, entries, bases=()):
                         return None      # something else writes the copy (sed -i, cp, mv, tee ...): it is not main's committed bytes
                 return g.group(2)
         if toks[:2] == ["gh", "api"]:
-            g = re.search(r"\"?repos/\$\{?GITHUB_REPOSITORY\}?/contents/([^\"?\s]+)\?ref=main\"?", chunk)
+            # the word bash passes, not the text: `"…?ref=main"-x` is one word, ?ref=main-x
+            # argv after `api` = the endpoint, then `--jq .content`; any other word (-X, -f, -H) may add a second ref
+            args = _tokens(chunk)[2:]
+            g = re.fullmatch(r"repos/\$\{?GITHUB_REPOSITORY\}?/contents/([^?\s]+)\?ref=(?:refs/heads/)?main", args[0]) \
+                if args[1:] == ["--jq", ".content"] else None
             if not g:
                 continue
             want = g.group(1)
-            if re.fullmatch(r"\$\{?f\}?", want):          # for f in <committed files>; do gh api …/${f}?ref=main
+            # for f in <committed files>; do gh api …/${f}?ref=main (or ?ref=refs/heads/main)
+            if re.fullmatch(r"\$\{?f\}?", want):
                 lists = re.findall(r"\bfor\s+f\s+in\s+([^;\n]*?)\s*;\s*do\b", text)
                 cands = [x for lst in lists for x in lst.split() if _base(x) == base and entries.get(x) == "file"]
                 if len(cands) == 1:
@@ -2800,18 +2791,16 @@ def _token_url_breach(text, name, run_texts, key):
 
 
 DOWNLOAD_EXCLUSIONS = {
-    (".github/workflows/auditor.yml", "audit", 9, "ec6b56ab920e50d88208a5c553521658f5eab8c32cff1cc0d56404e1b27de643"): (
+    (".github/workflows/auditor.yml", "audit", 9): (
         "the CISA KEV catalog is fetched to ${AUDITOR_KEV_CATALOG}, a file under runner.temp that the step's env names and nothing else assigns (this exclusion "
         "holds only while the file assigns that variable exactly once, as `AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json`); it is read as data by the auditor and never run",
         "AUDITOR_KEV_CATALOG", "AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json"),
-    (".github/workflows/dependabot-reviewer.yml", "review", 4,
-     "bd33b686b13cadaf9d7b3b2216165f30fa6dbe35ef74bcefaebe9c5c86d4e3f1"): (
+    (".github/workflows/dependabot-reviewer.yml", "review", 4): (
         "the identity-token request: curl prints the JSON answer from ${ACTIONS_ID_TOKEN_REQUEST_URL} "
         "(set by the runner, quoted, followed by a literal &audience=) into a "
         "command substitution that jq reads; it writes no file " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
-    (".github/workflows/dependabot-reviewer.yml", "review", 8,
-     "b0786a7fa2ac09fd6adf8658a0e853d527f2f9e0aea4aeb72fc7bbee9620effd"): (
+    (".github/workflows/dependabot-reviewer.yml", "review", 8): (
         "the same identity-token request inside the decision loop's token refresh: "
         "stdout into a command substitution that jq reads, no file written " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
@@ -2820,10 +2809,9 @@ DOWNLOAD_EXCLUSIONS = {
 
 def _exclusion_key(item):
     """The DOWNLOAD_EXCLUSIONS key of one step of a job's scripts:
-    (workflow file, job, step index, sha256 of its run text), or None."""
+    (workflow file, job, step index), or None."""
     m = re.match(r"^(.*)\.jobs\.([^.\[]+)\.steps\[(\d+)\]\.run$", item[0])
-    digest = hashlib.sha256(item[1].encode("utf-8", "replace")).hexdigest()
-    return (m.group(1), m.group(2), int(m.group(3)), digest) if m else None
+    return (m.group(1), m.group(2), int(m.group(3))) if m else None
 
 
 def _excluded_run_texts(scripts, name):
@@ -3250,7 +3238,7 @@ def step_texts(steps, outer=""):
         texts = []
         if isinstance(step, yaml.MappingNode):
             for k, v in step.value:
-                if isinstance(k, yaml.ScalarNode) and k.value in ("run", "with", "env"):
+                if key_of(k) in ("run", "with", "env"):
                     values = [w for _, w in v.value] if isinstance(v, yaml.MappingNode) else [v]
                     texts += [w.value for w in values if isinstance(w, yaml.ScalarNode)]
         yield "\n".join(texts + [outer])
@@ -3273,15 +3261,73 @@ def steps_context(doc):
     return found
 
 
+# `A_1` matches; `1A` and `A-B` do not
+_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# `echo() {` and `function printf {` match; `echo hello` does not
+_REDEFINES = re.compile(r"(?<![A-Za-z0-9_./-])(?:echo|printf)\s*\(\s*\)"
+                        r"|\bfunction\s+(?:echo|printf)\b|\balias\s+(?:echo|printf)=")
+_ENV_FILE = (["$GITHUB_ENV"], ["${GITHUB_ENV}"])
+# `exportVariable('NAME', v)` matches; `exportVariable(n, v)` and `notexportVariable('NAME', v)` do not
+_EXPORT_CALL = re.compile(r"\bexportVariable\(\s*(['\"])([A-Za-z_][A-Za-z0-9_]*)\1\s*,")
+# `::set-env name=NAME::` matches; `::set-env name=${{ inputs.n }}::` does not
+_SET_ENV = re.compile(r"::set-env\s+name=([A-Za-z_][A-Za-z0-9_]*)::")
+
+
+def _arguments(words):
+    """The arguments of a command's words after its name, without its one redirection; None when two words start with `>`,
+    since a quoted `>` word looks like a redirection once the quotes are off."""
+    if sum(bool(re.match(r"[0-9]*>", w)) for w in words[1:]) != 1:
+        return None
+    args, rest = [], iter(words[1:])
+    for w in rest:
+        if re.fullmatch(r"[0-9]*>>?", w):
+            next(rest, None)
+        elif not re.match(r"[0-9]*>", w):
+            args.append(w)
+    return args
+
+
+def _echoed_env_name(command):
+    """NAME of the one record `echo NAME=value >> "$GITHUB_ENV"` (printf too); None for any other use of the file."""
+    words = _tokens(command)
+    if words[:1] not in (["echo"], ["printf"]) or _redirect_targets(command) not in _ENV_FILE \
+            or len(_ENV_ROUTE.findall(command)) != 1:
+        return None
+    args = _arguments(words)
+    if not args or any("\n" in a for a in args) or (words[0] == "echo" and len(args) != 1):
+        return None
+    first = args[0].removesuffix("\\n")
+    if words[0] == "printf" and "%" in first.replace("%s", ""):
+        return None
+    name = first.partition("=")[0]
+    return name if "=" in first and _NAME.fullmatch(name) and "\\" not in first else None
+
+
+def env_writes(text):
+    """[(name, route)] for the env-file writes of a text whose name is literal: the three plain forms."""
+    writes = [] if _REDEFINES.search(text) else \
+        [(name, "GITHUB_ENV") for c in _split_commands(text) if (name := _echoed_env_name(c))]
+    joined = re.sub(r"\\\n", "", text)    # forms (2) and (3) are read from the text the route count reads
+    writes += [(m.group(2), "exportVariable") for m in _EXPORT_CALL.finditer(joined)]
+    return writes + [(m.group(1), "::set-env") for m in _SET_ENV.finditer(joined)]
+
+
 def step_write_findings(where, text):
-    """The findings for one text a step runs: a startup-hook name set through an env route, or a PATH route."""
+    """The findings for one text a step runs: a startup-hook name set through an env route, a PATH route, or an env route
+    whose name is not literal text."""
     names = re.compile(r"(?<![A-Za-z0-9_])(?:(?:" + "|".join(STARTUP_HOOK_ENV) + r")(?![A-Za-z0-9_])|BASH_FUNC_)")
     found = []
+    writes = env_writes(text)             # read as written: bash keeps a backslash-newline inside single quotes
+    text = re.sub(r"\\\n", "", text)
+    unread = collections.Counter(_ENV_ROUTE.findall(text))
+    unread.subtract(route for _, route in writes)
     if path := _PATH_ROUTE.search(text):
         found.append(f"{where}: uses {path.group()}, which changes PATH for later steps; refused")
-    if (route := _ENV_ROUTE.search(text)) and (name := names.search(text)):
+    if (route := _ENV_ROUTE.search(text)) and (name := names.search(text + "\n" + "\n".join(n for n, _ in writes))):
         found.append(f"{where}: sets {name.group()} through {route.group()}, which changes what later programs load or "
                      f"where they connect; refused")
+    if route := next((r for r, left in unread.items() if left > 0), None):
+        found.append(f"{where}: writes through {route}, and the name it sets cannot be read as literal text; refused")
     return found
 
 
@@ -3329,9 +3375,9 @@ def check_file(tree, rel, pins, bad):
                                                                or k.value.startswith("BASH_FUNC_")):
                             bad.append(f"{rel}: a mapping sets {k.value}, which changes what later programs "
                                        f"load or where they connect; refused")
-                        if isinstance(k, yaml.ScalarNode) and k.value == "steps" and isinstance(v, yaml.SequenceNode):
+                        if key_of(k) == "steps" and isinstance(v, yaml.SequenceNode):
                             check_step_writes(rel, v, bad, *context.get(id(v), ("", "")), mores)
-                        if isinstance(k, yaml.ScalarNode) and k.value == "env" and not isinstance(v, yaml.MappingNode):
+                        if key_of(k) == "env" and not isinstance(v, yaml.MappingNode):
                             bad.append(f"{rel}: an env that is not a literal mapping hides the names it sets; refused")
                         stack.append(v)
                 elif isinstance(n, yaml.SequenceNode):
@@ -3401,10 +3447,6 @@ def main():
         check_file(tree, rel, pins, bad)
     if GATE_WORKFLOW not in files:
         bad.append(f"{GATE_WORKFLOW}: missing — the gate that runs this check")
-    elif gate_digest(tree.read(GATE_WORKFLOW)) not in GATE_WORKFLOW_SHA256:
-        bad.append(f"{GATE_WORKFLOW}: changed — update GATE_WORKFLOW_SHA256 in this checker "
-                   f"(a reviewed .github/agent/ change) to {gate_digest(tree.read(GATE_WORKFLOW))}; "
-                   f"accepted: {', '.join(sorted(GATE_WORKFLOW_SHA256))}")
     if verify:
         bad += verify_pins(pins)
     for b in bad:

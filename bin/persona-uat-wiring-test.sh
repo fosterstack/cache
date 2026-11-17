@@ -9,7 +9,7 @@
 # driver's output directory (transcripts and reports) even when personas fail; and a persona-uat job in the weekly
 # workflow that runs only on its Monday cron, resolves the LATEST release's image digest, and runs the same driver with
 # --publish. The pinned CI tools file (advisor 0207, delta 2) holds exactly nine entries, each by digest, distinct, and each naming its own OFFICIAL repository:
-# cosign, gitlab-runner, gradle, jenkins, kind, kubectl, maven and the persona shell (the curl image); no driver, agent or provider source may run a
+# cosign, gitlab-runner, gradle, jenkins, kind, kubectl, maven and the persona shell (the curl image); no driver, agent or provider code may run a
 # privileged container (the kind cluster is created by the job's kind binary).
 # MODEL IDS ARE SECRETS (advisor 0233, owner's rule): GitHub prints a step's `env:` values in the step header before its script runs, so a model id from `vars.*` would be
 # public in the job log. PERSONA_UAT_MODEL and PERSONA_UAT_COMPLIANCE_MODEL therefore arrive on the DRIVER step as ${{ secrets.PERSONA_UAT_MODEL }} / ${{ secrets.PERSONA_UAT_COMPLIANCE_MODEL }}
@@ -136,7 +136,7 @@ def judge_installer(text, bad):
     kv = re.search(r"(?m)^KIND_VER=([0-9]+\.[0-9]+\.[0-9]+)$", code)
     urls = re.findall(r'(?m)^\s*kind-linux-(?:amd64|arm64)\) curl [^\n]*"https://github\.com/kubernetes-sigs/kind/releases/download/v([0-9]+\.[0-9]+\.[0-9]+)/(kind-linux-(?:amd64|arm64))"', code)
     if sorted(a for _, a in urls) != ["kind-linux-amd64", "kind-linux-arm64"] or not kv or any(v != kv.group(1) for v, _ in urls):
-        bad.append("the installer's kind download is not from github.com/kubernetes-sigs/kind/releases/download/v<KIND_VER>/ with each architecture's asset (kind-linux-amd64, kind-linux-arm64) written out in its own curl line: the pin-age scan measures a literal release URL, and a variable version, a variable asset or a *_BASE source it can never call a pin")
+        bad.append("the installer's kind download is not from github.com/kubernetes-sigs/kind/releases/download/v<KIND_VER>/ with each architecture's asset (kind-linux-amd64, kind-linux-arm64) written out in its own curl line: the pin-age scan measures a literal release URL, and a variable version, a variable asset or a *_BASE URL it can never call a pin")
     if re.search(r"(?m)^KIND_BASE=", code):
         bad.append("the installer retargets the kind download through a KIND_BASE variable: the pin-age scan counts that as an unpinned source")
     vf = re.search(r"(?ms)^verify\(\)\s*\{(.*?)^\}", code)
@@ -152,7 +152,7 @@ def judge_installer(text, bad):
         iv, ii = a.find('verify "$tmp/kind"'), a.find('"${DEST}/kind"')
         if iv < 0 or ii < 0 or iv > ii or not re.search(r"\binstall\b[^\n]*-m 0?755", a):
             bad.append("the kind branch does not verify the download BEFORE installing it as an executable ${DEST}/kind")
-        if "curl" not in a or "pipeline_fail" not in a:
+        if a.find("curl") < 0 or a.find("pipeline_fail") < 0:
             bad.append("the kind branch does not download with curl and fail as a pipeline failure")
 
 import hashlib, http.server, shutil, subprocess, tempfile, threading, stat

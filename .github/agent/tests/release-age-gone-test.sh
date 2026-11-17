@@ -2,7 +2,7 @@
 # proves: REQ-SUP-001-AC30, REQ-SUP-001-AC32, REQ-SUP-001-AC33
 # The owner's ruling of Nov 11 2026 removed the release-age wait. Proved on the tracked files: no text of the old wait
 # is left, Dependabot carries no cooldown and one
-# entry per ecosystem root, the job behind the pin-age context measures nothing, no job holds actions:
+# entry per ecosystem root, no job of supply-chain.yml measures a version's age, no job holds actions:
 # write, and the tag observer is gone.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -76,13 +76,7 @@ dup = [k for k, n in c.items() if n > 1]
 if dup: sys.exit("duplicate entries: %r" % dup)
 PY
 
-# AC33: the job stays and measures nothing; no actions: write anywhere
-py .github/workflows/supply-chain.yml >"$work/sc" 2>&1 <<'PY' && ok "supply-chain.yml still has the pin-age job" || { \
-    bad "supply-chain.yml still has the pin-age job"; sed 's/^/     /' "$work/sc"; }
-import sys, yaml
-j = yaml.safe_load(open(sys.argv[1]))["jobs"]
-if "pin-age" not in j and not any(v.get("name") == "pin-age" for v in j.values()): sys.exit("no job named pin-age")
-PY
+# AC33: no actions: write anywhere
 py >"$work/aw" 2>&1 <<'PY' && ok "no workflow holds actions: write, at the top or in any job" || { bad "no workflow \
 holds actions: write, at the top or in any job"; sed 's/^/     /' "$work/aw"; }
 import glob, yaml, sys
@@ -95,15 +89,12 @@ for p in sorted(glob.glob(".github/workflows/*.y*ml")):
         if isinstance(j, dict) and w(j.get("permissions")): bad.append("%s job %s" % (p, n))
 if bad: sys.exit("actions: write in " + ", ".join(bad))
 PY
-# the pin-age job's steps run no re-run of runs and no timing of versions
-py .github/workflows/supply-chain.yml >"$work/sc2" 2>&1 <<'PY' && ok "the pin-age job runs no re-run, no run listing \
-and no publication-time lookup" || { bad "the pin-age job runs no re-run, no run listing and no publication-time \
+# no job of supply-chain.yml runs a re-run of runs or a timing of versions
+py .github/workflows/supply-chain.yml >"$work/sc2" 2>&1 <<'PY' && ok "no job of supply-chain.yml runs a re-run, a run listing \
+or a publication-time lookup" || { bad "no job of supply-chain.yml runs a re-run, a run listing or a publication-time \
 lookup"; sed 's/^/     /' "$work/sc2"; }
 import sys, yaml, re
-j = yaml.safe_load(open(sys.argv[1]))["jobs"]
-job = j.get("pin-age") or next((v for v in j.values() if v.get("name") == "pin-age"), None)
-if job is None: sys.exit("no pin-age job")
-t = yaml.dump(job)
+t = yaml.dump(yaml.safe_load(open(sys.argv[1]))["jobs"])
 m = re.search(r"run rerun|gh run |/rerun|published_at|--now|first.seen|tag_observer", t)
 if m: sys.exit("found: " + m.group(0))
 PY

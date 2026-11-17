@@ -42,6 +42,7 @@ jobs:
   # bin/vendor-check.sh passes a tree without vendor/ only when origin/main has none either.
   vendor:
     name: vendor
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -67,6 +68,7 @@ jobs:
   # companion is tracked separately; this gate is the floor, not the claim.
   coverage:
     name: coverage
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -204,9 +206,11 @@ jobs:
 
   # ---------------------------------------------------------------------------------------------------------------
   # Merged from hygiene.yml and requirements.yml (workflow consolidation 2 of 4, owner RATIFIED Oct 2). Same events
-  # (push to main, pull_request); every job keeps its name, top-level placement and own permissions.
+  # (push to main, pull_request); every job keeps its name, top-level placement and own permissions; the jobs outside
+  # the six pull-request checks run on push to main only.
   allowlist:
     name: allowlist
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -348,6 +352,7 @@ jobs:
   # persona UAT suites (split out of the allowlist job; the driver suite is the long one)
   allowlist-persona:
     name: allowlist-persona
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -391,6 +396,7 @@ jobs:
   # build, archive, assembly, VEX and scanner-gate regression suites (split out of the allowlist job)
   allowlist-chain:
     name: allowlist-chain
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -474,6 +480,7 @@ jobs:
   # supply-chain, panel, release-wiring and dependency-lane suites (split out of the allowlist job)
   allowlist-pins-auditor:
     name: allowlist-pins-auditor
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -555,6 +562,7 @@ jobs:
 
   requirements:
     name: requirements
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

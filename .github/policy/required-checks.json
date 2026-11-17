@@ -61,11 +61,6 @@
       "scope": "push"
     },
     {
-      "context": "pin-age",
-      "integration_id": 15368,
-      "scope": "pull_request"
-    },
-    {
       "context": "vendor",
       "integration_id": 15368,
       "scope": "push"

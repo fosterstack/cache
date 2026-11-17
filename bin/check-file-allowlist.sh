@@ -62,9 +62,8 @@ ALLOW_PATTERNS=(
   '^requirements/releases/[A-Za-z0-9._-]+\.yaml$'
   '^test-evidence/[A-Za-z0-9._-]+\.yaml$'
   '^test-evidence/vex-scope/[A-Za-z0-9._-]+\.json$'
-  # The suite guard (REQ-TEST-001): the guard, the runner that measures the suites, its test, and the committed floors.
-  '^bin/suite-guard(-run|-test)?\.sh$'
-  '^test-evidence/suite-floors\.json$'
+  # The suite guard (REQ-TEST-001): the guard and its test.
+  '^bin/suite-guard(-test)?\.sh$'
   '^test-evidence/dependabot-reviewer/[A-Za-z0-9._-]+\.json$'
   '^docs/quality/[A-Za-z0-9._-]+\.md$'
   '^docs/quality/releases/[A-Za-z0-9._-]+\.md$'
@@ -130,6 +129,7 @@ ALLOW_PATTERNS=(
   '^\.github/supply-chain-exceptions\.json$'
   '^bin/workflow-consolidation-test\.sh$'
   '^bin/go-freshness-wiring-test\.sh$'
+  '^bin/pull-request-checks-test\.sh$'
   '^bin/dependabot-reviewer-gather-test\.sh$'
   '^bin/dispatch-fixer\.sh$'
   '^bin/inspector-gate\.py$'

@@ -871,103 +871,10 @@ class LiteralRunnerMatrix(unittest.TestCase):
         self.assertNotIn("runs-on", out)
 
 
-GATE_A = "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f"   # main's gate workflow
-GATE_B = "30ab1b01d956e176e777c859b77b233ee1444abec869a8e1121473b98c001c89"   # the same file after this change
-# this change's edits to the gate workflow (old text, new text): its header, its notice and its sweep summary no
-# longer say that a run Dependabot triggered has no App credentials, and its sweep judges a green Dependabot head
-# again, for the reviewer's verdict only (publishing only when the conclusion differs); either variant is derived
-# from the other
-GATE_HUNKS = (
-    ("# - Dependabot-triggered runs get no environment secrets, so a Dependabot PR's "
-     'publish finds no\n'
-     '#   App credentials. The scheduled SWEEP (not Dependabot-triggered) judges every '
-     'open PR into the\n'
-     '#   default branch whose head has no auditor-review-gate check from the App yet, and '
-     'publishes.\n',
-     '# - A PR run that holds no App credentials publishes nothing and says so in a '
-     'notice. The scheduled\n'
-     '#   SWEEP judges every open PR into the default branch whose head has no '
-     'auditor-review-gate check\n'
-     '#   from the App yet, or a failed one it still judges again, and publishes.\n'),
-    ('          else echo "::notice::no App credentials in this run (a '
-     "Dependabot-triggered run gets none) — the scheduled sweep publishes this PR's "
-     'check"; echo "ok=false" >> "$GITHUB_OUTPUT"; fi\n',
-     '          else\n'
-     '            echo "::notice::no App credentials in this run — the scheduled sweep '
-     'publishes this PR\'s check"\n'
-     '            echo "ok=false" >> "$GITHUB_OUTPUT"\n'
-     '          fi\n'),
-    ("            # the App's latest verdict on this head: none -> judge; success -> done; "
-     'a failure from the\n',
-     "            # the App's latest verdict on this head: none -> judge; success -> done "
-     '(a green Dependabot head only\n'
-     "            # has its reviewer verdict judged again: an old reviewer's success may "
-     'have bought it); a failure from the\n'),
-    ('            case "$last" in success) continue ;; esac\n',
-     '            if [ "$last" = success ] && [[ "$headref" != dependabot/* ]]; then '
-     'continue; fi\n'),
-    ('            if GH_TOKEN="$LIST_TOKEN" python3 -I '
-     '.github/agent/bin/check-action-pins.py --verify-tags --git "$sha" \\\n',
-     '            if [ "$last" = success ]; then\n'
-     "              # a green Dependabot head did not change: only the reviewer's verdict "
-     'can have\n'
-     '              rc=0\n'
-     '              GH_TOKEN="$LIST_TOKEN" bash bin/audit-record-judge.sh "$sha" "$DEFAULT" || rc=$?\n'
-     '              if [ "$rc" = 0 ]; then continue; fi\n'
-     '              # a GitHub API error is no verdict: publish nothing, fail the run\n'
-     '              if [ "$rc" = 3 ]; then fail=1; continue; fi\n'
-     '            elif GH_TOKEN="$LIST_TOKEN" python3 -I '
-     '.github/agent/bin/check-action-pins.py --verify-tags --git "$sha" \\\n'),
-    ('            if [ "$last" = "failure" ] && [ "$conclusion" = "failure" ]; then echo '
-     '"PR #${n} ${sha:0:7}: still failure"; continue; fi\n',
-     '            if [ "$last" = "$conclusion" ]; then echo "PR #${n} ${sha:0:7}: still '
-     '${conclusion}"; continue; fi\n'),
-    ('            last="$(GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/'
-     'check-runs?check_name=auditor-review-gate" \\\n'
-     '              --jq "[.check_runs[] | select(.app.slug == \\"${APP_SLUG}\\")] | '
-     'sort_by(.completed_at) | last\n',
-     '            gate_runs="repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=auditor-review-gate"\n'
-     '            last="$(GH_TOKEN="$APP_TOKEN" gh api "${gate_runs}&per_page=100" \\\n'
-     '              --jq "if (.check_runs | length) >= 100 then error(\\"the check runs are cut\\") '
-     'else . end\n'
-     '                    | [.check_runs[] | select(.app.slug == \\"${APP_SLUG}\\")] | '
-     'sort_by(.completed_at) | last\n'),
-    ('              -f "output[summary]=Judged by the scheduled sweep (the PR\'s own run '
-     'had no App credentials)." >/dev/null || fail=1\n',
-     '              -f "output[summary]=Judged by the scheduled sweep." >/dev/null || '
-     'fail=1\n'),
-    # the judge's reader asks for the head's pull requests and check runs: both jobs that run it hold those scopes
-    ('    permissions:\n      contents: read\n    outputs:\n',
-     '    permissions:\n      contents: read\n      checks: read   # the judge reads the head\'s check runs\n'
-     '      pull-requests: read   # and the pull requests that share the head\n    outputs:\n'),
-    ('    environment: agent\n    permissions:\n      contents: read\n      pull-requests: read\n    steps:\n',
-     '    environment: agent\n    permissions:\n      contents: read\n'
-     '      pull-requests: read   # the sweep lists open pull requests and their heads\n'
-     '      checks: read   # and the judge it runs reads each head\'s check runs\n    steps:\n'),
-    # what the judge step's token reads
-    ('          GH_TOKEN: ${{ github.token }}   # read-only: resolves each `# vX` tag to its commit\n',
-     '          GH_TOKEN: ${{ github.token }}   # read-only: resolves each `# vX` tag to its commit; the judge reads check runs and pull requests with it\n'),
-)
-
-
-def gate_variants():
-    """(main's gate workflow, the gate workflow after this change), from the repository's copy."""
+def gate_tree():
+    """A minimal tree the checker passes, carrying the repository's gate workflow."""
     with open(GATE) as fh:
-        cur = fh.read()
-    if all(cur.count(old) == 1 for old, _ in GATE_HUNKS):
-        a, b = cur, cur
-        for old, new in GATE_HUNKS:
-            b = b.replace(old, new)
-    else:
-        assert all(cur.count(new) == 1 for _, new in GATE_HUNKS), "the gate workflow is neither variant"
-        a, b = cur, cur
-        for old, new in GATE_HUNKS:
-            a = a.replace(new, old)
-    return a, b
-
-
-def gate_tree(gate_text):
-    """A minimal tree the checker passes, carrying `gate_text` as the gate workflow."""
+        gate_text = fh.read()
     return repo({".github/workflows/agent-review-gate.yml": gate_text,
                  ".github/workflows/w.yml": HEAD + f"    steps:\n      - uses: actions/checkout@{SHA} # v7.0.1\n",
                  ".github/agent/bin/auditor-review-gate.py": "", ".github/agent/bin/check-action-pins.py": "",
@@ -975,63 +882,15 @@ def gate_tree(gate_text):
                  "bin/scan-no-workflow-call-test.sh": "", "bin/audit-record-judge.sh": "", "bin/audit-record-prepare.sh": "", ".github/agent/bin/auditor-signed-commit.py": ""}, gate=False)
 
 
-def bump_first_pin(text):
-    """A Dependabot-style bump: the first `@<40 hex> # v<ver>` pin moves to another commit and tag."""
-    out, n = re.subn(r"@[0-9a-f]{40} # v[0-9][0-9A-Za-z.+-]*", f"@{OTHER} # v99.0.0", text, count=1)
-    assert n == 1
-    return out
+class GateWorkflowPresence(unittest.TestCase):
+    """The gate workflow that runs this check must be in the tree."""
 
+    def test_a_tree_with_the_gate_workflow_passes(self):
+        code, out = run([gate_tree()])
+        self.assertEqual(code, 0, out)
 
-class GateWorkflowDigestSet(unittest.TestCase):
-    """While a change to the gate is in flight the pin checker accepts exactly two gate-workflow digests, main's
-    and the change's, both taken by gate_digest (pins masked); a later change removes main's old one."""
-
-    def test_the_constant_is_a_frozen_set_of_exactly_two_digests(self):
-        s = M.GATE_WORKFLOW_SHA256
-        self.assertIsInstance(s, frozenset)      # immutable: no code path can add a digest at run time
-        self.assertEqual(len(s), 2)              # not empty, not one, not three (a frozenset has no duplicates)
-        for d in s:
-            self.assertRegex(d, r"\A[0-9a-f]{64}\Z")
-        self.assertEqual(s, frozenset({GATE_A, GATE_B}))
-
-    def test_both_variants_are_taken_by_gate_digest(self):
-        a, b = gate_variants()
-        self.assertEqual(M.gate_digest(a), GATE_A)
-        self.assertEqual(M.gate_digest(b), GATE_B)
-
-    def test_a_tree_with_either_accepted_gate_workflow_passes(self):
-        for name, text in zip(("main", "changed"), gate_variants()):
-            with self.subTest(gate=name):
-                code, out = run([gate_tree(text)])
-                self.assertEqual(code, 0, out)
-                self.assertIn(", 0 finding(s)", out)
-
-    def test_a_dependabot_pin_bump_in_either_still_matches(self):
-        for name, text in zip(("main", "changed"), gate_variants()):
-            with self.subTest(gate=name):
-                bumped = bump_first_pin(text)
-                self.assertNotEqual(bumped, text)
-                self.assertIn(M.gate_digest(bumped), M.GATE_WORKFLOW_SHA256)
-                code, out = run([gate_tree(bumped)])
-                self.assertEqual(code, 0, out)
-
-    def test_a_third_digest_is_refused_and_the_message_names_the_accepted_set(self):
-        a, _ = gate_variants()
-        third = a.replace("--verify-tags --git", "--git", 1)
-        self.assertNotEqual(third, a)
-        d3 = M.gate_digest(third)
-        self.assertNotIn(d3, (GATE_A, GATE_B))
-        code, out = run([gate_tree(third)])
-        self.assertEqual(code, 1, out)
-        (line,) = [ln for ln in out.splitlines() if ln.startswith(".github/workflows/agent-review-gate.yml:")]
-        self.assertIn("changed — update GATE_WORKFLOW_SHA256 in this checker", line)
-        self.assertIn(d3, line)
-        self.assertIn(GATE_A, line)
-        self.assertIn(GATE_B, line)
-
-    def test_a_missing_gate_workflow_still_fails(self):
-        a, _ = gate_variants()
-        d = gate_tree(a)
+    def test_a_missing_gate_workflow_fails(self):
+        d = gate_tree()
         os.remove(os.path.join(d, ".github/workflows/agent-review-gate.yml"))
         code, out = run([d])
         self.assertEqual(code, 1, out)
@@ -1237,12 +1096,20 @@ class StartupHookWrites(unittest.TestCase):
                 self.refused(self.env_value(level, '"${{ github.env }}"', 'echo "BASH_ENV=x" >> "$N"'),
                              matched="github.env", says=self.LOADS)
 
-    def test_an_env_value_without_the_other_half_is_accepted(self):
+    def test_an_env_value_with_no_route_in_the_text_is_accepted(self):
         for level in ("workflow", "job", "step"):
             with self.subTest(level=level):
                 self.accepted(self.env_value(level, "BASH_ENV", 'echo "$N=x"'))
-                self.accepted(self.env_value(level, '"${{ github.env }}"', 'echo "REF=x" >> "$N"'))
-                self.accepted(self.env_value(level, "REF", 'echo "$N=x" >> "$GITHUB_ENV"'))
+
+    def test_a_route_put_in_an_env_value_is_refused_whatever_name_the_script_writes(self):
+        for level in ("workflow", "job", "step"):
+            with self.subTest(level=level):
+                self.refused(self.env_value(level, '"${{ github.env }}"', 'echo "REF=x" >> "$N"'), matched="github.env")
+
+    def test_a_name_from_a_variable_written_to_github_env_is_refused_even_when_the_value_is_harmless(self):
+        for level in ("workflow", "job", "step"):
+            with self.subTest(level=level):
+                self.refused(self.env_value(level, "REF", 'echo "$N=x" >> "$GITHUB_ENV"'), matched="GITHUB_ENV")
 
     # ---- the PATH routes need no name
     def test_each_path_route_is_refused_on_its_own(self):

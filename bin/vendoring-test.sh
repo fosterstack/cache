@@ -341,7 +341,8 @@ if d.get("defaults"): fail("a workflow-level defaults block (a shell default can
 if d.get("env"): fail("a workflow-level env block (SHELLOPTS, BASH_ENV and the like change what a step runs)")
 ro = str(job.get("runs-on", ""))
 if ro not in ("ubuntu-latest", "ubuntu-24.04", "ubuntu-22.04"): fail("runs-on " + ro + " is not a GitHub-hosted ubuntu label")
-if set(job) - {"name", "runs-on", "permissions", "steps"}: fail("job keys beyond name, runs-on, permissions, steps: " + str(sorted(job)))
+if set(job) - {"if", "name", "runs-on", "permissions", "steps"}: fail("job keys beyond if, name, runs-on, permissions, steps: " + str(sorted(job)))
+if re.sub(r"\$\{\{|\}\}|\s", "", str(job.get("if"))) != "github.event_name!='pull_request'": fail("the job is not kept off pull requests by exactly `if: github.event_name != 'pull_request'` (REQ-REL-014): " + str(job.get("if")))
 if job.get("permissions") != {"contents": "read"}: fail("permissions " + str(job.get("permissions")))
 steps = job.get("steps", [])
 runs = [s for s in steps if "run" in s]
@@ -364,7 +365,7 @@ blob = json.dumps(job) + json.dumps(d.get("env")) + json.dumps(d.get("defaults")
 if re.search(r"GOSUMDB|GONOSUMDB|GONOSUMCHECK|GOPRIVATE|GOINSECURE|GOFLAGS|GOPROXY|-insecure|-mod=mod", blob): fail("a Go environment setting or opt-out in the vendor job or the workflow env")
 if "continue-on-error" in blob or "continue-on-error" in str(d.get("defaults")): fail("continue-on-error in the vendor job")
 PY
-t AC3 "ci.yml vendor job: bare pull_request trigger, hosted runner, exactly go mod verify, bin/vendor-check.sh, then the provenance check, no condition, no opt-out, digest pins, history fetched" python3 "$J" "$root/.github/workflows/ci.yml"
+t AC3 "ci.yml vendor job: bare pull_request trigger, hosted runner, exactly go mod verify, bin/vendor-check.sh, then the provenance check, only the push-to-main condition, no opt-out, digest pins, history fetched" python3 "$J" "$root/.github/workflows/ci.yml"
 mutate() { # NAME PYTHON-EXPRESSION on s (the ci.yml text): the mutated file must be refused
   python3 - "$root/.github/workflows/ci.yml" "$work/mut-$1.yml" "$2" <<'PY'
 import sys
@@ -385,7 +386,7 @@ mutate trigger-branches 's = s.replace("  pull_request:\n", "  pull_request:\n  
 mutate or-true 's = s.replace("run: bash bin/vendor-check.sh\n", "run: bash bin/vendor-check.sh || true\n", 1)'
 mutate echo-only 's = s.replace("run: bash bin/vendor-check.sh\n", "run: echo bin/vendor-check.sh\n", 1)'
 mutate coe-expression 's = s.replace("  vendor:\n    name: vendor\n", "  vendor:\n    name: vendor\n    continue-on-error: ${{ true }}\n", 1)'
-mutate job-if 's = s.replace("  vendor:\n    name: vendor\n", "  vendor:\n    name: vendor\n    if: github.actor != \x27dependabot[bot]\x27\n", 1)'
+mutate job-if 's = s.replace("  vendor:\n    name: vendor\n    if: github.event_name != \x27pull_request\x27\n", "  vendor:\n    name: vendor\n    if: github.actor != \x27dependabot[bot]\x27\n", 1)'
 mutate step-if-always 's = s.replace("      - name: vendor/ is what go mod vendor regenerates\n", "      - name: vendor/ is what go mod vendor regenerates\n        if: ${{ !cancelled() && false }}\n", 1)'
 mutate job-env-goflags 's = s.replace("  vendor:\n    name: vendor\n", "  vendor:\n    name: vendor\n    env:\n      GOFLAGS: -mod=mod\n", 1)'
 mutate shell-override 's = s.replace("        run: bash bin/vendor-check.sh\n", "        shell: bash {0}\n        run: bash bin/vendor-check.sh\n", 1)'
@@ -396,7 +397,7 @@ mutate checkout-ref 's = s.replace("          fetch-depth: 0\n", "          fetc
 mutate checkout-repository 's = s.replace("          fetch-depth: 0\n", "          fetch-depth: 0\n          repository: o/r\n", 1)'
 mutate env-shellopts 's = s.replace("jobs:\n", "env:\n  SHELLOPTS: noexec\njobs:\n", 1)'
 mutate env-bash-env 's = s.replace("jobs:\n", "env:\n  BASH_ENV: /dev/null\njobs:\n", 1)'
-mutate runner-private 's = s.replace("  vendor:\n    name: vendor\n    runs-on: ubuntu-latest\n", "  vendor:\n    name: vendor\n    runs-on: ubuntu-private\n", 1)'
+mutate runner-private 's = s.replace("    name: vendor\n    if: github.event_name != \x27pull_request\x27\n    runs-on: ubuntu-latest\n", "    name: vendor\n    if: github.event_name != \x27pull_request\x27\n    runs-on: ubuntu-private\n", 1)'
 mutate extra-action 's = s.replace("      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n", "      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0\n        with:\n          script: |\n            require(\x27fs\x27).writeFileSync(\x27bin/vendor-check.sh\x27, \x27exit 0\x27)\n      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n", 1)'
 mutate shallow-checkout 's = s.replace("        with:\n          fetch-depth: 0\n", "", 1)'
 
