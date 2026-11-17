@@ -106,9 +106,6 @@ root = sys.argv[2]
 bad = []
 MOVED = {   # job id -> (name, permissions, environment, needs, if) exactly as in the original file
     "allowlist": ("allowlist", None, None, None, None),
-    "required-check-guard": ("required-check guard", {"contents": "read"}, None, None, None),
-    "drift-issue": ("open the required-check drift issue", {"contents": "read", "issues": "write"}, None, None,
-                    "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"),
     "requirements": ("requirements", None, None, None, None),
     "dependency-review": (None, {"contents": "read"}, None, None,
                           "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}"),
@@ -179,7 +176,6 @@ PY
 case_ci real                     ok  ""
 case_ci allowlist-renamed        bad "d['jobs']['allowlist']['name'] = 'file allowlist'"
 case_ci requirements-dropped     bad "d['jobs'].pop('requirements')"
-case_ci guard-widened            bad "d['jobs']['required-check-guard']['permissions']['contents'] = 'write'"
 case_ci review-on-push-too       bad "d['jobs']['dependency-review'].pop('if')"
 case_ci top-level-widened        bad "d['permissions']['contents'] = 'write'"
 case_ci top-level-pr-write       bad "d['permissions']['pull-requests'] = 'write'"

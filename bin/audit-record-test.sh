@@ -717,7 +717,7 @@ check("bump: 99 pull requests are the whole answer", A.bump_pull(HEAD, FULL_PULL
 REVIEWER_PY = os.path.join(os.path.dirname(JUDGE_SH), "dependabot-reviewer.py")
 VERSION_FILES = ("bin/dependabot-reviewer.py", ".github/policy/dependabot-reviewer-prompt.txt",
       ".github/workflows/dependabot-reviewer.yml",
-                 ".github/policy/required-checks.json", "bin/required-check-guard.sh")
+                 ".github/policy/required-checks.json")
 VERSION_SCRIPT = "bin/dependabot-reviewer-version.sh"   # the code author's: copied into the fixtures where it exists
 CHECKED_IN = [open(os.path.join(ROOT, f), "rb").read() for f in VERSION_FILES]
 def sum_lines(files):   # what `sha256sum` prints over the files, in this order

@@ -1719,7 +1719,7 @@ requirements:
       - id: REQ-DEP-001-AC4
         given: both readers' findings
         when: the reviewer decides
-        then: "the decision is mechanical: no \"breaks us\" from either reader, with the required-check guard matching, arms squash auto-merge, which merges only once every required check is green; any \"breaks us\" from either reader holds the PR, even when the other reader errored, with one issue carrying the readers' findings and the fix, which is ccode's; a reader error with no \"breaks us\" leaves no verdict and is retried next hour"
+        then: "the decision is mechanical: no \"breaks us\" from either reader arms squash auto-merge, which merges only once every required check is green; any \"breaks us\" from either reader holds the PR, even when the other reader errored, with one issue carrying the readers' findings and the fix, which is ccode's; a reader error with no \"breaks us\" leaves no verdict and is retried next hour"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC5
@@ -1777,9 +1777,9 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC14
-        given: "the five files that decide the reviewer's verdict, as a run checked them out: bin/dependabot-reviewer.py, .github/policy/dependabot-reviewer-prompt.txt, .github/workflows/dependabot-reviewer.yml, .github/policy/required-checks.json and bin/required-check-guard.sh; their version is the sha256 of the output of sha256sum over them in that order (64 lower-case hex digits), so each file has its own boundary; one script, bin/dependabot-reviewer-version.sh, holds the list and computes it, and a file it cannot read fails it"
+        given: "the four files that decide the reviewer's verdict, as a run checked them out: bin/dependabot-reviewer.py, .github/policy/dependabot-reviewer-prompt.txt, .github/workflows/dependabot-reviewer.yml, .github/policy/required-checks.json; their version is the sha256 of the output of sha256sum over them in that order (64 lower-case hex digits), so each file has its own boundary; one script, bin/dependabot-reviewer-version.sh, holds the list and computes it, and a file it cannot read fails it"
         when: the reviewer publishes a verdict, whatever its conclusion (success carried from an earlier head, neutral for a forced or unfinished review, success, failure), and when it, the auto-merge workflow or the review gate's judge reads a verdict
-        then: "every check the reviewer publishes carries its version as the check run's external_id; a reader counts a success only where a verdict is needed, and then only when its external_id is the version printed by bin/dependabot-reviewer-version.sh on main now (the reviewer reads its own checkout, the auto-merge workflow fetches main's copy of the script and then the files it lists through the contents API, and runs the script with the folder of those files as its argument, the judge reads the checkout of main), so a change to any of the five makes every earlier success not count; a success with another external_id, or with none, is no success: for the reviewer it is no verdict (the head is read as a head with none is, the success is never carried to a new head, the newest check run still decides, so a new success with the current version replaces it), for the judge it is a verdict that does not pass; a failure or neutral verdict counts whatever its external_id; no time is read from GitHub and no workflow-change time decides anything; a version that cannot be computed stops the step that needs it before any verdict is published (no verdict at all, not a neutral), and gives the judge its record rule; every reader of a head's check runs (the reviewer, the auto-merge workflow, the judge, the gate's own check read by the reviewer and by the gate's sweep) asks for 100 runs a page and fails closed, as a read that failed, when it gets 100 runs, a full page that GitHub may have cut (fewer than 100 is the whole answer under the filter it asked; the judge exits 3 on it); a reader that wants the newest run per check name keeps GitHub's latest-per-name list, the others read all runs; the auto-merge workflow reads the verdict first and the version only for a success of a major, a flagged or an unparsed bump, which needs a verdict; a plain patch or minor reads no version, needs no verdict, and its step says so, armed or not, unless the reviewer failed its head, which the step says and turns off any arm over; when the verdict cannot be read it turns off the head's auto-merge before it fails; a version that cannot be read there is no verdict, and so is an empty file list or an empty version after a read that succeeded: the step turns the auto-merge off and fails"
+        then: "every check the reviewer publishes carries its version as the check run's external_id; a reader counts a success only where a verdict is needed, and then only when its external_id is the version printed by bin/dependabot-reviewer-version.sh on main now (the reviewer reads its own checkout, the auto-merge workflow fetches main's copy of the script and then the files it lists through the contents API, and runs the script with the folder of those files as its argument, the judge reads the checkout of main), so a change to any of the four makes every earlier success not count; a success with another external_id, or with none, is no success: for the reviewer it is no verdict (the head is read as a head with none is, the success is never carried to a new head, the newest check run still decides, so a new success with the current version replaces it), for the judge it is a verdict that does not pass; a failure or neutral verdict counts whatever its external_id; no time is read from GitHub and no workflow-change time decides anything; a version that cannot be computed stops the step that needs it before any verdict is published (no verdict at all, not a neutral), and gives the judge its record rule; every reader of a head's check runs (the reviewer, the auto-merge workflow, the judge, the gate's own check read by the reviewer and by the gate's sweep) asks for 100 runs a page and fails closed, as a read that failed, when it gets 100 runs, a full page that GitHub may have cut (fewer than 100 is the whole answer under the filter it asked; the judge exits 3 on it); a reader that wants the newest run per check name keeps GitHub's latest-per-name list, the others read all runs; the auto-merge workflow reads the verdict first and the version only for a success of a major, a flagged or an unparsed bump, which needs a verdict; a plain patch or minor reads no version, needs no verdict, and its step says so, armed or not, unless the reviewer failed its head, which the step says and turns off any arm over; when the verdict cannot be read it turns off the head's auto-merge before it fails; a version that cannot be read there is no verdict, and so is an empty file list or an empty version after a read that succeeded: the step turns the auto-merge off and fails"
         verification: { method: unit, release_blocking: false }
         status: approved
 
@@ -1789,11 +1789,13 @@ requirements:
       The ruleset on main and the committed required-check list shall be
       compared on every pull request and every push to main, so drift is red
       the day it happens, and a refusal shall open one issue.
-    source: [bin/required-check-guard.sh, .github/policy/required-checks.json, .github/workflows/ci.yml]
+    source: [.github/policy/required-checks.json, .github/workflows/ci.yml]
     tier: community
     introduced: v0.3.0
     origin: decided Sep 29 2026
     confidence: implementation-only
+    deprecated: true
+    deprecated_reason: The required-check guard and its drift issue were removed from the chain-v030 release branch (Nov 16 2026); GitHub's ruleset is the only list that gates merges. The committed list stays for release admission, and AC3 still holds for it.
     acceptance_criteria:
       - id: REQ-DEP-002-AC1
         given: any pull request and any push to main
@@ -1810,7 +1812,7 @@ requirements:
       - id: REQ-DEP-002-AC3
         given: the committed list .github/policy/required-checks.json and the jobs of .github/workflows/ci.yml
         when: the list is read
-        then: "it names the job vendor once with scope push and the job marker-gate once with scope pull_request, each with integration ID 15368 (GitHub Actions), and ci.yml has a job of each name; the ruleset on main follows only by a maintainer's change in the GitHub UI, and until then the guard of AC1 is red, which is the stated failure mode"
+        then: "it names the job vendor once with scope push and the job marker-gate once with scope pull_request, each with integration ID 15368 (GitHub Actions), and ci.yml has a job of each name; the ruleset on main follows only by a maintainer's change in the GitHub UI"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
@@ -1829,7 +1831,7 @@ requirements:
       - id: REQ-DEP-003-AC1
         given: a Dependabot patch or minor pull request
         when: the auto-merge workflow runs
-        then: it gets squash auto-merge armed only after the required-check guard matches, so it merges only when every required check is green; a major is left to the reviewer; the reviewer leaves that arm on while it reads the bump, and an arm its act step turned off because the review did not finish is put back (REQ-DEP-001-AC12)
+        then: it gets squash auto-merge armed so it merges only when every required check is green; a major is left to the reviewer; the reviewer leaves that arm on while it reads the bump, and an arm its act step turned off because the review did not finish is put back (REQ-DEP-001-AC12)
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-DEP-003-AC2
@@ -1863,7 +1865,7 @@ requirements:
     origin: decided Sep 29 2026 (the cache side)
     confidence: implementation-only
     deprecated: true
-    deprecated_reason: The fixer dispatch was removed from the repository (bin/dispatch-fixer.sh and the drift-fixer-dispatch job are gone); a held bump and a drift issue now stay as the issue the guard opened.
+    deprecated_reason: The fixer dispatch was removed from the repository (bin/dispatch-fixer.sh and the drift-fixer-dispatch job are gone); a held bump stays as its issue, and the required-check drift issue is gone with the guard.
     acceptance_criteria:
       - id: REQ-DEP-004-AC1
         given: a completed hold
@@ -1895,7 +1897,7 @@ requirements:
       - id: REQ-DEP-005-AC1
         given: any context in .github/policy/required-checks.json
         when: the merge queue tests a group
-        then: "the workflow job that produces it runs on the merge_group event on the queue's commit, with no condition that skips the job or any of its steps on that event, except that marker-gate (the landing marker check) runs on the pull request only, by a job-level condition for the pull request event; the review gate's check is produced by the workflow_run job of AC3 instead; no pull_request or merge_group trigger of these workflows carries a path or branch filter; the allowlist check applies the same suppression rule in the queue as on the pull request (only a head branch auditor/* of this repository may change a suppression file) to the change of the queue entry the ref names, that is its commit compared with its first parent (each entry has its own run, and the queue's grouping is ALLGREEN, so every entry's run must pass), finding the pull request's head branch by one API lookup of the pull request the queue ref names, and a lookup that fails or is unclear fails the check; and a context the wiring test does not know fails the test, so a required check added later cannot be missed"
+        then: "the workflow job that produces it runs on the merge_group event on the queue's commit, with no condition that skips the job or any of its steps on that event, except that marker-gate (the landing marker check) runs on the pull request only, by a job-level condition for the pull request event; the review gate's check is produced by the workflow_run job of AC3 instead; no pull_request or merge_group trigger of these workflows carries a path or branch filter; the allowlist check applies the same suppression rule in the queue as on the pull request (only a head branch auditor/* of this repository may change a suppression file) to the change of the queue entry the ref names, that is its commit compared with its first parent (each entry has its own run; the queue's grouping is a ruleset setting, ALLGREEN so that every entry's run must pass, which the repository does not check), finding the pull request's head branch by one API lookup of the pull request the queue ref names, and a lookup that fails or is unclear fails the check; and a context the wiring test does not know fails the test, so a required check added later cannot be missed"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-DEP-005-AC2
@@ -1907,7 +1909,7 @@ requirements:
       - id: REQ-DEP-005-AC3
         given: the review gate (auditor-review-gate)
         when: the merge queue tests a group
-        then: its verdict for the queue's head commit is decided by the default branch's copy of the gate, never by a copy from the group or a pull request, and is posted when the queue starts its CI run; it reads the queue's commits as git objects and runs nothing of them, and only when the queue branch it fetches ends at the head commit of the event; it demands a two-parent merge for every group commit (the queue's merge method must be MERGE; a squash or rebase queue fails every group; its grouping must be ALLGREEN, so that every entry's own run must pass, and the required-check guard fails when a merge_queue rule on main says otherwise) and the passed-audit record for the exact head of every pull request in the group; main's pin, allowlist (given the queue ref), pin-wiring and scanner judges pass over the queue head; it fails, never passes, when any of these cannot be read or does not hold; no scheduled job judges the queue's refs, and the pull request publisher and the scheduled sweep post nothing on a head that is the tip of a live queue branch, so a pull request cannot replace the queue's verdict; a verdict that is not posted leaves the check absent and the queue ejects the group; and the App token is held only by a separate job that publishes the verdict on the queue's head
+        then: its verdict for the queue's head commit is decided by the default branch's copy of the gate, never by a copy from the group or a pull request, and is posted when the queue starts its CI run; it reads the queue's commits as git objects and runs nothing of them, and only when the queue branch it fetches ends at the head commit of the event; it demands a two-parent merge for every group commit (the queue's merge method must be MERGE; a squash or rebase queue fails every group; the grouping is a ruleset setting the repository does not check) and the passed-audit record for the exact head of every pull request in the group; main's pin, allowlist (given the queue ref), pin-wiring and scanner judges pass over the queue head; it fails, never passes, when any of these cannot be read or does not hold; no scheduled job judges the queue's refs, and the pull request publisher and the scheduled sweep post nothing on a head that is the tip of a live queue branch, so a pull request cannot replace the queue's verdict; a verdict that is not posted leaves the check absent and the queue ejects the group; and the App token is held only by a separate job that publishes the verdict on the queue's head
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
@@ -2285,9 +2287,8 @@ requirements:
     title: Release admission requires the checks the ruleset does not list
     statement: >
       Release admission and the patch release's ready step shall require the checks of
-      .github/policy/release-only-checks.json together with those of required-checks.json, and a change to that list
-      shall be red on every pull request.
-    source: [.github/policy/release-only-checks.json, bin/required-check-guard.sh, .github/workflows/ci.yml, .github/workflows/stage-admission.yml, .github/workflows/release.yml]
+      .github/policy/release-only-checks.json together with those of required-checks.json.
+    source: [.github/policy/release-only-checks.json, .github/workflows/ci.yml, .github/workflows/stage-admission.yml, .github/workflows/release.yml]
     tier: community
     introduced: v0.3.0
     origin: the owner's trim of the ruleset (Nov 12 2026)
@@ -2300,15 +2301,6 @@ requirements:
           each reads required-checks.json and release-only-checks.json on its own, and refuses unless that file is an object whose required_checks is a non-empty array;
           a missing, empty, null or malformed file never lowers the requirement, whatever the other file holds;
           the requirement is the two lists together
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-013-AC2
-        given: a pull request or a push to main whose release-only-checks.json is not the eight entries pinned in bin/required-check-guard.sh on main
-        when: the required-check guard runs
-        then: >-
-          the guard fails and prints each entry that differs;
-          each entry is compared whole: its context, its integration_id and its scope;
-          the pin is main's copy of the guard, so a change to the file, the judge and the guard in one pull request is still red
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-013-AC3
@@ -2325,8 +2317,7 @@ requirements:
         when: it judges the head
         then: >-
           it refuses a carriage return, a next-line (U+0085), a line separator (U+2028) or a paragraph separator (U+2029) anywhere in ci.yml, because YAML ends a line at each of them and the judge does not;
-          on the landing path too it requires the required-check-guard job and the top-level keys to be byte for byte those of the landing commit's own ci.yml, with only the checkout's digest and version comment free;
-          it requires the guard suite's step (bash bin/required-check-guard-test.sh) in the allowlist job as it requires that job's other pinned steps
+          on the landing path too it requires the top-level keys to be byte for byte those of the landing commit's own ci.yml
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
