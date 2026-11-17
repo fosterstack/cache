@@ -16,7 +16,7 @@ which is RED until PR 4 is implemented. Finite grammars and allowlists only, no 
   verify FILE         REQ-CHAIN-007-AC4  bin/release-verify.sh is `set -euo pipefail` and then EXACTLY the commands of VERIFY, in order.
   scan FILE JSON      REQ-CHAIN-007-AC6..AC10  a release script is plain: only its listed tools, no other script, no build command, no tag
                       creation, no PATH-like setting, no credential printed (text scan, comments and quotes included; it over-reports).
-  listed JSON ROOT    REQ-CHAIN-007-AC10 each release script is a row of chain-scripts.json with its sha256, its tools and its signs value.
+  listed JSON ROOT    REQ-CHAIN-007-AC10 each release script is a row of chain-scripts.json with its tools and its signs value.
   record FILE [VAL..] REQ-CHAIN-007-AC12 no credential name or value, no JWT, no token variable in a Witness envelope (payload decoded).
   metadata FILE       REQ-CHAIN-007-AC13  bin/release-sign.sh makes the metadata in order: the image input, the OpenVEX copy, vex-forms, the manifest (which records the VEX files'
                       sha256 and checks every digest against Build's verified digests.json and items.json), the list, and only then the first signature.

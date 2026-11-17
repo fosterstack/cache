@@ -73,5 +73,6 @@
 {"suite": "s2-p2-strict-lookups-test.sh"},
 {"suite": "s2-p2-time-exceptions-test.sh"},
 {"suite": "marker-gate-test.sh"},
-{"suite": "pin-audit-go-major-test.sh"}
+{"suite": "pin-audit-go-major-test.sh"},
+{"suite": "run-ci-suite-test.sh"}
 ]

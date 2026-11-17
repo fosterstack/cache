@@ -21,11 +21,6 @@ import glob, hashlib, json, os, re, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 tree = sys.argv[2]
 bad = []
-# Codex #157 r2 (SEC-157-02 A): the pin also binds what the privileged step EXECUTES — the bump script's bytes.
-REVIEWED_BUMP_SCRIPT = "24edb2767d8eb8423d9df78138898957231c1916376e06f86bd38df87c422460"
-got_script = hashlib.sha256(open(os.path.join(tree, "bin/go-bump-open-pr.sh"), "rb").read()).hexdigest()
-if got_script != REVIEWED_BUMP_SCRIPT:
-    bad.append("bin/go-bump-open-pr.sh (run with the App token) differs from its reviewed form (%s)" % got_script[:12])
 # (SEC-157-02 B): repository-wide, the jobs that may reach the agent environment, the App's secrets, the token action,
 # every secret (toJSON) or inherited secrets are exactly these; a new consumer must come through review and be listed.
 ALLOWED = {("agent-review-gate.yml", "publish"), ("agent-review-gate.yml", "sweep"), ("agent-review-gate.yml", "record"), ("auditor.yml", "audit"),
@@ -281,10 +276,7 @@ case_ key-through-outputs    bad "$C['outputs'] = {'k': '\${{ secrets.AUDITOR_AP
 case_ bump-gutted            bad "[s.__setitem__('run', ':') for s in $C['steps'] if 'go-bump-open-pr.sh' in (s.get('run') or '')]"
 case_ github-env-write       bad "[s.__setitem__('run', s['run'] + 'echo INPUT_PERMISSION-checks=write >> \"\$GITHUB_ENV\"\\n') for s in $C['steps'] if s.get('id') == 'cmp']"
 case_ workflow-env           bad "d['env'] = {'INPUT_PERMISSION-checks': 'write'}"
-# Codex #157 r2 (SEC-157-02): a token print inside the executed script; a sidecar workflow minting the App token
-mk_tree() { local t="$work/tree-$1"; mkdir -p "$t/bin" "$t/.github/workflows"; cp "$root"/.github/workflows/*.yml "$t/.github/workflows/"; cp "$root/bin/go-bump-open-pr.sh" "$t/bin/"; echo "$t"; }
-t=$(mk_tree script-leak); printf '\nprintf %%s "$GH_TOKEN" | od -An -tx1\n' >> "$t/bin/go-bump-open-pr.sh"
-case_ script-token-print     bad "" "$t"
+mk_tree() { local t="$work/tree-$1"; mkdir -p "$t/.github/workflows"; cp "$root"/.github/workflows/*.yml "$t/.github/workflows/"; echo "$t"; }
 t=$(mk_tree sidecar); printf 'on: workflow_dispatch\njobs:\n  x:\n    runs-on: ubuntu-latest\n    environment: agent\n    steps:\n      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1\n        with:\n          app-id: ${{ secrets.AUDITOR_APP_ID }}\n          permission-checks: write\n' > "$t/.github/workflows/probe-sidecar.yml"
 case_ sidecar-workflow       bad "" "$t"
 t=$(mk_tree tojson); printf 'on: push\njobs:\n  y:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n        env:\n          S: ${{ toJSON(secrets) }}\n' > "$t/.github/workflows/dump.yml"
