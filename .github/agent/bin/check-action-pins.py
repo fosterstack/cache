@@ -2000,6 +2000,15 @@ def _touches(script, name, consumer):
 OUTSIDE = ("$RUNNER_TEMP", "${RUNNER_TEMP}", "/", "$(mktemp")   # outside the checkout: never the file's directory
 
 
+def _only_read(name, script):
+    """True when the job script mentions `name` only as a plain $name or ${name} read and runs no eval. Any other
+    mention (read, for, printf -v, ${name:=x}, (( )), let, name[0]=, …) may set it, so none is listed form by form."""
+    word = r"(?<![A-Za-z0-9_])" + name + r"(?![A-Za-z0-9_])"
+    reads = r"\$" + name + r"(?![A-Za-z0-9_])|\$\{" + name + r"\}"
+    return (len(re.findall(word, script)) == len(re.findall(reads, script))
+            and not re.search(r"(?<![\w-])eval(?![\w-])", script))
+
+
 def _outside(target, script, depth=0):
     """A destination that cannot be the checkout's directory: an absolute path outside the runner's workspace, a path
     under $RUNNER_TEMP or a fresh $(mktemp …), or a variable every assignment of which in the job is one of those —
@@ -2011,8 +2020,8 @@ def _outside(target, script, depth=0):
     if re.match(r"[\"']?\$\{?HOME\}?/(?!work(/|$))", target):
         return True                                      # $HOME/.docker …: the workspace is under $HOME/work
     runner = re.fullmatch(r"[\"']?\$\{?(GITHUB_(?:OUTPUT|ENV|PATH|STATE|STEP_SUMMARY))\}?[\"']?", target)
-    if runner and not re.search(r"(?:^|[\s;(])" + runner.group(1) + "=", script):
-        return True                                      # the runner's own files, made outside the checkout, until the job assigns one
+    if runner and _only_read(runner.group(1), script):
+        return True                                      # the runner's own files, made outside the checkout, until the job sets one
     m = re.match(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?(/.*)?$", target.strip("\"'"))
     if not m or depth > 4:
         return False

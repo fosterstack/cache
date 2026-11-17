@@ -215,5 +215,67 @@ class FixEscapedGreaterAndRunnerFiles(unittest.TestCase):
         self.assertFalse(M._writes('GITHUB_ENV=$RUNNER_TEMP/env\necho y >> "$GITHUB_ENV"\n', "bin/target.sh"))
 
 
+class RunnerFileSetByOtherForms(unittest.TestCase):
+    """The runner-file exemption holds only when every mention of the name is a plain $NAME or ${NAME} read."""
+    FILES = {"scripts/build.sh": "#!/bin/sh\necho hi\n"}
+
+    def hits(self, run):
+        hits, out = JobOrder("test_r4_case_d_own_step_text_before_run_is_finding").check(
+            [step(run)], self.FILES)
+        return [l for l in out.splitlines() if FINDING in l and "build.sh" in l], out
+
+    def reported(self, setter):
+        hits, out = self.hits(setter + '\necho "x=1" >> "$GITHUB_OUTPUT"\nbash scripts/build.sh')
+        self.assertTrue(hits, out)
+
+    def test_runner_file_set_by_read_r_is_reported(self):
+        self.reported('read -r GITHUB_OUTPUT <<< scripts/build.sh')
+
+    def test_runner_file_set_by_read_is_reported(self):
+        self.reported('read GITHUB_OUTPUT <<< scripts/build.sh')
+
+    def test_runner_file_set_by_for_in_is_reported(self):
+        self.reported('for GITHUB_OUTPUT in scripts/build.sh; do break; done')
+
+    def test_runner_file_set_by_printf_v_is_reported(self):
+        self.reported("printf -v GITHUB_OUTPUT '%s' scripts/build.sh")
+
+    def test_runner_file_set_by_default_assign_colon_is_reported(self):
+        self.reported('unset GITHUB_OUTPUT\n: "${GITHUB_OUTPUT:=scripts/build.sh}"')
+
+    def test_runner_file_set_by_default_assign_is_reported(self):
+        self.reported('unset GITHUB_OUTPUT\n: "${GITHUB_OUTPUT=scripts/build.sh}"')
+
+    def test_runner_file_set_by_arith_is_reported(self):
+        self.reported('(( GITHUB_OUTPUT = 1 ))')
+
+    def test_runner_file_set_by_let_is_reported(self):
+        self.reported('let "GITHUB_OUTPUT = 1"')
+
+    def test_runner_file_set_by_split_eval_is_reported(self):
+        self.reported('eval \'GITHUB_\'"OUTPUT=scripts/build.sh"')
+
+    def test_runner_file_set_by_array_element_is_reported(self):
+        self.reported('GITHUB_OUTPUT[0]=scripts/build.sh')
+
+    def test_runner_file_set_by_mapfile_is_reported(self):
+        self.reported('mapfile GITHUB_OUTPUT <<< scripts/build.sh')
+
+    def test_runner_file_set_by_getopts_is_reported(self):
+        self.reported("getopts 'a:' GITHUB_OUTPUT -a")
+
+    def test_fills_dir_runner_file_set_by_read_is_not_exempt(self):
+        # _fills_dir asks _outside() too: tar -C onto a name set by `read` must count as filling the directory
+        self.assertTrue(M._writes('read -r GITHUB_OUTPUT <<< scripts\ntar -xf a.tar -C "$GITHUB_OUTPUT"\n', "scripts/build.sh"))
+
+    def test_plain_dollar_read_not_reported(self):
+        hits, out = self.hits('echo "x=1" >> "$GITHUB_OUTPUT"\nbash scripts/build.sh')
+        self.assertFalse(hits, out)
+
+    def test_braced_read_not_reported(self):
+        hits, out = self.hits('echo y >> "${GITHUB_OUTPUT}"\nbash scripts/build.sh')
+        self.assertFalse(hits, out)
+
+
 if __name__ == "__main__":
     unittest.main()
