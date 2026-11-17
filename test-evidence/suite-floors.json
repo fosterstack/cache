@@ -57,7 +57,7 @@
  "pin-age-check-test.sh": 2061,
  "pin-audit-go-major-test.sh": 78,
  "pin-audit-test.sh": 234,
- "pin-wiring-test.sh": 807,
+ "pin-wiring-test.sh": 785,
  "pip-pin-test.sh": 263,
  "queue-gate-judge-test.sh": 59,
  "refresh-inputs-test.sh": 591,

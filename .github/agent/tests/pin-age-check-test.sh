@@ -4032,7 +4032,7 @@ runck parent1
 CASE="an item the head commit itself adds is a change against its parent: named and measured (exit 0)"
 check test "$rc" -eq 0; check grep -qF "action:actions/checkout@$NEWP" "$work/parent1.out"
 
-# --- Go's own releases skip the 7-day hold (owner ratified Oct 21 2026, REQ-SUP-001-AC27): the tool item `go` only, and only when bin/install-scanner.sh
+# --- Go's own releases (owner ratified Oct 21 2026, REQ-SUP-001-AC27): the tool item `go` only, and only when bin/install-scanner.sh
 # downloads it from https://go.dev/dl/ at its pinned version and pins the sha256 of both architectures and verifies the file; every other check still applies ----
 gosc() {   # gosc VER [TRIVY] [mutation: nopin|nohost|noverify|twohosts|arm64only] -> an installer text
   local ver=$1 trivy=${2:-0.74.0} mut=${3:-}

@@ -1276,9 +1276,8 @@ def moved(base_items, head_items):
 def _on_key(on):
     """What of a workflow's `on:` is part of a step's identity: all of it except the `paths` and `paths-ignore`
     filters under each event.
-    Owner rule 1 (Oct 5): no NEW version of what a workflow downloads until it has been public 7 days. A trigger
-    can change what a step downloads (the event name, the ref, a schedule and the event payload all reach steps;
-    a called workflow's inputs and outputs select what is fetched), so triggers stay in the key. A changed set of
+    A trigger can change what a step downloads (the event name, the ref, a schedule and the event payload all reach
+    steps; a called workflow's inputs and outputs select what is fetched), so triggers stay in the key. A changed set of
     changed-file paths only chooses WHETHER a run happens, never what it fetches. A scalar or list `on`
     (`on: push`, `[push, merge_group]`) is unchanged."""
     if not isinstance(on, dict):
