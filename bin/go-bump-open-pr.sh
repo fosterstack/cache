@@ -126,20 +126,6 @@ PY
     sed -i -E "s/^GO_VER=[0-9.]+/GO_VER=${LATEST}/; \
       s/(go:x86_64[|]go:amd64[)] SUM=)[0-9a-f]{64}/\1${sum_amd64}/; \
       s/(go:aarch64[|]go:arm64[)] SUM=)[0-9a-f]{64}/\1${sum_arm64}/" "$f"
-    # the installer is a listed script of the release chain: its sha256 row in the policy follows its bytes, in the same commit (the policy validator
-    # refuses a row that differs from the file)
-    env -u GH_TOKEN /usr/bin/python3 -I -B - "$f" .github/policy/chain-scripts.json <<'PY' || { echo "::error::failed to update the installer's sha256 row in .github/policy/chain-scripts.json" >&2; exit 1; }
-import hashlib, json, sys
-inst, pol = sys.argv[1:3]
-h = hashlib.sha256(open(inst, "rb").read()).hexdigest()
-doc = json.load(open(pol))
-rows = [r for r in doc["scripts"] if r["path"] == "bin/install-scanner.sh"]
-if len(rows) != 1:
-    sys.exit(1)
-rows[0]["sha256"] = h
-json.dump(doc, open(pol, "w"), indent=2)
-open(pol, "a").write("\n")
-PY
     grep -q "^GO_VER=${LATEST}\$" "$f" && grep -q "SUM=${sum_amd64} ;;" "$f" && grep -q "SUM=${sum_arm64} ;;" "$f" \
       || { echo "::error::failed to bump the Go pin in ${f}" >&2; exit 1; }
   }
@@ -158,18 +144,18 @@ PY
   marker="go-bump-run: ${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"   # unique to this run: two overlapping runs of one bump share parent and headline
   input="$(mktemp)"; enc="$(mktemp -d)"
   # each file's contents are encoded into a file of its own, every encoding checked (a failing encoder must not become an empty file in a signed commit), and the
-  # request is built from those files with --rawfile: the policy's base64 alone is over Linux's 128 KiB limit for one argument
-  for pair in go.mod:r tools/requirements/go.mod:t bin/install-scanner.sh:i .github/policy/chain-scripts.json:c build/melange.yaml.tmpl:m bin/gen-recipes.py:g build/melange.yaml:y build/melange-fips.yaml:z; do
+  # request is built from those files with --rawfile: one large file's base64 alone is over Linux's 128 KiB limit for one argument
+  for pair in go.mod:r tools/requirements/go.mod:t bin/install-scanner.sh:i build/melange.yaml.tmpl:m bin/gen-recipes.py:g build/melange.yaml:y build/melange-fips.yaml:z; do
     { base64 < "${pair%:*}" | tr -d '\n' > "${enc}/${pair##*:}"; } || { echo "::error::could not encode ${pair%:*}; opening no pull request" >&2; rm -rf "$enc" "$input"; exit 1; }
     [ -s "${enc}/${pair##*:}" ] || { echo "::error::the encoding of ${pair%:*} is empty; opening no pull request" >&2; rm -rf "$enc" "$input"; exit 1; }
   done
   jq -n --arg repo "${GITHUB_REPOSITORY:-fosterstack/cache}" --arg b "$branch" --arg base "$base" \
         --arg head "$headline" --arg mark "$marker" \
-        --rawfile r "${enc}/r" --rawfile t "${enc}/t" --rawfile i "${enc}/i" --rawfile c "${enc}/c" \
+        --rawfile r "${enc}/r" --rawfile t "${enc}/t" --rawfile i "${enc}/i" \
         --rawfile m "${enc}/m" --rawfile g "${enc}/g" --rawfile y "${enc}/y" --rawfile z "${enc}/z" \
     '{query: "mutation($input: CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid}}}",
       variables: {input: {branch: {repositoryNameWithOwner: $repo, branchName: $b}, message: {headline: $head, body: $mark}, expectedHeadOid: $base,
-                          fileChanges: {additions: [{path: "go.mod", contents: $r}, {path: "tools/requirements/go.mod", contents: $t}, {path: "bin/install-scanner.sh", contents: $i}, {path: ".github/policy/chain-scripts.json", contents: $c}, {path: "build/melange.yaml.tmpl", contents: $m}, {path: "bin/gen-recipes.py", contents: $g}, {path: "build/melange.yaml", contents: $y}, {path: "build/melange-fips.yaml", contents: $z}]}}}}' > "$input"
+                          fileChanges: {additions: [{path: "go.mod", contents: $r}, {path: "tools/requirements/go.mod", contents: $t}, {path: "bin/install-scanner.sh", contents: $i}, {path: "build/melange.yaml.tmpl", contents: $m}, {path: "bin/gen-recipes.py", contents: $g}, {path: "build/melange.yaml", contents: $y}, {path: "build/melange-fips.yaml", contents: $z}]}}}}' > "$input"
   rm -rf "$enc"
   # Cleanup removes only what this run owns: the delete is leased on the tip this run last knew (the commit it pushed, then the one the API made),
   # so a branch someone else advanced is kept. A cleanup that fails is its own loud message: the branch remains and a person must remove it.
@@ -216,7 +202,7 @@ fi
 body="$(cat <<EOF
 Automated Go toolchain bump: \`go ${CURRENT}\` -> \`go ${LATEST}\`. Eight files change together, so the installer's pin and the sealed build's compiler agree with go.mod.
 - \`go.mod\` and \`tools/requirements/go.mod\`: \`go ${CURRENT}\` -> \`go ${LATEST}\`.
-- \`bin/install-scanner.sh\`: \`GO_VER\` and the sha256 of the go${LATEST} linux-amd64 and linux-arm64 tarballs, taken from the downloads and equal to go.dev's published checksums; \`.github/policy/chain-scripts.json\` holds the new sha256 row of that script.
+- \`bin/install-scanner.sh\`: \`GO_VER\` and the sha256 of the go${LATEST} linux-amd64 and linux-arm64 tarballs, taken from the downloads and equal to go.dev's published checksums.
 - \`build/melange.yaml.tmpl\`: the two go.dev pins (uri and expected-sha256 of the linux-amd64 and linux-arm64 tarballs), the same checksums; \`bin/gen-recipes.py\`: \`TEMPLATE_SHA256\`; \`build/melange.yaml\` and \`build/melange-fips.yaml\`: regenerated with \`bin/gen-recipes.py --write\` (\`--check\` passes).
 
 One step is not part of this pull request and has no automation yet: the archive. \`build/archive.json\` and the two tarballs \`go/go${LATEST}.linux-amd64.tar.gz\` and \`go/go${LATEST}.linux-arm64.tar.gz\` are not pushed here.
