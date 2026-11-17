@@ -1595,12 +1595,23 @@ UNPINNED_GO=(
   "qvarat|go install 'example.com/x@'\"\$V\""
   "dqvarat|go install \"example.com/x@\$V\""
   "cmdsub|go install \"\$(cat tool.txt)\""
+  "bsn1|go install example.com/x@v1.2.\\3\\next"
+  "bsn2|go install example.com/x@v\"1.2.3\"\\nightly"
+  "bst|go install example.com/x@\\test"
+  "bsn3|go install example.com/x@v1.2.3\\nightly"
+  "btick1|go install example.com/x@v1.2.\\3\`printf next\`"
+  "btick2|go install \"example.com/x@\`cat v\`\""
+  "qsq|go install \"example.com/x@v1'.2.3'\""
+  "qdq|go install 'example.com/x@v1.2\".\"3'"
+  "dqbranch|go install example.com/x@v1.2.3\"branch\""
+  "dqvar|go install example.com/x@v1.2.3\"\$S\""
+  "bsbranch|go install example.com/x@v1.2.3\\branch"
 )
 for kind in wf sh; do
   for spec in "${UNPINNED_GO[@]}"; do
     form=${spec%%|*}; cmd=${spec#*|}; n="go-$kind-$form"
     gofind "$n" "$kind" "$cmd"
-    if [ "$form" = var ] || [ "$form" = qvarat ] || [ "$form" = dqvarat ] || [ "$form" = cmdsub ]; then
+    if [ "$form" = var ] || [ "$form" = qvarat ] || [ "$form" = dqvarat ] || [ "$form" = cmdsub ] || [ "$form" = btick1 ] || [ "$form" = btick2 ] || [ "$form" = dqvar ]; then
       CASE="AC34: daily audit, $kind file, '$cmd' (a variable or substitution names no version, an unmeasured item): exit 1, a line is printed, no issue create/edit call"
       check test "$rc" -eq 1; check test -s "$work/$n.out"; check no_issue_call "$n"
     else
