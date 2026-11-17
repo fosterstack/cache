@@ -7,7 +7,7 @@ name: scan
 # scanner set runs. It builds the candidate through the EXACT same build +
 # image-assembly stages the release chain uses (mode: snapshot/pr), so the
 # bytes scanned here are the bytes the chain would ship, then runs every
-# scanner in the `pr_gate` list of .github/policy/scanners.json.
+# scanner in the `pr_gate` list of .github/policy/scanners.json (grype and inspector; bin/job-isolation-test.sh holds the list to those two).
 #
 # Decision row 57 (supersedes row 45 for this gate): TWO scanners with
 # DIFFERENT DATABASES (different aggregations, overlapping upstream
@@ -26,15 +26,12 @@ name: scan
 # id-token: write and assumes a ScanSbom-only role by OIDC on pull requests
 # (Dependabot's included), pushes to main and tags (REQ-REL-004-AC1 as agreed
 # on Sep 29; the role's trust names those subjects).
-# In the merge queue the subject is ref:refs/heads/gh-readonly-queue/main/...: the role's trust must admit it (a maintainer
-# step, before the queue is turned on) or the inspector job fails, and with it `scan`, for every merge group.
 #
 # The aggregation job at the bottom is named `scan`; that is the one
 # context to add to the main-protection ruleset as a required check.
 
 on:
   pull_request:
-  merge_group:      # REQ-DEP-005: the merge queue runs every required check on its own commit
   push:
     branches: [main]
     tags: ['v*']
@@ -52,7 +49,7 @@ concurrency:
 # checks/statuses/pull-requests read are requested by Build's admission step, which snapshot mode
 # does not run, but they are static job permissions of the called stage. The callers' grants
 # are a static ceiling (REQ-CHAIN-004-AC14): no write and, since the Witness move, no id-token (building jobs record under a throwaway key). The inspector job requests
-# id-token: write for the role assumption; the scanner (grype) matrix holds no token. Dependabot-
+# id-token: write for the role assumption; the grype job holds no token. Dependabot-
 # triggered runs get a read-only token that the permissions key can raise
 # (GitHub docs, "Troubleshooting Dependabot on GitHub Actions"); fork
 # events are downgraded and need none of this to build and scan.
@@ -95,38 +92,15 @@ jobs:
           echo "snapshot Rebuild result: ${r}"
           [ "${r}" = "success" ] || { echo "::error::the build is not shown reproducible: the snapshot Rebuild failed, was cancelled or was skipped (result=${r})" >&2; exit 1; }
 
-  scanners:
-    name: read the scanner list
-    runs-on: ubuntu-latest
-    outputs:
-      list: ${{ steps.read.outputs.list }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - id: read
-        run: echo "list=$(jq -c '.pr_gate' .github/policy/scanners.json | jq -c 'map(select(. != "inspector"))')" >> "$GITHUB_OUTPUT"
-
   scanner:
-    name: scan (${{ matrix.scanner }})
-    needs: [build, scanners]
+    name: scan (grype)
+    needs: [build]
     runs-on: ubuntu-latest
-    # The grype leg(s) of the pr_gate list; Amazon Inspector runs in its own job below (the Witness adversarial pass: the one job that
-    # holds id-token: write is not a matrix, and the scanner matrix holds no token at all).
+    # Amazon Inspector runs in its own job below (the Witness adversarial pass: the one job that holds id-token: write; this job holds no token).
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        scanner: ${{ fromJSON(needs.scanners.outputs.list) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # This job scans with grype only: its three grype-only steps below are `if: matrix.scanner == 'grype'`. A pr_gate name other than grype would install a tool and scan
-      # nothing, and the `scan` aggregate would read success; a scanner that did not run is a failure, never a pass.
-      - name: refuse a scanner this job cannot run
-        if: matrix.scanner != 'grype'
-        run: |
-          echo "::error::scanners.json pr_gate names a scanner this job does not run; only grype is wired into it" >&2
-          exit 1
 
       # grype reads the OCI images and scans the release archives: the image download + tar,
       # the archive download and the archive verify all run in this job.
@@ -136,13 +110,11 @@ jobs:
           path: /tmp/oci/
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        if: matrix.scanner == 'grype'
         with:
           name: dist
           path: dist/
 
       - name: verify archives before scanning them
-        if: matrix.scanner == 'grype'
         env:
           EXPECTED: ${{ needs.build.outputs.digests }}
         run: |
@@ -153,8 +125,8 @@ jobs:
           [ "$(wc -l < /tmp/expected-checksums.txt)" = 4 ]
           (cd dist && sha256sum -c /tmp/expected-checksums.txt --strict)
 
-      - name: install ${{ matrix.scanner }} (pinned by checksum; a scanner that can't run is a pipeline failure, not a finding)
-        run: ./bin/install-scanner.sh '${{ matrix.scanner }}'
+      - name: install grype (pinned by checksum; a scanner that can't run is a pipeline failure, not a finding)
+        run: ./bin/install-scanner.sh grype
 
       # The candidate is an OCI layout. Each single-arch child is made into a docker-save tar of its own blobs
       # (bin/layout-archive.sh), which Grype reads without a Docker daemon; the four children are scanned by tar.
@@ -174,7 +146,6 @@ jobs:
           echo "tars to scan:"; cat /tmp/refs.txt; cat /tmp/arc/*.id
 
       - name: Grype scan every image tar and every archive
-        if: matrix.scanner == 'grype'
         run: |
           set -euo pipefail
           grype db update >/dev/null 2>&1 || true
