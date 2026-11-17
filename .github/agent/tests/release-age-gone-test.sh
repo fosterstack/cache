@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC1, REQ-SUP-001-AC2
+# proves: REQ-SUP-001-AC1
 # The owner's ruling of Nov 11 2026 removed the release-age hold: a pull request never waits for a version to age, and the pin scan measures no time. Proved on the
 # tracked files, with nothing run: (a) pin-age-check.py and (b) pin-audit.py hold none of the words of the removed hold, (c) the tag observer is gone and no tracked
-# file refers to it, (d) Dependabot carries no cooldown and one entry per ecosystem and directory, the context and the job pin-age stay, the pin-age job runs no
-# re-run, no run listing and no publication-time lookup, and no workflow holds actions: write.
+# file refers to it, (d) Dependabot carries no cooldown and one entry per ecosystem and directory, the pin-age scan is deleted (REQ-REL-014-AC2: no context, no job pin-age, no pull_request trigger in supply-chain.yml), and no workflow holds actions: write.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
@@ -66,27 +65,25 @@ if not r or r["schedule"] != {"interval": "weekly"} or r.get("groups") != {"gomo
 if any(k[0] == "docker" for k in u): sys.exit("a docker entry exists")
 PY
 
-# d: the context pin-age and the job pin-age stay
-py .github/policy/required-checks.json >"$work/rc" 2>&1 <<'PY' && ok "required-checks.json still names the context pin-age" || { bad "required-checks.json still names the context pin-age"; sed 's/^/     /' "$work/rc"; }
+# d (REQ-REL-014-AC2): the pin-age scan is deleted: no context pin-age in required-checks.json, no job pin-age in supply-chain.yml, and supply-chain.yml has no pull_request trigger
+py .github/policy/required-checks.json >"$work/rc" 2>&1 <<'PY' && ok "required-checks.json names no context pin-age" || { bad "required-checks.json names no context pin-age"; sed 's/^/     /' "$work/rc"; }
 import json, sys
 def ctx(o):
     if isinstance(o, dict): return ([o["context"]] if isinstance(o.get("context"), str) else []) + [c for v in o.values() for c in ctx(v)]
     if isinstance(o, list): return [c for v in o for c in ctx(v)]
     return []
-if "pin-age" not in ctx(json.load(open(sys.argv[1]))): sys.exit("no context pin-age")
+if "pin-age" in ctx(json.load(open(sys.argv[1]))): sys.exit("a context pin-age is still required")
 PY
-py .github/workflows/supply-chain.yml >"$work/sc" 2>&1 <<'PY' && ok "supply-chain.yml still has the job pin-age" || { bad "supply-chain.yml still has the job pin-age"; sed 's/^/     /' "$work/sc"; }
+py .github/workflows/supply-chain.yml >"$work/sc" 2>&1 <<'PY' && ok "supply-chain.yml has no job pin-age" || { bad "supply-chain.yml has no job pin-age"; sed 's/^/     /' "$work/sc"; }
 import sys, yaml
 j = yaml.safe_load(open(sys.argv[1]))["jobs"]
-if "pin-age" not in j and not any(isinstance(v, dict) and v.get("name") == "pin-age" for v in j.values()): sys.exit("no job pin-age")
+if "pin-age" in j or any(isinstance(v, dict) and v.get("name") == "pin-age" for v in j.values()): sys.exit("a job pin-age is still there")
 PY
-py .github/workflows/supply-chain.yml >"$work/sc2" 2>&1 <<'PY' && ok "the pin-age job runs no re-run, no run listing and no publication-time lookup" || { bad "the pin-age job runs no re-run, no run listing and no publication-time lookup"; sed 's/^/     /' "$work/sc2"; }
-import re, sys, yaml
-j = yaml.safe_load(open(sys.argv[1]))["jobs"]
-job = j.get("pin-age") or next((v for v in j.values() if isinstance(v, dict) and v.get("name") == "pin-age"), None)
-if job is None: sys.exit("no job pin-age")
-m = re.search(r"gh run|/rerun|published_at|--now|first.seen|tag_observer", yaml.dump(job))
-if m: sys.exit("found: " + m.group(0))
+py .github/workflows/supply-chain.yml >"$work/sc2" 2>&1 <<'PY' && ok "supply-chain.yml has no pull_request trigger" || { bad "supply-chain.yml has no pull_request trigger"; sed 's/^/     /' "$work/sc2"; }
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+on = d.get(True, d.get("on"))
+if "pull_request" in (on if isinstance(on, (dict, list)) else [on]): sys.exit("supply-chain.yml still runs on pull_request")
 PY
 
 # d: no workflow holds actions: write, at the top or in a job

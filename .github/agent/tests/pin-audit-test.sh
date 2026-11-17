@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC5, REQ-SUP-001-AC6, REQ-SUP-001-AC7, REQ-SUP-001-AC8, REQ-SUP-001-AC9, REQ-SUP-001-AC10
+# proves: REQ-SUP-001-AC5, REQ-SUP-001-AC6, REQ-SUP-001-AC7, REQ-SUP-001-AC8, REQ-SUP-001-AC9, REQ-SUP-001-AC10, REQ-SUP-001-AC37
 # The daily supply-chain audit (owner ratified Oct 5, rules 2, 3 and 5; advisor 0172, 0175, 0177), proved offline against a fixtures file that stands in for the
 # advisory databases, the actions' own repositories and the registries, with a recording `gh`:
 #   python3 bin/pin-audit.py --root REPO --fixtures FILE --now ISO --gh CMD [--exceptions FILE]
@@ -366,6 +366,58 @@ check test "$rc" -eq 2; check test ! -s "$work/gone2.gh"; check grep -q 'observa
 CASE="AC6: a pull request in the fixtures that moved a version (held before) is never re-run: a normal run makes no run rerun call"
 run heldoff "{\"lists\": {}, \"upstream\": {}, \"nested\": {}, \"versions\": {}, \"prs\": [{\"number\": 7, \"title\": \"bump checkout\", \"run_id\": 99, \"moved\": [\"$ITEM_CO\"]}], \"times\": {\"$ITEM_CO\": {\"time\": \"$(dago 8)\", \"source\": \"observer\"}}}" "$work/r-clean"
 check test "$rc" -eq 0; check bash -c "! grep -q 'rerun' '$work/heldoff.gh'"
+
+# --- REQ-SUP-001-AC37: the daily audit refuses a go install whose version is not exact; an exact one (vMAJOR.MINOR.PATCH with an optional pre-release part, or a full 40-hex commit, judged whole) is no finding ---
+gorepo() { # <dir> <file> <line>: a tree whose one file holds that line
+  local r=$1; rm -rf "$r"; mkdir -p "$r/.github/workflows" "$r/bin"; git -C "$r" init -q
+  case "$2" in
+    *.yml) printf 'on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: %s\n' "$3" >"$r/$2" ;;
+    *) printf '#!/bin/sh\n%s\n' "$3" >"$r/$2" ;;
+  esac
+  git -C "$r" add -A; git -C "$r" -c user.name=t -c user.email=t@x commit -q -m go
+}
+no_issue() { none_match '"issue", "(create|edit|reopen)"' "$work/$1.gh"; }
+ac37_refused() { # <run name> <file> <go install line> <word the naming line holds> <what it is>
+  gorepo "$work/$1" "$2" "$3"; run "$1" "$CLEAN" "$work/$1"
+  CASE="AC37: $5: exit 1, a line naming the item says UNPINNED GO TOOL, and no issue is filed"
+  check test "$rc" -eq 1
+  check grep -Eq "UNPINNED GO TOOL.*$4|$4.*UNPINNED GO TOOL" "$work/$1.out"
+  check no_issue "$1"
+}
+ac37_exact() { # <run name> <go install line> <what it is>
+  gorepo "$work/$1" .github/workflows/g.yml "$2"; run "$1" "$CLEAN" "$work/$1"
+  CASE="AC37: $3 is an exact version: exit 0, no UNPINNED GO TOOL line, no issue"
+  check test "$rc" -eq 0
+  check none_match 'UNPINNED GO TOOL' "$work/$1.out" "$work/$1.err"
+  check no_issue "$1"
+}
+H40=$(printf 'ab%.0s' $(seq 20))
+ac37_refused go37-latest .github/workflows/g.yml 'go install example.com/x@latest' 'example\.com/x' "go install example.com/x@latest"
+ac37_refused go37-main .github/workflows/g.yml 'go install example.com/x@main' 'example\.com/x' "go install example.com/x@main (a branch)"
+ac37_refused go37-branch .github/workflows/g.yml 'go install example.com/x@release-1.2' 'example\.com/x' "go install example.com/x@release-1.2 (a branch name)"
+ac37_refused go37-range .github/workflows/g.yml 'go install example.com/x@v1.2.x' 'example\.com/x' "go install example.com/x@v1.2.x (a range)"
+ac37_refused go37-nover .github/workflows/g.yml 'go install example.com/x' 'example\.com/x' "go install example.com/x with no @version"
+ac37_refused go37-var .github/workflows/g.yml 'go install "$TOOL"' '\(variable\)' 'go install "$TOOL" (a variable)'
+ac37_refused go37-varver .github/workflows/g.yml 'go install example.com/x@$VER' 'example\.com/x' 'go install example.com/x@$VER (a variable version)'
+ac37_refused go37-v1 .github/workflows/g.yml 'go install example.com/x@v1' 'example\.com/x' "go install example.com/x@v1 (a major only)"
+ac37_refused go37-v12 .github/workflows/g.yml 'go install example.com/x@v1.2' 'example\.com/x' "go install example.com/x@v1.2 (no patch)"
+ac37_refused go37-short .github/workflows/g.yml 'go install example.com/x@abc1234' 'example\.com/x' "go install example.com/x@abc1234 (a short commit)"
+ac37_refused go37-h39 .github/workflows/g.yml "go install example.com/x@${H40%?}" 'example\.com/x' "go install example.com/x@ a 39-hex commit"
+ac37_refused go37-h41 .github/workflows/g.yml "go install example.com/x@${H40}0" 'example\.com/x' "go install example.com/x@ a 40-hex commit with a suffix (judged whole)"
+ac37_refused go37-suffix .github/workflows/g.yml 'go install example.com/x@v1.2.3x' 'example\.com/x' "go install example.com/x@v1.2.3x (a suffix after an exact version, judged whole)"
+ac37_refused go37-fourth .github/workflows/g.yml 'go install example.com/x@v1.2.3.4' 'example\.com/x' "go install example.com/x@v1.2.3.4 (a fourth number)"
+ac37_refused go37-script bin/tool.sh 'go install example.com/x@latest' 'example\.com/x' "go install example.com/x@latest in a script of the tree"
+ac37_exact go37-ok1 'go install example.com/x@v1.2.3' "go install example.com/x@v1.2.3"
+ac37_exact go37-ok2 'go install example.com/x@v1.2.3-rc.1' "go install example.com/x@v1.2.3-rc.1 (a pre-release part)"
+ac37_exact go37-ok3 'go install example.com/x@v0.0.0-20240101000000-abcdef123456' "a pseudo-version (a pre-release part)"
+ac37_exact go37-ok4 "go install example.com/x@$H40" "go install example.com/x@ a full 40-hex commit"
+# a refused item beside a good one: the good one is not the finding, and the daily audit still does its other work
+gorepo "$work/go37-mix" .github/workflows/g.yml 'go install example.com/good@v1.2.3 && go install example.com/bad@latest'; run go37-mix "$CLEAN" "$work/go37-mix"
+CASE="AC37: of two go installs in one step only the one that is not exact is named: exit 1, UNPINNED GO TOOL names example.com/bad and not example.com/good"
+check test "$rc" -eq 1
+check grep -Eq 'UNPINNED GO TOOL.*example\.com/bad|example\.com/bad.*UNPINNED GO TOOL' "$work/go37-mix.out"
+check none_match 'UNPINNED GO TOOL.*example\.com/good|example\.com/good.*UNPINNED GO TOOL' "$work/go37-mix.out"
+check no_issue go37-mix
 
 # --- the live source's own logic, with no network: how a database record is read -----------------------------------------------------------------------------
 CASE="OSV's affected entries are judged range by range and OR-ed (a merged event list once marked codeql-action 4.x affected by a stale 2.x range), GitHub's comparator ranges too, and a ref that is not a commit is never upstream-checked"

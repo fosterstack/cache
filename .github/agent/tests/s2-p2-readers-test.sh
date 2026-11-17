@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC16
+# proves: REQ-SUP-001-AC5
 # cache#359 round 5, section 2, group P2, row "working-tree readers": tree_files, tree_scripts and tree_surfaces of
 # pin-inventory.py (rev None = the working tree)
 #   (1) skip a tracked symbolic link (the kernel-lock path already refuses one), whatever it points at;
