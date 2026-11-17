@@ -1585,8 +1585,10 @@ def callers(path):
         if rebuild.get("permissions") != SNAPSHOT_REBUILD_PERMISSIONS:
             bad.append("job rebuild must hold exactly the permissions the called stage requests %s, got %s"
                        % (SNAPSHOT_REBUILD_PERMISSIONS, rebuild.get("permissions")))
-        if set(rebuild) - {"uses", "with", "permissions", "needs"}:
-            bad.append("job rebuild: keys outside {uses, with, permissions, needs}: %s" % sorted(set(rebuild) - {"uses", "with", "permissions", "needs"}))
+        if rebuild.get("if") != "github.event_name == 'push'":
+            bad.append("job rebuild must run on push to main only (if: github.event_name == 'push', REQ-REL-014), got %s" % rebuild.get("if"))
+        if set(rebuild) - {"uses", "with", "permissions", "needs", "if"}:
+            bad.append("job rebuild: keys outside {uses, with, permissions, needs, if}: %s" % sorted(set(rebuild) - {"uses", "with", "permissions", "needs", "if"}))
     return bad
 
 

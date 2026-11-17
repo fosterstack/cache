@@ -188,6 +188,7 @@ jobs:
   # the review gate (agent-review-gate.yml) runs main's copies of them over the pull request head, and a pull request can edit its own copies.
   allowlist:
     name: allowlist
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -331,6 +332,7 @@ jobs:
   # .github/agent/tests/), each on its own runner. A leg that fails fails the job; every suite is also held to its floor (bin/suite-guard-run.py).
   suite-list:
     name: suite-list
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       suites: ${{ steps.list.outputs.suites }}
@@ -344,6 +346,7 @@ jobs:
   suites:
     name: suites (${{ matrix.suite }})
     needs: suite-list
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -384,7 +387,7 @@ jobs:
     name: allowlist-chain
     runs-on: ubuntu-latest
     needs: [suites]
-    if: ${{ always() }}
+    if: ${{ always() && github.event_name == 'push' }}
     steps:
       - name: every suite succeeded (a failed, skipped, cancelled or missing result fails)
         env:
@@ -426,6 +429,7 @@ jobs:
 
   requirements:
     name: requirements
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

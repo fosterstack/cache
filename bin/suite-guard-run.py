@@ -101,10 +101,13 @@ def checks_result(job, needed):
     return any(isinstance(st, dict) and any(ref in live(v) for v in [st.get("run"), *(st.get("env") or {}).values()]) for st in job.get("steps") or [])
 
 
+PUSH_ONLY = "github.event_name == 'push'"
+
+
 def counting_steps(root, floors, names):
     """{suite name: PATH} of the counting steps of ROOT/.github/workflows/ci.yml that are trusted (REQ-CI-005), and the number of malformed ones.
     A counting step is trusted only if it is the WHOLE run text of its step (one line: no here-document, `exit` or branch around it), the step has no key but name and run,
-    and its job has no key but name, runs-on and steps (no if, needs, strategy, container or continue-on-error that could skip it): a line that fails any of this is not
+    and its job has no key but name, runs-on and steps (no needs, strategy, container or continue-on-error that could skip it; the one `if` allowed is PUSH_ONLY, a job that runs on push to main only, REQ-REL-014): a line that fails any of this is not
     trusted and its suite stays in the residual run of `all`. A line that mentions the runner's `run` form inside a longer step, or a counting step that names an
     unfloored suite, another floors file or a NAME that is not the file name of its PATH, is malformed and fails `all`."""
     wf = os.path.join(root, ".github", "workflows", "ci.yml")
@@ -128,7 +131,7 @@ def counting_steps(root, floors, names):
     for jname, job in jobs.items():
         if not isinstance(job, dict) or not isinstance(job.get("steps"), list):
             continue
-        plain_job = set(job) <= {"name", "runs-on", "steps"}
+        plain_job = set(job) <= {"name", "runs-on", "steps", "if"} and job.get("if", PUSH_ONLY) == PUSH_ONLY
         # a counting step is trusted only in a job whose failure turns the run red: a required check, or a job a required check reads the result of (needs.JOB.result)
         gated = required is not None and (str(job.get("name", jname)) in required or any(
             str(o.get("name", on)) in required and checks_result(o, jname) for on, o in jobs.items() if isinstance(o, dict)))

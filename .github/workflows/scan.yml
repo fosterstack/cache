@@ -72,6 +72,7 @@ jobs:
   # Build's snapshot record; it FAILS the job on any difference (REQ-CHAIN-005-AC7). The release relies only on release.yml's own Rebuild; this is a PR/main proof.
   rebuild:
     needs: build
+    if: github.event_name == 'push'
     permissions:
       contents: read
     uses: ./.github/workflows/stage-reproducibility.yml
@@ -83,7 +84,7 @@ jobs:
   reproducibility:
     name: reproducibility
     needs: rebuild
-    if: always()
+    if: always() && github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: the snapshot Rebuild must have run and passed
