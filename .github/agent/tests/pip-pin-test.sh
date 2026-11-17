@@ -19,7 +19,7 @@
 # Boundaries (documented, not tested): code that shells out to pip from inside another program (python -c "subprocess..."), third-party actions that
 # install packages inside themselves, and the inside of an external reusable workflow. A job-level `uses:` is therefore required to be either a
 # local workflow (which is read here like any other) or a digest-pinned external one, and a job that has `uses:` has no steps of its own (case 7).
-# Not testable offline: that the pinned version exists on the index (the pin scan, REQ-SUP-001-AC2, names it on the PR that moves it).
+# Not testable offline: that the pinned version exists on the index (the daily audit, REQ-SUP-001-AC5, reads every version).
 # Everything is read from the PARSED files (vendored PyYAML); the real tree must pass and every mutation (made through the parsed document,
 # or on the requirement text) must be rejected FOR THE REASON NAMED. PIPPIN_ROOT points the judge at another tree (the mutant builder's reference).
 set -euo pipefail

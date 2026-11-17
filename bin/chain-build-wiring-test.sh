@@ -2944,7 +2944,7 @@ jobs:
         run: echo anything at all, including secrets ${{ secrets.X }}
 EOF
 cl() { replace "$work/caller.yml" "$work/$1.yml" "$3" "$4" && expect caught "$2" "$5" callers "$work/$1.yml"; return 0; }
-# scan.yml also calls Rebuild in snapshot mode (the PR gate keeps rule 31's two-assembly check); the judge keys that on the file name
+# scan.yml also calls Rebuild in snapshot mode (rule 31's two-assembly check, on push to main only since Nov 17 2026: REQ-REL-014-AC1); the judge keys that on the file name
 mkdir -p "$work/scanfx" "$work/rescanfx"
 python3 - "$work" <<'PY'
 import sys
@@ -2952,6 +2952,7 @@ w = sys.argv[1]
 t = open(w + "/caller.yml").read()
 rebuild = """  rebuild:
     needs: build
+    if: github.event_name == 'push'
     permissions:
       contents: read
     uses: ./.github/workflows/stage-reproducibility.yml
@@ -3028,7 +3029,7 @@ expect caught "AC14 allowlist: main-candidate-rescan.yml has no artifact-accepta
 expect ok "AC14 fixture scan.yml: build then rebuild, both in snapshot mode" "" callers "$work/scanfx/scan.yml"
 expect ok "AC14 fixture main-candidate-rescan.yml: build only" "" callers "$work/rescanfx/main-candidate-rescan.yml"
 cl c14 "AC14 the build call is gone" "  build:\n" "  built:\n" "build is missing"
-SCAN_REBUILD="  rebuild:\n    needs: build\n    permissions:\n      contents: read\n"
+SCAN_REBUILD="  rebuild:\n    needs: build\n    if: github.event_name == 'push'\n    permissions:\n      contents: read\n"
 SCAN_REBUILD="$SCAN_REBUILD    uses: ./.github/workflows/stage-reproducibility.yml\n    with:\n      mode: snapshot\n"
 sc s1 "AC14 scan.yml without the Rebuild call (the PR gate would lose rule 31's two-assembly check)" \
       "$SCAN_REBUILD" "" "must also call Rebuild"
@@ -3040,6 +3041,9 @@ sc s5 "AC14 scan.yml's rebuild with contents: write" "      contents: read\n    
       "      contents: write\n    uses: ./.github/workflows/stage-reproducibility.yml" "static ceiling"
 sc s6 "AC14 scan.yml's rebuild with a packages write grant" "      contents: read\n    uses: ./.github/workflows/stage-reproducibility.yml" \
       "      contents: read\n      packages: write\n    uses: ./.github/workflows/stage-reproducibility.yml" "static ceiling"
+sc s8 "AC14 scan.yml's rebuild without its push condition (it would run on every pull request)" "    if: github.event_name == 'push'\n" "" "rebuild"
+sc s9 "AC14 scan.yml's rebuild with another condition" "    if: github.event_name == 'push'\n" "    if: always()\n" "rebuild"
+sc s10 "AC14 scan.yml's rebuild with the condition on pull requests" "    if: github.event_name == 'push'\n" "    if: github.event_name == 'pull_request'\n" "rebuild"
 sc s7 "AC14 scan.yml's rebuild with secrets" "      mode: snapshot\n  scanners:" "      mode: snapshot\n    secrets: inherit\n  scanners:" "keys outside"
 mkdir -p "$work/rescanfx2"; cp "$work/scanfx/scan.yml" "$work/rescanfx2/main-candidate-rescan.yml"
 expect caught "AC14 main-candidate-rescan.yml calls Rebuild too (it needs none)" "calls Build only" callers "$work/rescanfx2/main-candidate-rescan.yml"
@@ -4079,7 +4083,7 @@ if [ "$rc" = 1 ] \
 else
   bad "AC7 release-publish.sh with a wrong registry digest: exit $rc, pushes $pushes: ${out:0:140}"
 fi
-EXPECT=1360
+EXPECT=1363
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

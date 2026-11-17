@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3
+# proves: REQ-SUP-001-AC3
 # cache#359 round 5, section 2, group P2, row "a series is not a pin": for EVERY installer-input tool (INSTALLER_INPUTS
 # of pin-inventory.py: golangci-lint,
 # python, java, node, goreleaser, cosign, gcloud, helm, buildx, kind, kubectl) a version of fewer than three numeric

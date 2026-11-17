@@ -286,6 +286,17 @@ for label in "a job with an if" "a job that needs another" "a job with a strateg
   cwf "$k" "$CNT a-test.sh bin/a-test.sh"
   out=$(cwall) || true; if grep -q "a-test.sh: count [0-9]" <<< "$out"; then ok "REQ-CI-005-AC1 all: a suite counted only by a step of $label is still run here"; else bad "$label was trusted: ${out:0:200}"; fi
 done
+# a job that runs on push to main only: its one extra key, `if: github.event_name == 'push'` exactly, keeps its counting step trusted; any other condition does not
+cwf $'    if: github.event_name == \'push\'\n' "$CNT a-test.sh bin/a-test.sh"
+out=$(cwall) || true; if grep -q 'a-test.sh: counted by its own step' <<< "$out" && ! grep -q "a-test.sh: count [0-9]" <<< "$out"; then ok "REQ-CI-005-AC1 all: a counting step in a job whose only extra key is if: github.event_name == 'push' is trusted"; else bad "push-only job not trusted: ${out:0:200}"; fi
+cwf $'    name: j\n    if: github.event_name == \'push\'\n' "$CNT a-test.sh bin/a-test.sh"
+out=$(cwall) || true; if grep -q 'a-test.sh: counted by its own step' <<< "$out"; then ok "REQ-CI-005-AC1 all: the same job with a name key is trusted"; else bad "named push-only job not trusted: ${out:0:200}"; fi
+for cond in "github.event_name == 'pull_request'" "always()" "always() && github.event_name == 'push'" "github.event_name == 'push' || always()" "github.event_name != 'pull_request'" "\${{ github.event_name == 'push' }}"; do
+  cwf "    if: $cond"$'\n' "$CNT a-test.sh bin/a-test.sh"
+  out=$(cwall) || true; if grep -q "a-test.sh: count [0-9]" <<< "$out" && ! grep -q 'a-test.sh: counted by its own step' <<< "$out"; then ok "REQ-CI-005-AC1 all: a counting step in a job with the condition '$cond' is not trusted: its suite is still run here"; else bad "condition '$cond' was trusted: ${out:0:200}"; fi
+done
+cwf $'    if: github.event_name == \'push\'\n    needs: k\n' "$CNT a-test.sh bin/a-test.sh"
+out=$(cwall) || true; if grep -q "a-test.sh: count [0-9]" <<< "$out"; then ok "REQ-CI-005-AC1 all: a push-only job that also needs another job is not trusted"; else bad "push-only job with needs was trusted: ${out:0:200}"; fi
 for label in "if: false" "continue-on-error: true" "env: {A: b}" "shell: bash"; do
   cwf "" "$CNT a-test.sh bin/a-test.sh|$label"
   out=$(cwall) || true; if grep -q "a-test.sh: count [0-9]" <<< "$out"; then ok "REQ-CI-005-AC1 all: a counting step with '$label' is not trusted: its suite is still run here"; else bad "step with $label was trusted: ${out:0:200}"; fi
@@ -347,7 +358,7 @@ out=$(cwall) && rc=0 || rc=$?; if [ "$rc" != 0 ] && ! grep -q Traceback <<< "$ou
 cwf "" "bash bin/a-test.sh"
 out=$(cwall) || true; if ! grep -q 'x: 60 passed' <<< "$out" && grep -q 'a-test.sh: count 60' <<< "$out"; then ok "REQ-CI-005-AC1 all: the suites it runs are counted, their own output is not reprinted"; else bad "all echoes suites: ${out:0:200}"; fi
 
-EXPECT=135
+EXPECT=144
 echo "suite-guard: $pass passed, $failn failed"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT"; exit 1; fi
 [ "$failn" = 0 ]

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # proves: REQ-REL-014-AC1, REQ-REL-014-AC2, REQ-REL-014-AC3
-# Pull requests run six checks (test, lint, govulncheck, analyze (go), fips140-only, scan with the jobs scan needs), the held
-# checks (marker-gate, image-signatures), customer-words-edited, agent-review-gate.yml and dependabot-auto-merge.yml; every
-# other job runs on push to main, on a schedule or in the release chain. pin-age and dependency-review judge a push's
-# versions (the commit before the push to the commit after it). Reads the committed workflows and required-checks.json.
+# Pull requests run six checks (test, lint, govulncheck, analyze (go), fips140-only, scan with the jobs scan needs), the held check
+# marker-gate, customer-words-edited, agent-review-gate.yml and dependabot-auto-merge.yml; every other job runs on push to main, on a
+# schedule or in the release chain (REQ-REL-014-AC1). supply-chain.yml has no pull_request trigger, no pin-age job and runs only its
+# daily audit; required-checks.json has no pin-age entry (AC2) and no acceptance entry, and every check it scopes to push is produced by a
+# job that runs on push (AC3). Reads the committed workflows and required-checks.json.
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 out=$(python3 -I - "$root" <<'PY'
@@ -56,6 +57,7 @@ def judge(s, event):
             return (s[len(pre):-1] == event) == (op == "==")
     return True
 
+
 res(runs_on("github.event_name == 'push'", "pull_request") is False
     and runs_on("github.event_name == 'push'", "push") is True
     and runs_on("${{ always() && github.event_name == 'push' }}", "merge_group") is False
@@ -68,6 +70,7 @@ res(runs_on("github.event_name == 'push'", "pull_request") is False
     and runs_on("(github.event_name == 'push') || always()", "pull_request") is True,
     "the condition reader decides event-name conditions and lets every other condition run (fixture)")
 
+
 PR_EVENTS = ("pull_request", "merge_group", "pull_request_target")
 def jobs_on(event):
     got = set()
@@ -76,27 +79,29 @@ def jobs_on(event):
         for k, jb in (d.get("jobs") or {}).items():
             if runs_on((jb or {}).get("if"), event): got.add(f + ":" + k)
     return got
+def cond(f, j):   # a job's condition without a ${{ }} wrapper
+    c = ((wf[f].get("jobs") or {}).get(j) or {}).get("if")
+    if c is None: return None
+    c = str(c).strip()
+    return c[3:-2].strip() if c.startswith("${{") and c.endswith("}}") else c
 
+# ---- REQ-REL-014-AC1: what runs on a pull request
 SIX = {"ci.yml:test", "ci.yml:lint", "ci.yml:govulncheck", "ci.yml:fips140-only", "codeql.yml:analyze", "scan.yml:scan"}
-SCAN_NEEDS = {"scan.yml:build", "scan.yml:scanners", "scan.yml:scanner", "scan.yml:inspector"}
-HELD = {"ci.yml:marker-gate", "supply-chain.yml:image-signatures"}
+SCAN_NEEDS = {"scan.yml:build", "scan.yml:scanner", "scan.yml:inspector"}
+HELD = {"ci.yml:marker-gate"}
 OTHER = {"customer-words-edited.yml:customer-words-edited", "dependabot-auto-merge.yml:auto-merge",
          "agent-review-gate.yml:judge", "agent-review-gate.yml:publish"}
 ALLOWED = SIX | SCAN_NEEDS | HELD | OTHER
 on_pr = set().union(*(jobs_on(e) for e in PR_EVENTS))
-res(on_pr == ALLOWED, "the jobs that run on pull_request, merge_group or pull_request_target are exactly the allowed ones "
+res(on_pr == ALLOWED, "AC1: the jobs that run on pull_request, merge_group or pull_request_target are exactly the allowed ones "
     "(extra: %s; missing: %s)" % (sorted(on_pr - ALLOWED), sorted(ALLOWED - on_pr)))
-res(not (on_pr - ALLOWED), "no other job runs on a pull request or the merge queue (%s)" % sorted(on_pr - ALLOWED)[:6])
-mq = jobs_on("merge_group")
-res((SIX | SCAN_NEEDS) <= mq, "the six checks and the jobs scan needs run on merge_group (missing: %s)" % sorted((SIX | SCAN_NEEDS) - mq))
-res(not (mq - SIX - SCAN_NEEDS), "nothing else runs on merge_group (%s)" % sorted(mq - SIX - SCAN_NEEDS)[:6])
+res(not (on_pr - ALLOWED), "AC1: no other job runs on a pull request or the merge queue (%s)" % sorted(on_pr - ALLOWED)[:12])
 pr = jobs_on("pull_request")
-res((SIX | SCAN_NEEDS | HELD | {"customer-words-edited.yml:customer-words-edited"}) <= pr,
-    "the six, scan's jobs, the held checks and customer-words-edited run on pull_request (missing: %s)"
+res((SIX - {"codeql.yml:analyze"} | SCAN_NEEDS | HELD | {"customer-words-edited.yml:customer-words-edited"}) <= pr,
+    "AC1: the six, scan's jobs, marker-gate and customer-words-edited run on pull_request (missing: %s)"
     % sorted((SIX | SCAN_NEEDS | HELD | {"customer-words-edited.yml:customer-words-edited"}) - pr))
-for h in sorted(HELD):
-    f, j = h.split(":")
-    res(wf[f]["jobs"][j].get("if") == "github.event_name == 'pull_request'", "%s keeps its if: github.event_name == 'pull_request'" % j)
+res("codeql.yml:analyze" in pr, "AC1: analyze (go) runs on pull_request")
+res(cond("ci.yml", "marker-gate") == "github.event_name == 'pull_request'", "AC1: the held check marker-gate keeps its if: github.event_name == 'pull_request' (%r)" % cond("ci.yml", "marker-gate"))
 
 # the six keep their check names and no job-level condition that reads the event
 NAMES = {"ci.yml:test": "test", "ci.yml:lint": "lint", "ci.yml:govulncheck": "govulncheck", "ci.yml:fips140-only": "fips140-only",
@@ -104,69 +109,62 @@ NAMES = {"ci.yml:test": "test", "ci.yml:lint": "lint", "ci.yml:govulncheck": "go
 for key, name in sorted(NAMES.items()):
     f, j = key.split(":")
     jb = wf[f]["jobs"].get(j) or {}
-    res(jb.get("name", j) == name, "%s keeps the check name %r" % (key, name))
+    res(jb.get("name", j) == name, "AC1: %s keeps the check name %r" % (key, name))
     res("github.event" not in str(jb.get("if")) and runs_on(jb.get("if"), "pull_request") and runs_on(jb.get("if"), "merge_group"),
-        "%s has no job-level condition that could skip it on a pull request (%r)" % (key, jb.get("if")))
+        "AC1: %s has no job-level condition that could skip it on a pull request (%r)" % (key, jb.get("if")))
+for key in sorted(SCAN_NEEDS):
+    f, j = key.split(":")
+    res("github.event" not in str((wf[f]["jobs"].get(j) or {}).get("if")), "AC1: %s, a job scan needs, has no condition that reads the event" % key)
 
-res(set(triggers(wf["acceptance.yml"])) == {"workflow_call"}, "acceptance.yml has only the workflow_call trigger (%s)" % sorted(triggers(wf["acceptance.yml"])))
+res(set(triggers(wf["acceptance.yml"])) == {"workflow_call"}, "AC1: acceptance.yml has only the workflow_call trigger (%s)" % sorted(triggers(wf["acceptance.yml"])))
 
-# jobs that run on push to main only
-PUSH_ONLY = {"ci.yml": ["vendor", "coverage", "gosec", "allowlist", "allowlist-persona", "allowlist-chain-1", "allowlist-chain-2",
-                        "allowlist-chain-3", "allowlist-chain-4", "allowlist-chain", "allowlist-pins-auditor", "requirements",
-                        "dependency-review"],
-             "scan.yml": ["rebuild", "reproducibility"], "supply-chain.yml": ["pin-age"]}
-for f, names in PUSH_ONLY.items():
-    for j in names:
-        jb = (wf[f].get("jobs") or {}).get(j)
-        res(jb is not None, "%s has the job %s" % (f, j))
-        if jb is None: continue
-        res(not runs_on(jb.get("if"), "pull_request") and not runs_on(jb.get("if"), "merge_group"),
-            "%s %s: its job-level if is false on pull_request and on merge_group (%r)" % (f, j, jb.get("if")))
-        res(runs_on(jb.get("if"), "push"), "%s %s: its job-level if is true on push (%r)" % (f, j, jb.get("if")))
-        res("push" in triggers(wf[f]), "%s runs on push (%s)" % (f, j))
-for f, j in (("supply-chain.yml", "rerun-held"), ("supply-chain.yml", "daily-audit"), ("supply-chain.yml", "evidence-letter-present")):
-    jb = wf[f]["jobs"][j]
-    res(not runs_on(jb.get("if"), "pull_request") and not runs_on(jb.get("if"), "merge_group")
-        and runs_on(jb.get("if"), "schedule") and runs_on(jb.get("if"), "workflow_dispatch"),
-        "%s keeps schedule and dispatch only (%r)" % (j, jb.get("if")))
-# the push trigger of supply-chain.yml
-sc = triggers(wf["supply-chain.yml"])
-res(isinstance(sc.get("push"), dict) and sc["push"].get("branches") == ["main"],
-    "supply-chain.yml runs on push with branches [main] (%r)" % (sc.get("push"),))
-# pull_request stays in the workflow only for the held check image-signatures (judged above); no pin-age step reads it
-res("merge_group" not in sc, "supply-chain.yml has no merge_group trigger")
-res("schedule" in sc and "workflow_dispatch" in sc, "supply-chain.yml keeps its schedule and dispatch triggers")
+# ---- jobs that run on push to main only: their job-level if is the one string, so they cannot run on a pull request
+PUSH_IF = {("ci.yml", "allowlist"): "github.event_name == 'push'",
+           ("ci.yml", "suite-list"): "github.event_name == 'push'",
+           ("ci.yml", "suites"): "github.event_name == 'push'",
+           ("ci.yml", "allowlist-chain"): "always() && github.event_name == 'push'",
+           ("ci.yml", "requirements"): "github.event_name == 'push'",
+           ("scan.yml", "rebuild"): "github.event_name == 'push'",
+           ("scan.yml", "reproducibility"): "always() && github.event_name == 'push'"}
+for (f, j), want in sorted(PUSH_IF.items()):
+    jb = (wf[f].get("jobs") or {}).get(j)
+    res(jb is not None, "AC1: %s has the job %s" % (f, j))
+    if jb is None: continue
+    res(cond(f, j) == want, "AC1: %s %s has the job-level if %r (%r)" % (f, j, want, cond(f, j)))
+    res(not runs_on(jb.get("if"), "pull_request") and not runs_on(jb.get("if"), "merge_group"),
+        "AC1: %s %s does not run on pull_request or merge_group" % (f, j))
+    res(runs_on(jb.get("if"), "push") and "push" in triggers(wf[f]), "AC1: %s %s runs on push" % (f, j))
 
-# pin-age reads the push: the commit before it, then the commit after it
-pa = wf["supply-chain.yml"]["jobs"]["pin-age"]
-pa_text = json.dumps(pa.get("steps"))
-res("pull_request" not in pa_text and "merge_group" not in pa_text, "no pin-age step names pull_request or merge_group")
-checkouts = [s for s in pa.get("steps") or [] if str(s.get("uses", "")).startswith("actions/checkout") and (s.get("with") or {}).get("path") == "trusted"]
-res(len(checkouts) == 1 and checkouts[0]["with"].get("ref") == "${{ github.event.before }}",
-    "pin-age pulls the trusted checker at ref ${{ github.event.before }}")
-runs = "\n".join(s.get("run", "") for s in pa.get("steps") or [])
-res("--base ${{ github.event.before }}" in runs.replace('"', "") or ('--base "$BASE_SHA"' in runs and 'BASE_SHA="${{ github.event.before }}"' in runs),
-    "pin-age compares --base ${{ github.event.before }}")
-res("--head ${{ github.sha }}" in runs.replace('"', "") or ('--head "$HEAD_SHA"' in runs and 'HEAD_SHA="${{ github.sha }}"' in runs),
-    "pin-age compares --head ${{ github.sha }}")
+# ---- REQ-REL-014-AC2: supply-chain.yml and the list of required checks
+sc = wf["supply-chain.yml"]
+res("pull_request" not in triggers(sc), "AC2: supply-chain.yml has no pull_request trigger (%s)" % sorted(triggers(sc)))
+res(set(triggers(sc)) == {"schedule", "workflow_dispatch"}, "AC2: supply-chain.yml runs on schedule and workflow_dispatch only (%s)" % sorted(triggers(sc)))
+res("pin-age" not in (sc.get("jobs") or {}), "AC2: supply-chain.yml has no pin-age job")
+res(not any(j.get("name") == "pin-age" for j in (sc.get("jobs") or {}).values()), "AC2: no job of supply-chain.yml is named pin-age")
+res(set(sc.get("jobs") or {}) == {"daily-audit"}, "AC2: daily-audit is the one job left in supply-chain.yml (%s)" % sorted(sc.get("jobs") or {}))
+res(not any(k.startswith("supply-chain.yml:") for k in on_pr), "AC2: no job of supply-chain.yml runs on pull_request, merge_group or pull_request_target")
+da = (sc.get("jobs") or {}).get("daily-audit") or {}
+res(runs_on(da.get("if"), "schedule") and runs_on(da.get("if"), "workflow_dispatch") and not runs_on(da.get("if"), "pull_request"),
+    "AC2: daily-audit runs on schedule and workflow_dispatch and not on pull_request (%r)" % da.get("if"))
+checks = json.load(open(root + "/.github/policy/required-checks.json"))["required_checks"]
+scopes = {c["context"]: c["scope"] for c in checks}
+res(len(scopes) == len(checks), "AC2: required-checks.json names no context twice")
+res("pin-age" not in scopes, "AC2: required-checks.json has no pin-age entry")
 
-# dependency-review reads the push too
-dr = wf["ci.yml"]["jobs"]["dependency-review"]
-withs = [s.get("with") or {} for s in dr.get("steps") or [] if str(s.get("uses", "")).startswith("actions/dependency-review-action")]
-res(len(withs) == 1 and withs[0].get("base-ref") == "${{ github.event.before }}" and withs[0].get("head-ref") == "${{ github.sha }}",
-    "dependency-review compares base-ref ${{ github.event.before }} with head-ref ${{ github.sha }} (%r)" % withs)
-res("merge_group" not in json.dumps(dr.get("steps")), "no dependency-review step names a merge_group field")
-
-# required-checks.json: the three acceptance entries are gone (the release's Check stage runs them), the scopes of dependency-review and pin-age change
-scopes = {c["context"]: c["scope"] for c in json.load(open(root + "/.github/policy/required-checks.json"))["required_checks"]}
-WANT = {"test": "push", "lint": "push", "gosec": "push", "govulncheck": "push", "analyze (go)": "push", "allowlist": "push",
-        "allowlist-persona": "push", "allowlist-chain": "push", "allowlist-pins-auditor": "push", "dependency-review": "push",
-        "fips140-only": "push", "requirements": "push", "reproducibility": "push", "coverage": "push", "scan": "push", "pin-age": "push",
-        "auditor-review-gate": "pull_request", "vendor": "push", "marker-gate": "pull_request"}
-res(scopes.get("dependency-review") == "push", "required-checks.json scopes dependency-review to push (%r)" % scopes.get("dependency-review"))
-res(scopes.get("pin-age") == "push", "required-checks.json scopes pin-age to push (%r)" % scopes.get("pin-age"))
-res(scopes == WANT, "required-checks.json lost exactly the three acceptance contexts and changed nothing else (diff: %s)"
+# ---- REQ-REL-014-AC3: a push-scoped check is produced by a job that runs on push; acceptance is no entry
+res("acceptance" not in scopes, "AC3: required-checks.json has no acceptance entry")
+WANT = {"test": "push", "lint": "push", "govulncheck": "push", "allowlist": "push", "allowlist-chain": "push",
+        "requirements": "push", "reproducibility": "push", "scan": "push", "auditor-review-gate": "pull_request"}
+res(scopes == WANT, "AC3: required-checks.json holds exactly the nine remaining contexts with their scopes (diff: %s)"
     % sorted(k for k in set(scopes) | set(WANT) if scopes.get(k) != WANT.get(k)))
+on_push = jobs_on("push")
+produced = {}
+for key in on_push:
+    f, j = key.split(":")
+    produced.setdefault(wf[f]["jobs"][j].get("name", j), []).append(key)
+for ctx, scope in sorted(scopes.items()):
+    if scope == "push":
+        res(ctx in produced, "AC3: the push-scoped check %s is produced by a job that runs on push (%s)" % (ctx, produced.get(ctx)))
 print("\n".join(results))
 PY
 )

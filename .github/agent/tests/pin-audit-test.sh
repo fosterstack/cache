@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC5, REQ-SUP-001-AC6, REQ-SUP-001-AC7, REQ-SUP-001-AC8, REQ-SUP-001-AC9, REQ-SUP-001-AC10, REQ-SUP-001-AC34
+# proves: REQ-SUP-001-AC5, REQ-SUP-001-AC6, REQ-SUP-001-AC7, REQ-SUP-001-AC8, REQ-SUP-001-AC9, REQ-SUP-001-AC10, REQ-SUP-001-AC37
 # The daily supply-chain audit (owner ratified Oct 5, rules 2, 3 and 5; advisor 0172, 0175, 0177), proved offline against a fixtures file that stands in for the
 # advisory databases, the actions' own repositories and the registries, with a recording `gh`:
 #   python3 bin/pin-audit.py --root REPO --fixtures FILE --now ISO --gh CMD [--exceptions FILE] [--rerun-held]
@@ -380,20 +380,72 @@ run heldunprov "{\"lists\": {}, \"upstream\": {}, \"nested\": {}, \"versions\": 
 CASE="a held PR whose age cannot be proven is not re-run (it stays red)"
 check bash -c "! grep -q 'rerun' '$work/heldunprov.gh'"
 
-# --- REQ-SUP-001-AC34: a held file-pin update is re-run once the base branch's file_pins row is old enough (the same proof the age check takes) ---
+# --- REQ-SUP-001-AC6, file pins: a held file-pin update is re-run once the base branch's file_pins row is old enough (the same proof the age check takes) ---
 FPP=.github/policy/gradle-wrapper-jar-sha256.txt; FPT="7a9ce74cff467ca1bf60a4fcd9f05185acceda4d0f382434d393e17864262c5d  bench/gradle-sample/gradle/wrapper/gradle-wrapper.jar"
 FPH=$(python3 -c "import hashlib;print(hashlib.sha256(('$FPP' + chr(0) + '$FPT\n').encode()).hexdigest())")
 fpex() { printf '{"exceptions": [], "unmeasured_text": [], "file_pins": [{"file": "%s", "content": "%s", "upstream": "https://services.gradle.org/distributions/gradle-9.7.1-wrapper.jar.sha256", "version": "9.7.1", "published": "%s"}]}' "$FPP" "$FPH" "$1" >"$work/fpex-$2.json"; }
 fpheld() { echo "{\"lists\": {}, \"upstream\": {}, \"nested\": {}, \"versions\": {}, \"prs\": [{\"number\": 11, \"title\": \"jar sum\", \"run_id\": 77, \"moved\": [\"tool:file:$FPP@(file)#content:$1\"]}], \"times\": {}}"; }
 fpex "$(dago 8)" old; run fpheld "$(fpheld $FPH)" "$work/r-clean" --rerun-held --exceptions "$work/fpex-old.json"
-CASE="AC34: a held PR whose file pin is dated by a base-branch row 8 days old is RE-RUN (gh run rerun 77)"
+CASE="AC6 file pin: a held PR whose file pin is dated by a base-branch row 8 days old is RE-RUN (gh run rerun 77)"
 check grep -q '"rerun", "77"' "$work/fpheld.gh"
 fpex "$(dago 2)" young; run fpheld2 "$(fpheld $FPH)" "$work/r-clean" --rerun-held --exceptions "$work/fpex-young.json"
-CASE="AC34: the same row 2 days old: not re-run"
+CASE="AC6 file pin: the same row 2 days old: not re-run"
 check bash -c "! grep -q 'rerun' '$work/fpheld2.gh'"
 run fpheld3 "$(fpheld $(printf 'b%.0s' $(seq 64)))" "$work/r-clean" --rerun-held --exceptions "$work/fpex-old.json"
-CASE="AC34: a file pin whose content differs from the row's is not re-run"
+CASE="AC6 file pin: a file pin whose content differs from the row's is not re-run"
 check bash -c "! grep -q 'rerun' '$work/fpheld3.gh'"
+
+# --- REQ-SUP-001-AC37: the daily audit refuses a go install whose version is not exact; an exact one (vMAJOR.MINOR.PATCH with an optional pre-release part, or a full 40-hex commit, judged whole) is no finding ---
+gorepo() { # <dir> <file> <line>: a tree whose one file holds that line
+  local r=$1; rm -rf "$r"; mkdir -p "$r/.github/workflows" "$r/bin"; git -C "$r" init -q
+  case "$2" in
+    *.yml) printf 'on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: %s\n' "$3" >"$r/$2" ;;
+    *) printf '#!/bin/sh\n%s\n' "$3" >"$r/$2" ;;
+  esac
+  git -C "$r" add -A; git -C "$r" -c user.name=t -c user.email=t@x commit -q -m go
+}
+no_issue() { none_match '"issue", "(create|edit|reopen)"' "$work/$1.gh"; }
+ac37_refused() { # <run name> <file> <go install line> <word the naming line holds> <what it is>
+  gorepo "$work/$1" "$2" "$3"; run "$1" "$CLEAN" "$work/$1"
+  CASE="AC37: $5: exit 1, a line naming the item says UNPINNED GO TOOL, and no issue is filed"
+  check test "$rc" -eq 1
+  check grep -Eq "UNPINNED GO TOOL.*$4|$4.*UNPINNED GO TOOL" "$work/$1.out"
+  check no_issue "$1"
+}
+ac37_exact() { # <run name> <go install line> <what it is>
+  gorepo "$work/$1" .github/workflows/g.yml "$2"; run "$1" "$CLEAN" "$work/$1"
+  CASE="AC37: $3 is an exact version: exit 0, no UNPINNED GO TOOL line, no issue"
+  check test "$rc" -eq 0
+  check none_match 'UNPINNED GO TOOL' "$work/$1.out" "$work/$1.err"
+  check no_issue "$1"
+}
+H40=$(printf 'ab%.0s' $(seq 20))
+ac37_refused go37-latest .github/workflows/g.yml 'go install example.com/x@latest' 'example\.com/x' "go install example.com/x@latest"
+ac37_refused go37-main .github/workflows/g.yml 'go install example.com/x@main' 'example\.com/x' "go install example.com/x@main (a branch)"
+ac37_refused go37-branch .github/workflows/g.yml 'go install example.com/x@release-1.2' 'example\.com/x' "go install example.com/x@release-1.2 (a branch name)"
+ac37_refused go37-range .github/workflows/g.yml 'go install example.com/x@v1.2.x' 'example\.com/x' "go install example.com/x@v1.2.x (a range)"
+ac37_refused go37-nover .github/workflows/g.yml 'go install example.com/x' 'example\.com/x' "go install example.com/x with no @version"
+ac37_refused go37-var .github/workflows/g.yml 'go install "$TOOL"' '\(variable\)' 'go install "$TOOL" (a variable)'
+ac37_refused go37-varver .github/workflows/g.yml 'go install example.com/x@$VER' 'example\.com/x' 'go install example.com/x@$VER (a variable version)'
+ac37_refused go37-v1 .github/workflows/g.yml 'go install example.com/x@v1' 'example\.com/x' "go install example.com/x@v1 (a major only)"
+ac37_refused go37-v12 .github/workflows/g.yml 'go install example.com/x@v1.2' 'example\.com/x' "go install example.com/x@v1.2 (no patch)"
+ac37_refused go37-short .github/workflows/g.yml 'go install example.com/x@abc1234' 'example\.com/x' "go install example.com/x@abc1234 (a short commit)"
+ac37_refused go37-h39 .github/workflows/g.yml "go install example.com/x@${H40%?}" 'example\.com/x' "go install example.com/x@ a 39-hex commit"
+ac37_refused go37-h41 .github/workflows/g.yml "go install example.com/x@${H40}0" 'example\.com/x' "go install example.com/x@ a 40-hex commit with a suffix (judged whole)"
+ac37_refused go37-suffix .github/workflows/g.yml 'go install example.com/x@v1.2.3x' 'example\.com/x' "go install example.com/x@v1.2.3x (a suffix after an exact version, judged whole)"
+ac37_refused go37-fourth .github/workflows/g.yml 'go install example.com/x@v1.2.3.4' 'example\.com/x' "go install example.com/x@v1.2.3.4 (a fourth number)"
+ac37_refused go37-script bin/tool.sh 'go install example.com/x@latest' 'example\.com/x' "go install example.com/x@latest in a script of the tree"
+ac37_exact go37-ok1 'go install example.com/x@v1.2.3' "go install example.com/x@v1.2.3"
+ac37_exact go37-ok2 'go install example.com/x@v1.2.3-rc.1' "go install example.com/x@v1.2.3-rc.1 (a pre-release part)"
+ac37_exact go37-ok3 'go install example.com/x@v0.0.0-20240101000000-abcdef123456' "a pseudo-version (a pre-release part)"
+ac37_exact go37-ok4 "go install example.com/x@$H40" "go install example.com/x@ a full 40-hex commit"
+# a refused item beside a good one: the good one is not the finding, and the daily audit still does its other work
+gorepo "$work/go37-mix" .github/workflows/g.yml 'go install example.com/good@v1.2.3 && go install example.com/bad@latest'; run go37-mix "$CLEAN" "$work/go37-mix"
+CASE="AC37: of two go installs in one step only the one that is not exact is named: exit 1, UNPINNED GO TOOL names example.com/bad and not example.com/good"
+check test "$rc" -eq 1
+check grep -Eq 'UNPINNED GO TOOL.*example\.com/bad|example\.com/bad.*UNPINNED GO TOOL' "$work/go37-mix.out"
+check none_match 'UNPINNED GO TOOL.*example\.com/good|example\.com/good.*UNPINNED GO TOOL' "$work/go37-mix.out"
+check no_issue go37-mix
 
 # --- the live source's own logic, with no network: how a database record is read -----------------------------------------------------------------------------
 CASE="OSV's affected entries are judged range by range and OR-ed (a merged event list once marked codeql-action 4.x affected by a stale 2.x range), GitHub's comparator ranges too, and a ref that is not a commit is never upstream-checked"
@@ -1771,19 +1823,16 @@ for exc in (AttributeError("x"), KeyError("k"), TypeError("t"), IndexError("i"),
         rc = pa.main(["--root", sys.argv[2], "--fixtures", fx, "--now", "2026-10-05T12:00:00Z", "--gh", "false"])
     assert rc == 2 and "cannot do its job" in err.getvalue() and "as of" not in out.getvalue(), (exc, rc, err.getvalue()[:200])
 PY
-CASE="fixtures that are not a JSON object (not JSON, null, a list) end both programs in exit 2 on a readable "
+CASE="fixtures that are not a JSON object (not JSON, null, a list) end the daily audit in exit 2 on a readable "
 CASE+="repository, with a 'cannot' line on stderr"
 check python3 - "$aud" "$work/r-clean" "$work" <<'PY'
 import subprocess, sys
 aud, repo, work = sys.argv[1:4]
-age = aud.replace("pin-audit.py", "pin-age-check.py")
 for body in ("not json", "null", "[]"):
     fx = work + "/notobj.fx.json"; open(fx, "w").write(body)
-    for argv in ([aud, "--root", repo, "--fixtures", fx, "--now", "2026-10-05T12:00:00Z", "--gh", "false"],
-                 [age, "--root", repo, "--base", "HEAD", "--head", "HEAD", "--fixtures", fx,
-                  "--now", "2026-10-05T12:00:00Z"]):
-        r = subprocess.run([sys.executable, *argv], capture_output=True, text=True)
-        assert r.returncode == 2 and "cannot" in r.stderr, (argv[0], body, r.returncode, r.stderr[-200:])
+    argv = [aud, "--root", repo, "--fixtures", fx, "--now", "2026-10-05T12:00:00Z", "--gh", "false"]
+    r = subprocess.run([sys.executable, *argv], capture_output=True, text=True)
+    assert r.returncode == 2 and "cannot" in r.stderr, (argv[0], body, r.returncode, r.stderr[-200:])
 PY
 CASE="error lines: a path with line breaks, escapes or ##[ in an error prints as one stderr line, no workflow command"
 check python3 - "$aud" "$root" "$work" <<'PY'
@@ -1946,22 +1995,12 @@ def c_registry():
     for body in (b"{}", b'{"results": [1]}', b'{"results": [{"images": 5}]}', b'{"results": [{"digest": "%s", "tag_last_pushed": 7}]}' % img.version.encode(), b'{"results": [], "next": 7}'):
         http(body); refuse(("hub", body), lambda: age._registry_push(img))
     http(b'{"results": [{"images": [{}]}]}'); assert accepts("hub optional digest", lambda: age._registry_push(img)) is None
-def c_main_fixtures():
-    # --fixtures is the tests' own input, not an answer: a file that is not a JSON object ends both programs in exit 2 (cannot run), before any work
-    import contextlib
-    for body in ("not json", "null", "[]"):
-        fx = os.path.join(tmp, "fx.json"); open(fx, "w").write(body)
-        for main, args in ((pa.main, ["--root", tmp, "--fixtures", fx, "--now", "2026-10-05T12:00:00Z"]), (age.main, ["--root", tmp, "--base", "HEAD", "--head", "HEAD", "--fixtures", fx, "--now", "2026-10-05T12:00:00Z"])):
-            out = io.StringIO()
-            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
-                rc = main(args)
-            assert rc == 2 and "cannot" in out.getvalue(), (main.__module__, body, rc, out.getvalue()[:160])
 def c_local_files():
     f = os.path.join(tmp, "x.json"); open(f, "w").write("{}")
     refuse("base inputs {}", lambda: (_ for _ in ()).throw(age.CouldNotLook("x")) if False else _runtime(lambda: age.load_base_inputs(f, True)))
     assert accepts("ruled text {} (nothing ruled)", lambda: age.load_ruled_text(f, True)) == {}      # "unmeasured_text" is optional: an absent list rules nothing, which only fails more
     refuse("exceptions {}", lambda: pa.load_exceptions(f, True))
-    # file_pins (REQ-SUP-001-AC34): {} holds no rows (the key is optional); a file that is not an object, a null, a file_pins that is not a list and a row that is not an object are unreadable, never "nothing ruled"
+    # file_pins: {} holds no rows (the key is optional); a file that is not an object, a null, a file_pins that is not a list and a row that is not an object are unreadable, never "nothing ruled"
     assert accepts("file_pins {} (no rows)", lambda: _runtime(lambda: age.load_file_pins(f, True))) is None
     for body in ("[]", "null", '{"file_pins": 5}', '{"file_pins": {}}', '{"file_pins": [5]}', '{"file_pins": [[]]}', "not json"):
         open(f, "w").write(body); refuse(("file_pins", body), lambda: _runtime(lambda: age.load_file_pins(f, True)))
@@ -2113,7 +2152,7 @@ CASES = {
     ("pin-age-check.py", "_run_times", "_gh_api"): c_pr_clock, ("pin-age-check.py", "_run_times", "loads"): c_pr_clock,
     ("pin-age-check.py", "_release_with_assets", "_gh_api"): c_release_assets, ("pin-age-check.py", "live_proofs", "_http_dict"): c_live_pypi,
     ("pin-age-check.py", "_registry_push", "_gh_list"): c_registry, ("pin-age-check.py", "_registry_push", "_http_dict"): c_registry,
-    ("pin-age-check.py", "main", "load"): c_main_fixtures, ("pin-age-check.py", "load_ruled_text", "load"): c_local_files, ("pin-age-check.py", "load_file_pins", "load"): c_local_files, ("pin-age-check.py", "load_reviewed_files", "load"): c_reviewed_files, ("pin-age-check.py", "load_base_inputs", "load"): c_local_files,
+    ("pin-age-check.py", "load_ruled_text", "load"): c_local_files, ("pin-age-check.py", "load_file_pins", "load"): c_local_files, ("pin-age-check.py", "load_reviewed_files", "load"): c_reviewed_files, ("pin-age-check.py", "load_base_inputs", "load"): c_local_files,
     ("pin-audit.py", "_gh_json_raw", "loads"): c_gh_json_raw, ("pin-audit.py", "_gh_json", "_gh_json_raw"): c_gh_json_raw, ("pin-audit.py", "_osv_post", "load"): c_osv_post, ("pin-audit.py", "_osv_get", "load"): c_osv_get,
     ("pin-audit.py", "resolve_ref", "_gh_json"): c_resolve_ref, ("pin-audit.py", "live_ranges", "_gh_json"): c_live_ranges,
     ("pin-audit.py", "_lists_for", "_gh_json"): c_lists_for, ("pin-audit.py", "_lists_for", "_http_dict"): c_lists_for,
@@ -2232,7 +2271,7 @@ assert walks == [], walks      # then every file of every tree is answered by th
 PY
 
 bg_collect
-# --- the kernel lock file is followed by the history scan like the persona tools file (REQ-SUP-001-AC2): a version that was in the file and is gone from the tip still counts ---
+# --- the kernel lock file is followed by the history scan like the persona tools file (REQ-SUP-001-AC5): a version that was in the file and is gone from the tip still counts ---
 CASE="G7 the history scan of pin-audit.py follows inv.KERNEL_LOCK as it follows inv.PERSONA_TOOLS"
 check python3 - "$aud" <<'PY'
 import ast, sys
