@@ -861,7 +861,7 @@ NS_SHA = {
     "bin/chain-bytes-sha.py": "88e9c767a77dd8a42513eb87e7369109864b5f5765cd4464bd676ca7a3f4fb13",
     "bin/chain-hostile-step.sh": "c21890f9b96910a61c6dbe4dc644e0d823c46d8d258ca74fbb28f9d6c4c78b6a",
     "bin/chain-sandbox-probe.sh": "9fa97f930da63ab30780b474111b1652fe51057fd1fe712821dc8c0dcc3a2a11",
-    "bin/chain-verify.py": "74155ac98f179e347cdfa397a20a1ebd28d631efcafbd7a8d0ddce117ab1e6a9",
+    "bin/chain-verify.py": "bd986fa62e960bc25ffa79424e586f851ae80a5be3c2a3c288ef96b57bee5f6f",
     "bin/chain_common.py": "a8730d0504aeedc592286a2b9bbf1b835c9817a421c7dea656e8e4630da5a56d",
     "bin/chain_hostile.py": "2bfc791820bc71ed5294b3e0f042e72aecac8279b4cd3932e6008720f274b631",
     "bin/chain_items.py": "a787fc1acdffa6d5670eca13881a0777dccdf13987b9b97fe4b4cbd52a5efe99",
