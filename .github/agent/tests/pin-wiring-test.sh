@@ -883,7 +883,7 @@ sys.exit(1 if bad else 0)
 PY
 }
 
-LANDING_COMMIT=6a36b066b38cc9820be4db2f516057026df30b99   # chain-v030's commit; the landing section below reads it, too
+LANDING_COMMIT=d7cab1463cef8ac9fac38696dc13d1ff80778840   # chain-v030's commit; the landing section below reads it, too
 
 # judge mode, for the trusted review gate: judge the ci.yml of one commit of the current repo, read as a git
 # object (never checked out, never run), and nothing else
@@ -1766,20 +1766,21 @@ exec(sys.argv[2])
 yaml.safe_dump(d, open(sys.argv[1], "w"), sort_keys=False)
 PYL
 }
-lcase() {  # <name> <ok|bad> <python edit of chain-v030's ci.yml, or empty> [shell edit run in the temp tree]: judge mode over a temp commit
+lcase() {  # <name> <ok|bad> <python edit of chain-v030's ci.yml, or empty> [text the landing judge's refusal holds] [shell edit run in the temp tree]: judge mode over a temp commit
   local r="$work/land-$1"; rm -rf "$r"; mkdir -p "$r/.github/policy" "$r/test-evidence" "$r/tools/govulncheck"
   git archive "$landing_ref" .github/workflows | tar -x -C "$r"
   git show "$landing_ref:.github/policy/required-checks.json" > "$r/.github/policy/required-checks.json"
   git show "$landing_ref:test-evidence/suite-floors.json" > "$r/test-evidence/suite-floors.json"
   git show "$landing_ref:tools/govulncheck/go.mod" > "$r/tools/govulncheck/go.mod"
   [ -z "$3" ] || landing_edit "$r/.github/workflows/ci.yml" "$3"
-  [ -z "${4:-}" ] || ( cd "$r" && eval "$4" )
+  [ -z "${5:-}" ] || ( cd "$r" && eval "$5" )
   ( cd "$r" && git init -q . && git add -A && git_commit )
   head=$(cd "$r" && git rev-parse HEAD)
   # the temp repo lacks the landing commit the judge reads: borrow the clone's objects for this one command
   if out=$(cd "$r" && GIT_ALTERNATE_OBJECT_DIRECTORIES="$(cd "$here" && cd "$(git rev-parse --git-common-dir)" && pwd)/objects" PIN_WIRING_JUDGE_GIT="$head" bash "$here/.github/agent/tests/pin-wiring-test.sh" 2>&1)
   then got=ok; else got=bad; fi
-  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS landing:$1 -> $got"
+  if [ "$got" = "$2" ] && { [ -z "${4:-}" ] || grep -qF -- "$4" <<<"${out#*the landing form also refuses it: }"; }
+  then pass=$((pass+1)); echo "PASS landing:$1 -> $got"
   else failn=$((failn+1)); echo "FAIL landing:$1 -> $got, want $2 ($out)"; fi
 }
 lbcase() {  # <name> <ok|bad> <python edit of the BYTES b of chain-v030's ci.yml>
@@ -1818,12 +1819,24 @@ else
   lcase shard-step-if-false                    bad "$J['allowlist-chain-3']['steps'][-1]['if'] = 'false'"
   lcase gate-if-removed                        bad "$J['allowlist-chain'].pop('if')"
   lcase gate-needs-a-shard-short               bad "$J['allowlist-chain']['needs'] = $J['allowlist-chain']['needs'][:3]"
+  CK="[s for s in $J['allowlist']['steps'] if (s.get('env') or {}).get('GITHUB_HEAD_REPO')][0]"
+  lcase queue-ref-changed                      bad "x = $CK; x['env']['GITHUB_QUEUE_REF'] = 'other'" "the allowlist check step env is not exactly"
+  lcase queue-token-gone                       bad "x = $CK; x['env'].pop('GH_TOKEN')" "the allowlist check step env is not exactly"
+  FLOORS="[s for j in d['jobs'].values() for s in (j.get('steps') or []) if 'floors-vs-base' in (s.get('run') or '')]"
+  lcase floors-body-env-gone                   bad "[x['env'].pop('PR_BODY') for x in $FLOORS]" "does not have exactly the guard step 'suite floors only rise"
+  lcase trigger-workflow-dispatch              bad "d['on']['workflow_dispatch'] = {}" "triggers beyond push, pull_request and merge_group: workflow_dispatch"
+  lcase trigger-workflow-call                  bad "d['on']['workflow_call'] = {}" "triggers beyond push, pull_request and merge_group: workflow_call"
+  lcase permissions-read-dropped               bad "d['permissions'] = {'contents': 'read'}" "are not exactly {contents: read, pull-requests: read}"
+  lcase permissions-pr-write                   bad "d['permissions'] = {'contents': 'read', 'pull-requests': 'write'}" "are not exactly {contents: read, pull-requests: read}"
+  lcase uses-digest-bumped                     ok  "[s.__setitem__('uses', 'actions/setup-python@abababababababababababababababababababab') for s in $J['allowlist-persona']['steps'] if s.get('uses', '').startswith('actions/setup-python@')]"
+  lcase uses-tag-ref                           bad "[s.__setitem__('uses', 'actions/setup-python@v7') for s in $J['allowlist-persona']['steps'] if s.get('uses', '').startswith('actions/setup-python@')]" "differs in: uses"
+  lcase uses-short-digest                      bad "[s.__setitem__('uses', 'actions/setup-python@abababababababababababababababababababa') for s in $J['allowlist-persona']['steps'] if s.get('uses', '').startswith('actions/setup-python@')]" "differs in: uses"
   lcase counting-step-or-true                  bad "x = $COUNTING; x['run'] += ' || true'"
   lcase counting-step-env                      bad "x = $COUNTING; x['env'] = {'PINS_DRY': '1'}"
   lcase persona-step-removed                   bad "$J['allowlist-persona']['steps'].pop()"
   lcase pins-auditor-step-removed              bad "$J['allowlist-pins-auditor']['steps'].pop()"
-  lcase landing-form-extra-workflow-refused    bad "" "printf '%b' \"\$extra_wf\" > .github/workflows/zz-extra.yml"
-  lcase landing-form-hidden-workflow-refused   bad "" "printf '%b' \"\$extra_wf\" > .github/workflows/.zz-extra.yml"
+  lcase landing-form-extra-workflow-refused    bad "" "" "printf '%b' \"\$extra_wf\" > .github/workflows/zz-extra.yml"
+  lcase landing-form-hidden-workflow-refused   bad "" "" "printf '%b' \"\$extra_wf\" > .github/workflows/.zz-extra.yml"
   # main's own single-job allowlist-chain inside chain-v030's ci.yml fits neither form
   MAIN="m = yaml.load(open('$here/.github/workflows/ci.yml'), Loader=yaml.BaseLoader)"
   SINGLE="$MAIN; [$J.pop('allowlist-chain-%d' % k) for k in (1, 2, 3, 4)]; "
