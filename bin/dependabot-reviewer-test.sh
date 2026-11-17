@@ -1990,6 +1990,32 @@ streak '[{"databaseId":499,"conclusion":"failure"},{"databaseId":498,"conclusion
 streak '[{"databaseId":499,"conclusion":"failure"}]' no "only two runs so far: no issue"
 RUNLIST=fail streak '[]' no "history unreadable: nothing decided, step does not fail"
 
+# a tag named main must not answer a read of main's files: the workflow's reads name the branch ref
+wf="$repo/.github/workflows/dependabot-reviewer.yml"
+reads_ok() { # file: it has no ?ref= word at all, so every word a read adds, to the end of the shell word, is refused
+  [ -z "$(grep -o '?ref=[^[:space:]]*' "$1")" ]
+}
+if reads_ok "$wf"; then echo "ok: workflow has no read of main by ?ref=, so no tag named main can answer one"; pass=$((pass+1))
+else
+  echo "FAIL: workflow has no read of main by ?ref=, so no tag named main can answer one" \
+    "(want exactly 0 reads)"
+  fail=$((fail+1))
+fi
+# the workflow has no read left to mutate: each refusal case is a copy with one read line of the bad shape appended
+mut=$(mktemp -d -t cache5-tests.XXXXXX)
+bad_read() { { cat "$wf"; printf '  x: api repos/o/r/contents/f%s\n' "$2"; } > "$mut/$1.yml"; }
+bad_read branch-prefix '?ref=refs/heads/main-x"'
+bad_read tag-read '?ref=refs/tags/main"'
+bad_read bare '?ref=main"'
+bad_read no-quote '?ref=refs/heads/main;'
+# bash joins text after the closing quote into the same word, so the ref would no longer end at main
+bad_read quote-join-a '?ref=refs/heads/main"${GITHUB_REF_NAME:+-x}'
+bad_read quote-join-b '?ref=refs/heads/main"-x'
+for m in branch-prefix tag-read bare no-quote quote-join-a quote-join-b; do
+  if reads_ok "$mut/$m.yml"; then echo "FAIL: reads check accepts a workflow with a $m read"; fail=$((fail+1))
+  else echo "ok: reads check refuses a workflow with a $m read"; pass=$((pass+1)); fi
+done
+[ -d "$mut" ] && rm -rf -- "$mut"
 echo "----"
 echo "dependabot-reviewer act step: ${pass} passed, ${fail} failed"
 [ "$py_rc" -eq 0 ] && [ "$fail" -eq 0 ]

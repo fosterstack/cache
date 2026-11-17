@@ -247,10 +247,13 @@ jobs:
             fail() { disarm; echo "::error::$1: the reviewer's version is unknown"; exit 1; }
             fetch() { # <path>
               mkdir -p "$main/$(dirname "$1")"
-              gh api "repos/${GITHUB_REPOSITORY}/contents/$1?ref=main" --jq .content | base64 -d > "$main/$1" ||
+              gh api "repos/${GITHUB_REPOSITORY}/contents/$1?ref=refs/heads/main" --jq .content \
+                | base64 -d > "$main/$1" ||
                 fail "could not read $1 on main"
             }
-            gh api "repos/${GITHUB_REPOSITORY}/contents/bin/dependabot-reviewer-version.sh?ref=main" --jq .content \
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/contents/bin/dependabot-reviewer-version.sh?ref=refs/heads/main" \
+              --jq .content \
               | base64 -d > "$RUNNER_TEMP/dependabot-reviewer-version.sh" || fail "could not read the version script"
             files=$(bash "$RUNNER_TEMP/dependabot-reviewer-version.sh" --files) ||
               fail "could not list the reviewer's files"
