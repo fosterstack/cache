@@ -1422,7 +1422,6 @@ _VENDOR_NAMING_FILES = frozenset("""
 .github/agent/tests/pin-audit-test.sh
 .github/agent/tests/pin-wiring-test.sh
 .github/workflows/ci.yml
-.github/workflows/release.yml
 bin/assemble-image-test.sh
 bin/build-apk-test.sh
 bin/build-apk.sh
@@ -1450,7 +1449,6 @@ bin/check-govulncheck.py
 bin/check-no-outbound-test.sh
 bin/check-no-outbound.py
 bin/install-scanner.sh
-bin/release-metadata.py
 bin/build-apk-helper.py
 bin/chain-test-shape.py
 """.split())

@@ -38,7 +38,7 @@
 #       `witness-build` into witness-build (Build's verified record, the --build-record of hand_sign_code, NOT a file the hostile
 #       step supplied); `provenance` into provenance (THIS run's genuine Sign output, for the positive control); the pinned
 #       `policy make` line above; then one step per attempt (five) and one POSITIVE CONTROL step (verify --stage sign --record
-#       provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json, must exit 0, recorded as its own row positive_control that
+#       provenance/provenance.json --policy policy.json --rekor-entries provenance/provenance.rekor.json, must exit 0, recorded as its own row positive_control that
 #       the verdict requires to be ACCEPTED: a policy that refuses everything, e.g. made for the wrong ref, is caught here), each
 #       exactly three lines:
 #           rc=0
@@ -53,7 +53,7 @@
 #         read_sign_key     hostile-material --kind key --file attempts/read_sign_key.txt --policy policy.json
 #         hand_sign_code    check-build-record --digests attempts/hand_sign_code.json --build-record witness-build/build-collection.json --policy policy.json
 #                           (the same refusals as `sign --check`, with no signer in it: this job holds no id-token and installs no cosign, step-8 SF4)
-#         positive_control  verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json   (must be ACCEPTED;
+#         positive_control  verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-entries provenance/provenance.rekor.json   (must be ACCEPTED;
 #                           the stub is the tlogEntry Sign extracted from its own cosign bundle into the provenance artifact; a verify
 #                           without the stub is refused 'rekor' (chain-verify-test.sh), so the control cannot pass by a shortcut)
 #         forge_provenance  verify --stage sign --record attempts/forge_provenance.json --policy policy.json
@@ -70,7 +70,7 @@
 #       --out hostile-results.json` and an upload of the artifact `hostile-results`. Job `hostile-verdict` (needs hostile-verify;
 #       permissions {contents: read}) downloads that artifact and runs `python3 bin/chain-verify.py hostile-verdict
 #       hostile-results/hostile-results.json`. No hostile-results*.json may be a file of the repository tree (it must come from
-#       the run). Every dry-run-gated job (the release caller, the `decide` tag job) has an `if:` that has the conjunct
+#       the run). Every dry-run-gated job (the release caller, the promotion job) has an `if:` that has the conjunct
 #       `!inputs.dry-run` and no `||`, so a dry run neither tags nor publishes.
 #   No throwaway caller workflow exists any more (the sixth case is not a runtime case); this test makes no exception for one and has no
 #       environment-variable bypass: a hostile step that reads a record named hostile-caller is a finding of the wiring judge.
@@ -98,7 +98,7 @@
 #   chain-verify.py hostile-verdict RESULTS.json   (the REAL script is run here; there is no inline copy of it): the five attempts
 #       must be refused with their own stage and cause, AND positive_control must be accepted. The hostile step's two material
 #       functions write the transcript line (the code contains `transcript:` twice).
-# Modelled on: this repo's bin/release-patch-wiring-test.sh (YAML-parsing wiring judge); in-toto-witness cmd/verify.go:211 (a
+# Modelled on: this repo's bin/chain-release-shape.py (YAML-parsing wiring judge); in-toto-witness cmd/verify.go:211 (a
 # verifier's refusal is its exit code and message, not a field the attacker writes); the spike evidence
 # 2026-10-09-harness-witness-spikes-a-c.md:83-100 (the five ways a Build step reaches the signing identity).
 set -euo pipefail
@@ -136,6 +136,8 @@ mut("badstage", 2, stage="x")
 mut("wrongcause_forge", 4, reason="digest mismatch")
 mut("wrongstage_token", 1, stage="sign")
 mut("wrongcause_hand", 3, reason="identity is stage-build.yml")
+mut("digestcause_hand", 3, reason="digest list differs from the digests Build attested "
+    "(its digest does not match the record's product subject)")
 mut("wrongcause_key", 2, reason="no such file attempts/read_sign_key.txt")
 mut("wrongcause_mint", 0, reason="digest mismatch")
 mut("nostage", 3, stage="")
@@ -203,6 +205,8 @@ expect refuse "verdict: a stage that is not a stage" badstage "stage"
 expect refuse "verdict: a forged provenance refused for a digest mismatch (not its identity) does not count" wrongcause_forge "cause"
 expect refuse "verdict: a token attempt graded at stage sign instead of runner does not count" wrongstage_token "stage"
 expect refuse "verdict: hand_sign_code refused for an identity reason (not digest/format) does not count" wrongcause_hand "cause"
+expect refuse "verdict: hand_sign_code refused at the attestation check (digest mismatch), not at its format check, \
+does not count" digestcause_hand "cause"
 expect refuse "verdict: a key attempt refused because the file was missing does not count" wrongcause_key "cause"
 expect refuse "verdict: a certificate mint refused for a digest mismatch does not count" wrongcause_mint "cause"
 expect refuse "verdict: an empty stage" nostage "stage"
@@ -287,23 +291,29 @@ done
 mrc=0; GITHUB_REPOSITORY=other/repo cvx hostile-material --kind token --file "$work/tok_yes.txt" || mrc=$?
 if [ "$mrc" = 1 ] && grep -F -q "refused at runner" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")"; then ok "hostile-material: the repository is read from GITHUB_REPOSITORY: Sign's file of another repository is not this repository's Sign"; else bad "hostile-material: GITHUB_REPOSITORY=other/repo must refuse fosterstack/cache's Sign token, got $mrc"; fi
 # a Build job with no id-token permission has no token request address (the Witness move): graded isolated, the static permission judge being the proof and this transcript the corroboration (an incomplete transcript is an error, never isolation)
-printf '%s\nrequest-env: absent\nenviron-read: 31\nenviron-unreadable-same-user: 0\n' "$TR" > "$work/tok_absent.txt"
-printf '%s\nrequest-env: absent\nenviron-read: 0\nenviron-unreadable-same-user: 0\n' "$TR" > "$work/tok_absent0.txt"
-printf '%s\nrequest-env: absent\nenviron-read: 31\nenviron-unreadable-same-user: 2\n' "$TR" > "$work/tok_absentbad.txt"
-printf '%s\nrequest-env: absent\nenviron-files: 31\n' "$TR" > "$work/tok_absentold.txt"
-printf '%s\nrequest-env: absent\nenviron-read: 31\nenviron-read: 99\nenviron-unreadable-same-user: 0\n' "$TR" > "$work/tok_absentdup.txt"
-printf '%s\nrequest-env: absent\nenviron-read: 31\nenviron-unreadable-same-user: 0\nenviron-unreadable-same-user: 0\n' "$TR" > "$work/tok_absentdupk.txt"
-printf '%s\nrequest-env: absent\nenviron-read: 31\n' "$TR" > "$work/tok_absentnc.txt"
-printf '%s\na process on this runner holds a token request address: /proc/9/environ\nrequest-env: absent\nenviron-read: 31\nenviron-unreadable-same-user: 0\n' "$TR" > "$work/tok_absenthold.txt"
+printf '%s\nrequest-env: absent\n' "$TR" > "$work/tok_absent.txt"
+printf '%s\na process on this runner holds a token request address: /proc/9/environ\nrequest-env: absent\n' "$TR" > "$work/tok_absenthold.txt"
 xexpect refuse "hostile-material: no token request address in the job, with the corroborating lines, is graded isolated (refused at runner), and the refusal names the static permission judge as the proof" "proven by the static permission judge" -- hostile-material --kind token --file "$work/tok_absent.txt"
-for f in tok_absent0 tok_absentbad tok_absentold tok_absentdup tok_absentdupk tok_absentnc tok_absenthold; do
+for f in tok_absenthold; do
   mrc=0; cvx hostile-material --kind token --file "$work/$f.txt" || mrc=$?
-  if [ "$mrc" = 2 ] && grep -F -q "error" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")" && ! grep -F -q "refused at" "$work/xerr"; then ok "hostile-material: $f (absent address with no environ file read, an unreadable environ among the step's own ancestors, the old bare environ-files count, a repeated or missing count, or a process holding an address) is an ERROR (exit 2), never isolation"; else bad "hostile-material: $f is an error" "exit $mrc"; fi
+  if [ "$mrc" = 2 ] && grep -F -q "error" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")" && ! grep -F -q "refused at" "$work/xerr"; then ok "hostile-material: $f (a process holds a token request address) is an ERROR (exit 2), never isolation"; else bad "hostile-material: $f is an error" "exit $mrc"; fi
 done
 # the REAL step's token attempt in a job with no request address: it writes the absence proof and no claims line (functions only: the cut drops the five calls at the end)
 mkdir -p "$work/stepnotok" && sed '/^attempt_mint_sign_cert$/,$d' "$root/bin/chain-hostile-step.sh" > "$work/stepnotok/fns.sh"
 (cd "$work/stepnotok" && env -i PATH="$PATH" bash -c '. ./fns.sh; attempt_read_sign_token')
-if grep -qx 'request-env: absent' "$work/stepnotok/attempts/read_sign_token.txt" && grep -q '^environ-read: [0-9][0-9]*$' "$work/stepnotok/attempts/read_sign_token.txt" && { [ ! -r /proc/self/environ ] || grep -q '^environ-read: [1-9]' "$work/stepnotok/attempts/read_sign_token.txt"; } && grep -qx 'environ-unreadable-same-user: 0' "$work/stepnotok/attempts/read_sign_token.txt" && ! grep -q '^claims:' "$work/stepnotok/attempts/read_sign_token.txt"; then ok "hostile step: with no token request address in the environment the token attempt writes request-env: absent, the count of environ files it read and no unreadable file of its own user, and no claims line"; else bad "hostile step: no-token transcript (got: $(cat "$work/stepnotok/attempts/read_sign_token.txt" 2>&1 | head -c 600 | tr '\n' '|'); proc readable: $([ -r /proc/self/environ ] && echo yes || echo no))"; fi
+if grep -qx 'request-env: absent' "$work/stepnotok/attempts/read_sign_token.txt" && ! grep -q -e '^environ-read:' -e '^environ-unreadable-same-user:' "$work/stepnotok/attempts/read_sign_token.txt" && ! grep -q '^claims:' "$work/stepnotok/attempts/read_sign_token.txt"; then ok "hostile step: with no token request address in the environment the token attempt writes request-env: absent, no environ line and no claims line"; else bad "hostile step: no-token transcript (got: $(cat "$work/stepnotok/attempts/read_sign_token.txt" 2>&1 | head -c 600 | tr '\n' '|'); proc readable: $([ -r /proc/self/environ ] && echo yes || echo no))"; fi
+# the REAL step's token fetch: the request token is in no argv, only in the file hostile-work/token-header that the stand-in for bin/loopback-get.sh reads at call time; the file is gone afterwards
+mkdir -p "$work/steptok/bin" && cp "$work/stepnotok/fns.sh" "$work/steptok/fns.sh"
+cat > "$work/steptok/bin/loopback-get.sh" <<'STUB'
+printf '%s\n' "$@" > argv.log
+cat hostile-work/token-header > header-at-call.txt
+printf '{"value": "aaa.bbb.ccc"}\n'
+STUB
+(cd "$work/steptok" && env -i PATH="$PATH" ACTIONS_ID_TOKEN_REQUEST_URL="http://127.0.0.1:9/token?x=1" ACTIONS_ID_TOKEN_REQUEST_TOKEN=SECRETREQUESTTOKEN bash -c '. ./fns.sh; attempt_read_sign_token')
+if ! grep -q SECRETREQUESTTOKEN "$work/steptok/argv.log" && grep -qx -e '-H' "$work/steptok/argv.log" && grep -qx '@hostile-work/token-header' "$work/steptok/argv.log" && grep -qx 'http://127.0.0.1:9/token?x=1&audience=sigstore' "$work/steptok/argv.log"; then ok "hostile step: the request token is in no argument of the fetch, which gets -H @hostile-work/token-header and the address with &audience=sigstore"; else bad "hostile step: the fetch argv is $(tr '\n' '|' < "$work/steptok/argv.log")"; fi
+if [ "$(cat "$work/steptok/header-at-call.txt" 2> /dev/null)" = "Authorization: bearer SECRETREQUESTTOKEN" ]; then ok "hostile step: at the time of the fetch the file held the line Authorization: bearer <token>"; else bad "hostile step: the file at call time held $(head -c 100 "$work/steptok/header-at-call.txt" 2> /dev/null)"; fi
+if [ ! -e "$work/steptok/hostile-work/token-header" ]; then ok "hostile step: the token header file is removed after the step"; else bad "hostile step: hostile-work/token-header is still there"; fi
+if grep -qx 'claims: aaa.bbb.' "$work/steptok/attempts/read_sign_token.txt" && ! grep -q SECRETREQUESTTOKEN "$work/steptok/attempts/read_sign_token.txt"; then ok "hostile step: the transcript is unchanged (claims line header.payload., no token)"; else bad "hostile step: transcript $(tr '\n' '|' < "$work/steptok/attempts/read_sign_token.txt" | head -c 200)"; fi
 # Linux only (/proc/PID/environ): an UNRELATED process of the same user that denies its environ (dumpable off, as hosted runners have) must not change the grade; a non-dumpable
 # ANCESTOR of the step must be an error (it could hide a request variable). Skipped, with an ok line, where there is no /proc.
 skipped=0
@@ -323,7 +333,7 @@ if [ -r /proc/self/environ ]; then
   # (b) the stray is a real holder: the runner scan lists it, so the step's scan is not narrowed
   if grep -qx "a process on this runner holds a token request address: /proc/$stray/environ" "$work/stepproc/attempts/read_sign_token.txt"; then ok "hostile step (Linux): the real scan lists a holder outside the step's tree (the runner scan is not narrowed)"; else bad "hostile step (Linux): the real scan did not list the stray holder /proc/$stray/environ"; fi
   kill "$stray" 2> /dev/null || true
-  if [ "$mrc" = 1 ] && grep -qx 'environ-unreadable-same-user: 0' "$work/stepproc/graded.txt" && grep -F -q "static permission judge" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")"; then ok "hostile step (Linux): an unrelated same-user process that denies its environ leaves the grade isolated (K counts the step's ancestors only)"; else bad "hostile step (Linux): unrelated non-dumpable process: rc $mrc, transcript $(tr '\n' '|' < "$work/stepproc/attempts/read_sign_token.txt" | head -c 400), err $(head -c 200 "$work/xerr")"; fi
+  if [ "$mrc" = 1 ] && grep -F -q "static permission judge" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")"; then ok "hostile step (Linux): an unrelated same-user process that denies its environ leaves the grade isolated"; else bad "hostile step (Linux): unrelated non-dumpable process: rc $mrc, transcript $(tr '\n' '|' < "$work/stepproc/attempts/read_sign_token.txt" | head -c 400), err $(head -c 200 "$work/xerr")"; fi
   # (c) a holder inside the step's own tree (a child of the step's shell that holds the address in its environment) is listed by its PID and the transcript is an error
   mkdir -p "$work/steptree"; cp "$work/stepnotok/fns.sh" "$work/steptree/fns.sh"
   (cd "$work/steptree" && env -i PATH="$PATH" HOME="$work" bash -c '. ./fns.sh; ACTIONS_ID_TOKEN_REQUEST_URL=x sleep 30 & echo $! > child.pid; sleep 0.5; attempt_read_sign_token; kill $(cat child.pid) 2> /dev/null')
@@ -331,8 +341,9 @@ if [ -r /proc/self/environ ]; then
   if [ "$mrc" = 2 ] && grep -qx "a process on this runner holds a token request address: /proc/$(cat "$work/steptree/child.pid")/environ" "$work/steptree/attempts/read_sign_token.txt"; then ok "hostile step (Linux): a holder inside the step's own tree is listed by its PID and the transcript is an error (exit 2)"; else bad "hostile step (Linux): a holder in the step's tree: rc $mrc, transcript $(tr '\n' '|' < "$work/steptree/attempts/read_sign_token.txt" | head -c 200)"; fi
   mkdir -p "$work/stepanc"; cp "$work/stepnotok/fns.sh" "$work/stepanc/fns.sh"
   (cd "$work/stepanc" && env -i PATH="$PATH" HOME="$work" python3 -c 'import ctypes, subprocess; ctypes.CDLL(None).prctl(4, 0); subprocess.run(["bash", "-c", ". ./fns.sh; attempt_read_sign_token"])')
-  mrc=0; cvx hostile-material --kind token --file "$work/stepanc/attempts/read_sign_token.txt" || mrc=$?
-  if [ "$mrc" = 2 ] && ! grep -qx 'environ-unreadable-same-user: 0' "$work/stepanc/attempts/read_sign_token.txt"; then ok "hostile step (Linux): a non-dumpable ANCESTOR of the step is counted and the transcript is an error (exit 2), never isolation"; else bad "hostile step (Linux): non-dumpable ancestor: rc $mrc, transcript $(tr '\n' '|' < "$work/stepanc/attempts/read_sign_token.txt" | head -c 400)"; fi
+  grep -v 'holds a token request address' "$work/stepanc/attempts/read_sign_token.txt" > "$work/stepanc/graded.txt"
+  mrc=0; cvx hostile-material --kind token --file "$work/stepanc/graded.txt" || mrc=$?
+  if [ "$mrc" = 1 ] && ! grep -q '^environ' "$work/stepanc/attempts/read_sign_token.txt"; then ok "hostile step (Linux): a non-dumpable ancestor of the step changes nothing (no environ line; the grade stays isolated, the static permission judge being the proof)"; else bad "hostile step (Linux): non-dumpable ancestor: rc $mrc, transcript $(tr '\n' '|' < "$work/stepanc/attempts/read_sign_token.txt" | head -c 400)"; fi
 else
   ok "hostile step (Linux fixtures): skipped, this system has no /proc"
   ok "hostile step (Linux fixtures): skipped, this system has no /proc (ancestor case)"
@@ -420,7 +431,7 @@ PIN = {
  "read_sign_token": r'python3 bin/chain-verify\.py hostile-material --kind token --file attempts/read_sign_token\.txt',
  "read_sign_key": r'python3 bin/chain-verify\.py hostile-material --kind key --file attempts/read_sign_key\.txt --policy policy\.json',
  "hand_sign_code": r'python3 bin/chain-verify\.py check-build-record --digests attempts/hand_sign_code\.json --build-record witness-build/build-collection\.json --policy policy\.json',
- "positive_control": r'python3 bin/chain-verify\.py verify --stage sign --record provenance/provenance\.json --policy policy\.json --rekor-stub provenance/provenance\.rekor\.json',
+ "positive_control": r'python3 bin/chain-verify\.py verify --stage sign --record provenance/provenance\.json --policy policy\.json --rekor-entries provenance/provenance\.rekor\.json',
  "forge_provenance": r'python3 bin/chain-verify\.py verify --stage sign --record attempts/forge_provenance\.json --policy policy\.json',
 }
 TAGCONJ = "startsWith(github.ref, 'refs/tags/v')"
@@ -630,12 +641,12 @@ else:
         BUILD_IF = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
         if re.sub(r"\s+", "", str(bj.get("if", ""))) != re.sub(r"\s+", "", BUILD_IF): bad.append("the build job must carry `if: %s` (else a dry run skips it, and with it sign and the hostile jobs, and is green with no checks): %r" % (BUILD_IF, bj.get("if")))
         if need(bj): bad.append("the build job needs nothing (admission is Build's first step, not a job): %r" % need(bj))
-        if "decide" not in jobs: bad.append("release.yml has no `decide` tag job to gate (the patch-tag job must not run in a dry run)")
+# a command continued with backslash-newline is one command: the lines are joined before `policy make`, --tag and --ref are looked for
 # Release makes its policy in its stage file or in its first step, bin/release-verify.sh
 cands = [os.path.join(root, ".github/workflows/stage-promote.yml"), os.path.join(root, "bin/release-verify.sh")]
 if not os.path.exists(cands[0]): bad.append("stage-promote.yml missing (Release makes its policy there or in bin/release-verify.sh)")
 else:
-    pm = [l for sp in cands if os.path.exists(sp) for l in open(sp).read().splitlines() if "policy make" in l and not l.lstrip().startswith("#")]
+    pm = [l for sp in cands if os.path.exists(sp) for l in re.sub(r"\\\n[ \t]*", " ", open(sp).read()).splitlines() if "policy make" in l and not l.lstrip().startswith("#")]
     if not pm: bad.append("Release (stage-promote.yml or bin/release-verify.sh) never runs `policy make` (it must make its own tag-pinned policy)")
     for l in pm:
         if "--ref" in l or "--tag" not in l: bad.append("Release's `policy make` must use --tag and never --ref (a --ref policy accepts a branch dry-run record): %s" % l.strip())
@@ -685,11 +696,6 @@ EOF
   { cat <<EOF
 on: {workflow_dispatch: {inputs: {dry-run: {type: boolean}}}}
 jobs:
-  decide:
-    if: \${{ github.ref == 'refs/heads/main' && !inputs.dry-run }}
-    runs-on: ubuntu-24.04
-    steps:
-      - run: echo tag
   build:
     if: \${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
     uses: ./.github/workflows/stage-build.yml
@@ -737,7 +743,7 @@ EOF
     cat <<EOF
       - run: |
           rc=0
-          python3 bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json 2> /tmp/positive_control.err || rc=\$?
+          python3 bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-entries provenance/provenance.rekor.json 2> /tmp/positive_control.err || rc=\$?
           python3 bin/chain-verify.py hostile-row --attempt positive_control --exit-code "\$rc" --stderr /tmp/positive_control.err --out results/positive_control.json
       - run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json
       - uses: actions/upload-artifact@$sha # v7
@@ -1137,7 +1143,7 @@ d=$(mk w_buildnoif); pymut "$(rel "$d")" "    if: \${{ (github.event_name == 'pu
     uses: ./.github/workflows/stage-build.yml" "    uses: ./.github/workflows/stage-build.yml"; wexpect caught "wiring: the build job has no gate: a dry run (or a push to main) would run the whole chain, or nothing is reachable (step-8 B-2)" "$d"
 d=$(mk w_buildneeds); pymut "$(rel "$d")" "  build:
 " "  build:
-    needs: decide
+    needs: sign
 "; wexpect caught "wiring: the build job needs another job (admission is Build's first step; a skipped needed job would skip the dry run)" "$d"
 d=$(mk w_buildtagonly); pymut "$(rel "$d")" "(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true" "startsWith(github.ref, 'refs/tags/v')"; wexpect caught "wiring: the build gate is the tag test alone (a dry run on a branch would never run)" "$d"
 d=$(mk w_hostileold); pymut "$(rel "$d")" "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc')" "inputs.dry-run"; wexpect caught "wiring: the build call passes the bare dry-run input (null on a tag push; the hostile step must run on an rc-tag push only): step-8 SF-5" "$d"
@@ -1173,10 +1179,10 @@ d=$(mk w_pinkind); pymut "$(rel "$d")" "--kind key --file attempts/read_sign_key
 d=$(mk w_stderr); pymut "$(rel "$d")" "--stderr /tmp/mint_sign_cert.err" "--stderr /tmp/other.err"; wexpect caught "wiring: hostile-row reads a different stderr file than the verifier wrote" "$d"
 d=$(mk w_other); python3 - "$(rel "$d")" <<'PY'
 import sys
-t = open(sys.argv[1]).read() + "  patch-notes:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: gh pr create\n"
+t = open(sys.argv[1]).read() + "  extra:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: gh pr create\n"
 open(sys.argv[1], "w").write(t)
 PY
-wexpect caught "wiring: any other job (patch-notes) without the dry-run gate still runs in a dry run" "$d"
+wexpect caught "wiring: any other job (extra) without the dry-run gate still runs in a dry run" "$d"
 d=$(mk w_okjobs); python3 - "$(rel "$d")" <<'PY'
 import sys
 t = open(sys.argv[1]).read() + "  rebuild:\n    needs: build\n    uses: ./.github/workflows/stage-reproducibility.yml\n  check:\n    needs: build\n    uses: ./.github/workflows/stage-verify.yml\n"
@@ -1184,9 +1190,8 @@ open(sys.argv[1], "w").write(t)
 PY
 wexpect ok "wiring: the rebuild and check stages run in a dry run (allowlist: build, sign, rebuild, check, hostile-*)" "$d"
 d=$(mk w_tracked); echo '{"attempts":[]}' > "$d/hostile-results.json"; wexpect caught "wiring: a hostile-results.json is checked into the tree" "$d"
-d=$(mk w_nodry); sed -i.bak 's/if: .*!inputs.dry-run }}$/if: true/' "$(rel "$d")"; wexpect caught "wiring: the release job (or the tag job) still runs in a dry run" "$d"
-d=$(mk w_nodrydecide); sed -i.bak "s/ \&\& !inputs.dry-run//" "$(rel "$d")"; wexpect caught "wiring: the decide (tag) job is not gated by !inputs.dry-run" "$d"
-d=$(mk w_orgate); sed -i.bak "s/!inputs.dry-run }}/!inputs.dry-run || true }}/" "$(rel "$d")"; wexpect caught "wiring: a dry-run gate with || true" "$d"
+d=$(mk w_nodry); sed -i.bak "s/if: .*!inputs.dry-run && startsWith(github.ref, 'refs\/tags\/v') }}\$/if: true/" "$(rel "$d")"; wexpect caught "wiring: the release job still runs in a dry run" "$d"
+d=$(mk w_orgate); sed -i.bak "s/!inputs.dry-run \&\& startsWith/!inputs.dry-run || true \&\& startsWith/" "$(rel "$d")"; wexpect caught "wiring: a dry-run gate with || true" "$d"
 d=$(mk w_noscript); rm "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: the hostile script is missing" "$d"
 d=$(mk w_missatt); sed -i.bak '/^attempt_read_sign_key$/d' "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: one of the attempts is never called" "$d"
 d=$(mk w_missother); sed -i.bak '/^attempt_forge_provenance$/d' "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: the forge attempt is never made" "$d"
@@ -1248,10 +1253,10 @@ wexpect caught "wiring: a hostile-* named job with write permission" "$d"
 d=$(mk w_notrans); sed -i.bak 's/# transcript: //' "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: the material attempts do not write a transcript line" "$d"
 d=$(mk w_nogatedecide2); python3 - "$(rel "$d")" <<'PY'
 import sys
-t = open(sys.argv[1]).read().replace("&& !inputs.dry-run", "&& inputs.dry-run == false", 1)
+t = open(sys.argv[1]).read().replace("!inputs.dry-run && startsWith", "inputs.dry-run == false && startsWith", 1)
 open(sys.argv[1], "w").write(t)
 PY
-wexpect caught "wiring: the tag job's gate is a differently-written condition, not the exact !inputs.dry-run conjunct" "$d"
+wexpect caught "wiring: the promotion job's gate is a differently-written condition, not the exact !inputs.dry-run conjunct" "$d"
 # ---- key allowlists, dry-run and tag gates, Release's policy step ---------------------------------------------------
 d=$(mk w_jobenv); pymut "$(rel "$d")" "    needs: sign
     runs-on: ubuntu-24.04
@@ -1394,7 +1399,7 @@ d=$(mk w_pf_literal); pymut "$(rel "$d")" "  promotion:" "  patch-failed:
 d=$(mk w_pmref); pymut "$d/.github/workflows/stage-promote.yml" '--tag "$GITHUB_REF_NAME"' '--ref "$GITHUB_REF"'; wexpect caught "wiring: Release makes its policy with --ref (a branch dry-run record would be accepted)" "$d"
 d=$(mk w_pmnone); printf 'on: {workflow_call: {}}\njobs:\n  promote:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo publish\n' > "$d/.github/workflows/stage-promote.yml"; wexpect caught "wiring: Release never makes a policy" "$d"
 d=$(mk w_pmother); printf 'on: {workflow_call: {}}\njobs:\n  x:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: python3 bin/chain-verify.py policy make --template t --ref "$GITHUB_REF" --out p.json\n' > "$d/.github/workflows/stage-verify.yml"; wexpect caught "wiring: another stage file makes a policy with --ref" "$d"
-d=$(mk w_rekorstub); pymut "$(rel "$d")" " --rekor-stub provenance/provenance.rekor.json" ""; wexpect caught "wiring: the positive control runs without the Rekor stub (it would be refused 'rekor', or pass by a shortcut)" "$d"
+d=$(mk w_rekorstub); pymut "$(rel "$d")" " --rekor-entries provenance/provenance.rekor.json" ""; wexpect caught "wiring: the positive control runs without the Rekor stub (it would be refused 'rekor', or pass by a shortcut)" "$d"
 d=$(mk w_nowflag); pymut "$(rel "$d")" "--record attempts/forge_provenance.json --policy policy.json" "--record attempts/forge_provenance.json --policy policy.json --now \"\$NOW\""; wexpect caught "wiring: an attempt's verify line takes --now from the environment (the pinned line has none)" "$d"
 wexpect ok "the real repository's hostile wiring (RED until PR 1 implements it)" "$root"
 # AC5's runtime proof has a fixed place: the rc-tag run is
@@ -1466,7 +1471,76 @@ MUT
 else
   bad "001-AC5 the key attempt's execution check needs openssl genpkey (ed25519) to plant a key"; bad "001-AC5 the execution check could not plant a key"
 fi
-EXPECT=$((283 - skipped))
+# ---- S2 rows: key search (NUL-safe, no truncation, unreadable key), token attempt without the environ corroboration, strict hostile-collect ----
+fn_of() { awk "/^$2\\(\\) \\{/{p=1} p{print} p&&/^\\}/{exit}" "$1"; }
+sk="$work/s2key"; rm -rf "$sk"; mkdir -p "$sk/home/sp ace" "$sk/rt" "$sk/many" "$sk/bad" "$sk/run"
+run_s2() { # run_s2 ROOT...: the real attempt_read_sign_key with those search roots; prints its transcript
+  rm -rf "$sk/run/attempts"; mkdir -p "$sk/run/attempts"
+  ( cd "$sk/run" && bash -c "$(fn_of "$root/bin/chain-hostile-step.sh" attempt_read_sign_key); attempt_read_sign_key \"\$@\"" _ "$@" > /dev/null 2>&1 ) || true
+  cat "$sk/run/attempts/read_sign_key.txt" 2> /dev/null
+}
+if openssl genpkey -algorithm ed25519 -out "$sk/proto.pem" > /dev/null 2>&1; then
+  s2h=$(openssl pkey -in "$sk/proto.pem" -pubout -outform DER 2> /dev/null | sha256sum | cut -d' ' -f1)
+  cp "$sk/proto.pem" "$sk/home/sp ace/k.pem"
+  st=$(run_s2 "$sk/home")
+  if grep -qx "pubkey-sha256: $s2h" <<< "$st" && ! grep -q '^unreadable-key:' <<< "$st"; then ok "S2 key search: a private key file whose path contains a space is found and its public-key sha256 recorded"
+  else bad "S2 key search: a key under a path with a space was not recorded: $(head -c 300 <<< "$st" | tr '\n' '|')"; fi
+  for i in $(seq 1 60); do cp "$sk/proto.pem" "$sk/many/k$i.pem"; done
+  st=$(run_s2 "$sk/many")
+  if [ "$(grep -c "^pubkey-sha256: $s2h$" <<< "$st")" = 60 ]; then ok "S2 key search: all 60 key files in the search root appear (no truncation at 50)"
+  else bad "S2 key search: 60 key files gave $(grep -c '^pubkey-sha256:' <<< "$st") lines"; fi
+  pk='PRIVATE'; printf -- '-----BEGIN %s KEY-----\nnot a key at all\n-----END %s KEY-----\n' "$pk" "$pk" > "$sk/bad/broken.pem"
+  st=$(run_s2 "$sk/bad")
+  if grep -qxF "unreadable-key: $sk/bad/broken.pem" <<< "$st"; then ok "S2 key search: a key file openssl cannot read is recorded as 'unreadable-key: <path>'"
+  else bad "S2 key search: no unreadable-key line for a broken key: $(head -c 300 <<< "$st" | tr '\n' '|')"; fi
+  if ! grep -q 'pubkey-sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' <<< "$st"; then ok "S2 key search: a failed openssl no longer records the sha256 of the empty string"
+  else bad "S2 key search: a failed openssl still records the sha256 of the empty string"; fi
+else
+  bad "S2 key search needs openssl genpkey (ed25519)"; bad "S2 key search needs openssl genpkey (ed25519)"; bad "S2 key search needs openssl genpkey (ed25519)"; bad "S2 key search needs openssl genpkey (ed25519)"
+fi
+# the grader: an unreadable-key line is an ERROR (exit 2), never isolation, whatever else the transcript holds
+printf '%s\nsearched: 42 files\nunreadable-key: /home/runner/k.pem\n' "$KR" > "$work/key_unread.txt"
+printf '%s\nsearched: 42 files\npubkey-sha256: %s\nunreadable-key: /home/runner/k.pem\n' "$KR" "$H2" > "$work/key_unread2.txt"
+for f in key_unread key_unread2; do
+  mrc=0; cvx hostile-material --kind key --file "$work/$f.txt" --policy "$work/keypol.json" || mrc=$?
+  if [ "$mrc" = 2 ] && grep -F -q "unreadable-key" "$work/xerr" && ! grep -F -q "refused at" "$work/xerr"; then ok "S2 hostile-material: $f (an unreadable-key line) is an ERROR (exit 2) naming it, never isolation"
+  else bad "S2 hostile-material: $f must be an error naming unreadable-key, got exit $mrc: $(head -c 160 "$work/xerr" | tr '\n' ' ')"; fi
+done
+# the token attempt: no environ-read / environ-unreadable-same-user lines any more, and the grader neither requires nor parses them
+mkdir -p "$work/s2tok" && sed '/^attempt_mint_sign_cert$/,$d' "$root/bin/chain-hostile-step.sh" > "$work/s2tok/fns.sh"
+(cd "$work/s2tok" && env -i PATH="$PATH" bash -c '. ./fns.sh; attempt_read_sign_token')
+if grep -qx 'request-env: absent' "$work/s2tok/attempts/read_sign_token.txt" && ! grep -q -e '^environ-read:' -e '^environ-unreadable-same-user:' "$work/s2tok/attempts/read_sign_token.txt"; then ok "S2 hostile step: the token attempt writes request-env: absent and no environ-read or environ-unreadable-same-user line"
+else bad "S2 hostile step: the token transcript still has environ lines: $(tr '\n' '|' < "$work/s2tok/attempts/read_sign_token.txt" | head -c 300)"; fi
+printf '%s\nrequest-env: absent\n' "$TR" > "$work/tok_s2only.txt"
+xexpect refuse "S2 hostile-material: a token transcript of the header and request-env: absent only is graded isolated (refused at runner)" "refused at runner" -- hostile-material --kind token --file "$work/tok_s2only.txt"
+printf '%s\na process on this runner holds a token request address: /proc/9/environ\nrequest-env: absent\n' "$TR" > "$work/tok_s2hold.txt"
+mrc=0; cvx hostile-material --kind token --file "$work/tok_s2hold.txt" || mrc=$?
+if [ "$mrc" = 2 ] && grep -F -q "error" "$work/xerr" && ! grep -F -q "refused at" "$work/xerr"; then ok "S2 hostile-material: a holder line with request-env: absent only is still an ERROR (exit 2)"
+else bad "S2 hostile-material: a holder line must be an error, got exit $mrc"; fi
+# hostile-collect: a strict reader and a named exit 2 (one line, no traceback) for what cannot be read as a row
+s2c() { # s2c NAME: rows dir "$work/s2rows-NAME" = the good rows, copied
+  rm -rf "$work/s2rows-$1"; mkdir -p "$work/s2rows-$1"; cp "$work"/rows/*.json "$work/s2rows-$1/"
+}
+s2expect() { # s2expect LABEL NAME: hostile-collect of that dir exits 2 with one error line naming the file, no traceback
+  local rc=0; cvx hostile-collect "$work/s2rows-$2" --out "$work/s2c-$2.json" || rc=$?
+  if [ "$rc" = 2 ] && [ "$(wc -l < "$work/xerr")" = 1 ] && grep -q '^error: .*bad\.json' "$work/xerr" && ! grep -q Traceback "$work/xerr"; then ok "$1"
+  else bad "$1 (exit $rc, wanted 2 with one 'error:' line naming bad.json; $(head -c 200 "$work/xerr" | tr '\n' ' '))"; fi
+}
+s2c dup; printf '{"attempt":"mint_sign_cert","attempt":"forge_provenance","outcome":"refused"}' > "$work/s2rows-dup/bad.json"
+s2expect "S2 hostile-collect: a row file with a duplicate key is a named error, exit 2" dup
+s2c list; printf '[1, 2]' > "$work/s2rows-list/bad.json"
+s2expect "S2 hostile-collect: a row file whose JSON is a list is a named error, exit 2, no traceback" list
+s2c num; printf '5' > "$work/s2rows-num/bad.json"
+s2expect "S2 hostile-collect: a row file whose JSON is a number is a named error, exit 2, no traceback" num
+s2c nan; printf '{"attempt":"mint_sign_cert","exit_code":NaN}' > "$work/s2rows-nan/bad.json"
+s2expect "S2 hostile-collect: a row file with a non-strict constant (NaN) is a named error, exit 2" nan
+s2c dir; mkdir "$work/s2rows-dir/bad.json"
+s2expect "S2 hostile-collect: a directory in place of a row file is a named error, exit 2, no traceback" dir
+if [ "$(id -u)" != 0 ]; then
+  s2c perm; printf '{}' > "$work/s2rows-perm/bad.json"; chmod 000 "$work/s2rows-perm/bad.json"
+  s2expect "S2 hostile-collect: an unreadable (permission denied) row file is a named error, exit 2, no traceback" perm
+else ok "S2 hostile-collect: permission-denied case skipped, running as root"; fi
+EXPECT=$((296 - skipped))
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

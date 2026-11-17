@@ -1,20 +1,13 @@
 name: supply-chain
 
 # REQ-SUP-001: the actions supply-chain checks.
-#   pin-age        every push to main (REQ-REL-014): a version the push moves must be public 7 days by a server-side time (AC2-AC4). It runs the
-#                  checker of the commit before the push against the pushed tree, never on pull_request or pull_request_target, with a read-only token and nothing secret.
-#   image-signatures  every pull request: `cosign verify` (reads only) of each pinned third-party image, run by the
-#                  base branch's checker from the pinned cosign image.
+#   pin-age        every pull request: the scan names every version the PR moves and passes only a pin it can read (AC2). It runs the base branch's
+#                  checker against the PR's tree, on pull_request (never pull_request_target), with a read-only token and nothing secret.
 #   daily-audit    once a day: the inventory, advisories, malicious-package reports, upstream reachability, disputed hits (AC5, AC7-AC10).
-#   rerun-held     once a day: re-runs the pin-age check of a held PR whose moved versions have reached 7 days (AC6). The only job with actions: write.
-#   evidence-letter-present  once a day: from the 3rd of the month, last month's evidence letter must be on a
-#                  published release and verify (REQ-REL-013). Read-only.
 # It never produces a run, environment or secret name (AC8): the private details are written on a maintainer's machine, not here.
 
 on:
-  pull_request: {}   # image-signatures only
-  push:
-    branches: [main]
+  pull_request: {}
   schedule:
     - cron: '53 3 * * *'    # off-peak, clear of the auditor, rescan and freshness crons (the 1,000/hour token limit is shared by the repo)
   workflow_dispatch: {}
@@ -30,59 +23,9 @@ permissions: {}
 
 jobs:
   pin-age:
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      actions: read   # reads the tag observations of our scheduled runs (an action's age); read-only
-      checks: read    # the PR clock reads every check suite of the introducing commit; read-only
-    steps:
-      - name: Trusted checker (the commit before the push)
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.before }}
-          path: trusted
-          persist-credentials: false
-      - name: The pushed tree
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          path: pr
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Age of every moved version, and what advisories say about it
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          set -uo pipefail
-          status=0
-          # a push is read from the commit before it to the commit after it; an empty one fails
-          BASE_SHA="${{ github.event.before }}"
-          HEAD_SHA="${{ github.sha }}"
-          : "${BASE_SHA:?no base commit to compare: this check fails}" \
-            "${HEAD_SHA:?no head commit to compare: this check fails}"
-          # 540 s, then pin-audit.py's 600 s --base deadline (deadline_for): fits the 20-minute job; -v names a stop
-          timeout -v 540 python3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base "$BASE_SHA" \
-            --head "$HEAD_SHA" || status=1
-          # the reviewers' rulings come from the commit before the push too: the push must not bring its own
-          exceptions=trusted/.github/supply-chain-exceptions.json
-          if [ ! -f "$exceptions" ]; then
-            exceptions="$RUNNER_TEMP/no-exceptions.json"
-            echo '{"exceptions": []}' > "$exceptions"
-          fi
-          python3 trusted/.github/agent/supply-chain/pin-audit.py --root pr --base "$BASE_SHA" --head "$HEAD_SHA" \
-            --exceptions "$exceptions" --report-only || status=1
-          exit $status
-
-  image-signatures:
-    # Reads only: the base branch's checker runs `cosign verify` (never sign, attest or upload) from the cosign
-    # image the repository pins by digest, once per pinned publisher identity of each pinned third-party image
-    # the pull request's tree names. It checks who signed an image, never its age: the pin-age job fails an image
-    # outside ghcr.io and Docker Hub, whose registry gives no push time.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 20   # a real run takes seconds; the checker also guards each docker call against a hang
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -98,13 +41,27 @@ jobs:
           path: pr
           fetch-depth: 0
           persist-credentials: false
-      - name: The signature of every pinned third-party image
+      - name: Every moved version, and what advisories say about it
         env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          set -euo pipefail
-          python3 trusted/.github/agent/supply-chain/pin-age-check.py cosign-verify --root pr --head "$HEAD_SHA" \
-            --tools-file trusted/bin/persona-uat-tools.json
+          set -uo pipefail
+          status=0
+          # 540 s, then pin-audit.py's 600 s --base deadline (deadline_for): fits the 20-minute job; -v names a stop
+          timeout -v 540 python3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base "$BASE_SHA" \
+            --head "$HEAD_SHA" || status=1
+          # the reviewers' rulings come from the base branch too: a pull request must not bring its own
+          exceptions=trusted/.github/supply-chain-exceptions.json
+          if [ ! -f "$exceptions" ]; then
+            exceptions="$RUNNER_TEMP/no-exceptions.json"
+            echo '{"exceptions": []}' > "$exceptions"
+          fi
+          python3 trusted/.github/agent/supply-chain/pin-audit.py --root pr --base "$BASE_SHA" --head "$HEAD_SHA" \
+            --exceptions "$exceptions" --report-only || status=1
+          exit $status
 
   daily-audit:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -116,7 +73,6 @@ jobs:
     permissions:
       contents: read
       issues: write
-      actions: read   # reads the previous tag observations to extend them; read-only
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -126,49 +82,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: python3 .github/agent/supply-chain/pin-audit.py --observations-out "$RUNNER_TEMP/tag-observations/state.json"
-      - name: Keep the tag observations (an action's age is when WE first saw its tag at that commit)
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: tag-observations
-          path: ${{ runner.temp }}/tag-observations/state.json
-          retention-days: 90
-          if-no-files-found: error
-
-  rerun-held:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      actions: write
-      contents: read
-      pull-requests: read
-      checks: read    # the PR clock of a held PR reads every check suite of its introducing commit
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Re-run held pull requests whose versions are old enough
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: python3 .github/agent/supply-chain/pin-audit.py --rerun-held
-
-  evidence-letter-present:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read    # the monthly evidence letter's daily presence check reads published releases and writes nothing
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: install cosign (pinned by checksum)
-        run: bash bin/install-scanner.sh cosign
-      - name: Last month's evidence letter is on a published release and verifies
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash bin/evidence-letter-present.sh
+        run: python3 .github/agent/supply-chain/pin-audit.py

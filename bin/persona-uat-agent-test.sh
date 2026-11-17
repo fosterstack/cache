@@ -270,10 +270,15 @@ cat >"$work/proof.py" <<'PY'
 import importlib.util, json, os, sys
 sp = importlib.util.spec_from_file_location("driver", sys.argv[1]); m = importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
 a = json.load(open(sys.argv[2]))
-print("PROOF" if m.verified_digest(a, sys.argv[3]) else "NOPROOF")
+print("PROOF" if m.verified_digest(a, sys.argv[3], key_ok=len(sys.argv) > 4) else "NOPROOF")
 PY
 driver_py="$root/bin/persona-uat.py"
-verdict() { python3 "$work/proof.py" "$driver_py" "$work/$1/out.json" "$RC"; }
+# key_ok is true (the reviewer'"'"'s release.rsa.pub equals build/keys/release.rsa.pub: bin/persona-uat-test.sh cmpk22-24) only for
+# the three release-key proof cases; every other case is judged with key_ok false
+verdict() {
+  local k=(); case "$1" in px-key-release|px-key-release-eq|px-key-release-after) k=(key_ok) ;; esac
+  python3 "$work/proof.py" "$driver_py" "$work/$1/out.json" "$RC" ${k[@]+"${k[@]}"}
+}
 ISS="https://token.actions.githubusercontent.com"
 IDRE="^https://github.com/example/cache/.github/workflows/stage-promote.yml@refs/tags/v1.0.0$"
 IDF='"--certificate-identity-regexp='"$IDRE"'","--certificate-oidc-issuer='"$ISS"'"'

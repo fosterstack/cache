@@ -42,7 +42,7 @@ jobs:
   # the preferred path - it gets us knowing our auditor works for a while before launch"). Docker Scout has applied our statements
   # only this way (probe 0221, run 37555367665: by tag and by exact index digest); every local-file and daemon-loaded form failed.
   # An attestation survives only in a registry, so the attested candidates go to the SCRATCH package ghcr.io/fosterstack/cache-scout-probe
-  # (the one package bin/scout-root-cause.sh already writes; never the release package, never any other tag than the attested candidates
+  # (a package of its own; never the release package, never any other tag than the attested candidates
   # and the self-check fixtures), and the same run prunes it to the newest 14 days. Releases are unchanged.
   vex-attach:
     name: attach our OpenVEX to each candidate index and push the attested candidates (scratch package)
@@ -270,38 +270,6 @@ jobs:
                 || { rm -rf "${d}"; echo "::warning::docker scout could not scan ${v}-${arch} (the tally counts it as did not run)"; }
             done
           done
-      # What the first runs must tell us (5a and 5b): does Scout honor the attestation per platform of an index
-      # (5a), by tag as well as by digest? Printed to the job summary, never deciding the job. It runs after a failed self-check too (!cancelled(), not always(): a cancelled run does not start five more scans): that is when its data is needed.
-      - name: Scout attestation diagnostics (REQ-REL-010-AC6; printed, never decides)
-        if: ${{ !cancelled() }}
-        timeout-minutes: 10
-        run: |
-          set +e
-          (
-            set -uo pipefail
-              before=$(jq -er '."fixture-before"' "$RUNNER_TEMP/attach/digests.json")
-            ours=$(jq -er '."fixture-ours"' "$RUNNER_TEMP/attach/digests.json")
-            mkdir -p "$RUNNER_TEMP/diag"
-            n() { jq '[.vulnerabilities[]?.identifiers[]?.value] | length' "$1"; }
-            has() { jq --arg c CVE-2023-4911 '[.vulnerabilities[]?.identifiers[]?.value] | any(. == $c)' "$1"; }
-            docker scout cves --format gitlab --vex-author '^FosterStack LLC$' --platform linux/amd64 "registry://ghcr.io/fosterstack/cache-scout-probe@${before}" > "$RUNNER_TEMP/diag/before.json"
-            docker scout cves --format gitlab --vex-author '^FosterStack LLC$' --platform linux/amd64 "registry://ghcr.io/fosterstack/cache-scout-probe@${ours}" > "$RUNNER_TEMP/diag/ours-amd64.json"
-            docker scout cves --format gitlab --vex-author '^FosterStack LLC$' --platform linux/arm64 "registry://ghcr.io/fosterstack/cache-scout-probe@${ours}" > "$RUNNER_TEMP/diag/ours-arm64.json"
-            docker scout cves --format gitlab --vex-author '^FosterStack LLC$' "registry://ghcr.io/fosterstack/cache-scout-probe@${ours}" > "$RUNNER_TEMP/diag/ours-noplatform.json"
-            docker scout cves --format gitlab --vex-author '^FosterStack LLC$' --platform linux/amd64 "registry://ghcr.io/fosterstack/cache-scout-probe:selfcheck-ours-${GITHUB_RUN_ID}" > "$RUNNER_TEMP/diag/ours-tag.json"
-            {
-              echo "== 5a/5b: Scout and our attestation on the debian fixture (CVE-2023-4911 present before: $(has "$RUNNER_TEMP/diag/before.json"), $(n "$RUNNER_TEMP/diag/before.json") findings)"
-              echo "- our product form, amd64 platform, exact digest: CVE kept=$(has "$RUNNER_TEMP/diag/ours-amd64.json"), findings $(n "$RUNNER_TEMP/diag/ours-amd64.json")"
-              echo "- our product form, arm64 platform, exact digest: CVE kept=$(has "$RUNNER_TEMP/diag/ours-arm64.json"), findings $(n "$RUNNER_TEMP/diag/ours-arm64.json")"
-              echo "- our product form, no --platform, exact digest: CVE kept=$(has "$RUNNER_TEMP/diag/ours-noplatform.json"), findings $(n "$RUNNER_TEMP/diag/ours-noplatform.json")"
-              echo "- our product form, by tag: CVE kept=$(has "$RUNNER_TEMP/diag/ours-tag.json"), findings $(n "$RUNNER_TEMP/diag/ours-tag.json")"
-            } | tee -a "$GITHUB_STEP_SUMMARY"
-          )
-          rc=$?
-          set -e
-          mkdir -p /tmp/panel && cp -r "$RUNNER_TEMP/diag" /tmp/panel/scout-diag 2>/dev/null || true   # the raw reports, in the job's artifact
-          [ "$rc" = 0 ] || echo "::warning::the Scout attestation diagnostics could not finish (exit ${rc}); the self-check above decides the job"
-          exit 0
       - id: upload
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() }}
@@ -309,116 +277,6 @@ jobs:
           name: panel-scout
           path: /tmp/panel/
           if-no-files-found: warn
-
-  # The Docker Scout root-cause round, dispatch only: the attestation path on a scratch package
-  # (never the release package; the digests before and after are recorded), then Docker's documented control, one field
-  # changed at a time, and our forms, on Scout 1.26.0 and the two previous minors. Results in the job summary.
-  scout-root-cause:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
-    environment: agent   # the read-only Docker Hub token for Scout lives here
-    permissions:
-      contents: read
-      # packages: write reaches every package linked to this repository (the token cannot be narrower); the job runs only
-      # from main (the agent environment), and bin/scout-root-cause.sh refuses any target but the scratch package
-      packages: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: the containerd image store (Docker's documented requirement for attestations)
-        run: |
-          set -euo pipefail
-          echo '{"features": {"containerd-snapshotter": true}}' | sudo tee /etc/docker/daemon.json
-          sudo systemctl restart docker
-          docker info -f '{{ .DriverStatus }}'
-
-      - name: install docker-scout 1.26.0, 1.25.0 and 1.24.0 and crane (each pinned by checksum); skopeo is the runner image's, checked
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/scout" "$HOME/.docker/cli-plugins"
-          for t in docker-scout docker-scout-1.25.0 docker-scout-1.24.0; do
-            mkdir -p "$RUNNER_TEMP/$t"      # install-scanner.sh never creates its DEST (Codex #176 r2, B2)
-            ./bin/install-scanner.sh "$t" "$RUNNER_TEMP/$t"
-          done
-          mv "$RUNNER_TEMP/docker-scout/docker-scout" "$RUNNER_TEMP/scout/docker-scout-1.26.0"
-          mv "$RUNNER_TEMP/docker-scout-1.25.0/docker-scout" "$RUNNER_TEMP/scout/docker-scout-1.25.0"
-          mv "$RUNNER_TEMP/docker-scout-1.24.0/docker-scout" "$RUNNER_TEMP/scout/docker-scout-1.24.0"
-          # the chain's own copy tool appends the attestation manifest to the scratch index (bin/scout-root-cause.sh: crane index append), by digest
-          ./bin/install-scanner.sh crane
-          command -v skopeo > /dev/null || { echo "::error::skopeo is not on this runner image"; exit 1; }
-
-      - name: log in to Docker Hub (read-only token) and GHCR (this job's token)
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_SCOUT_TOKEN: ${{ secrets.DOCKERHUB_SCOUT_TOKEN }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          printf '%s' "$DOCKERHUB_SCOUT_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
-          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
-
-      - name: the root-cause round
-        env:
-          SCOUT_DIR: ${{ runner.temp }}/scout
-          PROBE_REPO: ghcr.io/fosterstack/cache-scout-probe
-          RELEASE_TAG: '0.2.1'
-        run: bash bin/scout-root-cause.sh "$RUNNER_TEMP/rc" | tee -a "$GITHUB_STEP_SUMMARY"
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: ${{ always() }}
-        with:
-          name: scout-root-cause
-          path: ${{ runner.temp }}/rc/
-          retention-days: 30
-
-  # The Docker Scout older-versions sweep, dispatch only and read-only: does any older Scout apply a LOCAL VEX file
-  # (--vex-location)? 1.24.0 to 1.26.0 do not (docker/scout-cli#207). Each minor's newest patch is installed by the pinned
-  # installer (checksum per version) and run against Docker's documented example and our statement. Nothing is published.
-  scout-older-versions:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
-    environment: agent   # the read-only Docker Hub token for Scout lives here
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: install every swept docker-scout (each pinned by checksum)
-        env:
-          SCOUT_VERSIONS: '1.23.1 1.22.0 1.21.0 1.20.4 1.19.0 1.18.4 1.17.1 1.16.3 1.15.1 1.14.0 1.12.0 1.11.0 1.10.0 1.9.3 1.8.0 1.7.0 1.6.4 1.5.2 1.4.1 1.3.0 1.2.2 1.0.9'
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/scout" "$HOME/.docker/cli-plugins"
-          for v in $SCOUT_VERSIONS; do
-            mkdir -p "$RUNNER_TEMP/docker-scout-$v"      # install-scanner.sh never creates its DEST
-            ./bin/install-scanner.sh "docker-scout-$v" "$RUNNER_TEMP/docker-scout-$v"
-            mv "$RUNNER_TEMP/docker-scout-$v/docker-scout" "$RUNNER_TEMP/scout/docker-scout-$v"
-          done
-
-      - name: log in to Docker Hub (read-only token)
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_SCOUT_TOKEN: ${{ secrets.DOCKERHUB_SCOUT_TOKEN }}
-        run: |
-          set -euo pipefail
-          printf '%s' "$DOCKERHUB_SCOUT_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
-
-      - name: the older-versions sweep
-        env:
-          SCOUT_DIR: ${{ runner.temp }}/scout
-          SCOUT_VERSIONS: '1.23.1 1.22.0 1.21.0 1.20.4 1.19.0 1.18.4 1.17.1 1.16.3 1.15.1 1.14.0 1.12.0 1.11.0 1.10.0 1.9.3 1.8.0 1.7.0 1.6.4 1.5.2 1.4.1 1.3.0 1.2.2 1.0.9'
-        run: bash bin/scout-older-versions.sh "$RUNNER_TEMP/sweep" | tee -a "$GITHUB_STEP_SUMMARY"
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: ${{ always() }}
-        with:
-          name: scout-older-versions
-          path: ${{ runner.temp }}/sweep/
-          retention-days: 30
 
   panel-inspector:
     name: panel — Amazon Inspector (four images)

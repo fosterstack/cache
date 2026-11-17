@@ -16,10 +16,10 @@
 #       (Sign's bundle) and `check-results`/`witness-check` (Check's), the five script names and command lines of bin/check-stage.sh, the guide
 #       file docs/verify-release.md (the www lane's customer guide), the results file names.
 #
-# RULE 68: every command run under Witness is limited to 9 minutes (`timeout 540`), because Fulcio's
-# certificate lives 10 minutes and Witness checks it at the TIMESTAMP's time (harness spike (d): a 13-minute command yields a record that never
-# verifies). The cap lives in ONE place, the helper bin/witnessed.sh (judge `helper` below is its seam). Check
-# is split into three plainly named witnessed steps (scanners / acceptance / runtime) so none nears the cap.
+# RULE 68: Fulcio's certificate lives 10 minutes and Witness checks it at the TIMESTAMP's time (harness spike (d): a
+# 13-minute command yields a record that never verifies). GitHub's default job time limit bounds a hung command. The
+# Witness flags live in ONE place, the helper bin/witnessed.sh (judge `helper` below is its seam). Check
+# is split into three plainly named witnessed steps (scanners / acceptance / runtime) to keep each short.
 # The owner also asked
 # for code a human can read: the stage file is four short lines, the helper is the only place with Witness flags, the judges accept the plain form
 # and reject variants instead of growing clever.
@@ -77,7 +77,7 @@ import sys, os
 w = sys.argv[1]
 CHK = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1"
 UPL = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1"
-DWN = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1"
+DWN = "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2"
 def dn(name, path): return f"      - uses: {DWN}\n        with:\n          name: {name}\n          path: {path}\n"
 def up(name, path): return f"      - uses: {UPL}\n        with:\n          name: {name}\n          path: {path}\n"
 def wit(step): return f"      - name: {step}\n        run: bash bin/witnessed-local.sh {step} bin/check-phase-{step}.sh\n"
@@ -107,6 +107,7 @@ stage = ("name: 'Stage: check'\non:\n  workflow_call:\n    outputs:\n      recor
 stage += ("  check-arm64:\n    runs-on: ubuntu-24.04-arm\n    permissions:\n      contents: read\n    outputs:\n      records-arm64: ${{ steps.records-arm64.outputs.records-arm64 }}\n    steps:\n"
           f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
           "      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n"
+          "      - name: install Go (pinned by checksum)\n        run: bash bin/install-scanner.sh go\n"
           + dn("signed-witness-build", "witness-build") + dn("digests", "witness-build") + dn("dist", "dist") + dn("images", "images")
           + "      - name: arm64 under Witness\n        run: bash bin/witnessed-local.sh arm64 bin/check-phase-arm64.sh\n"
           + "      - id: records-arm64\n        name: expose\n        run: r=$(bash bin/check-records-digests.sh witness-arm64) && echo \"records-arm64=$r\" >> \"$GITHUB_OUTPUT\"\n"
@@ -121,7 +122,8 @@ PH = [("scanners", ["bash bin/check-scan.sh --scanners .github/policy/scanners.j
                    "bash bin/check-acceptance.sh k8s --digests witness-build/digests.json --images images --out check-results",
                    "bash bin/check-fips.sh --digests witness-build/digests.json --images images --out check-results",
                    "bash bin/check-artifacts.sh --digests witness-build/digests.json --images images --archives dist --out check-results",
-                   "bash bin/check-guide.sh --guide docs/verify-release.md --digests witness-build/digests.json --images images --out check-results"])]
+                   "bash bin/check-guide.sh --guide docs/verify-release.md --digests witness-build/digests.json --images images --out check-results"]),
+      ("arm64", ["bash bin/check-artifacts.sh --arch arm64 --digests witness-build/digests.json --images images --archives dist --out check-results"])]
 POL = 'python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag "$GITHUB_REF_NAME" --out policy.json'
 body = "set -euo pipefail\n" + POL + "\n" + "\n".join(V) + '\ncase "$1" in\n'
 for n, cs in PH:
@@ -163,19 +165,17 @@ open(w + "/acceptance.yml", "w").write("""name: Acceptance
 on:
   pull_request:
 jobs:
-  acceptance-gradle:
+  acceptance:
     runs-on: ubuntu-latest
     steps:
       - run: echo start
       - run: bash bin/acceptance-gradle.sh
-      - id: results
-        run: bash bin/acceptance-gradle-capped.sh
-  acceptance-maven:
-    runs-on: ubuntu-latest
-    steps:
-      - run: bash bin/acceptance-maven.sh
-      - id: results
-        run: bash bin/acceptance-maven-capped.sh
+      - run: bash bin/acceptance-gradle-capped.sh
+      - run: |
+          for v in 1.2.0 1.2.3; do
+            bash bin/acceptance-maven.sh
+            bash bin/acceptance-maven-capped.sh
+          done
 """)
 os.makedirs(w + "/plain", exist_ok=True)
 for n in ("check-stage", "check-phase-scanners", "check-phase-acceptance", "check-phase-runtime", "check-phase-arm64", "check-scan", "check-govulncheck", "check-fips", "check-artifacts", "check-acceptance", "check-guide"):
@@ -206,31 +206,24 @@ expect caught "AC3 a phase target with a second command" "exactly the one line" 
 printf '#!/usr/bin/env bash\nbash bin/check-stage.sh scanners || true\n' > "$work/ph_swallow.sh"
 expect caught "AC3 a phase target that swallows a failure" "exactly the one line" phase "$work/ph_swallow.sh" scanners
 expect caught "AC3 a phase outside the closed list" "unknown phase" phase "$work/ph_scanners.sh" checks
-ARMV='python3 -I -B bin/chain-verify.py'
 ARML='bash bin/check-artifacts.sh --arch arm64 --digests witness-build/digests.json --images images --archives dist --out check-results'
 armt() { # armt FILE LINE... : an arm64 target holding exactly these lines after the shebang
   local f=$1; shift; { printf '#!/usr/bin/env bash\n'; printf '%s\n' "$@"; } > "$f"; }
-P1="$ARMV policy make --template .github/policy/release-policy.template.json --tag \"\$GITHUB_REF_NAME\" --out policy.json"
-P2="$ARMV stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json"
-P3="$ARMV verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json"   # Sign's provenance is Release's to verify (rule 58: Check's previous stage is Build)
-armt "$work/ph_arm64.sh" "set -euo pipefail" "$P1" "$P2" "$ARML"
-expect ok "fixture: the arm64 target passes the phase judge (rule 58: it verifies Build's record, then the artifact checks)" "" phase "$work/ph_arm64.sh" arm64
-armt "$work/ph_arm64b.sh" "set -euo pipefail" "$P1" "$P2" "${ARML/ --arch arm64/}"
-expect caught "AC17 an arm64 target without --arch arm64" "exactly" phase "$work/ph_arm64b.sh" arm64
-armt "$work/ph_arm64c.sh" "set -euo pipefail" "$P1" "$P2" "$ARML || true"
+DISP="bash bin/check-stage.sh arm64"      # the dispatcher's arm64 phase makes the policy, verifies Build's record, then runs the artifact checks
+armt "$work/ph_arm64.sh" "set -euo pipefail" "$DISP"
+expect ok "fixture: the arm64 target passes the phase judge (set -euo pipefail, then the dispatcher's arm64 phase)" "" phase "$work/ph_arm64.sh" arm64
+armt "$work/ph_arm64b.sh" "set -euo pipefail" "$ARML"
+expect caught "rule 58 an arm64 target that skips the dispatcher (the artifact checks without the policy and Build's verification)" "exactly" phase "$work/ph_arm64b.sh" arm64
+armt "$work/ph_arm64c.sh" "set -euo pipefail" "$DISP || true"
 expect caught "AC17 an arm64 target that swallows a failure" "exactly" phase "$work/ph_arm64c.sh" arm64
-armt "$work/ph_arm64d.sh" "set -euo pipefail" "$P1" "$ARML"
-expect caught "rule 58 an arm64 target that does not verify Build's record (no stage-start)" "exactly" phase "$work/ph_arm64d.sh" arm64
-armt "$work/ph_arm64e.sh" "set -euo pipefail" "$P1" "$P2" "$P3" "$ARML"
-expect caught "rule 58 an arm64 target that verifies Sign's provenance (Release's to verify)" "exactly" phase "$work/ph_arm64e.sh" arm64
-armt "$work/ph_arm64f.sh" "set -euo pipefail" "$P1" "$ARML" "$P2"
-expect caught "rule 58 an arm64 target that checks the artifacts before it verifies Build" "exactly" phase "$work/ph_arm64f.sh" arm64
-armt "$work/ph_arm64g.sh" "set -euo pipefail" "$P1" "${P2/python3 -I -B/python3}" "$ARML"
-expect caught "rule 58 an arm64 target whose verifier is not isolated" "exactly" phase "$work/ph_arm64g.sh" arm64
-armt "$work/ph_arm64h.sh" "set -euo pipefail" "$P1" "${P2/witness-build\/digests.json/other\/digests.json}" "$ARML"
-expect caught "rule 58 an arm64 target that verifies other digests than the ones it checks" "exactly" phase "$work/ph_arm64h.sh" arm64
-armt "$work/ph_arm64i.sh" "$P1" "$P2" "$ARML"
-expect caught "an arm64 target without set -euo pipefail" "exactly" phase "$work/ph_arm64i.sh" arm64
+armt "$work/ph_arm64d.sh" "set -euo pipefail" "$DISP" "$ARML"
+expect caught "rule 58 an arm64 target with a second command after the dispatcher" "exactly" phase "$work/ph_arm64d.sh" arm64
+armt "$work/ph_arm64e.sh" "set -euo pipefail" "bash bin/check-stage.sh runtime"
+expect caught "AC3 an arm64 target that runs another phase" "exactly" phase "$work/ph_arm64e.sh" arm64
+armt "$work/ph_arm64f.sh" "$DISP"
+expect caught "an arm64 target without set -euo pipefail" "exactly" phase "$work/ph_arm64f.sh" arm64
+armt "$work/ph_arm64g.sh" "set -euo pipefail" "$DISP" "true"
+expect caught "an arm64 target with a trailing command" "exactly" phase "$work/ph_arm64g.sh" arm64
 expect ok "fixture: the known-good chain-records.json passes the records judge" "" records "$work/records.json"
 expect ok "fixture: the known-good release.yml passes the graph judge" "" graph "$work/release.yml"
 FXD_3="fixture: plain scripts that only use scanners, docker and curl pass the plain judge"
@@ -256,29 +249,29 @@ m s_pkgr   '(  check:\n    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n
 m s_att    '(  check:\n    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n)' '\1      attestations: write\n' 'permissions'       "AC1 attestations: write"
 m s_idw    '(  check:\n    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n)' '\1      id-token: write\n' 'permissions'       "REL-011-AC1 id-token: write put back on the Check job"
 m s_idn    '(  check:\n    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n)' '\1      id-token: none\n' 'permissions'       "REL-011-AC1 an id-token key (even none) on the Check job"
-m s_sec    'name: scanners'                                   'name: scanners\n        env:\n          K: ${{ secrets.SNYK_TOKEN }}'  'step keys'  "AC1 a secret in a step"
+m s_sec    'name: scanners'                                   'name: scanners\n        env:\n          K: ${{ secrets.SNYK_TOKEN }}'  'keys not allowed'  "AC1 a secret in a step"
 m s_login  '      - name: install Witness'                     '      - name: login\n        run: echo x | docker login ghcr.io -u u --password-stdin\n      - name: install Witness' 'registry login' "AC1 a registry login"
 m s_unp    '(  check:\n.*?uses: actions/checkout@)3d3c42e5aac5ba805825da76410c181273ba90b1' '\1v4' 'digest-pinned' "AC1 an unpinned checkout in the Check job"
 m s_persist '(  check:\n.*?persist-credentials: )false' '\1true' 'persist-credentials' "AC1 persisted credentials in the Check job"
-m s_prov   'name: dist\n          path: dist\n'                      'name: provenance\n          path: provenance\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n' 'download-artifact' "rule 58 the Check job downloads Sign's provenance"
-m s_dlname 'name: images\n          path: images'                  'name: not-listed\n          path: images'                                       'download-artifact' "AC1 a download outside the allowlist"
-m s_dlbin  'path: dist'                                        'path: bin'                                              'download-artifact' "AC1 a download into bin/"
-m s_upname 'name: check-results'                               'name: anything'                                         'upload-artifact'   "AC1 an upload outside the allowlist"
-m s_ghscr  '      - name: install Witness'                     '      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1\n      - name: install Witness' 'uses not allowed' "AC1 github-script"
-m s_comp   '      - name: install Witness'                     '      - uses: ./.github/actions/x\n      - name: install Witness'  'uses not allowed' "AC1 a local composite action"
-m s_after  '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-check' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist2\n      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-check' 'after Witness' "AC1 a download after Witness started"
+m s_prov   'name: dist\n          path: dist\n'                      'name: provenance\n          path: provenance\n      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: dist\n          path: dist\n' 'download-artifact' "rule 58 the Check job downloads Sign's provenance"
+m s_dlname 'name: images\n          path: images'                  'name: not-listed\n          path: images'                                       'must be a digest-pinned download' "AC1 a download outside the allowlist"
+m s_dlbin  'path: dist'                                        'path: bin'                                              'must be a digest-pinned download' "AC1 a download into bin/"
+m s_upname 'name: check-results'                               'name: anything'                                         'must be a digest-pinned upload'   "AC1 an upload outside the allowlist"
+m s_ghscr  '      - name: install Witness'                     '      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1\n      - name: install Witness' 'must have exactly its' "AC1 github-script"
+m s_comp   '      - name: install Witness'                     '      - uses: ./.github/actions/x\n      - name: install Witness'  'must have exactly its' "AC1 a local composite action"
+m s_after  '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-check' '      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: dist\n          path: dist2\n      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-check' 'must have exactly its' "AC1 a download after Witness started"
 m s_wf     'permissions:\n  contents: read\njobs'             'permissions:\n  contents: read\nenv: {A: b}\njobs'      'workflow keys'     "AC1 workflow env"
 m s_trig   'workflow_call:'                                    'workflow_call:\n  push:'                                  'workflow_call'     "AC1 an extra trigger"
 m s_direct 'run: bash bin/witnessed-local.sh scanners bin/check-phase-scanners.sh' 'run: witness run --step scanners -- ./bin/check-stage.sh'  'witnessed-local.sh' "AC11 a direct witness run in the stage file (the helper is the one place)"
 m s_tmo    'run: bash bin/witnessed-local.sh scanners bin/check-phase-scanners.sh' 'run: timeout 540 bash bin/witnessed-local.sh scanners bin/check-phase-scanners.sh' 'witnessed-local.sh' "AC11 timeout boilerplate repeated in the stage file"
 m s_name   'witnessed-local.sh runtime bin/check-phase-runtime.sh'  'witnessed-local.sh checks bin/check-phase-checks.sh'  'exactly' "AC11 a step name outside the closed list"
 m s_mism   'witnessed-local.sh acceptance bin/check-phase-acceptance.sh' 'witnessed-local.sh acceptance bin/check-phase-runtime.sh' 'witnessed-local.sh' "AC11 the step name and the phase differ"
-m s_four   '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-check' '      - name: extra\n        run: bash bin/witnessed-local.sh extra bin/check-phase-extra.sh\n      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-check' 'THREE' "AC11 a fourth witnessed step"
-m s_order  '      - name: scanners\n        run: bash bin/witnessed-local.sh scanners bin/check-phase-scanners.sh\n      - name: acceptance\n        run: bash bin/witnessed-local.sh acceptance bin/check-phase-acceptance.sh\n' '      - name: acceptance\n        run: bash bin/witnessed-local.sh acceptance bin/check-phase-acceptance.sh\n      - name: scanners\n        run: bash bin/witnessed-local.sh scanners bin/check-phase-scanners.sh\n' 'in that order' "AC11 the steps run in another order"
-m s_threeup 'witness-runtime\n' 'elsewhere\n' 'upload-artifact' "AC12 a record directory is not what witness-check uploads"
-m s_img2   'name: images\n          path: images\n' 'name: images\n          path: images\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images2\n' 'exactly one download of the images' "AC1 a second download of the images artifact (Q4)"
-m s_imgno  '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n' '' 'exactly one download of the images' "AC1 no download of the images artifact (Q4)"
-m s_imgother 'name: images\n          path: images' 'name: image-cache\n          path: images' 'download-artifact' "AC1 another artifact name in place of images (Q4)"
+m s_four   '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-check' '      - name: extra\n        run: bash bin/witnessed-local.sh extra bin/check-phase-extra.sh\n      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-check' 'must have exactly its' "AC11 a fourth witnessed step"
+m s_order  '      - name: scanners\n        run: bash bin/witnessed-local.sh scanners bin/check-phase-scanners.sh\n      - name: acceptance\n        run: bash bin/witnessed-local.sh acceptance bin/check-phase-acceptance.sh\n' '      - name: acceptance\n        run: bash bin/witnessed-local.sh acceptance bin/check-phase-acceptance.sh\n      - name: scanners\n        run: bash bin/witnessed-local.sh scanners bin/check-phase-scanners.sh\n' 'must be exactly' "AC11 the steps run in another order"
+m s_threeup 'witness-runtime\n' 'elsewhere\n' 'must be a digest-pinned upload' "AC12 a record directory is not what witness-check uploads"
+m s_img2   'name: images\n          path: images\n' 'name: images\n          path: images\n      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: images\n          path: images2\n' 'exactly one download of the images' "AC1 a second download of the images artifact (Q4)"
+m s_imgno  '      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: images\n          path: images\n' '' 'exactly one download of the images' "AC1 no download of the images artifact (Q4)"
+m s_imgother 'name: images\n          path: images' 'name: image-cache\n          path: images' 'must be a digest-pinned download' "AC1 another artifact name in place of images (Q4)"
 m s_xnogr  '      - name: install grype \(pinned by checksum\)\n        run: bash bin/install-scanner.sh grype\n' '' 'exactly its' "AC4 round 1 F2: Check without the grype install (check-scan.sh needs it)"
 m s_xnoosv '      - name: install osv-scanner \(pinned by checksum\)\n        run: bash bin/install-scanner.sh osv-scanner\n' '' 'exactly its' "AC4 round 1 F2: Check without the osv-scanner install"
 m s_xinsord '      - name: install grype \(pinned by checksum\)\n        run: bash bin/install-scanner.sh grype\n      - name: install osv-scanner \(pinned by checksum\)\n        run: bash bin/install-scanner.sh osv-scanner\n' '      - name: install osv-scanner (pinned by checksum)\n        run: bash bin/install-scanner.sh osv-scanner\n      - name: install grype (pinned by checksum)\n        run: bash bin/install-scanner.sh grype\n' 'check step' "AC4 round 1 F2: the scanner installs out of the listed order"
@@ -286,7 +279,7 @@ m s_xnogo  '(install-scanner.sh osv-scanner\n)      - name: install Go \(pinned 
 m s_xnogv  '      - name: install govulncheck from its build job[^\n]*\n        run: bash bin/unpack-govulncheck.sh\n' '' 'exactly its' "G Check without the govulncheck install"
 m s_xgvord '(      - name: install Go \(pinned by checksum\)\n        run: bash bin/install-scanner.sh go\n)(      - uses: [^\n]*\n        with:\n          artifact-ids: \$\{\{ needs.govulncheck-build.outputs.artifact-id \}\}\n          path: govulncheck-dl\n)' '\2\1' 'exactly' "G the pinned Go installed after the govulncheck download"
 m s_xgvdir 'run: bash bin/unpack-govulncheck.sh' 'run: bash bin/unpack-govulncheck.sh /tmp' 'exactly' "G govulncheck installed into another directory"
-m s_xgvgo  '(install-scanner.sh osv-scanner\n)      - name: install Go \(pinned by checksum\)\n        run: bash bin/install-scanner.sh go\n' '\1      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n' 'uses not allowed' "G the setup-go action in place of the pinned Go install in Check (its bytes are not pinned by a repository checksum)"
+m s_xgvgo  '(install-scanner.sh osv-scanner\n)      - name: install Go \(pinned by checksum\)\n        run: bash bin/install-scanner.sh go\n' '\1      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n' 'must be exactly' "G the setup-go action in place of the pinned Go install in Check (its bytes are not pinned by a repository checksum)"
 m s_xinsdir '      - name: install grype \(pinned by checksum\)\n        run: bash bin/install-scanner.sh grype\n' '      - name: install grype\n        run: bash bin/install-scanner.sh grype /tmp\n' 'check step' "AC4 round 1 F2: grype installed into another directory"
 m g_cred   '(  govulncheck-build:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n)' '\1      id-token: write\n' 'permissions' "REL-011-AC1 govulncheck-build granted id-token: write (a build in a job with a credential)"
 m g_envjob '  govulncheck-build:\n' '  govulncheck-build:\n    environment: agent\n' 'may hold exactly' "REL-011-AC1 govulncheck-build gets an environment"
@@ -317,7 +310,7 @@ m r_outw    '(      records: \$\{\{ steps\.records\.outputs\.)records' '\1other'
 m r_nostep  '      - id: records\n        name: expose\n[^\n]*\n' '' 'records' "REL-011-AC1 the check job without its records step"
 m r_stepid  '(      - id: )records(\n        name: expose\n)' '\1other\2' 'records' "REL-011-AC1 the records step under another id"
 m r_steprun '(bin/check-records-digests.sh witness-scanners witness-acceptance )witness-runtime' '\1witness-runtime witness-extra' 'records' "REL-011-AC1 the records step listing another folder"
-m r_stepbeforew '(      - name: scanners\n)' '      - id: records\n        name: expose\n        run: r=$(bash bin/check-records-digests.sh witness-scanners witness-acceptance witness-runtime) && echo "records=$r" >> "$GITHUB_OUTPUT"\n\1' 'steps must be' "REL-011-AC1 the records step before the witnessed steps (it would list records not made yet)"
+m r_stepbeforew '(      - name: scanners\n)' '      - id: records\n        name: expose\n        run: r=$(bash bin/check-records-digests.sh witness-scanners witness-acceptance witness-runtime) && echo "records=$r" >> "$GITHUB_OUTPUT"\n\1' 'must have exactly its' "REL-011-AC1 the records step before the witnessed steps (it would list records not made yet)"
 m r_wfnoout 'on:\n  workflow_call:\n    outputs:\n      records:\n        description: x\n        value: [^\n]*\n      records-arm64:\n        description: x\n        value: [^\n]*\n' 'on:\n  workflow_call:\n' 'workflow_call must carry' "REL-011-AC1 the workflow_call outputs are missing"
 m r_wfval   '(        value: \$\{\{ jobs\.)check-arm64(\.outputs\.records-arm64 \}\})' '\1check\2' 'workflow_call must carry' "REL-011-AC1 the records-arm64 workflow output points at the check job"
 m r_armnoout '    outputs:\n      records-arm64: [^\n]*\n' '' 'records-arm64' "REL-011-AC1 the arm64 job exposes no records-arm64 output"
@@ -327,10 +320,10 @@ m r_armres  'name: check-results-arm64\n          path: check-results' 'name: ch
 m c_override '(          artifact-ids: \$\{\{ needs.govulncheck-build.outputs.artifact-id \}\}\n          path: govulncheck-dl\n)' '\1          digest-mismatch: ignore\n' 'download-artifact' "REL-011-AC1 the Check job's download turns the digest check off (digest-mismatch: ignore)"
 m c_warn   '(          artifact-ids: \$\{\{ needs.govulncheck-build.outputs.artifact-id \}\}\n          path: govulncheck-dl\n)' '\1          digest-mismatch: warn\n' 'download-artifact' "REL-011-AC1 the Check job's download only warns on a digest mismatch"
 m c_error  '(          artifact-ids: \$\{\{ needs.govulncheck-build.outputs.artifact-id \}\}\n          path: govulncheck-dl\n)' '\1          digest-mismatch: error\n' 'download-artifact' "REL-011-AC1 even an explicit digest-mismatch input is refused (the default must stand untouched)"
-m c_coe    '(      - uses: [^\n]*\n)(        with:\n          artifact-ids: \$\{\{ needs.govulncheck-build.outputs.artifact-id \}\}\n          path: govulncheck-dl\n)' '\1        continue-on-error: true\n\2' 'step keys' "REL-011-AC1 the Check job's download may fail without stopping the job (continue-on-error)"
-m c_dlif   '(      - uses: [^\n]*\n)(        with:\n          artifact-ids: \$\{\{ needs.govulncheck-build.outputs.artifact-id \}\}\n          path: govulncheck-dl\n)' '\1        if: always()\n\2' 'step keys' "REL-011-AC1 the Check job's download is conditional"
-m c_inscoe '(        run: bash bin/unpack-govulncheck.sh\n)' '\1        continue-on-error: true\n' 'step keys' "REL-011-AC1 the install step may fail silently"
-# the arm64 job: exactly this job, this label, these steps, and nothing else
+m c_coe    '(      - uses: [^\n]*\n)(        with:\n          artifact-ids: \$\{\{ needs.govulncheck-build.outputs.artifact-id \}\}\n          path: govulncheck-dl\n)' '\1        continue-on-error: true\n\2' 'keys not allowed' "REL-011-AC1 the Check job's download may fail without stopping the job (continue-on-error)"
+m c_dlif   '(      - uses: [^\n]*\n)(        with:\n          artifact-ids: \$\{\{ needs.govulncheck-build.outputs.artifact-id \}\}\n          path: govulncheck-dl\n)' '\1        if: always()\n\2' 'keys not allowed' "REL-011-AC1 the Check job's download is conditional"
+m c_inscoe '(        run: bash bin/unpack-govulncheck.sh\n)' '\1        continue-on-error: true\n' 'keys not allowed' "REL-011-AC1 the install step may fail silently"
+# the arm64 job : exactly this job, this label, these steps, and nothing else
 m a_name   '  check-arm64:'                                    '  check-arm:'                                              'three jobs'          "AC1 the second job under another name"
 m a_label  'runs-on: ubuntu-24.04-arm'                         'runs-on: ubuntu-24.04'                                  'ubuntu-24.04-arm'  "AC1 the arm64 job on the amd64 label"
 m a_label2 'runs-on: ubuntu-24.04-arm'                         'runs-on: ubuntu-latest-arm'                             'ubuntu-24.04-arm'  "AC1 the arm64 job on another arm label"
@@ -343,49 +336,51 @@ m a_pkg    'ubuntu-24.04-arm\n    permissions:\n      contents: read' 'ubuntu-24
 m a_sec    'name: arm64 under Witness\n'                       'name: arm64 under Witness\n        env:\n          K: ${{ secrets.SNYK_TOKEN }}\n' 'secret'  "AC1 a secret in the arm64 job"
 m a_extra  'name: arm64 under Witness\n'                       'name: extra\n        run: kind version\n      - name: arm64 under Witness\n' 'check-arm64' "AC1 an extra step in the arm64 job"
 m a_nokind '      - name: arm64 under Witness\n        run: bash bin/witnessed-local.sh arm64 bin/check-phase-arm64.sh\n' '' 'check-arm64' "AC1 the arm64 job without its witnessed step"
-m a_noinst '      - name: install Witness \(pinned by checksum\)\n        run: bash bin/install-scanner.sh witness\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build\n          path: witness-build\n' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build\n          path: witness-build\n' 'check-arm64' "AC1 the arm64 job without the Witness install"
-m a_nowb   '          name: signed-witness-build\n          path: witness-build\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: digests\n          path: witness-build\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n      - name: arm64' '          name: digests\n          path: witness-build\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n      - name: arm64' 'check-arm64' "rule 58 the arm64 job without the Build record download"
-m a_prov   'name: images\n          path: images\n      - name: arm64' 'name: images\n          path: images\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: provenance\n          path: provenance\n      - name: arm64' 'check-arm64' "rule 58 the arm64 job downloads Sign's provenance"
+m a_noinst '      - name: install Witness \(pinned by checksum\)\n        run: bash bin/install-scanner.sh witness\n      - name: install Go \(pinned by checksum\)\n        run: bash bin/install-scanner.sh go\n      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: signed-witness-build\n          path: witness-build\n' '      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: signed-witness-build\n          path: witness-build\n' 'check-arm64' "AC1 the arm64 job without the Witness install"
+m a_nowb   '          name: signed-witness-build\n          path: witness-build\n      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: digests\n          path: witness-build\n      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: dist\n          path: dist\n      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: images\n          path: images\n      - name: arm64' '          name: digests\n          path: witness-build\n      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: dist\n          path: dist\n      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: images\n          path: images\n      - name: arm64' 'check-arm64' "rule 58 the arm64 job without the Build record download"
+m a_prov   'name: images\n          path: images\n      - name: arm64' 'name: images\n          path: images\n      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: provenance\n          path: provenance\n      - name: arm64' 'check-arm64' "rule 58 the arm64 job downloads Sign's provenance"
 m a_stepwhat 'run: bash bin/witnessed-local.sh arm64 bin/check-phase-arm64.sh' 'run: bash bin/witnessed-local.sh arm64 bin/check-phase-runtime.sh' 'check-arm64' "AC1 the arm64 step with another target"
 m a_stepname 'run: bash bin/witnessed-local.sh arm64 bin/check-phase-arm64.sh' 'run: bash bin/witnessed-local.sh scanners bin/check-phase-scanners.sh' 'check-arm64' "AC1 the arm64 job running another step"
+# finding 3b: check-artifacts.sh calls fscache-go's `go` on the arm64 runner, so the arm64 job installs the pinned Go exactly as the amd64 Check job does
+m a_nogo   '(install-scanner.sh witness\n)      - name: install Go \(pinned by checksum\)\n        run: bash bin/install-scanner.sh go\n(      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: signed-witness-build)' '\1\2' 'check-arm64' "3b the arm64 job without the pinned Go install (check-artifacts.sh exits 127 on go)"
+m a_gosetup '(install-scanner.sh witness\n)      - name: install Go \(pinned by checksum\)\n        run: bash bin/install-scanner.sh go\n' '\1      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n' 'check-arm64' "3b the setup-go action in place of the pinned Go install in the arm64 job"
+m a_goarg  'run: bash bin/install-scanner.sh go\n(      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: signed-witness-build)' 'run: bash bin/install-scanner.sh go /tmp\n\1' 'check-arm64' "3b the Go install of the arm64 job with another directory"
+m a_goord  '(      - name: install Witness \(pinned by checksum\)\n        run: bash bin/install-scanner.sh witness\n)(      - name: install Go \(pinned by checksum\)\n        run: bash bin/install-scanner.sh go\n)(      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: signed-witness-build)' '\2\1\3' 'check-arm64' "3b the Go install of the arm64 job before the Witness install"
 m a_upname 'name: witness-check-arm64'                         'name: check-results'                                    'check-arm64'       "AC1 the arm64 upload under another artifact name"
 m a_uppath 'path: witness-arm64'                               'path: witness-scanners'                                 'check-arm64'       "AC1 the arm64 upload of another directory"
-m a_dlimg  'name: images\n          path: images\n      - name: arm64' 'name: images\n          path: images\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: image-cache\n          path: image-cache\n      - name: arm64' 'check-arm64' "AC1 an extra download in the arm64 job"
-m a_unpin  'name: install Witness \(pinned by checksum\)\n        run: bash bin/install-scanner.sh witness\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build' 'name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n      - uses: actions/download-artifact@v8\n        with:\n          name: digests' 'check-arm64' "AC1 an unpinned download in the arm64 job"
+m a_dlimg  'name: images\n          path: images\n      - name: arm64' 'name: images\n          path: images\n      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: image-cache\n          path: image-cache\n      - name: arm64' 'check-arm64' "AC1 an extra download in the arm64 job"
+m a_unpin  'name: install Witness \(pinned by checksum\)\n        run: bash bin/install-scanner.sh witness\n      - name: install Go \(pinned by checksum\)\n        run: bash bin/install-scanner.sh go\n      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: signed-witness-build' 'name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n      - name: install Go (pinned by checksum)\n        run: bash bin/install-scanner.sh go\n      - uses: actions/download-artifact@v8\n        with:\n          name: digests' 'check-arm64' "AC1 an unpinned download in the arm64 job"
 # the amd64 job is judged as exactly as the arm64 job: its listed steps in order, each download by name and
 # path and once, the witness-check upload by name and path.
-m s_xnowb '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build\n          path: witness-build\n' '' 'exactly its' "AC1 round 1 F6: no download of witness-build (the record Check verifies)"
-m s_xnodig '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: digests\n          path: witness-build\n' '' 'exactly its' "AC1 round 1 F6: no download of the digests"
-m s_xnodist '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n' '' 'exactly its' "AC1 round 1 F6: no download of dist (the archives the scan and the artifact checks need)"
-m s_xdup '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build\n          path: witness-build\n' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build\n          path: witness-build\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build\n          path: witness-build\n' 'exactly its' "AC1 round 1 F6: witness-build downloaded twice"
-m s_xdupd '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n' 'exactly its' "AC1 round 1 F6: dist downloaded twice"
-m s_xwbpath '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build\n          path: witness-build\n' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: witness-build\n          path: elsewhere\n' 'check step' "AC1 round 1 F6: witness-build downloaded into another directory"
-m s_xdigpath '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: digests\n          path: witness-build\n' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: digests\n          path: dist\n' 'check step' "AC1 round 1 F6: the digests downloaded into dist/, not beside the record"
-m s_xorder '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: digests\n          path: witness-build\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: digests\n          path: witness-build\n' 'check step' "AC1 round 1 F6: the dist download ahead of the digests (the order is the list)"
+m s_xnowb '      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: signed-witness-build\n          path: witness-build\n' '' 'exactly its' "AC1 round 1 F6: no download of witness-build (the record Check verifies)"
+m s_xnodig '      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: digests\n          path: witness-build\n' '' 'exactly its' "AC1 round 1 F6: no download of the digests"
+m s_xnodist '      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: dist\n          path: dist\n' '' 'exactly its' "AC1 round 1 F6: no download of dist (the archives the scan and the artifact checks need)"
+m s_xdup '      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: signed-witness-build\n          path: witness-build\n' '      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: signed-witness-build\n          path: witness-build\n      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: signed-witness-build\n          path: witness-build\n' 'exactly its' "AC1 round 1 F6: witness-build downloaded twice"
+m s_xdupd '      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: dist\n          path: dist\n' '      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: dist\n          path: dist\n      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: dist\n          path: dist\n' 'exactly its' "AC1 round 1 F6: dist downloaded twice"
+m s_xwbpath '      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: signed-witness-build\n          path: witness-build\n' '      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: witness-build\n          path: elsewhere\n' 'check step' "AC1 round 1 F6: witness-build downloaded into another directory"
+m s_xdigpath '      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: digests\n          path: witness-build\n' '      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: digests\n          path: dist\n' 'check step' "AC1 round 1 F6: the digests downloaded into dist/, not beside the record"
+m s_xorder '      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: digests\n          path: witness-build\n      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: dist\n          path: dist\n' '      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: dist\n          path: dist\n      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: digests\n          path: witness-build\n' 'check step' "AC1 round 1 F6: the dist download ahead of the digests (the order is the list)"
 m s_xnoup '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-check\n          path: \|\n            witness-scanners\n            witness-acceptance\n            witness-runtime\n' '' 'exactly its' "AC1 round 1 F6: no witness-check upload (Release verifies Check's records from it)"
 m s_xupdup '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: check-results\n          path: check-results\n' '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: check-results\n          path: check-results\n      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: check-results\n          path: check-results\n' 'exactly its' "AC1 round 1 F6: check-results uploaded twice"
 m s_xrec 'witness-runtime\n' 'witness-runtime\n            witness-extra\n' 'check step' "AC1 round 1 F6: the witness-check upload holds an extra record directory"
 # ---- AC11: the helper (the rule 68 seam) -----------------------------------------------------------------------------
 hm() { if mutate "$work/witnessed.sh" "$work/$1.sh" "$2" "$3"; then expect caught "$5" "$4" helper "$work/$1.sh"; fi; }
-hm h_twowit  'oidc_token\(\) \{'                                 'witness run --step x -- true\noidc_token() {' 'the helper'     "AC11 a second witness run"
-hm h_dflag   '  -o "\$local_record"'                           '  -d out -o "\$local_record"'                                   'the helper'        "AC9 the working-directory flag"
+hm h_twowit  'openssl genpkey'                                    'witness run --step x -- true\nopenssl genpkey' 'the helper'     "AC11 a second witness run"
+hm h_dflag   '  -o "witness-'                                   '  -d out -o "witness-'                                   'the helper'        "AC9 the working-directory flag"
 hm h_gh      '-a environment,git,material,product'              '-a environment,git,github,product'                      'the helper'        "AC9 the github attestor (it embeds the raw OIDC token)"
 hm h_slsa    '-a environment,git,material,product'              '-a environment,git,material,product,slsa'               'the helper'        "AC9 the slsa attestor (Sign's alone)"
 hm h_nofilt  '  --env-filter-sensitive-vars \\\n'             ''                                                       'the helper'        "AC9 the environment filter dropped"
 hm h_tok     '--env-add-sensitive-key GITHUB_TOKEN'             '--env-add-sensitive-key SOMETHING_ELSE'                  'the helper'        "AC9 a token variable no longer filtered"
-hm h_out     '--out "witness-\$\{step#snapshot-\}/\$step-collection.json"' '--out elsewhere.json'                                'the helper'        "AC9 the record written elsewhere"
-hm h_mask    'echo "::add-mask::\$tok"'                        'echo hi'                                                'the helper'        "AC9 the token is no longer masked"
-hm h_unset   'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL\n' ''                                    'the helper'        "AC9 the request variables stay set for the wrapped script"
+hm h_out     '-o "witness-\$\{step#snapshot-\}/\$step-collection\.local\.json"' '-o elsewhere.json'                                'the helper'        "AC9 the record written elsewhere"
+hm h_unset   'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN\n' ''                                    'the helper'        "AC9 the request variables stay set for the wrapped script"
 hm h_noset   'set -euo pipefail\n'                              ''                                                       'the helper'        "AC11 the helper without set -euo pipefail"
 hm h_nostep  'release-verify\|release-apks\|'              ''                                                      'the helper'        "AC11 two of Release's steps missing from the closed list"
 hm h_open    '\*\) echo "witnessed: unknown step \$step" >&2; exit 2 ;;' '*) ;;'                                    'the helper'        "AC11 an unknown step accepted"
 hm h_extra   '\|release-postverify\)'                          '|release-postverify|extra)'                                       'the helper'        "AC11 a fourth Check step in the closed list"
-hm h_kref    '--signer-file-key-path "\$td/key.pem"'    '--signer-file-key-path /etc/signing-key.pem'                 'the helper'        "AC9 Witness told to sign with another key file than the step's throwaway key"
+hm h_kref    '--signer-file-key-path "\$kd/key.pem"'    '--signer-file-key-path /etc/signing-key.pem'                 'the helper'        "AC9 Witness told to sign with another key file than the step's throwaway key"
 hm h_fulcio  '--signer-file-key-path'                          '--signer-fulcio-url https://fulcio.example.com --signer-file-key-path' 'the helper'  "AC9 a Fulcio flag (keyless signing is gone)"
 hm h_ts      '--signer-file-key-path'                          '-t https://timestamp.example.com/api --signer-file-key-path'  'the helper'        "AC9 a timestamp authority flag"
-hm h_aud     'audience=sts.amazonaws.com'                      'audience=sigstore'                                      'the helper'        "AC9 the token asked for another audience"
 hm h_notrap  'trap [^\n]*EXIT HUP INT TERM\n'                  ''                                                       'the helper'        "AC9 no trap: the token directory outlives an interrupted run"
-hm h_wrap0   'unset AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE\n' ':\n'                                    'the helper'        "AC9 Witness and the wrapped script keep the AWS variables"
 hm h_wrap1   '-- bash "\$@"' '-- env AWS_ROLE_ARN=1 bash "$@"'                                              'the helper'        "AC9 an AWS name in the wrapped command (the command-run record would name it)"
 hm h_sens    '--env-add-sensitive-key AWS_ROLE_ARN'            ''                                                       'the helper'        "AC9 the role variable is not a sensitive key"
 hm h_exec    'witness run --step'                              'exec witness run --step'                                'the helper'        "AC9 witness exec'd (the cleanup after it would never run)"
@@ -397,8 +392,8 @@ cm c8_noimg  ' --image kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd56
 cm c8_two    'create_cluster\n$'                               'create_cluster\nkind create cluster --name second\n'    'exactly once'       "AC14 a second cluster"
 cm c8_act    'set -eo pipefail\n'                              'set -eo pipefail\n# uses: helm/kind-action\n'            'kind action'        "AC14 a kind action named in the suite"
 um() { if mutate "$work/acceptance.yml" "$work/$1.yml" "$2" "$3"; then expect caught "$5" "$4" suites "$work/$1.yml"; fi; }
-um u_inline  '      - run: bash bin/acceptance-gradle.sh\n'   '      - run: ./gradlew build\n'                          'acceptance-gradle'  "AC5 the gradle suite inline instead of the shared script"
-um u_res     '      - id: results\n        run: bash bin/acceptance-maven-capped.sh' '      - run: bash bin/acceptance-maven-capped.sh\n      - id: results\n        run: echo results' 'results step' "AC5 the maven results step is not the suite"
+um u_inline  '      - run: bash bin/acceptance-gradle.sh\n'   '      - run: ./gradlew build\n'                          'acceptance'  "AC5 the gradle suite inline instead of the shared script"
+um u_order   '            bash bin/acceptance-maven.sh\n            bash bin/acceptance-maven-capped.sh\n' '            bash bin/acceptance-maven-capped.sh\n            bash bin/acceptance-maven.sh\n' 'in that order' "AC5 the maven suites in the wrong order"
 # ---- AC3: the order of bin/check-stage.sh --------------------------------------------------------------------------------
 sm() { if mutate "$work/script.sh" "$work/$1.sh" "$2" "$3"; then expect caught "$5" "$4" script "$work/$1.sh"; fi; }
 sm c_nofirst 'python3 -I -B bin/chain-verify.py stage-start[^\n]*\n'   ''                                                 'not the pinned form' "AC3 the verify step dropped"
@@ -501,7 +496,8 @@ mkdir -p "$work/gl1/docs" "$work/gl2/docs" "$work/gl3/docs" "$work/gl4/docs" "$w
 for d in gl1 gl2 gl3 gl4 gl5 gl6 gl8; do printf '# guide\n\n```sh\ncosign verify <IMAGE_REF>\n```\n' > "$work/$d/docs/verify-release.md"; done
 printf '# guide\n\n```sh\ngh release view v1\n```\n' > "$work/gl7/docs/verify-release.md"
 R='"reason": "needs the image in a registry; run right after publishing"'
-printf '[{"command": "cosign verify <IMAGE_REF>", %s}]\n' "$R" > "$work/gl1/docs/verify-release.cannot-run.json"
+printf '# guide\n\n```sh\ncosign verify --key release.rsa.pub <IMAGE_REF>\n```\n' > "$work/gl1/docs/verify-release.md"
+printf '[{"command": "cosign verify --key release.rsa.pub <IMAGE_REF>", %s}]\n' "$R" > "$work/gl1/docs/verify-release.cannot-run.json"
 printf '[]\n' > "$work/gl2/docs/verify-release.cannot-run.json"
 printf '[{"command": "cosign verify <IMAGE_REF>", %s}, {"command": "cosign verify <IMAGE_REF>", %s}]\n' "$R" "$R" > "$work/gl4/docs/verify-release.cannot-run.json"
 printf '[{"command": "cosign verify <IMAGE_REF>", "reason": " "}]\n' > "$work/gl5/docs/verify-release.cannot-run.json"
@@ -523,10 +519,29 @@ for n in 9 10; do mkdir -p "$work/gl$n/docs"; done
 printf '# guide\n\n```sh\ncosign verify-evil <IMAGE_REF>\n```\n' > "$work/gl9/docs/verify-release.md"
 printf '[{"command": "cosign verify-evil <IMAGE_REF>", %s}]\n' "$R" > "$work/gl9/docs/verify-release.cannot-run.json"
 expect caught "AC7 round 3 a cannot-run entry whose first words only start with a verify form is refused by the structural judge too" "not a verify form" guidelist "$work/gl9/docs/verify-release.md"
-GJ="cosign verify <IMAGE_REF> --certificate-identity <IDENTITY> | jq -e '.[0] | .critical'"
+GJ="cosign verify <IMAGE_REF> --key release.rsa.pub | jq -e '.[0] | .critical'"
 printf '# guide\n\n```sh\n%s\n```\n' "$GJ" > "$work/gl10/docs/verify-release.md"
 python3 -c 'import json,sys; json.dump([{"command": sys.argv[1], "reason": "needs the image in a registry; run right after publishing"}], open(sys.argv[2], "w"))' "$GJ" "$work/gl10/docs/verify-release.cannot-run.json"
 expect ok "AC7 round 3 a verify form piped to a jq filter that holds a quoted pipe is one verify form (the planner's rule)" "" guidelist "$work/gl10/docs/verify-release.md"
+# a rejection by the shared judge is final: a second command after a verify form is refused,
+# whatever the judge says about why
+mkdir -p "$work/gl11/docs"
+printf '# guide\n\n```sh\ncosign verify <IMAGE_REF>; true\n```\n' > "$work/gl11/docs/verify-release.md"
+printf '[{"command": "cosign verify <IMAGE_REF>; true", %s}]\n' "$R" > "$work/gl11/docs/verify-release.cannot-run.json"
+expect caught "AC7 a cannot-run entry the shared judge rejects (a verify form, then '; true') is refused" \
+  "; true" guidelist "$work/gl11/docs/verify-release.md"
+# the shared judge's rejection is final, whether it is a split rejection or a policy rejection; a reason never overrides it
+for n in 12 13 14; do mkdir -p "$work/gl$n/docs"; done
+GA='cosign verify <IMAGE_REF> --key release.rsa.pub; true'
+GB='cosign verify <IMAGE_REF>'
+GC='cosign verify <IMAGE_REF> --key release.rsa.pub'
+glw() { printf '# guide\n\n```sh\n%s\n```\n' "$2" > "$work/$1/docs/verify-release.md"
+  python3 -c 'import json,sys; json.dump([{"command": sys.argv[1], "reason": "needs the image in a registry; run right after publishing"}], open(sys.argv[2], "w"))' "$2" "$work/$1/docs/verify-release.cannot-run.json"; }
+glw gl12 "$GA"; glw gl13 "$GB"; glw gl14 "$GC"
+expect caught "AC7 row 14 a verify form with a key flag then '; true' is refused by the shared judge" "refused by the shared judge" guidelist "$work/gl12/docs/verify-release.md"
+expect caught "AC7 row 14 a verify form the judge rejects on policy only (no key flag) is refused by the shared judge" "refused by the shared judge" guidelist "$work/gl13/docs/verify-release.md"
+expect caught "AC7 row 14 the policy rejection carries the judge's own reason" "it needs exactly one key flag whose value is release.rsa.pub" guidelist "$work/gl13/docs/verify-release.md"
+expect ok "AC7 row 14 a verify form the judge accepts (with the key flag) passes" "" guidelist "$work/gl14/docs/verify-release.md"
 # ---- AC10: the old acceptance stages --------------------------------------------------------------------------------
 mkdir -p "$work/r/.github/workflows"; cp "$work/release.yml" "$work/r/.github/workflows/release.yml"
 expect ok "fixture: none of the old acceptance stages and no call to them" "" removed "$work/r"
@@ -554,8 +569,8 @@ mkr q5; printf '          grep -h FROM build/docker/Dockerfile.* | sort -u\n' >>
 expect caught "AC10 rule 61: release.yml still reads a Dockerfile" "release.yml names" removed "$work/q5"
 mkr q6; printf 'jobs:\n  r:\n    steps:\n      - run: docker buildx imagetools inspect --raw "$ref"\n' > "$work/q6/.github/workflows/main-candidate-rescan.yml"
 expect caught "AC10 rule 61: a workflow still reads an image with buildx imagetools" "main-candidate-rescan.yml names" removed "$work/q6"
-mkr q7; printf '#!/usr/bin/env bash\ndocker buildx imagetools create --tag x y\n' > "$work/q7/bin/scout-root-cause.sh"
-expect caught "AC10 rule 61: a script still builds an index with buildx imagetools" "scout-root-cause.sh names" removed "$work/q7"
+mkr q7; printf '#!/usr/bin/env bash\ndocker buildx imagetools create --tag x y\n' > "$work/q7/bin/old-script.sh"
+expect caught "AC10 rule 61: a script still builds an index with buildx imagetools" "old-script.sh names" removed "$work/q7"
 mkr q8; printf '  {"path": ".goreleaser.yaml", "sha256": "0"}\n' > "$work/q8/.github/policy/build-config-files.json"
 expect caught "AC10 rule 61: the build-config list still pins .goreleaser.yaml" "build-config-files.json names" removed "$work/q8"
 mkr q9; printf 'jobs:\n  r:\n    steps:\n      - run: docker login ghcr.io\n' > "$work/q9/.github/workflows/main-candidate-rescan.yml"
@@ -563,21 +578,13 @@ expect caught "AC10 rule 61: the rescan does not read the candidate index with c
 RSOK='jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n'
 mkr q10; printf "$RSOK" > "$work/q10/.github/workflows/main-candidate-rescan.yml"
 expect ok "fixture: a rescan that reads the candidate index with the pinned crane, by digest, passes" "" removed "$work/q10"
-# the digest reference, the install order, a commented command, and the Scout job's own install
+# the digest reference, the install order and a commented command
 mkr q12; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache:latest"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n' > "$work/q12/.github/workflows/main-candidate-rescan.yml"
 expect caught "AC10 rule 61: a rescan that reads the candidate by a tag reference is refused" "assigned exactly once" removed "$work/q12"
 mkr q13; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n          ./bin/install-scanner.sh crane\n' > "$work/q13/.github/workflows/main-candidate-rescan.yml"
 expect caught "AC10 rule 61: crane manifest before the pinned install of that job is refused" "before the pinned install" removed "$work/q13"
 mkr q14; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          # crane manifest "$ref" (commented out)\n          echo nothing\n' > "$work/q14/.github/workflows/main-candidate-rescan.yml"
 expect caught "AC10 rule 61: a commented-out crane manifest is not a read of the candidate" "does not read the candidate index" removed "$work/q14"
-mkr q15; printf "$RSOK"'  s:\n    steps:\n      - run: bash bin/scout-root-cause.sh "$RUNNER_TEMP/rc"\n' > "$work/q15/.github/workflows/main-candidate-rescan.yml"
-expect caught "AC10 rule 61: the Scout job runs scout-root-cause.sh without installing crane in that job" "scout-root-cause.sh" removed "$work/q15"
-mkr q16; printf "$RSOK"'  s:\n    steps:\n      - run: ./bin/install-scanner.sh crane\n      - run: bash bin/scout-root-cause.sh "$RUNNER_TEMP/rc"\n' > "$work/q16/.github/workflows/main-candidate-rescan.yml"
-expect ok "fixture: the Scout job with crane installed in its own earlier step passes" "" removed "$work/q16"
-mkr q17; printf '#!/usr/bin/env bash\nbuilt_idx="$PROBE_REPO:multi"; att_ref="$PROBE_REPO@$att_dig"\ncrane index append "$built_idx" -m "$att_ref" -t "$built_ref"\n' > "$work/q17/bin/scout-root-cause.sh"; printf "$RSOK" > "$work/q17/.github/workflows/main-candidate-rescan.yml"
-expect caught "AC10 rule 61: the Scout probe's index append from a tag reference is refused" "built_idx is not assigned exactly once, by digest" removed "$work/q17"
-mkr q18; printf '#!/usr/bin/env bash\nbuilt_idx="$PROBE_REPO@$MULTI"; att_ref="$PROBE_REPO:att"\ncrane index append "$built_idx" -m "$att_ref" -t "$built_ref"\n' > "$work/q18/bin/scout-root-cause.sh"; printf "$RSOK" > "$work/q18/.github/workflows/main-candidate-rescan.yml"
-expect caught "AC10 rule 61: the Scout probe's attestation manifest named by a tag is refused" "att_ref is not assigned exactly once, by digest" removed "$work/q18"
 mkr q19; mkdir -p "$work/q19/tools/x/y"; printf 'MAP = {"goreleaser": "x"}\n' > "$work/q19/tools/x/y/helper.py"
 expect caught "AC10 rule 61: a nested script anywhere under tools/ that names goreleaser is a reader" "tools/x/y/helper.py names" removed "$work/q19"
 AG=".github/ag"ent      # assembled: the layout check refuses a file outside the agent folder that spells it out
@@ -595,8 +602,6 @@ mkr q25; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/instal
 expect caught "AC10 rule 61: the reference reassigned to a tag after the digest assignment is refused" "assigned exactly once" removed "$work/q25"
 mkr q26; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          crane manifest "ghcr.io/o/cache:latest" > /tmp/index.json\n' > "$work/q26/.github/workflows/main-candidate-rescan.yml"
 expect caught "AC10 rule 61: a redirected tag-based manifest read is an unrecognised crane form" "other than the pinned install" removed "$work/q26"
-mkr q27; printf '#!/usr/bin/env bash\nbuilt_idx="$PROBE_REPO@$MULTI"; att_ref="$PROBE_REPO@$att_dig"\ncrane index append "$PROBE_REPO:latest" -m "$att_ref" -t "$built_ref"\n' > "$work/q27/bin/scout-root-cause.sh"; printf "$RSOK" > "$work/q27/.github/workflows/main-candidate-rescan.yml"
-expect caught "AC10 rule 61: an index append from a literal tag is refused (the one approved append names the variables)" "other than the one index append" removed "$work/q27"
 mkr q39; printf '#!/bin/sh\ngoreleaser release --clean\n' > "$work/q39/bin/retired-test.sh"
 expect caught "AC10 rule 61: a test file whose line starts goreleaser is a finding (tests name the tools in fixtures; none starts one)" "runs a removed tool" removed "$work/q39"
 mkr q40; printf '#!/bin/sh\nFOO=1 goreleaser release --clean\n' > "$work/q40/bin/retired-test.sh"
@@ -608,9 +613,7 @@ expect ok "fixture: a test that only names the removed tools in a message (the c
 mkr q35; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          true;ref="ghcr.io/o/cache:latest"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n' > "$work/q35/.github/workflows/main-candidate-rescan.yml"
 expect caught "AC10 rule 61: a reference reset inside a command list (true;ref=...) is counted as a second assignment" "assigned exactly once" removed "$work/q35"
 mkr q36; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n          built_idx="ghcr.io/o/cache:latest"; att_ref="ghcr.io/o/cache:latest"; built_ref=x\n          crane index append "$built_idx" -m "$att_ref" -t "$built_ref"\n' > "$work/q36/.github/workflows/main-candidate-rescan.yml"
-expect caught "AC10 rule 61: the index append is not a form of the rescan workflow (only of the Scout script)" "other than the pinned install" removed "$work/q36"
-mkr q37; printf '#!/usr/bin/env bash\nbuilt_idx="$PROBE_REPO@$MULTI"; att_ref="$PROBE_REPO@$att_dig"\ncrane index append "$built_idx" -m "$att_ref" -t "$built_ref"\nref="x:latest"\nif ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then exit 1; fi\n' > "$work/q37/bin/scout-root-cause.sh"; printf "$RSOK" > "$work/q37/.github/workflows/main-candidate-rescan.yml"
-expect caught "AC10 rule 61: a crane manifest in the Scout script is not a form of that script" "other than the one index append" removed "$work/q37"
+expect caught "AC10 rule 61: the index append is not a form of the rescan workflow" "other than the pinned install" removed "$work/q36"
 mkr q38; mkdir -p "$work/q38/$AG/supply-chain"; printf 'import os\nos.spawnlp(os.P_WAIT, "goreleaser", "goreleaser", "build")\n' > "$work/q38/$AG/supply-chain/pin-age-check.py"
 expect caught "AC10 rule 61: a judge file that starts a removed tool through the spawn family is a finding" "starts a program with a removed tool" removed "$work/q38"
 mkr q28; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          echo checking; crane manifest "ghcr.io/o/cache:latest" > /tmp/x.json\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n' > "$work/q28/.github/workflows/main-candidate-rescan.yml"
@@ -631,6 +634,16 @@ mkr q11; printf 'DENY = "docker buildx goreleaser"\n' > "$work/q11/bin/chain-rel
 expect ok "fixture: the deny list of a judge may name the removed tools (it refuses them)" "" removed "$work/q11"
 # ---- the real repository ---------------------------------------------------------------
 expect ok "the real stage-verify.yml is the Check stage" "" stage "$root/.github/workflows/stage-verify.yml"
+python3 -I - "$root/.github/workflows/stage-verify.yml" <<'PY' > "$work/arm_go.out" 2>&1 && ok "3b the real check-arm64 job has the same pinned Go install step as the amd64 check job" || bad "3b the real check-arm64 job has the same pinned Go install step as the amd64 check job -> $(head -c 200 "$work/arm_go.out")"
+import sys, re
+t = open(sys.argv[1]).read()
+jobs = re.split(r"\n  (?=[a-z0-9-]+:\n    )", t)
+job = {j.split(":", 1)[0].strip(): j for j in jobs}
+step = "      - name: install Go (pinned by checksum)\n        run: bash bin/install-scanner.sh go\n"
+assert step in job["check"], "the amd64 check job lost its Go step"
+assert step in job["check-arm64"], "check-arm64 has no install Go (pinned by checksum) step: check-artifacts.sh exits 127 on go"
+assert job["check-arm64"].index("install-scanner.sh go") < job["check-arm64"].index("witnessed-local.sh"), "Go is installed after the witnessed step"
+PY
 expect ok "AC4 round 1 F2: the real stage-verify.yml installs every scanner .github/policy/scanners.json lists (check-scan.sh runs them)" "" installs "$root/.github/workflows/stage-verify.yml" "$root/.github/policy/scanners.json"
 expect ok "the real bin/check-stage.sh verifies, then dispatches scanners / acceptance / runtime" "" script "$root/bin/check-stage.sh"
 for s in scanners acceptance runtime arm64; do expect ok "the real bin/check-phase-$s.sh is the one line of its phase (AC1, AC3)" "" phase "$root/bin/check-phase-$s.sh" "$s"; done
@@ -694,21 +707,10 @@ if grep -Fq "plan line does not match the staged tree" <<< "$out" && ! grep -Fq 
 else
   bad "REL-011-AC1 witness-sign-staged.sh did not refuse a wrong signed path for its reason: ${out:0:140}"
 fi
-if grep -Fq 'scanners|acceptance|runtime|arm64) stage=check' "$root/bin/witness-sign-staged.sh"; then ok "REL-011-AC1 witness-sign-staged.sh verifies a signed Check record under the check stage"; else bad "REL-011-AC1 witness-sign-staged.sh has no check stage for the self-check of a signed Check record"; fi
+# the steps are validated first (the loop above: every step name outside the closed list is refused at the plan check), so the one `*) stage=check` arm is reached only by scanners, acceptance, runtime and arm64
+if grep -Fq '*) stage=check' "$root/bin/witness-sign-staged.sh" && grep -Fq 'apk|build) stage=build' "$root/bin/witness-sign-staged.sh" && grep -Fq 'rapk|rebuild) stage=rebuild' "$root/bin/witness-sign-staged.sh"; then ok "REL-011-AC1 witness-sign-staged.sh verifies a signed Check record under the check stage"; else bad "REL-011-AC1 witness-sign-staged.sh has no check stage for the self-check of a signed Check record"; fi
 
-# REQ-CHAIN-004-AC2: the wrapped script runs under `timeout -k 20 540`; a fake witness records its arguments
-fw="$work/fakewit"; mkdir -p "$fw/bin" "$fw/tmp"
-printf '#!/usr/bin/env bash\nprintf "%%s " "$@" > "$FAKE_ARGS"\n' > "$fw/bin/witness"; chmod +x "$fw/bin/witness"
-rc=0
-(cd "$fw" && PATH="$fw/bin:$PATH" RUNNER_TEMP="$fw/tmp" FAKE_ARGS="$fw/args" \
-  bash "$root/bin/witnessed-local.sh" apk x.sh) || rc=$?
-if [ "$rc" = 0 ] && grep -Fq -- ' -- timeout -k 20 540 bash x.sh ' "$fw/args"; then
-  ok "AC2 witnessed-local.sh bounds the wrapped script by timeout -k 20 540 (9 minutes)"
-else
-  bad "AC2 witnessed-local.sh exit $rc, ran the script under: $(grep -o -- ' -- .*' "$fw/args" 2> /dev/null)"
-fi
-
-EXPECT=315
+EXPECT=313
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

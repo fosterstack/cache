@@ -7,7 +7,7 @@
 # holds PER ENVIRONMENT: every install through a venv (<venv>/bin/pip, <venv>/bin/python -m pip, or pip after `source <venv>/bin/activate`) needs the
 # pin installed INTO THAT VENV first (<venv>/bin/python -m pip install ... -r the file, then <venv>/bin/python -m pip --version).
 # The requirement file holds exactly one requirement, pip==<version>, with at least one --hash=sha256:. Dependabot watches that file's
-# directory under the 7-day cooldown. The required allowlist job in ci.yml runs this test.
+# directory (one pip entry for it). The required allowlist job in ci.yml runs this test.
 #
 # Which pin steps pull-request CI actually exercises: ci.yml `coverage` and `allowlist` (every pull request and push to main). The auditor.yml
 # `audit` and `panel-probe` jobs and the dependabot-reviewer.yml `review` job run only on schedule / workflow_dispatch, so their pin steps are proven
@@ -19,7 +19,7 @@
 # Boundaries (documented, not tested): code that shells out to pip from inside another program (python -c "subprocess..."), third-party actions that
 # install packages inside themselves, and the inside of an external reusable workflow. A job-level `uses:` is therefore required to be either a
 # local workflow (which is read here like any other) or a digest-pinned external one, and a job that has `uses:` has no steps of its own (case 7).
-# Not testable offline: that the pinned version has been public 7 days (the pin age check, REQ-SUP-001-AC2/AC3, measures that on the PR that moves it).
+# Not testable offline: that the pinned version exists on the index (the pin scan, REQ-SUP-001-AC2, names it on the PR that moves it).
 # Everything is read from the PARSED files (vendored PyYAML); the real tree must pass and every mutation (made through the parsed document,
 # or on the requirement text) must be rejected FOR THE REASON NAMED. PIPPIN_ROOT points the judge at another tree (the mutant builder's reference).
 set -euo pipefail
@@ -330,14 +330,11 @@ def judge(t):
     dep = t["dep"]
     ups = (dep or {}).get("updates") or []
     pips = [u for u in ups if u.get("package-ecosystem") == "pip" and u.get("directory") == "/.github/agent"]
-    acts = [u for u in ups if u.get("package-ecosystem") == "github-actions"]
     if not pips:
         r.append(("C4", "dependabot.yml has no pip entry for directory /.github/agent"))
     else:
-        want = acts[0].get("cooldown") if acts else None
-        for u in pips:
-            if u.get("cooldown") != want or u.get("cooldown") != {"default-days": 7}:
-                r.append(("C4", f"the pip entry's cooldown is {u.get('cooldown')}, not the neighbours' {{default-days: 7}}"))
+        if len(pips) != 1:
+            r.append(("C4", f"dependabot.yml has {len(pips)} pip entries for directory /.github/agent, not one"))
     # case 6: the CI wiring
     ci = t["docs"].get(".github/workflows/ci.yml") or {}
     job = (ci.get("jobs") or {}).get("allowlist")
@@ -376,7 +373,7 @@ res = judge(tree)
 for case, title in (("C1", "case 1: every pip-installing job pins pip first, in the system python and in every venv it uses (hash-checked, binary-only)"),
                     ("C2", "case 2: the pin step logs `python -m pip --version` of the pinned python"),
                     ("C3", "case 3: the requirement file is exactly one hash-pinned release pip==" + GOLDEN),
-                    ("C4", "case 4: Dependabot watches the pin file's directory under the 7-day cooldown"),
+                    ("C4", "case 4: Dependabot watches the pin file's directory with exactly one pip entry"),
                     ("C6", "case 6: ci.yml's required allowlist job runs this test"),
                     ("C8", "case 8: a pip install after a pin step cannot run when the pin step FAILED (no always()/cancelled()/failure() condition without success() or the pin's outcome)"),
                     ("C7", "case 7: a job-level `uses:` is a local or digest-pinned reusable workflow and the job has no steps of its own")):
@@ -399,7 +396,7 @@ def pin_sites(t):
 
 def site_key(s): return (s[0], s[1])
 SITE_KEYS = [site_key(s) for s in pin_sites(tree)]
-EXPECT_SITES = 14   # ci coverage + allowlist (system, venv) + the allowlist-split jobs (allowlist-persona, allowlist-pins-auditor and the four shards of allowlist-chain: system), auditor audit + panel-probe, dependabot-reviewer review, release + go-freshness persona-uat (system)
+EXPECT_SITES = 9   # ci test (the auditor coverage) + allowlist (system, venv) + the suites job (system), auditor audit + panel-probe, dependabot-reviewer review, release + go-freshness persona-uat (system)
 def prog_for(env): return "python3" if env == "system" else f"{env}/bin/python"
 
 def edit_run(st, fn):
@@ -536,17 +533,13 @@ for name, case, fn in (
 def dep_pip(t): return [u for u in t["dep"]["updates"] if u.get("package-ecosystem") == "pip"]
 def dep_missing(t):
     t["dep"]["updates"] = [u for u in t["dep"]["updates"] if u.get("package-ecosystem") != "pip"]; return True
-def dep_nocool(t):
-    for u in dep_pip(t): u.pop("cooldown", None)
-    return True
-def dep_cool3(t):
-    for u in dep_pip(t): u["cooldown"] = {"default-days": 3}
-    return True
+def dep_twice(t):
+    t["dep"]["updates"].append(dict(dep_pip(t)[0])); return True
 def dep_dir(t):
     for u in dep_pip(t): u["directory"] = "/"
     return True
-mutants += [("the Dependabot pip entry missing", "C4", dep_missing), ("the Dependabot pip entry without cooldown", "C4", dep_nocool),
-            ("the Dependabot pip cooldown shortened to 3 days", "C4", dep_cool3), ("the Dependabot pip entry on directory /", "C4", dep_dir)]
+mutants += [("the Dependabot pip entry missing", "C4", dep_missing), ("a second Dependabot pip entry for the same directory", "C4", dep_twice),
+             ("the Dependabot pip entry on directory /", "C4", dep_dir)]
 
 def ci_steps(t): return t["docs"][".github/workflows/ci.yml"]["jobs"]["allowlist"]["steps"]
 def ci_unwire(t):

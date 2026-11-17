@@ -30,12 +30,17 @@ for z in zips:
         m = r.get("modified") if isinstance(r, dict) else None
         if isinstance(m, str):
             try:
-                dated.append((datetime.datetime.fromisoformat(m.replace("Z", "+00:00")), m))
+                t = datetime.datetime.fromisoformat(m.replace("Z", "+00:00"))
             except ValueError:
-                pass
+                continue
+            if t.tzinfo is None:
+                fail("the osv database for %s has a record modified %s with no time zone offset: a naive date has no clock to judge" % (eco, m))
+            dated.append((t, m))
     if not dated:
         fail("the osv database for %s has no record with a readable modified date" % eco)
     t, newest = max(dated)
+    if t.timestamp() > now:
+        fail("the osv database for %s has its newest record modified %s, in the future: its clock is wrong" % (eco, newest))
     if now - t.timestamp() > max_age:
         fail("the osv database for %s has its newest record modified %s, older than 48 hours: OSV records change constantly, so a stale "
              "newest modification means the database was not refreshed" % (eco, newest))
