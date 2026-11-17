@@ -26,6 +26,12 @@ unmapped:
 # They cannot be listed above: the validator refuses a residual that is also mapped, and both ACs are mapped for production and -fips (Check, PR 3).
   - ac: REQ-GUIDE-001-AC8
     reason: "manual acceptance not done yet: the owner's cold reading, the second reader on a clean machine, and pipeline's AC7 run executing every command against a candidate; recorded as manual evidence in mappings.yaml when each is done"
+  - ac: REQ-DEP-002-AC1
+    reason: "deprecated: the required-check guard was removed from the release branch, so no test remains for it; the requirement is kept, marked deprecated, never deleted"
+  - ac: REQ-DEP-002-AC2
+    reason: "deprecated: the required-check guard and its drift issue were removed from the release branch, so no test remains for them; the requirement is kept, marked deprecated, never deleted"
+  - ac: REQ-DEP-002-AC3
+    reason: "the suite that held it was deleted with the required-check guard; no check holds this criterion now"
   - ac: REQ-DEP-004-AC1
     reason: "deprecated: the fixer dispatch was removed from the repository, so no test remains for it; the requirement is kept, marked deprecated, never deleted"
   - ac: REQ-DEP-004-AC2

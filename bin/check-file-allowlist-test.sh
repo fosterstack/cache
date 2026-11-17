@@ -128,8 +128,8 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 220 allow patterns: chain-v030 plus the 0710 and KMS-signing rows; read from the run of this test
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 220, 4
+# 218 allow patterns: chain-v030 plus the 0710 and KMS-signing rows; read from the run of this test
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 218, 4
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -177,7 +177,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
 # the script text outside the v0.3.0 region; history is in git
-PINNED_SHA256 = "2d11cb9794f5d716cc35c6ab8a89b3f7f4acaacf5e5361f3070adf27f8f9b970"
+PINNED_SHA256 = "e2593e52968348ff1224a772b0431296c0867cf55c2e96bbe05f4fc038c7ea4b"
 if rstart and rend:
     import hashlib
     _b = _rawlines

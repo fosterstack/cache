@@ -1,6 +1,6 @@
 # After a crash or a forced stop
 
-This page says what the server does when it did not shut down cleanly, and what you see. It is read from `cmd/fscache/main.go` (the marker and the reconcile) and from [Kubernetes](kubernetes.md#startup-and-reconcile).
+This page says what the server does when it did not shut down cleanly, and what you see.
 
 ## The marker
 

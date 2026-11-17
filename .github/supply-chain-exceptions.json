@@ -395,7 +395,7 @@
     {
       "file": ".github/agent/bin/check-action-pins.py",
       "ruling": "text, not a command: Python source of .github/agent/bin/check-action-pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made | text, not a command: a comment in .github/agent/bin/check-action-pins.py that names the tool",
-      "body-sha256": "03fd9cd073ef4014c174a5de46efe941fff4200ce668e129b32aeb05c2623ca0"
+      "body-sha256": "aea67411b11ec483256ab15a996107fdf955e651e5bee507e378b37acaa5d8e0"
     },
     {
       "file": ".github/agent/bin/tests/system_path_allowlist.py",

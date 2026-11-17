@@ -1509,7 +1509,7 @@ assert "CUTOVER CHECKLIST" in r["notes"], "REQ-CHAIN-001 notes lack the CUTOVER 
 for words in ("CUTOVER CHECKLIST (order accepted Oct 12)", "bin/chain-known-red.py empty-except KR-CUTOVER", "it does not wait for an rc run", "the maintainers sign a release-candidate tag vX.Y.Z-rcN on main's merge commit",
               "the marker pull request of REQ-CHAIN-001-AC6", "it removes KR-CUTOVER", "admission and the patch decision refuse every final and patch tag"):
     assert words in r["notes"], "REQ-CHAIN-001 notes lack the accepted checklist order: " + words
-assert "does not merge without a green rc-tag run of the same commit's chain files" not in r["notes"], "REQ-CHAIN-001 notes still say the cutover waits for an rc run (advisor 0383, superseded Oct 12)"
+assert "does not merge without a green rc-tag run of the same commit's chain files" not in r["notes"], "REQ-CHAIN-001 notes still say the cutover waits for an rc run"
 assert "GitHub dry run is green" not in r["notes"], "REQ-CHAIN-001 notes still make a branch dry run the proof"
 PY
 # the key attempt is EXECUTED, not only read. The real function is cut out of the hostile step and run in a
