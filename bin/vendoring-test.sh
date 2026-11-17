@@ -341,7 +341,8 @@ if d.get("defaults"): fail("a workflow-level defaults block (a shell default can
 if d.get("env"): fail("a workflow-level env block (SHELLOPTS, BASH_ENV and the like change what a step runs)")
 ro = str(job.get("runs-on", ""))
 if ro not in ("ubuntu-latest", "ubuntu-24.04", "ubuntu-22.04"): fail("runs-on " + ro + " is not a GitHub-hosted ubuntu label")
-if set(job) - {"name", "runs-on", "permissions", "steps"}: fail("job keys beyond name, runs-on, permissions, steps: " + str(sorted(job)))
+if set(job) - {"if", "name", "runs-on", "permissions", "steps"}: fail("job keys beyond if, name, runs-on, permissions, steps: " + str(sorted(job)))
+if re.sub(r"\$\{\{|\}\}|\s", "", str(job.get("if"))) != "github.event_name!='pull_request'": fail("the job is not kept off pull requests by exactly `if: github.event_name != 'pull_request'` (REQ-REL-014): " + str(job.get("if")))
 if job.get("permissions") != {"contents": "read"}: fail("permissions " + str(job.get("permissions")))
 steps = job.get("steps", [])
 runs = [s for s in steps if "run" in s]
@@ -364,7 +365,7 @@ blob = json.dumps(job) + json.dumps(d.get("env")) + json.dumps(d.get("defaults")
 if re.search(r"GOSUMDB|GONOSUMDB|GONOSUMCHECK|GOPRIVATE|GOINSECURE|GOFLAGS|GOPROXY|-insecure|-mod=mod", blob): fail("a Go environment setting or opt-out in the vendor job or the workflow env")
 if "continue-on-error" in blob or "continue-on-error" in str(d.get("defaults")): fail("continue-on-error in the vendor job")
 PY
-t AC3 "ci.yml vendor job: bare pull_request trigger, hosted runner, exactly go mod verify, bin/vendor-check.sh, then the provenance check, no condition, no opt-out, digest pins, history fetched" python3 "$J" "$root/.github/workflows/ci.yml"
+t AC3 "ci.yml vendor job: bare pull_request trigger, hosted runner, exactly go mod verify, bin/vendor-check.sh, then the provenance check, only the push-to-main condition, no opt-out, digest pins, history fetched" python3 "$J" "$root/.github/workflows/ci.yml"
 mutate() { # NAME PYTHON-EXPRESSION on s (the ci.yml text): the mutated file must be refused
   python3 - "$root/.github/workflows/ci.yml" "$work/mut-$1.yml" "$2" <<'PY'
 import sys

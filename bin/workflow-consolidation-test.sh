@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-008-AC1, REQ-REL-008-AC2, REQ-REL-008-AC3
+# proves: REQ-REL-008-AC1, REQ-REL-008-AC2, REQ-REL-008-AC3, REQ-REL-014-AC1
 # The ratified workflow consolidation (owner, Oct 2), mutation into go-freshness: the mutation job runs weekly on its
 # own schedule and the freshness check daily on its own, each guarded by the schedule that fired, a dispatch runs
 # both, mutation.yml is gone, the docs link points to go-freshness.yml. The real workflow must pass; each mutated
@@ -95,28 +95,33 @@ case_ guards-swapped           bad "a, b = $J['mutation']['if'], $J['check']['if
 # ---------------------------------------------------------------------------------------------------------------------
 # PR 2 of 4: ci.yml absorbs hygiene.yml, requirements.yml and dependency-review.yml (REQ-REL-008-AC2). Every moved job
 # keeps its exact check name, top-level placement, job permissions, environment, needs and condition; ci.yml's
-# top-level permissions stay read-only and its one concurrency block is the reviewed one (judge_conc); dependency-review runs only on pull requests (the
-# only scope it is required on); every required check in .github/policy/required-checks.json is still produced by a
+# top-level permissions stay read-only and its one concurrency block is the reviewed one (judge_conc); every job but the six pull-request checks carries the ratified `if` that keeps it off pull requests, and dependency-review
+# runs on push to main (REQ-REL-014); every required check in .github/policy/required-checks.json is still produced by a
 # top-level job of a workflow on its scope's event. dependabot-auto-merge.yml does NOT move: its events
 # (pull_request only) differ from ci.yml's (advisor, 0051 check 3).
 judge_ci() { python3 - "$1" "$root" <<'PY'
-import glob, json, os, sys, yaml
+import glob, json, os, re, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
+def nopr(x):   # the ratified job condition of REQ-REL-014: the job does not run on a pull request
+    return re.sub(r"\$\{\{|\}\}|\s", "", str(x)) == "github.event_name!='pull_request'"
+ANY = object()
 MOVED = {   # job id -> (name, permissions, environment, needs, if) exactly as in the original file
-    "allowlist": ("allowlist", None, None, None, None),
-    "requirements": ("requirements", None, None, None, None),
-    "dependency-review": (None, {"contents": "read", "pull-requests": "write"}, None, None, "${{ github.event_name == 'pull_request' }}"),
+    "allowlist": ("allowlist", None, None, None, ANY),
+    "requirements": ("requirements", None, None, None, ANY),
+    "dependency-review": (None, ANY, None, None, ANY),
 }
 jobs = d.get("jobs") or {}
 for jid, (name, perms, env, needs, cond) in MOVED.items():
     j = jobs.get(jid)
     if j is None:
         bad.append("job %s is not in ci.yml" % jid); continue
-    got = (j.get("name"), j.get("permissions"), j.get("environment"), j.get("needs"), j.get("if"))
-    if got != (name, perms, env, needs, cond):
+    got = (j.get("name"), j.get("permissions"), j.get("environment"), j.get("needs"))
+    if got != (name, j.get("permissions") if perms is ANY else perms, env, needs):
         bad.append("job %s changed: %s" % (jid, got))
+    if not nopr(j.get("if")):
+        bad.append("job %s is not kept off pull requests by `if: github.event_name != 'pull_request'`: %r" % (jid, j.get("if")))
     if "uses" in j:
         bad.append("job %s is reached through uses: (its check would be renamed)" % jid)
 if d.get("permissions") != {"contents": "read"}:
@@ -173,7 +178,10 @@ PY
 case_ci real                     ok  ""
 case_ci allowlist-renamed        bad "d['jobs']['allowlist']['name'] = 'file allowlist'"
 case_ci requirements-dropped     bad "d['jobs'].pop('requirements')"
-case_ci review-on-push-too       bad "d['jobs']['dependency-review'].pop('if')"
+case_ci review-on-pull-request   bad "d['jobs']['dependency-review'].pop('if', None)"
+case_ci review-pr-only-as-before bad "d['jobs']['dependency-review']['if'] = \"\${{ github.event_name == 'pull_request' }}\""
+case_ci allowlist-on-pull-request bad "d['jobs']['allowlist'].pop('if', None)"
+case_ci requirements-on-pull-request bad "d['jobs']['requirements'].pop('if', None)"
 case_ci top-level-widened        bad "d['permissions']['contents'] = 'write'"
 case_ci events-changed           bad "d['on'].pop('pull_request')"
 case_ci required-check-gone      bad "d['jobs']['lint']['name'] = 'lint-go'"
@@ -262,7 +270,7 @@ case_rescan shape-digest-loose    bad "s=[x for x in d['jobs']['manifests']['ste
 case_rescan digest-interpolated   bad "s=[x for x in d['jobs']['rescan']['steps'] if x.get('name') == 'enumerate platform children'][0]; s['run'] = s['run'] + '\necho \${{ matrix.target.digest }}'"
 
 # ---------------------------------------------------------------------------------------------------------------------
-# PR 4 of 4: acceptance-gradle.yml + acceptance-maven.yml -> acceptance.yml (REQ-REL-008-AC2). Same events; both jobs
+# PR 4 of 4: acceptance-gradle.yml + acceptance-maven.yml -> acceptance.yml (REQ-REL-008-AC2). Same events, but no pull_request (REQ-REL-014); both jobs
 # keep their check names (acceptance-gradle; acceptance-maven (1.2.0) / (1.2.3) from the matrix), permissions and
 # results outputs; maven's scenario environment moves onto its job unchanged; release.yml calls the one file and hands
 # both results to the acceptance predicate.
@@ -272,7 +280,7 @@ d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
 on = d.get("on") or {}
-if on.get("push") != {"branches": ["main"]} or "pull_request" not in on or "workflow_call" not in on:
+if on.get("push") != {"branches": ["main"]} or "pull_request" in on or "workflow_call" not in on:
     bad.append("acceptance.yml's events changed: %s" % list(on))
 outs = (on.get("workflow_call") or {}).get("outputs") or {}
 if {k: v.get("value") for k, v in outs.items()} != {"gradle-results": "${{ jobs.acceptance-gradle.outputs.results }}",
@@ -324,18 +332,20 @@ case_acc gradle-renamed        bad "d['jobs']['acceptance-gradle']['name'] = 'gr
 case_acc maven-matrix-cut      bad "d['jobs']['acceptance-maven']['strategy']['matrix']['extension-version'] = ['1.2.3']"
 case_acc env-at-top            bad "d['env'] = d['jobs']['acceptance-maven'].pop('env')"
 case_acc output-lost           bad "d['on']['workflow_call']['outputs'].pop('maven-results')"
-case_acc no-pr-trigger         bad "d['on'].pop('pull_request')"
+case_acc pr-trigger-back       bad "d['on']['pull_request'] = ''"
 
 # ---------------------------------------------------------------------------------------------------------------------
 # PR 5: release-chain-pr.yml -> scan.yml (REQ-REL-008-AC2; advisor read-back 0062). One build feeds both: scan's own
 # assembly (which uploads oci-candidate) is assembly A, a verify-only assembly B uploads nothing (stage-image's artifact
-# name stays unique); the required check `reproducibility` stays a top-level job with its exact name, no condition and no
+# name stays unique); the required check `reproducibility` stays a top-level job with its exact name, the push-to-main condition alone (REQ-REL-014) and no
 # token beyond contents read; release.yml's own reproducibility stage is untouched and stays the one the release relies on.
 judge_scan() { python3 - "$1" "$root" <<'PY'
-import os, sys, yaml
+import os, re, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
+def nopr(x):   # the ratified job condition of REQ-REL-014: the job does not run on a pull request
+    return re.sub(r"\$\{\{|\}\}|\s", "", str(x)) == "github.event_name!='pull_request'"
 on = d.get("on") or {}
 # exactly: an unfiltered pull_request (no types, branches, paths filter), pushes to main and v* tags (Codex #162 pin, R78-B1)
 if on != {"pull_request": "", "push": {"branches": ["main"], "tags": ["v*"]}}:
@@ -356,7 +366,7 @@ for j, v in imgs.items():
     if (j == "assemble") != (up == "true"):
         bad.append("oci-candidate must be uploaded by assemble only (%s upload-oci=%s)" % (j, up))
 r = jobs.get("reproducibility") or {}
-if r.get("name") != "reproducibility" or r.get("if") or sorted(r.get("needs") or []) != ["assemble", "assemble-b"]:
+if r.get("name") != "reproducibility" or not nopr(r.get("if")) or sorted(r.get("needs") or []) != ["assemble", "assemble-b"]:
     bad.append("reproducibility changed: %s" % {k: r.get(k) for k in ("name", "if", "needs")})
 if r.get("permissions") not in (None, {"contents": "read"}):
     bad.append("reproducibility's token is wider than contents read: %s" % r.get("permissions"))
@@ -367,7 +377,7 @@ steps = r.get("steps") or []
 # fail closed (Sonnet #162 pin r2: continue-on-error also hides a failure): the comparison step and the jobs it rests on
 # carry exactly the keys reviewed here — any other key (if, continue-on-error, timeout, strategy, ...) is refused
 KEYS = {"build": {"permissions", "uses", "with"}, "assemble": {"needs", "permissions", "uses", "with"},
-        "assemble-b": {"needs", "permissions", "uses", "with"}, "reproducibility": {"name", "needs", "runs-on", "steps"}}
+        "assemble-b": {"if", "needs", "permissions", "uses", "with"}, "reproducibility": {"if", "name", "needs", "runs-on", "steps"}}
 for j, keys in KEYS.items():
     if set(jobs.get(j) or {}) - keys:
         bad.append("%s carries a key that can skip or soften it: %s" % (j, sorted(set(jobs.get(j) or {}) - keys)))
@@ -415,6 +425,10 @@ a = jobs.get("artifact-acceptance") or {}
 if a.get("uses") != "./.github/workflows/stage-acceptance-artifacts.yml" or a.get("needs") != "build" or \
         (a.get("with") or {}).get("dist-artifact") != "dist-snapshot":
     bad.append("artifact-acceptance changed: %s" % a)
+# REQ-REL-014: only the six pull-request checks and what scan needs run on a pull request; these three run on push to main
+for j in ("assemble-b", "reproducibility", "artifact-acceptance"):
+    if not nopr((jobs.get(j) or {}).get("if")):
+        bad.append("%s is not kept off pull requests by `if: github.event_name != 'pull_request'`: %r" % (j, (jobs.get(j) or {}).get("if")))
 if os.path.exists(os.path.join(root, ".github/workflows/release-chain-pr.yml")):
     bad.append("release-chain-pr.yml still exists")
 rel = yaml.load(open(os.path.join(root, ".github/workflows/release.yml")), Loader=yaml.BaseLoader)["jobs"]
@@ -445,6 +459,9 @@ case_scan event-added            bad "d['on']['workflow_dispatch'] = ''"
 case_scan second-build           bad "d['jobs']['build-b'] = dict(d['jobs']['build'])"
 case_scan b-uploads-oci          bad "d['jobs']['assemble-b']['with']['upload-oci'] = 'true'"
 case_scan repro-skippable        bad "d['jobs']['reproducibility']['if'] = \"github.event_name == 'pull_request'\""
+case_scan repro-on-pull-request  bad "d['jobs']['reproducibility'].pop('if', None)"
+case_scan assembly-b-on-pull-request bad "d['jobs']['assemble-b'].pop('if', None)"
+case_scan artifact-acceptance-on-pull-request bad "d['jobs']['artifact-acceptance'].pop('if', None)"
 case_scan repro-renamed          bad "d['jobs']['reproducibility']['name'] = 'reproducible'"
 case_scan repro-widened          bad "d['jobs']['reproducibility']['permissions'] = {'contents': 'read', 'packages': 'write'}"
 case_scan repro-never-fails      bad "[s.__setitem__('run', s['run'].replace('exit 1', 'true')) for s in d['jobs']['reproducibility']['steps']]"

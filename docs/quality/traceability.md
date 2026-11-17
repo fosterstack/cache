@@ -19,7 +19,7 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Active requirements | 92 |
 | Acceptance criteria | 404 |
 | Release-blocking ACs | 54 |
-| ACs with mapped evidence | 381 |
+| ACs with mapped evidence | 384 |
 | Release-blocking ACs with mapped evidence | 54 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 45 |
@@ -837,9 +837,9 @@ On a pull request into main or a release branch only these checks shall run: tes
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-REL-014-AC1 | Given the workflows under .github/workflows on main; when the jobs that run on the pull_request event are listed; then they are test, lint, govulncheck, analyze (go), fips140-only and scan, the jobs scan needs (build, assemble, the scanner list and the scanners), and the jobs of agent-review-gate.yml and dependabot-auto-merge.yml, which are no pull-request checks of the ruleset; no other job runs on pull_request | ci-workflow |  | approved | none mapped |
-| REQ-REL-014-AC2 | Given a push to main that adds a version no one can read (an unpinned action, tool or image); when pin-age runs on that push; then it judges the versions between the commit before the push and the commit after it, and fails | ci-workflow |  | approved | none mapped |
-| REQ-REL-014-AC3 | Given a tag whose commit has a red or missing run of a check that required-checks.json or release-only-checks.json scopes to push (pin-age and dependency-review included); when release admission runs; then it refuses the tag | ci-workflow |  | approved | none mapped |
+| REQ-REL-014-AC1 | Given the workflows under .github/workflows on main; when the jobs that run on the pull_request event are listed; then they are test, lint, govulncheck, analyze (go), fips140-only and scan, the jobs scan needs (build, assemble, the scanner list and the scanners), and the jobs of agent-review-gate.yml and dependabot-auto-merge.yml, which are no pull-request checks of the ruleset; no other job runs on pull_request | ci-workflow |  | approved | 2 item(s) |
+| REQ-REL-014-AC2 | Given a push to main that adds a version no one can read (an unpinned action, tool or image); when pin-age runs on that push; then it judges the versions between the commit before the push and the commit after it, and fails | ci-workflow |  | approved | 3 item(s) |
+| REQ-REL-014-AC3 | Given a tag whose commit has a red or missing run of a check that required-checks.json or release-only-checks.json scopes to push (pin-age and dependency-review included); when release admission runs; then it refuses the tag | ci-workflow |  | approved | 1 item(s) |
 
 ## SCAN
 

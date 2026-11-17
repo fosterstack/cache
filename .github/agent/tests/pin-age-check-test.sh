@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # proves: REQ-SUP-001-AC2, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19, REQ-SUP-001-AC20
 # proves: REQ-SUP-001-AC21, REQ-SUP-001-AC22, REQ-SUP-001-AC23, REQ-SUP-001-AC25, REQ-SUP-001-AC26
-# proves: REQ-SUP-001-AC27
+# proves: REQ-SUP-001-AC27, REQ-REL-014-AC2
 # The pin scan (owner ratified Oct 5, rule 1; the owner removed the wait for new versions on Nov 11 2026): a pull
 # request that moves an action pin, or the version of a
 # tool, image or package a workflow downloads, has every moved version NAMED, and fails only for an item the scan
@@ -4530,6 +4530,33 @@ pdrow nrr8 "${nr_texts[8]}" "curl http://e.example/x" ""
 CASE="AC16 ruled with a row, no context: ${nr_names[8]}: exit 0, ruled text"
 check test "$rc" -eq 0; check grep -q 'ruled text' "$work/pd.out"
 
+
+# --- REQ-REL-014-AC2: pin-age runs on a push to main and judges the commit before the push (github.event.before) to the
+# commit after it (github.sha), by commit id, over a push of one commit or several; it fails on a version no one can read that
+# the push moved, and not on one an earlier push moved. Same checker, run as the supply-chain.yml job runs it.
+rm -rf "$work/push"; cp -R "$base" "$work/push"
+pushc() { ( cd "$work/push" && python3 - "$1" "$2" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1]); p.parent.mkdir(parents=True, exist_ok=True); p.write_text(sys.argv[2])
+PY
+  git add -A; git -c user.name=t -c user.email=t@x commit -q -m "$3"; git rev-parse HEAD ); }
+P0=$(git -C "$work/push" rev-parse HEAD)
+UNPINNED=$(sed "s|actions/checkout@$SHA1 # v4.1.0|actions/checkout@v4 # v4.2.0|" "$base/.github/workflows/ci.yml")
+P1=$(pushc .github/workflows/ci.yml "$UNPINNED" "a push that adds an unpinned action")
+P2=$(pushc README.md "unrelated" "a later push that moves nothing")
+pushck() { rc=0; python3 "$chk" --root "$work/push" --base "$1" --head "$2" >"$work/push.out" 2>&1 || rc=$?; }
+pushck "$P0" "$P1"
+CASE="AC2 (REL-014): a push whose range (before..sha) adds an unpinned version fails (exit 1) and names it"
+check test "$rc" -eq 1; check grep -q "action:actions/checkout@v4" "$work/push.out"
+pushck "$P0" "$P2"
+CASE="AC2 (REL-014): a push of several commits is judged over the whole range, so the unpinned version in its first commit fails (exit 1)"
+check test "$rc" -eq 1; check grep -q "action:actions/checkout@v4" "$work/push.out"
+pushck "$P1" "$P2"
+CASE="AC2 (REL-014): a push after the unpinned one, moving nothing, is judged on its own range: exit 0, and says so"
+check test "$rc" -eq 0; check grep -qi 'no pin moved' "$work/push.out"
+pushck "$P2" "$P1"
+CASE="AC2 (REL-014): before and after are not swapped: a range from the later commit back to the earlier moves the pin back, and is judged by what it moves"
+check test "$rc" -eq 0
 
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0

@@ -753,6 +753,18 @@ mappings:
   - ac: REQ-REL-008-AC1
     evidence:
       - { type: shell-test, ref: "bin/workflow-consolidation-test.sh" }
+  - ac: REQ-REL-014-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/pull-request-checks-test.sh" }
+      - { type: shell-test, ref: "bin/workflow-consolidation-test.sh" }
+  - ac: REQ-REL-014-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/pull-request-checks-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
+  - ac: REQ-REL-014-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/pull-request-checks-test.sh" }
   - ac: REQ-SCAN-010-AC1
     evidence:
       - { type: shell-test, ref: "bin/vex-forms-test.sh" }

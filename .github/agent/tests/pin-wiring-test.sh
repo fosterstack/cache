@@ -3,8 +3,7 @@
 # proves: REQ-SCAN-015-AC2, REQ-REL-013-AC3, REQ-REL-013-AC4 — the scanner guard step is required, exactly, in the allowlist job
 # (the scanguard cases);
 # the eight release-only names belong to the jobs that produce them (the reserved cases)
-# REQ-REL-005-AC1 (register row 78): the hygiene check runs the pin checker on every pull request and
-# every push to main, and nothing can skip it or swallow its failure. (Mapped from the product matrix as
+# REQ-REL-005-AC1 (register row 78): the hygiene check runs the pin checker on every push to main (REQ-REL-014: not on a pull request), and nothing can skip it or swallow its failure. (Mapped from the product matrix as
 # workflow-job evidence: REQ-AUD-18 AC1 keeps .github/agent/ paths out of files outside it.)
 # The real ci.yml must pass; each mutated copy must be caught.
 # Known limit (by design): later steps of the CI allowlist job can edit the pin checker or this test on disk;
@@ -135,6 +134,8 @@ export PIN_WIRING_TOP_KEYS='["name", "on", "concurrency", "permissions", "jobs"]
 
 judge() { PIN_WIRING_WORKFLOWS_DIR="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}" PIN_WIRING_POLICY_FILE="${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}" PIN_WIRING_RELEASE_ONLY_FILE="${PIN_WIRING_RELEASE_ONLY_FILE:-$here/.github/policy/release-only-checks.json}" python3 - "$1" <<'PY'
 import sys, os, json, re, yaml
+def nopr(x):   # the ratified job condition of REQ-REL-014: the job runs on push to main, never on a pull request
+    return re.sub(r"\$\{\{|\}\}|\s", "", str(x)) == "github.event_name!='pull_request'"
 # cheap pre-parse, BEFORE any structure is built: a token scan is linear and expands nothing, so an
 # anchor/alias bomb cannot hang the judge; the pin checker refuses anchors and aliases too
 _text = open(sys.argv[1]).read()
@@ -236,10 +237,12 @@ for _jid, _j in (d.get("jobs") or {}).items():
 if "defaults" in d:
     bad.append("the workflow sets `defaults` (a shell override could skip every run)")
 job = d.get("jobs", {}).get("allowlist", {})
-# the guard's job is exactly name / runs-on / steps: no `needs` (a skipped prerequisite skips the whole guard),
+# the guard's job is exactly name / runs-on / steps (and the REQ-REL-014 `if` that keeps it off pull requests): no `needs` (a skipped prerequisite skips the whole guard),
 # `if`, `timeout-minutes`, `permissions`, `strategy`, `concurrency`, `container`, `services`, `env`, `defaults`, ...
-for k in sorted(set(job) - {"name", "runs-on", "steps"}):
+for k in sorted(set(job) - {"name", "runs-on", "steps", "if"}):
     bad.append(f"the allowlist job has `{k}`")
+if not nopr(job.get("if")):
+    bad.append(f"the allowlist job is not kept off pull requests by exactly `if: github.event_name != 'pull_request'` (REQ-REL-014): {job.get('if')!r}")
 if job.get("runs-on") != "ubuntu-latest":
     bad.append("the allowlist job does not run on exactly `ubuntu-latest` (GitHub-hosted)")
 want = {"bash .github/agent/tests/check-action-pins-test.sh", "python3 .github/agent/bin/check-action-pins.py --verify-tags .",
@@ -646,8 +649,10 @@ for jid, want_steps in SPLIT_STEPS.items():
     if not isinstance(sj, dict):
         bad.append(f"the job {jid} is missing")
         continue
-    for k in sorted(set(sj) - {"name", "runs-on", "steps"}):
+    for k in sorted(set(sj) - {"name", "runs-on", "steps", "if"}):
         bad.append(f"the {jid} job has `{k}`")
+    if not nopr(sj.get("if")):
+        bad.append(f"the {jid} job is not kept off pull requests by exactly `if: github.event_name != 'pull_request'` (REQ-REL-014): {sj.get('if')!r}")
     if sj.get("name") != jid:
         bad.append(f"the {jid} job is not named `{jid}` (the required-check context)")
     if sj.get("runs-on") != "ubuntu-latest":
@@ -1018,6 +1023,9 @@ gitcase fetch-depth-at-a-commit   bad "$steps[0].pop('with')"
 
 case_ job-needs-skipped          bad "d['jobs']['skip_guard'] = {'runs-on': 'ubuntu-latest', 'if': 'false', 'steps': [{'run': 'true'}]}; d['jobs']['allowlist']['needs'] = 'skip_guard'"
 case_ split-job-if            bad "d['jobs']['allowlist-chain']['if'] = 'false'"
+case_ allowlist-on-pull-request bad "d['jobs']['allowlist'].pop('if', None)"
+case_ split-job-on-pull-request bad "d['jobs']['allowlist-chain'].pop('if', None)"
+case_ allowlist-pr-only-if      bad "d['jobs']['allowlist']['if'] = \"\${{ github.event_name == 'pull_request' }}\""
 case_ split-job-missing       bad "d['jobs'].pop('allowlist-persona')"
 case_ split-job-renamed       bad "d['jobs']['allowlist-pins-auditor']['name'] = 'pins'"
 case_ split-job-needs         bad "d['jobs']['allowlist-chain']['needs'] = ['lint']"
