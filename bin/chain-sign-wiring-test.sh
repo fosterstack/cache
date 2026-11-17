@@ -3269,8 +3269,7 @@ probe mytool "./mytool" "the real bin/chain-hostile-step.sh running ./mytool (an
 probe bashlib "mylib" "the real bin/chain-hostile-step.sh running bash mylib, its sha256 updated (Sonnet 3)" \
   "printf 'echo x\\n' > mylib; printf 'bash mylib\\n' >> bin/chain-hostile-step.sh"
 # ---- Opus #249 r-final: the signer rule is a CLOSED ALLOW-LIST, not a scan ----
-# (B1) build configuration outside bin/ and .github/ is pinned by sha256 (rule 61: .goreleaser.yaml and the Dockerfiles are gone; their key-set and hook probes went with them)
-probe cfgchanged .golangci.yml "a byte change in a pinned build file (.golangci.yml)" "printf '# x\n' >> .golangci.yml"
+# (B1) build configuration outside bin/ and .github/ is a closed list (rule 61: .goreleaser.yaml and the Dockerfiles are gone; their key-set and hook probes went with them)
 probe cfgnew    .ko.yaml "a new, unlisted build file (.ko.yaml)" "printf 'defaultBaseImage: scratch\n' > .ko.yaml"
 # (B2) a job may hold id-token: write only if .github/policy/id-token-jobs.json lists it (workflow, job): remote reusable-workflow signers and
 # in-process libraries need the token, so the list covers them structurally

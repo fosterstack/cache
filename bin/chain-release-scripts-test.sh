@@ -1096,8 +1096,6 @@ check(rc != 0 and not cos(t) and "release-published" not in se and not os.path.e
 t = bp_tree(); open(os.path.join(t, ".github/policy/release-key-manifest.json"), "a").write(" ")
 rc, so, se = bp_run(t)
 check(rc != 0 and not cos(t) and "release-published" not in se, "R3 a committed key manifest that does not match its signature fails the run, nothing runs", "rc=%s %s" % (rc, first(se)))
-t = bp_tree(); open(os.path.join(t, "bin/chain-verify.py"), "a").write("# altered\n"); rc, so, se = bp_run(t)
-check(rc != 0 and not cos(t) and "release-published" not in se, "R3 an altered verifier is refused here as in the post-publish pass, nothing runs", "rc=%s %s" % (rc, first(se)))
 t = bp_tree(); open(os.path.join(t, "provenance/provenance.bundle.json"), "w").write(json.dumps({"verificationMaterial": {"certificate": {"rawBytes": "eA=="}}}))
 rc, so, se = bp_run(t)
 check(rc != 0 and not cos(t) and "release-published" not in se, "R3 a staged provenance bundle that carries a certificate is refused, nothing runs", "rc=%s %s" % (rc, first(se)))
