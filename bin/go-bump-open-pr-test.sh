@@ -220,10 +220,10 @@ mutant "an orphan tip that is not a bump commit is taken" "an orphan tip that is
 # action or script outside the tests runs git commit, git commit-tree or git merge, written out as a shell command (options allowed, quoted or after ;
 # and &&) or as a Python argument list ("git", "commit"). A deliberately disguised form (an alias, --config-env, split or concatenated words, escaped
 # quotes, redirections spread through the command, git fast-import) is information, not a blocker: main's signed-commits rule stops an unsigned commit
-# from merging whatever wrote it, and the bump path itself is proved by the cases above. An exception is the sha256 of the file and the WHOLE line, so
+# from merging whatever wrote it, and the bump path itself is proved by the cases above. An exception is the file and the WHOLE line, so
 # nothing else on that line can run: a test fixture inside a library the tests source, a ledger string the harness reads, error messages and prose.
 GUARD_PY='
-import hashlib, os, re, subprocess, sys
+import os, re, subprocess, sys
 CMDS = "(?:commit|commit-tree|merge)"
 WORD = r"""(?:"[^"]*"|\x27[^\x27]*\x27|[^\s"\x27]+)"""      # an ordinary shell word, quoted or not (quotes around the whole word)
 OPT = r"""["\x27]?-[^\s"\x27]*["\x27]?(?:\s+""" + WORD + r""")?"""     # an option and, when it has one, its value: -c "user.name=Build Bot"
@@ -231,7 +231,7 @@ SHELL_RE = re.compile(r"""(?<![\w.-])(?:[\w./-]*/)?["\x27]?git["\x27]?(?:\s+""" 
 LIST_RE = re.compile(r"""["\x27](?:[^"\x27]*/)?git["\x27]\s*,\s*(?:["\x27][^"\x27]*["\x27]\s*,\s*)*["\x27]""" + CMDS + r"""["\x27]""")
 # every tracked file is read except the tests, the prose and the data (docs, markdown, json, the evidence and the root requirements)
 SKIP = re.compile(r"(^|/)(tests?|testdata|fixtures)/|^(docs|test-evidence|requirements)/|-test\.(sh|py)$|_test\.(py|go)$|(^|/)test_[^/]*\.py$|\.(md|json|txt|sum|mod|png|svg|gz|lock|pub)$")
-ALLOWED = set(sys.argv[2:])      # sha256 of "file\nwhole line, stripped"
+ALLOWED = set(sys.argv[2:])      # "file<TAB>whole line, stripped"
 root = sys.argv[1]
 files = subprocess.run(["git", "ls-files", "-z"], cwd=root, capture_output=True, text=True, check=True).stdout.split("\0")
 for f in files:
@@ -246,15 +246,23 @@ for f in files:
         s = line.strip()
         if s.startswith("#") or not (SHELL_RE.search(s) or LIST_RE.search(s)):
             continue
-        if hashlib.sha256((f + "\n" + s).encode()).hexdigest() in ALLOWED:
+        if f + "\t" + s in ALLOWED:
             continue
         print("%s:%d:%s" % (f, n, s[:160]))
     for m in LIST_RE.finditer(whole):           # an argument list spread over lines
         if "\n" in m.group(0):
             print("%s:%d:%s" % (f, whole.count("\n", 0, m.start()) + 1, " ".join(m.group(0).split())[:160]))
 '
-guard_scan() { python3 -I -c "$GUARD_PY" "$@"; }   # guard_scan <repo root> [allowed sha256 ...]
-ALLOW=(93abf67cf317408498df34dd65e1f7af0ddef77dc3be75c3e22107424f6575b9 4ecf328cb07ea2e678cec7c6bda8aaf5d45a4569d93a92439cc0e65caf40425f 214234061c415ef2a41afd9c51fe8503b0645b31679d08fb6a06f7ddce85ffb0 5268fb8e50f332bb34b20260158a11e3169918db862866888a14e63996042130 809e4cd3d001b8f260e59002af8ee8c4bc14a7b0aee7a746bdf1a45fe260894d 2449244a68f1430fd2adeda5e9baf812b46470c590b9e77a9b60b2db11fd950f 7c3e3df9b151afb150c82b8a64eb67d69d60c0c2ccbf0b9ac97f54624218f818)
+guard_scan() { python3 -I -c "$GUARD_PY" "$@"; }   # guard_scan <repo root> [allowed "file<TAB>whole line" ...]
+mapfile -t ALLOW <<'ROWS'
+.github/agent/bin/auditor-open-pr.py	shim("git commit -m auditor:%s" % change)
+.github/agent/bin/auditor-run.py	"gh api graphql createCommitOnBranch %s -- %s" % (branch, " ".join(staged)),   # a signed commit made through the API: no git commit, no git push
+.github/agent/bin/auditor-run.py	"gh api graphql createCommitOnBranch %s -- go.mod go.sum" % branch]   # a signed commit made through the API: no git commit, no git push
+.github/agent/bin/auditor-signed-commit.py	main requires signed commits; `git commit` in a runner is unsigned. This makes ONE commit on --branch through createCommitOnBranch with the
+.github/agent/bin/auditorlib/signed_commit.py	main's ruleset requires signed commits. A commit made by `git commit` in the runner is not signed, so the PR it
+.github/agent/bin/auditorlib/signed_commit.py	raise CommitError("signed commit: %s is %d bytes, over the %d-byte limit of createCommitOnBranch; the commit cannot be made through the API (and a git commit would be unsigned)"
+bin/melange-apko-lib.sh	GIT_COMMITTER_EMAIL=t@example.test GIT_COMMITTER_DATE="$ISO" GIT_AUTHOR_DATE="$ISO" git commit -q -m fixture ) >/dev/null 2>&1
+ROWS
 bad_lines="$(guard_scan "$root" "${ALLOW[@]}")" || bad_lines="the guard itself failed"
 if [ -z "$bad_lines" ]; then echo "ok: no workflow or script outside the tests makes a commit with git (AC8, plain forms)"; pass=$((pass+1))
 else echo "FAIL: a commit-making git call outside the tests:"; printf '%s\n' "$bad_lines" | sed 's/^/    /'; fail=$((fail+1)); fi
@@ -288,7 +296,7 @@ guard_passes  "a comment and other git calls"     bin/a.sh '# git commit is not 
 guard_passes  "a word that only contains the name" bin/a.sh 'echo digit commit; mygit commit\n'
 # an exception is the exact whole line: the same line with anything executable around it is still caught
 L='raise CommitError("signed commit: %s is %d bytes, over the %d-byte limit of createCommitOnBranch; the commit cannot be made through the API (and a git commit would be unsigned)"'   # a copy of the one excepted line (the repo-wide scan below still reads the real file)
-sig="$(printf '%s\n%s' "bin/a.py" "$L" | shasum -a 256 | cut -d' ' -f1)"
+sig="bin/a.py"$'\t'"$L"
 n="$(guard_in bin/a.py "${L//\\/\\\\}"'\n' "$sig")"; [ "$n" = 0 ] && { echo "ok: an exception row passes exactly its own line"; pass=$((pass+1)); } || { echo "FAIL: an exception row does not pass its own line ($n)"; fail=$((fail+1)); }
 n="$(guard_in bin/a.py "subprocess.run(['git','commit']); ${L//\\/\\\\}"'\n' "$sig")"; [ "$n" -ge 1 ] && { echo "ok: an executable prefix on an excepted line is caught"; pass=$((pass+1)); } || { echo "FAIL: an executable prefix on an excepted line passes"; fail=$((fail+1)); }
 n="$(guard_in bin/a.py "${L//\\/\\\\}"'; git commit -m x\n' "$sig")"; [ "$n" -ge 1 ] && { echo "ok: an executable suffix on an excepted line is caught"; pass=$((pass+1)); } || { echo "FAIL: an executable suffix on an excepted line passes"; fail=$((fail+1)); }

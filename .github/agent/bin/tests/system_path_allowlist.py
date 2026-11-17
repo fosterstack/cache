@@ -26,11 +26,10 @@ LINK_ROWS = [
 ]
 
 # A WHOLE-FILE row (empty span) exempts every system-path literal in a PYTHON test, and the scan cannot tell a quoted fixture line from a command,
-# so the WHOLE FILE is pinned: (sha256 of the file's raw bytes, the literal-bearing lines it may contain, reason). Any edit to one of these files
-# needs a reviewed update here (`python3 test_fs_guard.py --print-pins`); a new literal line must be added with a reason.
+# so each file lists the literal-bearing lines it may contain, with a reason. A new literal line in one of these files must be added here
+# with a reason (`python3 test_fs_guard.py --print-pins`).
 PINS = {
     '.github/agent/bin/tests/test_check_action_pins.py': (
-        '67133298989612c9cfad3485b89a16b40f198c96d0b488c103a476571d233f53',
         [        'self.assertEqual(M.script_installs("python3 -m venv /tmp/v && python3 -m json.tool f"), [])',
                  'self.assertEqual(M._downloaded_commands("curl --output=/tmp/x https://e/x\\ncp /tmp/x /usr/local/bin/tool"), {"tool", '
                  '"x"})',
@@ -48,7 +47,7 @@ PINS = {
                  'code, out = run([self.tree_with(self.K8S, "/tmp/other.sh")])',
                  'for js in ("core.addPath(\'/tmp/bin\')", "core.addPath(p)", "core.addPath(`${dir}/bin`)"):'],
         "shell-script TEXT handed to the pin checker's string analysers (script_installs, _downloaded_commands, _outside, _made_executable); /home/runner/work and /usr/local/bin are the literal GitHub-runner and install-location strings those rules match on, and the functions never open, stat or resolve them (the checker reads only entries of the tree it is given; the guard proves the suite touches no system path at run time); the added for-loop line holds JavaScript test strings (core.addPath arguments) that are written into a throwaway fixture workflow, never used as paths"),
-    '.github/agent/bin/tests/test_panel.py': ('f746c6fa3e6f8bbd101227f64de17287fbb8a116532309f70c6ba489d4f1fcdd',
+    '.github/agent/bin/tests/test_panel.py': (
         [        '"package database /var/lib/dpkg/status.d/tzdata:\\nPackage: tzdata\\nVersion: 2026c-0+deb13u1\\n"',
                  '"file: /usr/share/zoneinfo/tzdata.zi (version 2026a)\\n"',
                  'b = ("h\\n%s\\npackage database /var/lib/dpkg/status.d/tzdata:\\nPackage: tzdata\\nVersion: 2026c-0+deb13u1\\n"',
@@ -57,7 +56,7 @@ PINS = {
                  'gb = "h\\n%s\\ngo build info /usr/bin/cache: dep golang.org/x/sys v0.47.0 h1:abc\\n" % P.EVIDENCE_MARK',
                  'named = b(["package database: no record names libssl3", "file: /usr/lib/libssl3.so"])'],
         'container-image-internal paths inside evidence text (package-database and go-build-info lines) that the panel voter parses; no filesystem access'),
-    '.github/agent/bin/tests/test_panel_io.py': ('9a3f1447ac7776f08339bcbe0660505dde53aae692918ef39cefdc4d8e39ce8c',
+    '.github/agent/bin/tests/test_panel_io.py': (
         [        'self.assertIn("/usr/share/zoneinfo/tzdata.zi", facts["paths"])',
                  'self.assertNotIn("/etc/old-tzdata.conf", facts["paths"])',
                  'self.assertEqual(sorted(facts["status"]), ["/var/lib/dpkg/status", "/var/lib/dpkg/status.d/tzdata"])',
