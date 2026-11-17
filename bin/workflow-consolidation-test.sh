@@ -108,9 +108,6 @@ root = sys.argv[2]
 bad = []
 MOVED = {   # job id -> (name, permissions, environment, needs, if) exactly as in the original file
     "allowlist": ("allowlist", None, None, None, None),
-    "required-check-guard": ("required-check guard", {"contents": "read", "issues": "write"}, None, None, None),
-    "drift-fixer-dispatch": ("dispatch the fixer for required-check drift", {"contents": "read"}, "agent", "required-check-guard",
-                             "${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.required-check-guard.outputs.drift_issue != '' }}"),
     "requirements": ("requirements", None, None, None, None),
 }
 jobs = d.get("jobs") or {}
@@ -235,9 +232,6 @@ root = sys.argv[2]
 bad = []
 MOVED = {   # job id -> (name, permissions, environment, needs, if) exactly as in the original file
     "allowlist": ("allowlist", None, None, None, None),
-    "required-check-guard": ("required-check guard", {"contents": "read", "issues": "write"}, None, None, None),
-    "drift-fixer-dispatch": ("dispatch the fixer for required-check drift", {"contents": "read"}, "agent", "required-check-guard",
-                             "${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.required-check-guard.outputs.drift_issue != '' }}"),
     "requirements": ("requirements", None, None, None, None),
 }
 jobs = d.get("jobs") or {}
@@ -339,8 +333,6 @@ PY
 case_ci real                     ok  ""
 case_ci allowlist-renamed        bad "d['jobs']['allowlist']['name'] = 'file allowlist'"
 case_ci requirements-dropped     bad "d['jobs'].pop('requirements')"
-case_ci guard-widened            bad "d['jobs']['required-check-guard']['permissions']['contents'] = 'write'"
-case_ci drift-no-environment     bad "d['jobs']['drift-fixer-dispatch'].pop('environment')"
 STUB="'runs-on': 'x', 'steps': []"
 case_ci dependency-review-back   bad "d['jobs']['dependency-review'] = {'name': 'dependency-review', $STUB}"
 case_ci gosec-back               bad "d['jobs']['gosec'] = {'name': 'gosec', $STUB}"

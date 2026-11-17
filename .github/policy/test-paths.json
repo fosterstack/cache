@@ -413,7 +413,6 @@
   },
   {
    "paths": [
-    "bin/required-check-guard.sh",
     "bin/dispatch-fixer.sh"
    ],
    "suites": [

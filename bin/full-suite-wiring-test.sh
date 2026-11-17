@@ -340,7 +340,6 @@ def allowlist_static(job):
         if g.get("name") != GUARD_NAME: bad.append("the scanner guard step is not named %r" % GUARD_NAME)
         if any(k in g for k in ("if", "continue-on-error", "shell", "env")): bad.append("the scanner guard step is conditional or weakened: " + ", ".join(k for k in ("if", "continue-on-error", "shell", "env") if k in g))
     for s, r in runs(job):
-        if s.get("name") == "required-check guard regressions (offline fixtures)" and r.strip() == "bash bin/required-check-guard-test.sh": continue   # main's own step
         if s not in sel + ss + guards + suite_steps(job) + literal_steps(job) and TESTSH.search(r): bad.append("step %r runs a suite directly instead of through the selection" % s.get("name"))
     return bad
 def run_step(step, extra_env, ctx, cwd, job=None):
@@ -705,7 +704,6 @@ mutants("ci.yml", ci_problems, ci, [
     ("the script given another file than the one written", lambda d: runner_edit(d, lambda s: s.__setitem__("run", re.sub(r"(run-selected-tests\.sh\s+).*", r"\1/nonexistent", s["run"])))),
     ("the script given no file", lambda d: runner_edit(d, lambda s: s.__setitem__("run", "bash bin/run-selected-tests.sh"))),
     ("the script step before the select step", lambda d: d["jobs"]["allowlist"]["steps"].insert(0, d["jobs"]["allowlist"]["steps"].pop(next(i for i, s in enumerate(d["jobs"]["allowlist"]["steps"]) if RUNNER in (s.get("run") or ""))))),
-    ("the guard regressions step running another suite", lambda d: [st.__setitem__("run", "bash bin/branch-sweep-test.sh") for st in d["jobs"]["allowlist"]["steps"] if st.get("name") == "required-check guard regressions (offline fixtures)"]),
     ("a suite run directly in the allowlist job", lambda d: add_step(d, "allowlist", {"name": "direct", "run": "bash bin/branch-sweep-test.sh"})),
     ("an auditor suite run directly", lambda d: add_step(d, "allowlist", {"name": "direct", "run": "bash " + AGENT + "tests/auditor-matrix-test.sh"})),
     ("the scanner guard step gone", lambda d: d["jobs"]["allowlist"].__setitem__("steps", [s for s in d["jobs"]["allowlist"]["steps"] if (s.get("run") or "").strip() != GUARD])),

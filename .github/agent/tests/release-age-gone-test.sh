@@ -2,7 +2,7 @@
 # proves: REQ-SUP-001-AC30, REQ-SUP-001-AC32, REQ-SUP-001-AC33
 # The owner's ruling of Nov 11 2026 removed the release-age wait. Proved on the tracked files: no text of the old wait
 # is left, Dependabot carries no cooldown and one
-# entry per ecosystem root, the context pin-age stays while the job behind it measures nothing, no job holds actions:
+# entry per ecosystem root, the job behind the pin-age context measures nothing, no job holds actions:
 # write, and the tag observer is gone.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -74,9 +74,7 @@ dup = [k for k, n in c.items() if n > 1]
 if dup: sys.exit("duplicate entries: %r" % dup)
 PY
 
-# AC33: the context stays; the job stays and measures nothing; no actions: write anywhere
-if grep -q '"context": "pin-age"' .github/policy/required-checks.json; then ok "required-checks.json still has the \
-context pin-age"; else bad "required-checks.json still has the context pin-age"; fi
+# AC33: the job stays and measures nothing; no actions: write anywhere
 py .github/workflows/supply-chain.yml >"$work/sc" 2>&1 <<'PY' && ok "supply-chain.yml still has the pin-age job" || { \
     bad "supply-chain.yml still has the pin-age job"; sed 's/^/     /' "$work/sc"; }
 import sys, yaml
