@@ -61,10 +61,11 @@ for form in ("git config gpg.format 'x509'", 'git config gpg.format "x509"', "gi
 check(not names_signer("git tag -s v1 with gpg.format=ssh and a signing key"),
       "the scan does not flag an SSH-signed tag")
 
-# two files keep the words on purpose, because they DETECT them: the signer table that makes any use of gitsign in
-# a chain file an unlisted signer (bin/chain-test-signers.json) and the shape judge's list of signing words
-# (bin/chain-check-shape.py)
-DETECTORS = {"bin/chain-test-signers.json", "bin/chain-check-shape.py"}
+# three files keep the words on purpose, because they DETECT them: the signer table that makes any use of gitsign in
+# a chain file an unlisted signer (bin/chain-test-signers.json), the shape judge's list of signing words
+# (bin/chain-check-shape.py) and the tag-jobs judge, whose regexes refuse any tag job that uses them
+# (bin/chain-tag-jobs-judge.py)
+DETECTORS = {"bin/chain-test-signers.json", "bin/chain-check-shape.py", "bin/chain-tag-jobs-judge.py"}
 hits = {}
 for f in files:
     if not f or SKIP.search(f) or f in DETECTORS:
