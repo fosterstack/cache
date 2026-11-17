@@ -717,7 +717,7 @@
       ],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "201e1e3579beff1f89e52d79583ee37a305567ca55a63f16e4ec418a9d234e2d"
+      "sha256": "6eff6ca8debfe39855c5e12dff18e86ba5c314743b3e64268f22bc68c6d9e991"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
@@ -795,7 +795,9 @@
         "at",
         "just"
       ],
-      "runs": [],
+      "runs": [
+        "build-admit.py"
+      ],
       "signs": "other",
       "reason": "the tag-signature route and the owner baselines (policy read from origin/main by bin/build-admit.py); names git verify-tag, verifies and signs nothing",
       "sha256": "4519680d8018298a046836ff14731495f4863fd30938d092211b3465292cf037"
@@ -1667,6 +1669,13 @@
       "exceptions": [
         {
           "rule": "deny",
+          "line": "python3 bin/build-admit.py tag-ok \"${GITHUB_REF_NAME:-}\" || { echo \"refused at tag: ${GITHUB_REF_NAME:-} is not vX.Y.Z or vX.Y.Z-rcN\" >&2; exit 1; }",
+          "line_sha256": "71efac8932b166ea227b8db22a9c49a6eeb7d31b221f7a817f31d6bb488cd6f7",
+          "count": 1,
+          "why": "the refusal message must read `refused at tag` (rule 71: the failure names its stage); `at` is a word of that message, not a command"
+        },
+        {
+          "rule": "deny",
           "line": "python3 bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag \"$GITHUB_REF_NAME\" --out policy.json",
           "line_sha256": "8fe91de9714fae476faa76135b732fc863b248e97d3d63984719de9bb1a4eb3e",
           "count": 1,
@@ -1732,12 +1741,11 @@
         "trap"
       ],
       "runs": [
-        "bin/build-admit.py",
         "bin/release-layout.py"
       ],
       "signs": false,
       "reason": "Release, step release-publish: pushes the exact image bytes by digest to ghcr.io and Docker Hub and reads each registry back (REQ-CHAIN-007-AC7, REQ-REL-009-AC11); it signs nothing",
-      "sha256": "a245fc7d1478ed9217f5ff6c22764cab52d0131947b3677edd006abf9a5ff6ce",
+      "sha256": "257fdbed204dcc817c15c19c0eba2922a2bfa9107cd489b464a1175398b170f2",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -1778,7 +1786,6 @@
         "trap"
       ],
       "runs": [
-        "bin/build-admit.py",
         "bin/chain-verify.py",
         "bin/release-metadata.py",
         "bin/vendor-provenance.py",
@@ -1786,7 +1793,7 @@
       ],
       "signs": "other",
       "reason": "Release, step release-sign: cosign signatures made with the release KMS key (--key RELEASE_KMS_KEY_REF; the step refuses an empty RELEASE_ROLE_ARN or RELEASE_TOKEN_FILE, which the Witness wrapper hands it, and maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE itself), each with a Rekor entry, on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
-      "sha256": "931806db61f62821c314d56801ccc44917621781698782ec194b4cb4a1b51347",
+      "sha256": "1d04eb477d37a0555909658e336245ace0dd01fcf6b227bf715a99db05c47a5b",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -1810,12 +1817,11 @@
         "python3"
       ],
       "runs": [
-        "bin/build-admit.py",
         "bin/release-metadata.py"
       ],
       "signs": false,
       "reason": "Release, step release-assets: attaches the evidence to the GitHub release, a release created only with --verify-tag (REQ-CHAIN-007-AC9)",
-      "sha256": "b5577fbdb548148c3d605b0231f95cf9ca474013f7940d5db9ee5f8e7f507276",
+      "sha256": "5c6c219e23ce0c4fb86811d9f53b9c8bf84528ffbc2dbd08d502ce24c075afb1",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -1910,6 +1916,7 @@
         "just"
       ],
       "runs": [
+        "bin/build-admit.py",
         "bin/chain-verify.py"
       ],
       "signs": false,
@@ -1951,7 +1958,9 @@
       "tools": [
         "at"
       ],
-      "runs": [],
+      "runs": [
+        "build-admit.py"
+      ],
       "signs": false,
       "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files and the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
       "sha256": "dd242da5458f4a30f6e92d86ad7dc357e2336ca5c25f3b7d837f8385599d9ade"

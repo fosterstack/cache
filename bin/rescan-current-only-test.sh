@@ -59,6 +59,7 @@ setup() {
   FIX="$work/fix"; export FIX; rm -rf "$FIX" "$work/repo" "$work/rt"
   mkdir -p "$FIX" "$work/repo/.github/policy" "$work/rt"
   cp "$root/.github/policy/scanners.json" "$root/.github/policy/legacy-releases.json" "$work/repo/.github/policy/"
+  mkdir -p "$work/repo/bin"; cp "$root/bin/build-admit.py" "$work/repo/bin/"
   echo "$1" > "$FIX/list.json"; shift
   local n=1; for t in "$@"; do manifest "$t" "$n"; n=$((n+1)); done
   : > "$FIX/calls.log"; : > "$work/out"
@@ -73,10 +74,10 @@ targets() { sed -n 's/^targets=//p' "$work/out"; }
 anyv()    { sed -n 's/^any=//p' "$work/out"; }
 nscan=$(jq '.scanners | length' "$root/.github/policy/scanners.json")
 
-REL='[{"tagName":"v0.2.2","isDraft":false,"isPrerelease":false},{"tagName":"v0.2.3","isDraft":true,"isPrerelease":false},{"tagName":"v0.3.0-rc.1","isDraft":false,"isPrerelease":true},{"tagName":"v0.3.0","isDraft":false,"isPrerelease":true},{"tagName":"nightly","isDraft":false,"isPrerelease":false},{"tagName":"v0.2.1","isDraft":false,"isPrerelease":false},{"tagName":"v0.2.0","isDraft":false,"isPrerelease":false},{"tagName":"v0.1.0","isDraft":false,"isPrerelease":false}]'
+REL='[{"tagName":"v0.2.2","isDraft":false,"isPrerelease":false},{"tagName":"v0.2.3","isDraft":true,"isPrerelease":false},{"tagName":"v0.3.0-rc1","isDraft":false,"isPrerelease":true},{"tagName":"v0.3.0","isDraft":false,"isPrerelease":true},{"tagName":"nightly","isDraft":false,"isPrerelease":false},{"tagName":"v0.2.1","isDraft":false,"isPrerelease":false},{"tagName":"v0.2.0","isDraft":false,"isPrerelease":false},{"tagName":"v0.1.0","isDraft":false,"isPrerelease":false}]'
 
 # 1. the fixture list: exactly v0.2.2, its three variants x every scanner, nothing else
-setup "$REL" v0.2.0 v0.2.1 v0.2.2 v0.2.3 v0.3.0-rc.1 v0.3.0 nightly
+setup "$REL" v0.2.0 v0.2.1 v0.2.2 v0.2.3 v0.3.0-rc1 v0.3.0 nightly
 run
 t=$(targets)
 if [ "$rc" -eq 0 ] && [ "$(jq -c '[.[].release] | unique' <<<"${t:-[]}")" = '["v0.2.2"]' ] \
@@ -108,8 +109,8 @@ if [ "$rc" -eq 0 ] && [ "$(jq -c '[.[].release] | unique' <<<"${t:-[]}")" = '["v
 else bad "semver ordering" "rc=$rc targets=${t:0:200}"; fi
 
 # 6. no published release (empty list, or only drafts and prereleases): empty matrix, a clear message, success
-for L in '[]' '[{"tagName":"v0.2.3","isDraft":true,"isPrerelease":false},{"tagName":"v0.3.0-rc.1","isDraft":false,"isPrerelease":true},{"tagName":"nightly","isDraft":false,"isPrerelease":false}]'; do
-  setup "$L" v0.2.3 v0.3.0-rc.1
+for L in '[]' '[{"tagName":"v0.2.3","isDraft":true,"isPrerelease":false},{"tagName":"v0.3.0-rc1","isDraft":false,"isPrerelease":true},{"tagName":"nightly","isDraft":false,"isPrerelease":false}]'; do
+  setup "$L" v0.2.3 v0.3.0-rc1
   run
   if [ "$rc" -eq 0 ] && [ "$(targets)" = '[]' ] && [ "$(anyv)" = false ] && grep -qi 'no published release' <<<"$msg"; then ok "no published release: empty matrix, clear message ($(jq -c 'map(.tagName)' <<<"$L"))"
   else bad "no published release" "rc=$rc targets=$(targets) any=$(anyv) msg=${msg:0:200}"; fi

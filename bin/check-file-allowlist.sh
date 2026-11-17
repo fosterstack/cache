@@ -198,6 +198,7 @@ ALLOW_PATTERNS=(
   '^bin/release-(verify|apks|compare|publish|sign|assets|postverify)\.sh$'
   '^bin/release-(postverify|metadata|layout|compare)\.py$'
   '^bin/chain-(install-crane|release-scripts|release-wiring|release-metadata)-test\.sh$'
+  '^bin/chain-tag-grammar-test\.sh$'
   '^bin/chain-release-shape\.py$'
   # The auditor implementation now lands (Round 8): sealed command scripts, the
   # shared library, and their parser unit tests, plus the parser-test runner.

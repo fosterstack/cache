@@ -1480,6 +1480,7 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
       - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
+      - { type: shell-test, ref: "bin/chain-tag-grammar-test.sh" }
   - ac: REQ-CHAIN-007-AC15
     evidence:
       - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }

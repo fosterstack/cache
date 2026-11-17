@@ -8,7 +8,6 @@ set -euo pipefail
 for name in DOCKERHUB_USERNAME DOCKERHUB_TOKEN GH_TOKEN; do
   if [ -z "${!name:-}" ]; then echo "release-publish: $name is unset" >&2; exit 2; fi
 done
-python3 bin/build-admit.py tag-ok --final "${GITHUB_REF_NAME:-}" || { echo "release-publish: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never reaches this step)" >&2; exit 1; }
 ver="${GITHUB_REF_NAME#v}"
 repo="fosterstack/cache"
 rx='^sha256:[0-9a-f]{64}$'

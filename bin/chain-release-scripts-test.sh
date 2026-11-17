@@ -345,9 +345,9 @@ check([stage_of(c) for c in calls if stage_of(c)] == STAGES and calls and calls[
 check(all("--digests witness-build/digests.json" in c for c in calls if stage_of(c) and stage_of(c) not in ("items", "baseline")) and any("--tag v0.3.0" in c for c in calls if "policy" in c), "AC4 every record is checked against the same digest list and the policy is made for the tag")
 # REQ-CHAIN-007-AC14: a release candidate is exactly ^v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$ (case-sensitive,
 # anchored; leading zeros as for vX.Y.Z)
-for tag in ("v0.3.0-rc1", "v10.20.30-rc12", "v01.02.03-rc01"):
+for tag in ("v0.3.0-rc1", "v10.20.30-rc12"):
     t = tree(); rc, so, se = run(t, "release-verify", tag=tag); check(rc == 0, "AC14 the release candidate %s passes release-verify exactly like a final" % tag, se)
-for tag in ("v0.3", "v0.3.0-rc", "v0.3.0-rc.1", "v0.3.0-rc.x", "v0.3.0-rc1x", "v0.3.0-rc1.2", "v0.3.0-RC1", "v0.3.0-Rc1", "v0.3.0rc1", "v0.rc1.3.0", "rc1", "v0.3.0-1rc1", "v0.3.0-rc-1", "v0.3.0-beta.1", "v0.3.0.1", "0.3.0", "main", "refs/heads/x", "v0.3.0-rc1\n", "v0.3.0\n", ""):
+for tag in ("v01.02.03-rc01", "v0.3.0-rc0", "v0.3.0-rc01", "v0.3", "v0.3.0-rc", "v0.3.0-rc.1", "v0.3.0-rc.x", "v0.3.0-rc1x", "v0.3.0-rc1.2", "v0.3.0-RC1", "v0.3.0-Rc1", "v0.3.0rc1", "v0.rc1.3.0", "rc1", "v0.3.0-1rc1", "v0.3.0-rc-1", "v0.3.0-beta.1", "v0.3.0.1", "0.3.0", "main", "refs/heads/x", "v0.3.0-rc1\n", "v0.3.0\n", ""):
     t = tree(); rc, so, se = run(t, "release-verify", tag=tag)
     check(rc != 0 and first(se).startswith("refused at tag") and not [l for l in log(t) if l.startswith("chain-verify")], "AC5 the tag %r is refused first, naming the tag, before any verification" % tag, "rc=%s %s" % (rc, first(se)))
 for s in STAGES:
@@ -426,9 +426,18 @@ check(bool(P) and P[0][3].startswith("ghcr.io/"), "AC7 ghcr.io comes first")
 check(bool(P) and all(os.path.exists(os.path.join(t, "reg", p[3].replace(":", "/", 1))) and open(os.path.join(t, "reg", p[3].replace(":", "/", 1))).read().strip() == DIG["image-production" if "fips" not in p[3] else "image-fips"] for p in P), "AC7 the registry shows the attested index digest for every tag pushed")
 check(any(l.startswith("crane digest") for l in log(t)), "AC7 each registry is read back")
 check(SENT["DOCKERHUB_TOKEN"] not in "\n".join(log(t)) + so + se and SENT["GH_TOKEN"] not in "\n".join(log(t)) + so + se, "AC7 the credentials go in by standard input, never on a command line or in output")
-for tag in ("v0.3.0-rc1", "v0.3.0-rc.1", "v0.3.0-RC1", "v0.3.0-beta.1", "main"):
-    t = tree(); rc, so, se = run(t, "release-publish", creds=REG, tag=tag)
-    check(rc != 0 and "tag" in se and not pushes(t) and not log(t), "AC14 release-publish refuses the tag %r: a release candidate never publishes, no login, no push, no floating tag" % tag, "rc=%s %s" % (rc, first(se)))
+# REQ-CHAIN-004-AC19 / REQ-CHAIN-007-AC14: the tag is judged once, in release-verify; the three scripts that hold credentials judge none
+for s in ("release-sign", "release-publish", "release-assets"):
+    src = open(os.path.join(BIN, s + ".sh")).read()
+    check(not re.search(r"build-admit|tag-ok|tag-pattern|TAG_PATTERN|v\[0-9\]|\^v|-rc\[", src), "AC14 bin/%s.sh holds no tag regex and does not call or load bin/build-admit.py (the tag is judged once, in release-verify)" % s)
+import yaml
+_want = "${{ !contains(github.ref_name, '-') }}"
+_bad = []
+for _jn, _job in yaml.safe_load(open(os.path.join(os.environ["RELEASE_ROOT"], ".github/workflows/stage-promote.yml")))["jobs"].items():
+    _st = _job.get("steps") or []
+    _k = next((n for n, x in enumerate(_st) if str(x.get("name", "")).startswith("release-verify")), None)
+    if _k is not None: _bad += ["%s: %s" % (_jn, x.get("name")) for x in _st[_k + 1:] if "bin/release-" in str(x.get("run", "")) and "bin/release-verify.sh" not in str(x.get("run", "")) and x.get("if") != _want]
+check(not _bad, "AC14 every stage-promote.yml step after release-verify carries if: ${{ !contains(github.ref_name, '-') }}", "; ".join(_bad))
 t = tree(); rc, so, se = run(t, "release-publish", creds=REG, env={"REG_CORRUPT": "docker.io"})
 check(rc != 0 and "differ" in se and DIG["image-production"] in se and "docker.io" in se, "AC7 a registry that shows another digest blocks release, naming the image and both digests", "rc=%s %s" % (rc, first(se)))
 t = tree(); rc, so, se = run(t, "release-publish", creds=REG, env={"REG_CORRUPT": "ghcr.io"}); h = [p[3].split("/")[0] for p in pushes(t)]
@@ -477,9 +486,6 @@ t, rc, so, se = float_run("v0.3.0", ["0.2.2"], env={"LS_FAIL": "1"})
 check(rc != 0 and not pushes(t) and "ghcr.io" in se and "list" in se.lower(), "AC11 a tag list that cannot be read stops the release before any push (it never guesses that this is the highest)", "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = float_run("v0.3.0", ["0.2.2"], env={"REG_CORRUPT": "docker.io"})
 check(rc != 0 and "differ" in se and "docker.io" in se, "AC11 a floating tag is read back like an exact one (a mirror that shows another digest blocks the release)", "rc=%s %s" % (rc, first(se)))
-for tag in ("v0.3.0-rc1", "v10.20.30-rc7"):
-    t, rc, so, se = float_run(tag, ["0.2.2"])
-    check(rc != 0 and not pushes(t), "AC14 the release candidate %s moves no floating tag and pushes nothing" % tag, "rc=%s" % rc)
 t, rc, so, se = float_run("v0.3.0", ["0.2.2"]); L = [l for l in log(t) if l.startswith("crane push")]
 check(L and all(re.search(r" images/(production|fips) ", l + " ") for l in L) and not [l for l in log(t) if l.startswith("crane tag")], "AC11 floating tags are pushed from the same attested bytes, nothing is retagged from a registry")
 # ---- a higher release published between the first listing and the floating pushes: :0 and :latest are not
@@ -780,8 +786,6 @@ t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_NOREKOR"
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"KMSSIGN_NOBUNDLE": "release-files.sha256.bundle"}); check(rc != 0 and "release-files.sha256.bundle" in se and "Traceback" not in se, "KA-2 p4 a signer that exits 0 and leaves no bundle stops the step, naming the missing bundle", "rc=%s %s" % (rc, first(se)))
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"VEXFORMS_FAIL": "1"}); check(rc != 0 and not signs(t), "AC13 failing VEX generation stops everything before anything is signed")
 t = tree(); open(os.path.join(t, "images/fips.manifests"), "w").write("amd64 sha256:" + "1" * 64 + "\n"); rc, so, se = run(t, "release-sign", creds=REG); check(rc != 0 and "fips.manifests" in se and not signs(t), "AC13 an images/<variant>.manifests that is not complete stops before anything is signed")
-for tag in ("v0.3.0-rc1", "v0.3.0-rc.1", "main"):
-    t = tree(); rc, so, se = run(t, "release-sign", creds=REG, tag=tag); check(rc != 0 and "tag" in se and not log(t), "AC14 release-sign refuses the tag %r" % tag, "rc=%s %s" % (rc, first(se)))
 # ---- AC9: release-assets.sh ----------------------------------------------------------------------------------------------------------------------
 def full_assets():
     t = tree(); rc_, so_, se_ = run(t, "release-sign", creds=REG)
@@ -900,8 +904,6 @@ t = full_assets(); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"], env
 check(rc != 0 and "release-files.sha256.bundle" in se, "AC13 the gate runs again AFTER publishing, on what the release stores: a missing asset fails the run", "rc=%s %s" % (rc, first(se)))
 t = full_assets(); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"], env={"GH_ALTER": "release-manifest.json"})
 check(rc != 0 and "release-manifest.json" in se, "AC13 the gate after publishing catches a stored file that differs from the staged one", "rc=%s %s" % (rc, first(se)))
-for tag in ("v0.3.0-rc1", "v0.3.0-rc.1", "main"):
-    t3 = tree(); rc3, so3, se3 = run(t3, "release-assets", creds=["GH_TOKEN"], tag=tag); check(rc3 != 0 and "tag" in se3 and not log(t3), "AC14 release-assets refuses the tag %r" % tag, "rc=%s %s" % (rc3, first(se3)))
 check(not [l for l in log(t) if re.search(r"release create(?!.*--verify-tag)|git (?!cat-file tag )", l)], "AC9 no release is created without --verify-tag and no tag is made")
 check(SENT["GH_TOKEN"] not in L + so + se, "AC9 the token is never on a command line or in output")
 # the archives are Build's bytes and the set is complete before anything is uploaded
@@ -1645,7 +1647,7 @@ check(rc == 0 and os.path.isfile(os.path.join(t, "out/guide-results.json")),
       "AC7 check-guide.sh passes a passing guide command and writes guide-results.json",
       "rc=%s %s" % (rc, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "537"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "530"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

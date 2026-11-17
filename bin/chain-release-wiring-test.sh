@@ -157,8 +157,8 @@ BODY = {
  "release-assets": 'set -euo pipefail\ngh release upload "$GITHUB_REF_NAME" apks/* dist/* --clobber\ngh release create "$GITHUB_REF_NAME" --verify-tag --draft\n',
 }
 ROWS = {"release-verify": (["python3"], False, ["bin/build-admit.py", "bin/chain-verify.py"]), "release-compare": (["python3"], False, ["bin/release-compare.py"]), "release-apks": (["bash", "jq", "python3"], "other", ["bin/apk-tool.py", "bin/build-admit.py", "bin/release-sign-apks.sh"]),
-        "release-publish": (["crane", "jq", "python3", "trap"], False, ["bin/build-admit.py", "bin/release-layout.py"]), "release-sign": (["cosign", "git", "jq", "python3", "sha256sum", "trap"], "other", ["bin/build-admit.py", "bin/chain-verify.py", "bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py"]),
-        "release-assets": (["gh", "git", "python3"], False, ["bin/build-admit.py", "bin/release-metadata.py"]), "release-postverify": (["python3"], False, ["bin/release-postverify.py"])}
+        "release-publish": (["crane", "jq", "python3", "trap"], False, ["bin/release-layout.py"]), "release-sign": (["cosign", "git", "jq", "python3", "sha256sum", "trap"], "other", ["bin/chain-verify.py", "bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py"]),
+        "release-assets": (["gh", "git", "python3"], False, ["bin/release-metadata.py"]), "release-postverify": (["python3"], False, ["bin/release-postverify.py"])}
 rows = []
 for n, b in BODY.items():
     open(f"{w}/s/bin/{n}.sh", "w").write("#!/usr/bin/env bash\n" + b)

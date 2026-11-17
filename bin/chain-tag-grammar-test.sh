@@ -8,7 +8,8 @@
 # `python3 bin/build-admit.py tag-pattern`; none has a pattern of its own. v01.2.3, v1.2.3-rc0 and v1.2.3-rc.1 are refused by every one.
 #
 # Parsers, one case group each (all under bin/ unless a path says otherwise):
-#   release-apks.sh release-assets.sh release-publish.sh release-sign.sh   final tags only (they read GITHUB_REF_NAME)
+#   release-apks.sh                  final tags only (reads GITHUB_REF_NAME)
+#   release-assets.sh release-publish.sh release-sign.sh   NONE: they hold credentials and judge no tag; release-verify.sh judged it once
 #   release-verify.sh                final or rc        release-metadata.py   baseline command (final)
 #   release-postverify.py            final only         chain-verify.py       policy make --tag / --ref refs/tags/<tag> (final or rc)
 #   marker-pr-gate.py                rc only            chain_items.py        admission-baseline (rc vs final baseline), via chain-verify.py
@@ -119,10 +120,10 @@ shcase() { # shcase SCRIPT KIND(final|any) ENV...: every refusal, and the contro
 KMS='awskms:///arn:aws:kms:us-east-1:123456789012:key/0123abcd'
 COMMON=(RELEASE_KMS_KEY_REF="$KMS" GH_TOKEN=g DOCKERHUB_USERNAME=u DOCKERHUB_TOKEN=t RELEASE_ROLE_ARN=arn:aws:iam::123456789012:role/r RELEASE_TOKEN_FILE=/dev/null RUNNER_TEMP="$S/c")
 shcase release-apks.sh final "${COMMON[@]}"
-shcase release-assets.sh final "${COMMON[@]}"
-shcase release-publish.sh final "${COMMON[@]}"
-shcase release-sign.sh final "${COMMON[@]}"
 shcase release-verify.sh any "${COMMON[@]}"
+# the one place the tag is judged says so in the words of the rule
+c=$(mkcase "sv" release-verify.sh); shrun "$c" release-verify.sh v01.2.3 "${COMMON[@]}"
+grep -q 'refused at tag: .* is not vX.Y.Z or vX.Y.Z-rcN' "$c/err" && ok "release-verify.sh refuses at tag with 'is not vX.Y.Z or vX.Y.Z-rcN'" || bad "release-verify.sh refuses at tag with 'is not vX.Y.Z or vX.Y.Z-rcN'" "err: $ERR"
 
 # ------------------------------------------------------------------ C. chain-verify.py: policy make --tag / --ref (final or rc)
 K=$S/keys; mkdir -p "$K"
@@ -432,23 +433,46 @@ fi
 # ------------------------------------------------------------------ L. structure: no listed file holds a tag pattern of its own
 # A tag regex of its own looks like v[0-9], ^v[0-9] or ^v(0|, v(0|, v(?:0|, or an rc number class -rc[...]. The files below read
 # a tag; each must hold none of them and must name bin/build-admit.py (or TAG_PATTERN) as where the grammar comes from.
-LISTED="bin/release-apks.sh bin/release-assets.sh bin/release-publish.sh bin/release-sign.sh bin/release-verify.sh bin/release-metadata.py
+# The three credential scripts (CRED) judge no tag: they hold no tag pattern, make no tag-ok call and do not name build-admit.py.
+CRED="bin/release-assets.sh bin/release-publish.sh bin/release-sign.sh"
+LISTED="bin/release-apks.sh bin/release-verify.sh bin/release-metadata.py
 bin/release-postverify.py bin/chain-verify.py bin/marker-pr-gate.py bin/chain_items.py bin/evidence-letter.py bin/evidence-letter-fetch.sh
 bin/admission-tag-signer.py bin/chain-release-shape.py bin/install-scanner.sh .github/workflows/main-candidate-rescan.yml"
-for f in $LISTED; do
+for f in $LISTED $CRED; do
   if [ ! -f "$root/$f" ]; then bad "$f holds no tag pattern of its own" "file is missing"; continue; fi
   hits=$(grep -nE -e 'v\[0-9\]' -e '\^v[\[(0-9]' -e 'v\(0\|' -e 'v\(\?:0\|' -e '-rc\\?\[' -e 'rc\[0-9' -e 'rc\[1-9' -e '\[0-9\]\+\\?\.\[0-9\]\+\\?\.\[0-9\]\+' -e '\[0-9\]\+\[\.\]\[0-9\]\+\[\.\]\[0-9\]\+' "$root/$f" | cut -c1-110 | head -3 | tr '\n' ';')
   [ -z "$hits" ] && ok "$f holds no tag pattern of its own" || bad "$f holds no tag pattern of its own" "$hits"
+  case " $CRED " in *" $f "*) continue;; esac
   grep -qE 'build-admit|TAG_PATTERN' "$root/$f" && ok "$f takes the grammar from bin/build-admit.py" || bad "$f takes the grammar from bin/build-admit.py" "no mention of build-admit.py or TAG_PATTERN"
 done
 # a shell script and a workflow step reach the grammar only by the two commands; a Python script only by loading the file
-for f in bin/release-apks.sh bin/release-assets.sh bin/release-publish.sh bin/release-sign.sh bin/release-verify.sh bin/evidence-letter-fetch.sh bin/install-scanner.sh .github/workflows/main-candidate-rescan.yml; do
+for f in bin/release-apks.sh bin/release-verify.sh bin/evidence-letter-fetch.sh bin/install-scanner.sh .github/workflows/main-candidate-rescan.yml; do
   grep -qE 'build-admit\.py (tag-ok|tag-pattern)' "$root/$f" && ok "$f calls build-admit.py tag-ok or tag-pattern" || bad "$f calls build-admit.py tag-ok or tag-pattern" "no such call"
 done
-for f in bin/release-sign.sh bin/release-apks.sh bin/release-assets.sh bin/release-publish.sh; do
-  # the final-only shell steps pass --final (the Python scripts refuse a release candidate in code; evidence-letter-fetch.sh may read tag-pattern instead)
+for f in bin/release-apks.sh; do
+  # the final-only shell step passes --final (the Python scripts refuse a release candidate in code; evidence-letter-fetch.sh may read tag-pattern instead)
   grep -qE 'build-admit\.py tag-ok( -[A-Za-z-]+)* --final|build-admit\.py tag-ok --final' "$root/$f" && ok "$f passes --final" || bad "$f passes --final" "no tag-ok --final call"
 done
+# the credential scripts judge no tag: no build-admit.py, no tag-ok, no tag-pattern
+for f in $CRED; do
+  grep -qE 'build-admit|tag-ok|tag-pattern|TAG_PATTERN' "$root/$f" && bad "$f does not call or mention build-admit.py (it judges no tag)" "$(grep -nE 'build-admit|tag-ok|tag-pattern|TAG_PATTERN' "$root/$f" | head -2 | cut -c1-100 | tr '\n' ';')" || ok "$f does not call or mention build-admit.py (it judges no tag)"
+done
+# stage-promote.yml: every step after release-verify carries the final-tag condition
+"$REALPY" - "$root/.github/workflows/stage-promote.yml" <<'PY' && ok "stage-promote.yml: every step after release-verify carries the final-tag condition" || bad "stage-promote.yml: every step after release-verify carries the final-tag condition" "see the steps named above"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+want = "${{ !contains(github.ref_name, '-') }}"
+bad = []
+for jn, job in d["jobs"].items():
+    steps = job.get("steps") or []
+    names = [str(s.get("name", "")) for s in steps]
+    i = next((k for k, n in enumerate(names) if n.startswith("release-verify")), None)
+    if i is None:
+        continue
+    bad += ["%s: %s" % (jn, names[k]) for k in range(i + 1, len(steps)) if "bin/release-" in str(steps[k].get("run", "")) and "bin/release-verify.sh" not in str(steps[k].get("run", "")) and steps[k].get("if") != want]
+if bad:
+    print("steps without the condition: " + "; ".join(bad)); sys.exit(1)
+PY
 
 echo "pass=$pass fail=$failn"
 [ "$failn" = 0 ]
