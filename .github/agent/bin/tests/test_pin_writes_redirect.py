@@ -272,6 +272,11 @@ class RunnerFileSetByOtherForms(unittest.TestCase):
         hits, out = self.hits('echo "x=1" >> "$GITHUB_OUTPUT"\nbash scripts/build.sh')
         self.assertFalse(hits, out)
 
+    # A `$'` left after decoding may build a name, so the exemption fails closed
+    def test_dollar_quote_left_in_script_drops_runner_file_exemption(self):
+        hits, out = self.hits("grep 'a$' f\necho \"x=1\" >> \"$GITHUB_OUTPUT\"\nbash scripts/build.sh")
+        self.assertTrue(hits, out)
+
     def test_braced_read_not_reported(self):
         hits, out = self.hits('echo y >> "${GITHUB_OUTPUT}"\nbash scripts/build.sh')
         self.assertFalse(hits, out)
