@@ -1,4 +1,4 @@
-# Scanner-panel audit prompts (scanner-panel rules 8 and 8(c); REQ-SCAN-008)
+# Scanner-panel audit prompts (REQ-SCAN-008)
 
 Versioned instructions for the two auditor seats that judge findings only one scanner reported. They change only
 through reviewed pull requests. Each section is a `## <key>` heading; `{finding}`, `{bundle}`, `{own_case}`,

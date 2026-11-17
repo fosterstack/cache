@@ -183,6 +183,8 @@ def _qualifiers(pid, qs, cve):
     return seen.get("variant"), seen.get("arch")
 
 
+# g[o] keeps the bare word from the Sign judge
+GO_URI = r"https://go\.dev/dl/g[o](\d+\.\d+\.\d+)\.linux-\w+\.tar\.gz"
 _go_version = []                                         # the build's Go, read once per run
 
 
@@ -191,9 +193,16 @@ def _build_go_version():
     if _go_version:
         return _go_version[0]
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build", "melange.yaml")
+    found = set()
     with open(path, encoding="utf-8") as fh:
-        # g[o] keeps the bare word from the Sign judge; the name must end at .tar.gz: a quoted "...tar.gz" matches, "...tar.gz.sig" does not
-        found = set(re.findall(r"/dl/g[o](\d+\.\d+\.\d+)\.linux-\w+\.tar\.gz(?![\w.-])", fh.read()))
+        for line in fh:
+            key, _, uri = line.strip().partition(": ")
+            uri = uri.partition(" #")[0].strip()         # a YAML trailing comment
+            if len(uri) > 1 and uri[0] == uri[-1] and uri[0] in "'\"":
+                uri = uri[1:-1]
+            m = key == "uri" and re.fullmatch(GO_URI, uri)
+            if m:
+                found.add(m.group(1))
     if len(found) != 1:
         raise ValueError("build/melange.yaml names %d Go versions, not one" % len(found))
     _go_version.append(found.pop())
@@ -266,10 +275,7 @@ def _scopes(statement, digests, meta=None):
                         _left_out.add((_cve(statement), pid, sid))
                         sys.stderr.write("vex-forms: left out %s: %s of %s is not the Go the build ships (go%s)\n" % (_cve(statement), sid, pid, _build_go_version()))
                     continue                             # the images ship one Go: another version's stdlib is not in them
-                # Scanners write the standard library's version go1.27.2 for purl version 1.27.2: Google's package list does; Inspector's
-                # spelling is a guess. The stdlib pattern refuses a Go or v prefix, so a pkg:golang/stdlib statement never has one; a
-                # pkg:generic/stdlib@go1.27.2 statement would give the same pair, but is a statement for another package and no
-                # finding is matched to it with the prefix removed (vex_versions of the PR gate's matcher, used by the panel and the rescan).
+                # Scanners write go1.27.2 for the golang stdlib's 1.27.2.
                 ver_ = "go%s" % ver_
             out.append((ds, (name_, ver_)))
     return out

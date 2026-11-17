@@ -583,13 +583,6 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
-  - ac: REQ-DEP-002-AC1
-    evidence:
-      - { type: shell-test, ref: "bin/required-check-guard-test.sh" }
-      - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
-  - ac: REQ-DEP-002-AC2
-    evidence:
-      - { type: shell-test, ref: "bin/required-check-guard-test.sh" }
   - ac: REQ-DEP-002-AC3
     evidence:
       - { type: shell-test, ref: "bin/required-check-guard-test.sh" }

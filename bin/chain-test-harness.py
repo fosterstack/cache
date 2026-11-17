@@ -1,5 +1,7 @@
 """Test infrastructure (not product code): a throw-away repository tree with FAKE cache scripts and a FAKE chain-verify.py, so
-bin/chain-build-wiring-test.sh can RUN the four stage scripts bin/build-stage-KIND.sh and check what they do. The fakes log their argv.
+bin/chain-build-wiring-test.sh can RUN the stage scripts bin/build-stage-KIND.sh (KIND assemble, rebuild-assemble,
+snapshot-assemble, snapshot-rebuild-assemble: the one bin/build-stage-assemble.sh with its STEP) and check what they do.
+The fakes log their argv.
 The expected results are computed here by the ORACLE, from the inputs of the tree, never from anything the implementation wrote.
 
   python3 chain-test-harness.py mktree DIR KIND SCRIPT [MODE [TAG]]     MODE oracle (default) | real (items-apk and items-merge go to the
@@ -323,7 +325,7 @@ for std, name in (("std", "fscache"), ("fips", "fscache-fips")):
         open("%s/%s_%s_linux_%s.tar.gz" % (out, name, version, g), "w").write("tar|%s|%s|%s" % (std, g, version))
 '''
 FAKE_CV = '''#!/usr/bin/env python3
-import hashlib, importlib.util, json, os, sys
+import hashlib, importlib.util, json, os, shutil, sys
 spec = importlib.util.spec_from_file_location("h", os.environ["HARNESS_DIR"] + "/chain-test-harness.py")
 h = importlib.util.module_from_spec(spec); spec.loader.exec_module(h)
 a = sys.argv[1:]
@@ -349,7 +351,16 @@ if cmd == "bind":       # every file under --dir must be a product of the record
             if not os.path.exists(table) or open(table).read().strip() != hashlib.sha256(open(p, "rb").read()).hexdigest(): bad.append(p)
     if bad: sys.stderr.write("refused at build: digest: %s\\n" % " ".join(bad)); sys.exit(1)
     sys.exit(0)
-if cmd in ("items-apk", "items-merge") and os.environ.get("ITEMS_MODE") == "real":
+if cmd == "items-apk" and os.environ.get("ITEMS_MODE") == "real":
+    # the real verifier runs the apk tool that sits beside it (chain_items.APK_TOOL): a copy of the real files here, with this tree's fixture tool
+    real = os.path.dirname(os.environ["REAL_CV"])
+    shadow = os.path.abspath(".real")
+    os.makedirs(shadow + "/bin", exist_ok=True); os.makedirs(shadow + "/.github/policy", exist_ok=True)
+    for f in ("chain-verify.py", "chain_common.py", "chain_hostile.py", "chain_items.py"): shutil.copy(real + "/" + f, shadow + "/bin/" + f)
+    for f in ("rebuild-items.json", "chain-scripts.json"): shutil.copy(real + "/../.github/policy/" + f, shadow + "/.github/policy/" + f)
+    shutil.copy(os.path.abspath("bin/apk-tool.py"), shadow + "/bin/apk-tool.py")
+    os.execv(sys.executable, [sys.executable, shadow + "/bin/chain-verify.py"] + a)
+if cmd == "items-merge" and os.environ.get("ITEMS_MODE") == "real":
     os.execv(sys.executable, [sys.executable, os.environ["REAL_CV"]] + a)
 if cmd == "items-apk":
     json.dump(h.fragment(os.path.basename(arg("--out-dir").rstrip("/")), os.environ["TAG"]), open(arg("--result"), "w"))
@@ -410,7 +421,10 @@ def mktree(d, kind, script, mode="oracle", tag="v0.3.0"):
                        ("build-baselayout-apk.sh", FAKE_BUILD_BASELAYOUT),
                        ("assemble-image.sh", FAKE_ASSEMBLE), ("chain-verify.py", FAKE_CV)):
         write(d + "/bin/" + name, body, 0o755)
-    shutil.copy(script, d + "/bin/build-stage-%s.sh" % kind); os.chmod(d + "/bin/build-stage-%s.sh" % kind, 0o755)
+    # the four assemble kinds are cases of the ONE script bin/build-stage-assemble.sh (run with its STEP by the caller);
+    # kind only lays out the tree
+    name = "assemble" if kind.endswith("assemble") else kind
+    shutil.copy(script, d + "/bin/build-stage-%s.sh" % name); os.chmod(d + "/bin/build-stage-%s.sh" % name, 0o755)
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     shutil.copy(os.path.join(here, "bin", "vex-index.py"), d + "/bin/vex-index.py"); os.chmod(d + "/bin/vex-index.py", 0o755)      # the REAL tool runs in the stage tree (REQ-REL-010-AC1)
     os.makedirs(d + "/.vex", exist_ok=True); shutil.copy(os.path.join(here, VEX_FILE), d + "/" + VEX_FILE)

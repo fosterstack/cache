@@ -56,6 +56,8 @@ printf 'a note: an old run said pass=999 fail=0\npass=55 fail=0\nsee 888 passed 
 printf 'case 3 expects 777 passed, 0 failed\nx: 53 passed, 0 failed\nthe next run may print 666 passed\n' > "$work/l12"
 expect 0 "count: a look-alike line before or after a pass=N summary is not the count" "55" -- count "$work/l11"
 expect 0 "count: a look-alike line before or after a N passed summary is not the count" "53" -- count "$work/l12"
+printf 'x: 40 passed, 0 failed\nx act step: 44 passed, 0 failed\n' > "$work/l13"
+expect 0 "count: a summary line whose label has several words is the count (dependabot-reviewer act step)" "44" -- count "$work/l13"
 
 # ---- floor: a suite below its committed floor, or unlisted, fails ---------------------------------------------------------------
 printf '{"suite-a": 50, "suite-b": 10}\n' > "$work/floors.json"
@@ -268,10 +270,10 @@ ac = next(a for r in yaml.safe_load(open("requirements/requirements.yaml"))["req
 pinned = {n: int(k) for n, k in re.findall(r"([a-z0-9-]+-test\.sh) \((\d) runs?", ac["then"])}
 ci = [l for l in open(".github/workflows/ci.yml").read().splitlines() if not l.lstrip().startswith("#")]
 actual = {n: sum(1 for l in ci if re.search(r"\bbash [./A-Za-z0-9_-]*/%s\b" % re.escape(n), l)) + 1 for n in rest}
-print("ok" if bad == 0 and rest == set(pinned) and len(pinned) == 3 and actual == pinned else "bad %s residual %s pinned %s actual %s" % (bad, sorted(rest), pinned, actual))
+print("ok" if bad == 0 and rest == set(pinned) and len(pinned) == 2 and actual == pinned else "bad %s residual %s pinned %s actual %s" % (bad, sorted(rest), pinned, actual))
 PY
 )
-if [ "$real" = "ok" ]; then ok "REQ-CI-005-AC5 the real ci.yml: all runs itself exactly the three suites the AC names, each run as many times as the AC states; every other floored suite is counted by its own step"; else bad "real ci.yml residual: $real"; fi
+if [ "$real" = "ok" ]; then ok "REQ-CI-005-AC5 the real ci.yml: all runs itself exactly the two suites the AC names, each run as many times as the AC states; every other floored suite is counted by its own step"; else bad "real ci.yml residual: $real"; fi
 # (2) two counting steps for one suite: refused
 cwf "" "$CNT a-test.sh bin/a-test.sh" "$CNT a-test.sh bin/a-test.sh"
 out=$(cwall) && rc=0 || rc=$?; if [ "$rc" = 1 ] && grep -q 'more than one counting step' <<< "$out"; then ok "REQ-CI-005-AC1 all: two counting steps for one suite are refused (the suite would run twice)"; else bad "duplicate counting step: rc=$rc ${out:0:200}"; fi
@@ -318,7 +320,40 @@ out=$(cwall) && rc=0 || rc=$?; if [ "$rc" != 0 ] && ! grep -q Traceback <<< "$ou
 cwf "" "bash bin/a-test.sh"
 out=$(cwall) || true; if ! grep -q 'x: 60 passed' <<< "$out" && grep -q 'a-test.sh: count 60' <<< "$out"; then ok "REQ-CI-005-AC1 all: the suites it runs are counted, their own output is not reprinted"; else bad "all echoes suites: ${out:0:200}"; fi
 
-EXPECT=122
+# the wiring suite (bin/required-check-guard-test.sh) must exit non-zero when a case fails; run a copy in a scratch tree whose list names a context no job produces
+rcg="$work/rcg"; mkdir -p "$rcg/bin" "$rcg/.github/policy"
+mkdir -p "$rcg/requirements"; cp "$root/requirements/requirements.yaml" "$rcg/requirements/"
+cp "$root/bin/required-check-guard-test.sh" "$rcg/bin/"; cp -r "$root/.github/workflows" "$rcg/.github/"; cp "$root/.github/policy/required-checks.json" "$rcg/.github/policy/"
+out=$(LC_ALL=C bash "$rcg/bin/required-check-guard-test.sh" 2>&1 < /dev/null) && rc=0 || rc=$?
+if [ "$rc" = 0 ]; then ok "REQ-DEP-005-AC1 the wiring suite exits 0 when every case passes"; else bad "unmutated wiring suite rc=$rc: ${out: -200}"; fi
+python3 -I - "$rcg/.github/policy/required-checks.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["required_checks"].append({"context": "no-such-job", "integration_id": 15368, "scope": "push"})
+json.dump(d, open(sys.argv[1], "w"))
+PY
+out=$(LC_ALL=C bash "$rcg/bin/required-check-guard-test.sh" 2>&1 < /dev/null) && rc=0 || rc=$?
+if [ "$rc" = 1 ] && grep -Eq '[1-9][0-9]* failed' <<< "$out"; then ok "REQ-DEP-005-AC1 the wiring suite exits 1 and counts the failure when a case fails"; else bad "mutated wiring suite rc=$rc (want 1): ${out: -200}"; fi
+# the wiring suite is counted by its own step in the allowlist job, so `all` no longer runs it
+cnt='python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json required-check-guard-test.sh bin/required-check-guard-test.sh'
+if python3 -I - "$root/.github/workflows/ci.yml" "$cnt" <<'PY'
+import sys, yaml
+steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["allowlist"]["steps"]
+sys.exit(0 if sum(1 for s in steps if s.get("run", "").strip() == sys.argv[2]) == 1 else 1)
+PY
+then ok "REQ-CI-005-AC5 the allowlist job counts the wiring suite in its own step"; else bad "ci.yml allowlist job has no single counting step for required-check-guard-test.sh"; fi
+# the merge queue's grouping is a ruleset setting: no text claims the repository holds or checks it
+txt=$(cd "$root" && python3 -I - <<'PY'
+import yaml
+for r in yaml.safe_load(open("requirements/requirements.yaml"))["requirements"]:
+    for a in r.get("acceptance_criteria", []):
+        if a["id"] in ("REQ-DEP-005-AC1", "REQ-DEP-005-AC3"): print(a["id"], "ok" if "does not check" in a["then"] else "bad")
+PY
+)
+if [ "$txt" = "$(printf 'REQ-DEP-005-AC1 ok\nREQ-DEP-005-AC3 ok')" ]; then ok "REQ-DEP-005-AC1 AC3 the requirements say the queue's grouping is a ruleset setting the repository does not check"; else bad "requirements grouping text: $txt"; fi
+judge=$(find "$root/.github" -name queue-gate-judge.sh)
+if grep -q 'does not check' "$judge" && ! tr -d '#\n' < "$judge" | tr -s ' ' | grep -q 'the grouping ALLGREEN, so that'; then ok "REQ-DEP-005-AC3 queue-gate-judge.sh says the grouping is a setting it does not check"; else bad "queue-gate-judge.sh still claims the grouping ALLGREEN as a requirement"; fi
+
+EXPECT=128
 echo "suite-guard: $pass passed, $failn failed"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT"; exit 1; fi
 [ "$failn" = 0 ]
