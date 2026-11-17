@@ -353,21 +353,21 @@
       "form": "a download",
       "key": "d9cbfa065b269d05ee09a08e4136ded6b73601bbece6d37c38671afbeb116f9f",
       "line": "9deac0d1003e47ede2bbb0c688862ad337321257308adfb4f41c232b3846c188",
-      "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): the Go toolchain fetch in the Go shape, pinned byte for byte"
+      "ruling": "pinned fetch (REQ-SUP-001-AC26): the Go toolchain fetch in the Go shape, pinned byte for byte"
     },
     {
       "file": "bin/go-bump-open-pr.sh",
       "form": "a download",
       "key": "cd911d5ab586a8b1faf8e800a9191ad8196ecd7fd2ecf78b49757196d4f36131",
       "line": "7d12504f59f46f70f485dbe1d91ad4e2f3462dad855fa6d7abf9f089214e357b",
-      "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): the Go toolchain fetch in the Go shape, pinned byte for byte"
+      "ruling": "pinned fetch (REQ-SUP-001-AC26): the Go toolchain fetch in the Go shape, pinned byte for byte"
     },
     {
       "file": "bin/acceptance-egress.sh",
       "form": "a system package install",
       "key": "4bbd5f87ccadd37315f40e60b70c95ba4b0b7d950ca9c460c8976a1aaa005a79",
       "line": "4bbd5f87ccadd37315f40e60b70c95ba4b0b7d950ca9c460c8976a1aaa005a79",
-      "ruling": "build-container install, advisor reading Oct 19: test-only build container, never shipped; base image pinned by digest; the only thing built (strace) comes from a checksum-verified tarball; packages are build tools"
+      "ruling": "build-container install, test-only: build container, never shipped; base image pinned by digest; the only thing built (strace) comes from a checksum-verified tarball; packages are build tools"
     },
     {
       "file": ".github/workflows/release.yml",

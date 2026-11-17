@@ -1,10 +1,9 @@
 # Verify our images
 
-GitHub's own CI signs every FosterStack Cache release and attaches its
-provenance (a signed record of how the release was built). You don't have to
-take our word for it. You can check the chain yourself in under a minute, with
-`cosign` and `gh` plus standard tools (`curl`, `sed`, `jq`, `base64`,
-`sha256sum` or `shasum`).
+Every FosterStack Cache release is signed and provenance-attested — not by
+us claiming it, but by a chain you can check yourself
+in under a minute, with `cosign` and `gh` plus standard tools (`curl`,
+`sed`, `jq`, `base64`, `sha256sum` or `shasum`).
 
 None of the commands below for v0.3.0 and later needs a GitHub token or a registry <!-- pinned: historical -->
 login. They find the release and fetch files with `curl`, and check them
@@ -265,15 +264,15 @@ The individual statements can all be verified with the same command shape
 | `https://fosterstack.com/attestations/scan-trivy/v1` (also `-grype`, `-snyk`) | the verification stage | this digest was scanned clean by that scanner, with its version and database state |
 | `https://fosterstack.com/attestations/acceptance/v1` | the acceptance stage | the per-AC acceptance results for this digest |
 | `https://fosterstack.com/attestations/release-authorization/v1` | the authorization stage | the whole graph above verified; this digest is approved for this version |
-| `https://fosterstack.com/attestations/publication/v1` | the promotion stage | the publication-phase results (REQ-REL-001/002): the anonymous verification and every-tag anonymous pull passed for this digest |
+| `https://fosterstack.com/attestations/publication/v1` | the promotion stage | the publication-phase results: the anonymous verification and every-tag anonymous pull passed for this digest |
 
-**Where the two publication results are.** The release manifest is attached
-before publication. So its `ac_results` shows the two publication acceptance
-criteria (`REQ-REL-001-AC1` and `REQ-REL-002-AC1`) as
-`deferred-to-publication`, and its `publication_evidence` field points here.
-Their **pass** result is in the separate publication attestation above. Verify
-it (this needs a token), checking it against the promotion workflow and this
-release ref:
+**Resolving the deferred release ACs.** Because the release manifest is
+attached BEFORE publication, its `ac_results` shows the two publication
+ACs (the release is signed and attested; it is available anonymously) as
+`deferred-to-publication`, and its `publication_evidence` field points
+here. Their **pass** outcome lives in the separate publication attestation
+above — verify it (needs a token), pinned to the promotion workflow and
+this release ref:
 
 ```sh
 # Verify the attestation AND extract its predicate as JSON, then assert
@@ -397,7 +396,10 @@ ships a signature for that file, made with the release key, as a bundle:
 # Download checksums.txt and checksums.txt.bundle from the release page, then:
 cosign verify-blob --key release.rsa.pub --bundle checksums.txt.bundle checksums.txt
 
-sha256sum -c checksums.txt   # verifies every archive you downloaded, transitively
+# Check the archive you downloaded (VER is set at the top of this page; PLATFORM and BIN as in the install page)
+PLATFORM=linux_amd64   # or linux_arm64
+BIN=fscache            # fscache-fips for the FIPS build (Linux only)
+LINE=$(grep -F "${BIN}_${VER}_${PLATFORM}.tar.gz" checksums.txt) && echo "$LINE" | sha256sum -c -
 ```
 
 ## 5. Enforcing this in your own cluster (Kyverno)

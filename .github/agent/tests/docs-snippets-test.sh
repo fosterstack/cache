@@ -167,11 +167,11 @@ cnr_cos = [e["command"] for e in json.load(open(cnr_file)) if str(e.get("command
 ok(len(cnr_cos) >= 3 and all(CLEAN(c) for c in cnr_cos), "%s: each cosign command of the cannot-run list (%d found) verifies with --key release.rsa.pub and names no certificate identity, no OIDC issuer and no switch that turns the log check off" % (cnr_file, len(cnr_cos)))
 ok(all(c in rel_cmds for c in cnr_cos), "%s: every cosign command of the cannot-run list is a command of %s" % (cnr_file, rel_doc))
 # Release key pointer (REQ-CHAIN-008-AC9): next to each release key step (a fenced curl of build/keys/release.rsa.pub) of install.md (1),
-# offline-install.md (2) and using-our-vex.md (1) there is one plain line outside any fence, within 6 lines of that fence, that links to
+# offline-install.md (1) and using-our-vex.md (1) there is one plain line outside any fence, within 6 lines of that fence, that links to
 # verify-key.md; no other such line; and the fenced text of each file is the text it had before the pointer (a hash), so no command changed.
 import hashlib
 POINTER = re.compile(r"\]\((?:\./|docs/)?verify-key\.md(#[^)]*)?\)")
-for var, steps, digest in (("INSTALL_DOC", 1, "b623026bc52bebda"), ("OFFLINE_DOC", 2, "fcc1055c6fc8f6c4"), ("VEX_DOC", 1, "78465f536ebd9e2d")):
+for var, steps, digest in (("INSTALL_DOC", 1, "8693fd7ace7dc0be"), ("OFFLINE_DOC", 1, "34fb5a1b3891b96c"), ("VEX_DOC", 1, "78465f536ebd9e2d")):
     path = os.environ[var]
     text = open(path).read()
     lines = text.split("\n")
@@ -190,6 +190,14 @@ for var, steps, digest in (("INSTALL_DOC", 1, "b623026bc52bebda"), ("OFFLINE_DOC
         near = [i for i in ptrs if a - 6 <= i <= b + 6]
         ok(len(near) == 1, "%s: one pointer within 6 lines of the release key step at line %d (found %d)" % (path, a + 1, len(near)))
     ok(hashlib.sha256("\n".join(re.findall(r"^```.*?^```", text, re.S | re.M)).encode()).hexdigest()[:16] == digest, "%s: its fenced commands are unchanged" % path)
+# Archive checksum step must fail loudly: no fenced `sha256sum -c` line hides or filters its result, and each page
+# (install, offline-install, verify-images) holds the agreed grep -F + sha256sum -c - form.
+AGREED = re.compile(r'LINE=\$\(grep -F "[^"]*" checksums\.txt\) && echo "\$LINE" \| sha256sum -c -')
+for path in (os.environ["INSTALL_DOC"], os.environ["OFFLINE_DOC"], os.environ["VERIFY_ONE"]):
+    fenced = "\n".join(re.findall(r"^```.*?^```", open(path).read(), re.S | re.M)).split("\n")
+    checks = [l for l in fenced if "sha256sum -c" in l]
+    ok(not [l for l in checks if "2>/dev/null" in l or "grep OK" in l], "%s: no fenced sha256sum -c line hides its errors or filters for OK" % path)
+    ok(any(AGREED.search(l) for l in fenced), "%s: a fence holds the agreed grep -F checksums.txt && sha256sum -c - step" % path)
 sys.exit(fails)
 PY
 }
@@ -249,6 +257,7 @@ for v in INSTALL_DOC OFFLINE_DOC VEX_DOC; do
   mutant "$v: the pointer moved into the fence as a comment" "$v" "$PTR"'; s=P.sub("",s,count=1); s=s.replace("build/keys/release.rsa.pub\"\n","build/keys/release.rsa.pub\"\n# see [the key page](verify-key.md)\n",1)'
   mutant "$v: the release key command changed, its key name kept" "$v" 's=s.replace("-fsSLO","-fsSL",1)'
 done
-mutant "offline-install.md: only the second pointer missing" OFFLINE_DOC "$PTR"'; ms=list(P.finditer(s)); s=s[:ms[-1].start()]+s[ms[-1].end():]'
+# Checksum step back to the old form that hides errors and filters for OK.
+mutant "install.md: the checksum step back to 2>/dev/null | grep OK" INSTALL_DOC 'import re; s=re.sub(r"LINE=\$\(grep -F [^\n]*sha256sum -c -","grep -F checksums.txt | sha256sum -c - 2>/dev/null | grep OK",s,count=1)'
 echo "mutants caught: $caught/$mut"
 [ "$rc" -eq 0 ] && [ "$caught" -eq "$mut" ]

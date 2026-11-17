@@ -67,8 +67,6 @@ We track this work in this repo's issues, which is also where you can argue with
 
 There is no waitlist and no signup. Pull the image and run it. The quickstart below is the whole gate.
 
-The Actions history shows the CI claims. The commands in [`RELEASING.md`](RELEASING.md) show the signatures and provenance. RELEASING.md also states what those commands prove, and what they do not.
-
 The full core (eviction, size limits, metrics) is free under MIT: see [`LICENSE`](LICENSE). Paid tiers add single sign-on (SSO), high-availability (HA) replication, a 48-hour CVE response target, and compliance support. They sit on top of the same open core. Nothing is withheld from the free tier for security.
 
 The security evidence itself is public and free. These are published with every release, and anyone can verify them with no account and no purchase:
@@ -133,7 +131,7 @@ For full install instructions, including which archive to download and a systemd
 
 ## Debugging a running container
 
-The production and `-fips` images have no shell, so you debug them from the outside. You attach a second container that carries the tools. There are three ways, below. None of them has been run against a v0.3 image yet (details at the end of this section).
+The production and `-fips` images have no shell, so you debug them from the outside. You attach a second container that carries the tools. There are three ways, below.
 
 **Kubernetes: `kubectl debug`.** An ephemeral debug container joins the running pod (stable since Kubernetes v1.25):
 
@@ -156,7 +154,8 @@ You cannot change or remove an ephemeral container once it is added. It goes awa
 docker debug <container>
 ```
 
-This opens a shell in a toolbox attached to the container, even though the image has no shell. It ships with Docker Desktop. It was a paid feature (Pro, Team or Business) until Docker Desktop 4.50 (announced 12 Nov 2025), when Docker made it free for all users. Docker's earlier announcement (Docker Desktop 4.33, July 2024) described it as available with a Pro, Team or Business license, so an older Docker Desktop may still need one. See
+This opens a shell in a toolbox attached to the container, even though the image
+has no shell. It ships with Docker Desktop and is free from Docker Desktop 4.50 on. See
 [Docker's announcement](https://www.docker.com/blog/docker-desktop-4-50/) and the
 [command reference](https://docs.docker.com/reference/cli/docker/debug/).
 
@@ -217,7 +216,7 @@ Maven reads Basic Auth credentials from the `<server>` entries in `settings.xml`
 
 Every behavior of this server that you can observe from outside is a written requirement, with acceptance criteria you can measure. The matrix at [docs/quality/traceability.md](docs/quality/traceability.md) maps each criterion to its evidence. It also lists, honestly, the criteria that have no sufficient evidence yet.
 
-We extracted the first set of requirements from the code and docs, and it was approved. Since Sep 8, 2026, we write acceptance criteria before we write the code. CI fails if the matrix drifts from its sources.
+We extracted the first set of requirements from the code and docs. Since Sep 8, 2026, we write acceptance criteria before we write the code. CI fails if the matrix drifts from its sources.
 
 ## Documentation
 
