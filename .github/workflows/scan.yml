@@ -89,6 +89,7 @@ jobs:
   # this job is a PR/main proof and never a gate on the tag chain.
   assemble-b:
     needs: build
+    if: github.event_name != 'pull_request'
     permissions:
       contents: read
       id-token: write
@@ -102,6 +103,7 @@ jobs:
 
   artifact-acceptance:
     needs: build
+    if: github.event_name != 'pull_request'
     permissions:
       contents: read
       packages: read
@@ -113,6 +115,7 @@ jobs:
   reproducibility:
     name: reproducibility
     needs: [assemble, assemble-b]
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: two independent assemblies must agree, digest for digest

@@ -48,7 +48,7 @@
     {
       "context": "dependency-review",
       "integration_id": 15368,
-      "scope": "pull_request"
+      "scope": "push"
     },
     {
       "context": "fips140-only",
@@ -69,11 +69,6 @@
       "context": "scan",
       "integration_id": 15368,
       "scope": "push"
-    },
-    {
-      "context": "pin-age",
-      "integration_id": 15368,
-      "scope": "pull_request"
     },
     {
       "context": "vendor",

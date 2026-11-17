@@ -1860,7 +1860,7 @@ requirements:
       - id: REQ-REL-008-AC2
         given: "a job moved into another workflow file"
         when: "it runs"
-        then: "its check name, top-level placement and triggering events are unchanged, and no required job gains a condition that could skip it on a pull request"
+        then: "its check name, top-level placement and triggering events are unchanged, and none of the six pull-request checks (REQ-REL-014) gains a condition that could skip it on a pull request"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-008-AC3
@@ -2249,6 +2249,40 @@ requirements:
         then: >-
           it refuses a carriage return, a next-line (U+0085), a line separator (U+2028) or a paragraph separator (U+2029) anywhere in ci.yml, because YAML ends a line at each of them and the judge does not;
           on the landing path too it requires the top-level keys to be byte for byte those of the landing commit's own ci.yml, with only the checkout's digest and version comment free
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+
+  - id: REQ-REL-014
+    title: Pull requests run six checks; the rest run on push to main
+    statement: >
+      On a pull request into main or a release branch only these checks shall run: test, lint, govulncheck, analyze (go),
+      fips140-only and scan (with the jobs scan needs). Every other check shall run on push to main, on a schedule or in the
+      release chain, so release admission reads each of them on the exact tagged commit. dependency-review runs on push to main
+      and judges the versions the push moved (the commit before the push to the commit after it). The pin-age scan of pull
+      requests is deleted; the daily pin audit is the supply-chain check.
+    source: [.github/workflows/ci.yml, .github/workflows/scan.yml, .github/workflows/codeql.yml, .github/workflows/acceptance.yml, .github/workflows/supply-chain.yml, .github/policy/required-checks.json]
+    tier: community
+    introduced: v0.3.0
+    origin: the owner's ruling on pull-request checks (Nov 17 2026, "only keep the ones that actually have meaning for CI")
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-REL-014-AC1
+        given: the workflows under .github/workflows on main
+        when: the jobs that run on the pull_request event are listed
+        then: >-
+          they are test, lint, govulncheck, analyze (go), fips140-only and scan, the jobs scan needs (build, assemble, the scanner list and the scanners), and the jobs of agent-review-gate.yml and dependabot-auto-merge.yml, which are no pull-request checks of the ruleset; no other job runs on pull_request
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-014-AC2
+        given: a push to main that moves a dependency version
+        when: dependency-review runs on that push
+        then: it judges the versions between the commit before the push and the commit after it
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-014-AC3
+        given: a tag whose commit has a red or missing run of a check that required-checks.json or release-only-checks.json scopes to push (pin-age and dependency-review included)
+        when: release admission runs
+        then: it refuses the tag
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
@@ -2769,7 +2803,7 @@ requirements:
       AC14 evaluation: range events are evaluated as OSV evaluates them: sorted by version (introduced 0 is the minimum, at one version the fixed wins), last_affected inclusive; Go versions compare as strict semver (pseudo-versions, numeric pre-releases and +incompatible are valid; r1, p1, post1 and rev1 are pre-release identifiers). A limit event is refused in SEMVER and ECOSYSTEM ranges (the record is a hit, a fail-closed refusal): the Go vulnerability database never writes limit, the OSV schema text could not be consulted offline, so any use of it in a Go range is treated as unreadable, which also removes the any-or-all question for several limits (the evaluator, used for other ecosystems, reads below ANY limit as affected). The schema asks for id and modified on a record, ecosystem and name on a package, an introduced event in every range (their order is free), and not both fixed and last_affected in one range; aliases may be absent or null. An independent interval oracle in the test compares the evaluator on a generated grid. The 240 recorded verdicts did not change.
       AC14 residual: the rule judges the OSV record's affected entries only; GitHub's ranges are read as before. An OSV answer that is not a record (not an object, no string id or modified) is a hit under the id UNREADABLE-OSV-RECORD; a GIT range together with a SEMVER or ECOSYSTEM range in one entry is a hit in every branch. The gh and git calls of pin-audit.py and of the shared helpers in pin-age-check.py have a 120 s timeout that stops the run (exit 2).
       AC14 residual (semver): bounds that SemVer 2.0.0 forbids (a numeric pre-release identifier with a leading zero such as 3.0.0-01, an empty identifier in the pre-release or the build metadata) are unparsable and read as affected, so the record is a hit. Go pseudo-versions with a zero-time stamp (0.0.0-00010101000000-000000000000) are one valid alphanumeric identifier, because it contains a hyphen, and parse normally.
-      Removed Nov 11 2026 with the wait for new versions: AC1 (Dependabot cooldown), AC3 (age measurement) and AC6 (re-run of the pull requests the wait stopped); their ids are not reused and the gaps are deliberate, like AC16/AC17 below. AC31 is also left empty here: it is held for the go.dev archive signature check, which a second pull request adds (the owner's rule 3 of Nov 11 2026); no AC31 exists until then.
+      Removed Nov 17 2026 with the pin-age pull-request scan (the owner's order that only six checks run on a pull request): AC2, AC4, AC16, AC19, AC20, AC21, AC22, AC23, AC25, AC26 and AC27; their ids are not reused. AC34 holds the one judgment of that scan the daily audit keeps. Removed Nov 11 2026 with the wait for new versions: AC1 (Dependabot cooldown), AC3 (age measurement) and AC6 (re-run of the pull requests the wait stopped); their ids are not reused and the gaps are deliberate, like AC16/AC17 below. AC31 is also left empty here: it is held for the go.dev archive signature check, which a second pull request adds (the owner's rule 3 of Nov 11 2026); no AC31 exists until then.
       AC16/AC17 history: the AC16 and AC17 first accepted for this requirement (a lexer telling text from commands, pull request 272, closed: an open-ended class) are WITHDRAWN; the AC16 above replaces both, and there is no AC17 (the gap is deliberate). AC18 (literal downloads in install-build-tools.sh) belongs to pull request 271.
       AC16 design: the scan stays strict. A row is {file, form, key, line, ruling} plus an optional count (default 1): key is the scan's own 64-hex sha256 prefix (for a download, of the one command segment that names curl or wget), and line is the 64-hex sha256 prefix of the WHOLE whitespace-flattened line that segment sits in (the automated reviewer, pull request 273 round 1: a segment hash alone ruled the same segment inside another line that pipes it to sh); an item is ruled only when every occurrence in the head sits in a line a row names, and a row covers at most count occurrences of that line, so a second copy of a ruled line fails unless the row counts it. Editing the line other than in spaces and tabs (which the scan normalises) voids the row; changing only a row's ruling prose does not void it (the prose is the reason, not the identity). An occurrence is ADDED when the head has more of its (file, form, key, whole line) than the base (the automated reviewer, pull request 273 round 2: counting by key alone let an edit that kept the download segment, such as a ruled echo rewritten to pipe into sh, pass as no addition); a replay of the 150 first-parent commits of main from 7c6077b (Sep 11) to 09b30af (Oct 10) found no commit that this newly fails. A row never matches a line holding whitespace other than a space or a tab, or a line joined from a backslash-newline continuation: bash reads those differently from the flattening (automated review round 1); count is at most 100. Intended: editing only a row's ruling prose does not void it, and a space- or tab-only edit of the line stays ruled. The exceptions file must be strict JSON: NaN, Infinity and -Infinity (which Python's reader accepts) and a repeated key stop the check (exit 2). AC16 delta accepted by the reviewer Oct 10 (automated review round 3, P7): the given names the command hash (key) and the whole-line hash (line); the then states the count limit and the edited-line, whitespace and continuation failures. Limit of line identity (automated review round 3, P4; the maintainers' decision, Oct 10): shell CONTEXT is not part of a line's identity, so moving a line out of a heredoc (above its opener) or commenting the opener out keeps (file, form, key, line) and is no addition. Therefore a row is only ever written for a line that is HARMLESS IN ANY CONTEXT: read as a shell command it runs no download (a comment, an echo or printf, a cat into a file, Python source or a package list that bash cannot parse), and the reviewer reviews each row for exactly that; a row for a line that would download when run is the reviewer's to refuse. The test holds the text of each committed row's line and checks it is harmless that way. Allowed row forms (reviewer, Oct 10; the reviewer refuses any other row): (1) TEXT lines: a comment, a quoted or echoed string, a data heredoc (a stub body or its opener), Python or package-name text that bash cannot parse; (2) HARNESS ASSERTION lines, whose whole grammar is the single data structure HARNESS_WHITELIST in harness_form.py (written by the pin-age check's own test suite); anything it does not name is refused. In short: t "RULE" "TITLE" bash -c 'BODY' _ followed by at most nine path arguments "$NAME" or "$NAME/path" with NAME in work, CALLS; no expansion of any kind in RULE or TITLE (no $, backtick, backslash or quote); the body SINGLE-QUOTED (the automated reviewer, pull request 289: a double-quoted body let the outer shell splice a variable's value into the code) and naming the paths only as whole "$1".."$9"; the commands grep, test, [, cat and exit with one digit; grep in the shape grep OPTION... -- PATTERN ["$N"...]: the options -E, -q, -v and -Eq as bare words, -- REQUIRED before the pattern, the pattern a double-quoted word that does not start with - (or the bare '.'), file operands only "$N" (the automated reviewer, pull request 289 round 3: a double-quoted word in an option position is an option to grep); cat only as cat -- "$N"; test and [ only the file tests -f -s -e -d -r on a positional "$N" (never a literal path or a substitution: the automated reviewer, pull request 289 round 6), = and !=, and count comparisons between digits and "$(grep -c ...)" (never -v, -R or an arithmetic operand that is a name or expression: bash 5 evaluates $(...) there); the substitutions "$(grep -c OPTION... -- PATTERN "$N")" and "$(cat -- "$N")" only; no unquoted glob, brace, subscript or expansion word; and no character outside printable ASCII and tab (the automated reviewer, pull request 289). The test proves the whitelist closed: a complement enumeration of every token class outside it in every position (none accepted, none refused for another reason), and a mutation run that widens it by one token at a time and requires an unexpected acceptance or a refusal for another reason (reported apart). The role rules that live in the parser's code (a file test on a positional, cat with exactly one operand, a positional within the arguments) are pinned by code mutants that loosen each one and must be caught. A harness line that reads a test stub's call log matches whole ROLE-TAGGED fields of a log the stub writes from its own parse (opt, val, out, url, unk; brackets inside a word become _), never substrings of flattened text (the automated reviewer, pull request 289 round 4); the later rows pull request runs each such line against logs with the right words in the wrong roles, forged fields inside URLs and -o values imitating flags. Scope (maintainers, Oct 11): this pull request carries the FORM (the parser, HARNESS_WHITELIST pinned by its golden canonical sha256, the complement enumeration, the mutation run, the runtime corpus with synthetic lines in the shapes of the input refresh assertions) and the three comment rows; the rows for the input refresh harness lines, with the test of what each line asserts, come with those lines in a later rows pull request. HARNESS_WHITELIST is pinned by HARNESS_WHITELIST_GOLDEN in the test: any change to the grammar needs that value edited in the same reviewed diff. The test decides form (2) with a quote-aware parser (harness_form.py in the test) and proves each refused variant as its own case. The rows are read from the exceptions file beside the checkout the script runs from (in CI trusted/, the base branch), never from the pull request's tree; a missing default file is no rows; a malformed list (not a list, a row that is not an object, a missing, empty or extra field, a key or line that is not 16 lowercase hex, a JSON object that repeats a key, a count that is not a whole number from 1 to 100, a repeated row) stops the check with exit 2.
       AC15 limit: the pins nested inside an action are not counted as held, so a ruling for a pin that is only nested can be dormant, never dead.
@@ -2777,18 +2811,6 @@ requirements:
       Finding (Oct 9): with the corrected table paths, the existing package-name filter of the audit already clears cosign 3.1.3 against GO-2026-4309. The real work of AC14 is (1) the corrected table (goreleaser, osv and golangci-lint need their /v2 path), (2) GitHub names matched under both the bare and the /vMAJOR path so the five existing rulings keep working, (3) the log of ignored entries, (4) the OSV query by the /vMAJOR path.
     confidence: implementation-only
     acceptance_criteria:
-      - id: REQ-SUP-001-AC2
-        given: "a pull request that moves an action pin, or the version of a tool, image or package a workflow downloads (the version inputs of installer actions, install-scanner.sh pins, go install, pip install and release-asset downloads (curl or wget of a GitHub release) in run steps, container images our workflows run, local composite actions under .github/actions, the auditor's hash-pinned Python packages)"
-        when: "the pin check runs"
-        then: "it names every version that moved; the product's base image (build/docker FROM lines), Go modules and the Go toolchain are not covered and are skipped"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-SUP-001-AC4
-        given: "any pull request"
-        when: "the check runs"
-        then: "it runs on every pull request (no path filter) on pull_request, never pull_request_target, with a read-only token and no secrets, and passes within a minute when no pin moves"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
       - id: REQ-SUP-001-AC5
         given: "any day"
         when: "the daily check runs"
@@ -2837,65 +2859,11 @@ requirements:
         then: "a ruling is DEAD when its pin (the ruling names ANY version the pin stands for; applying a ruling still needs it to name ALL of them) exists on main (the pins the daily run inventories, which include the 90-day workflow history) or in the open-pull-request sweep and it decided no dispute: the audit exits 1 and prints a DEAD EXCEPTION line naming the ruling, package and version, so the ruling is removed in the change that made it dead; a ruling that matches a real dispute (same package and ids) but fails the time or live-range check is LAPSED: the audit exits 1 and prints a LAPSED EXCEPTION line saying a fresh ruling must be written, and the dispute is still reported; a ruling is DORMANT when nobody holds the pin: it is information only (exit 0) and every run's summary lists every dormant ruling with its pin; a ruling matched by a real dispute is alive; whether a ruling is dead, dormant or alive is judged in the run, never from a list, and a ruling still verifies its copied ranges against the live ones before it applies"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
-      - id: REQ-SUP-001-AC16
-        given: "a pull request that adds a line the pin-age check cannot read (a download whose repository, version or file cannot be read), and a row in the base branch's .github/supply-chain-exceptions.json list unmeasured_text whose file, form, command hash (key) and whole-line hash (line) equal the added item and whose ruling is non-empty"
-        when: "pin-age runs"
-        then: "that item is reported as ruled text and does not fail the check when the head holds that line no more times than the row's count (1 unless the row says more, at most 100) (accepted by the reviewer Oct 10); and an added item with no such row, a row whose hash does not match (the line was edited), an edited line (any change other than spaces or tabs, including one that keeps its download command), a line holding whitespace other than a space or a tab or joined from a backslash-newline continuation, more occurrences than the row's count, a row with an empty ruling, a malformed list, or a row brought by the pull request itself (not present on the base branch) fails as before; a ruling row may carry the optional context assignment (the line is one plain NAME=word assignment), which the check proves from the head file, and a row whose context does not hold rules nothing; a row with a proof field is a malformed list; a row that names any other context (comment, heredoc or pystring, which narrowed a row to the text around its line, or a name the check does not know) is a malformed list and stops the check (exit 2), so no row is narrowed to a comment, a here-document or a Python string, and a ruled line is ruled by its whole-line row whatever the code around it does (reviewer ruling Oct 16, wording that only tightens; Nov 16 2026, the comment, heredoc and pystring contexts removed)"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
       - id: REQ-SUP-001-AC18
         given: "bin/install-build-tools.sh"
         when: "pin-age inventories it"
         then: "every tool download is a literal command carrying the exact release version and the sha256 it is verified against, so the pin scan reads the version like any pin (accepted by the reviewer Oct 10)"
         verification: { method: unit, release_blocking: false }
-        status: approved
-      - id: REQ-SUP-001-AC19
-        given: "a pull request that adds a job (a job, never a step) calling a reusable workflow by the exact form ./.github/workflows/<name>.yml as YAML parses it (a plain file name of letters, digits, dot, underscore and hyphen, with no .., no other directory, no @ref, no expression, no surrounding space), where that file is in the tree and is a workflow with a workflow_call trigger and jobs, and the call has no with: block (absent or empty)"
-        when: "the pin check runs"
-        then: "the call is no item and no finding: nothing can be handed to the called file, which is itself inventoried, so every version it moves is scanned there by its own rules; a call with any with: value, and a local reference of any other form, stays an item that cannot pass, as before, unless a row in the base branch's .github/supply-chain-exceptions.json list unmeasured_text names it (file of the call, form \"a local reusable workflow call\", key and line both the 64-hex hash of the item's whole identity, which carries the hash of its with: block, so an edited block is another item; ruling non-empty) (decided at review Oct 14: the closed form, because every attempt at a looser one let some caller input reach a version position through the callee)"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-SUP-001-AC20
-        given: "a pull request that adds a script line (a *.sh file outside the auditor's own tree) that names a package with no version in a pip install, and a row in the base branch's .github/supply-chain-exceptions.json list unmeasured_text (for a line that the base branch does not hold: a copy of a line the base holds is never ruled, because an item of the unchanged line may have moved with an assignment it reads) whose file, form \"an unpinned package install\", key and line (both the 64-hex hash of the whole whitespace-flattened line) equal that line and whose ruling is non-empty"
-        when: "pin-age and the advisory audit run"
-        then: "the line is reported as ruled text and does not fail the check when the head holds that line no more times than the row's count (1 unless the row says more, at most 100), and only the package items THAT line made (by its own path and line id) leave the moved list, in the pin check and in the advisory audit alike; a line with no such row, an edited line, a line joined from a continuation or holding whitespace other than a space or a tab, the same text in a workflow step, an unchanged line whose item moved because an assignment it reads changed, and one copy too many fail as before (decided by the reviewer Oct 14: the AC16 mechanism, no parser; the ruling text for a test fixture is the fixture text the check's own test uses in pin-age-check-test.sh)"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-SUP-001-AC21
-        given: "a pull request that adds or changes a checksum or version record file (an item whose identity is the file's content) at a path that .github/policy/base-inputs.json, as the base branch holds it, lists in base_inputs"
-        when: "the pin check runs"
-        then: "that file is no item and no finding (it is the repository's own base record: its content change is the release chain's base-input-changed signal, and the list is itself a reviewed file); a file at any other path, a path spelled differently from the list (a ./ prefix, a .. inside), and every item that is not a file item stay as before; a list the pull request brings never counts (the base branch's copy is read), a missing list exempts nothing and a malformed one stops the check (decided at review Oct 14, the plainest closed form: no pattern on names or directories)"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-SUP-001-AC22
-        given: "the committed .github/policy/base-inputs.json, and a pull request (the daily refresh pull request) that changes build/locks/archive-index.sha256, the record of the digests of the Wolfi-signed package index that every refresh run checks against the archived index"
-        when: "the pin check runs"
-        then: "the list names build/locks/archive-index.sha256 exactly and, by AC21, that record is no item and no finding: it records Wolfi's own index; the same name at any other path, a name with a suffix, and every installer checksum file stay items (reviewer reading Oct 16)"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-SUP-001-AC23
-        given: "a pull request that adds a script line that is exactly one curl (with -q first, only fixed flags with plain values, and -g) whose single operand is https://go.dev/dl/ followed by one variable and nothing else, and a row in the base branch's .github/supply-chain-exceptions.json list unmeasured_text for that line whose ruling text begins with the Go exception string GO_RULING in the pin-age checker"
-        when: "pin-age runs"
-        then: "the line is ruled text exactly as under AC20 (the row binds file, form, key and the whole line); a row for any file that is not a shell script outside .github/ (a workflow step, another file type) rules nothing; a line of another shape under that ruling (the spellings --disable and --globoff in place of -q and -g, a single-quoted operand, an output value with a default or command expansion, another host, a lookalike host, userinfo, a port, http, another path, a literal file name, two variables, a variable host, a second operand, a pipe, a proxy or resolve option, no -g, no leading -q) rules nothing; a Go-toolchain line under the Wolfi live-fetch ruling, and a Wolfi line under the Go-toolchain ruling, rule nothing; the Wolfi ruling's own shapes are unchanged (reviewer reading Oct 16: the Go toolchain is kept in the archive, the refresh job verifies each tarball against the sha256 its committed recipe pins before storing it)"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-SUP-001-AC25
-        given: "a pull request that adds the line of bin/loopback-get.sh that starts the fetch program for the loopback helper (REQ-SUP-001-AC24), exactly the line whose whole text hashes to the value the checker pins, and a row in the base branch's .github/supply-chain-exceptions.json list unmeasured_text for that line whose ruling text begins with the loopback exception string LOOPBACK_RULING in the pin-age checker"
-        when: "pin-age runs"
-        then: "the line is ruled text exactly as under AC20 (the row binds file, form, key and the whole line); the same text in any other file, any edit of the line in the helper (one character), and that ruling prefix on any other line (of the helper or of another file) rules nothing, so the one line that fetches for a loopback or token request is the only line this ruling allows"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-SUP-001-AC26
-        given: "a pull request that adds one of the nineteen script lines the checker pins by file and by the sha256 of the whole line: the line of bin/release-assets.sh that downloads the assets of our own release (verified against our signature, failing closed); the line of bin/acceptance-k8s.sh that pulls and tags the client image pinned by digest (the word curl is the image name, not a download); and the fourteen request lines to the cache under test on localhost in bin/acceptance-gradle.sh, bin/acceptance-gradle-capped.sh, bin/acceptance-maven.sh and bin/acceptance-maven-capped.sh (they fetch no software); and the three fetches of the Go toolchain tarball or of go.dev's published checksum list in bin/install-scanner.sh and bin/go-bump-open-pr.sh (each in the shape the Go exception of AC23 accepts, the tarball checked against its pinned sum or go.dev's list before use); and a row in the base branch's .github/supply-chain-exceptions.json list unmeasured_text for that line whose ruling text begins with the pinned-fetch exception string PINNED_FETCH_RULING in the pin-age checker"
-        when: "pin-age runs"
-        then: "the line is ruled text exactly as under AC20 (the row binds file, form, key and the whole line); the same text in any other file, any edit of the line (one character, a tab for a space, a carriage return), a second copy of it that differs only in whitespace, a link named like the file, and that ruling prefix on any other line (of the same file or another) rules nothing, so the nineteen lines are the only lines this ruling allows. A new script that names the vendored folder is refused unless its exact path is listed in the checker; six paths that name it legitimately (the govulncheck vendor-mode tests and checks) are listed, and a seventh file still fails"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-SUP-001-AC27
-        given: "a pull request that moves the tool item go, Go's own toolchain release, in bin/install-scanner.sh"
-        when: "pin-age runs"
-        then: "the item passes only when the head's installer has exactly one GO_VER, exactly one download line naming Go and it is the https://go.dev/dl/go${GO_VER} fetch, a sha256 pin of 64 hex for each of the two architectures, and the verify call on the very next line, and only for the version GO_VER names; a Go download from any other host, an unpinned or unverified one, or a second Go download fails; the advisory and malware audit and every other check apply to go"
-        verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC28
         given: "the sample project's Gradle wrapper (bench/gradle-sample/gradle/wrapper/gradle-wrapper.properties)"
@@ -2924,8 +2892,14 @@ requirements:
       - id: REQ-SUP-001-AC33
         given: "the workflow supply-chain.yml"
         when: "it is read"
-        then: "the job named pin-age runs only the pin scan of the moved versions and the advisory report on them (pin-audit.py --report-only), never a measurement of how long a version has been public; no job holds actions: write; dropping the context name is a later change of the ruleset, which is the owner's"
+        then: "no job of it measures how long a version has been public, and no job holds actions: write"
         verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-SUP-001-AC34
+        given: "the tree the daily audit inventories holds a go install of a tool whose version is not an exact version (@latest, @main, a branch name, a range, no @version, or a variable)"
+        when: "the daily audit runs"
+        then: "it prints a line that names the item, exits 1 and files no issue; a go install at an exact version (vMAJOR.MINOR.PATCH, with or without a pre-release part, or a full 40-hex commit) is no finding; v1, v1.2, a short commit and a branch are not exact"
+        verification: { method: unit, release_blocking: false }
         status: approved
 
   - id: REQ-UAT-001
