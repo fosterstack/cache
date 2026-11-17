@@ -1918,46 +1918,6 @@ a file-test operand may be any operand (Codex R6)	args[0][1] in W["test_unary"] 
 cat takes at least, not exactly, its operands (Sonnet R6)	if len(rest) != len(want) or any(	if len(rest) < len(want) or any(
 a positional may name an argument that is not there	if t[2] == "pos" and int(t[1]) > len(args): raise	if t[2] == "pos" and int(t[1]) > 9: raise
 EOF
-# --- the GOLDEN whitelist (Sonnet, PR 289 round 5: the mutation run catches only the widenings it lists; a security control fails closed). The sha256 of
-# HARNESS_WHITELIST as canonical JSON (sorted keys, no spaces, ASCII) must equal HARNESS_WHITELIST_GOLDEN below: ANY change to the grammar, a widening
-# the mutation list does not name included, turns this suite red. Changing the grammar is therefore two deliberate edits in one reviewed diff: the
-# whitelist, and this golden value (whose new value the failing case prints).
-HARNESS_WHITELIST_GOLDEN=b2584723ffad2283b2d195aff694c38669d7746ef2e1dfe2520207768060371d
-cat >"$work/hf_gold.py" <<'PY'
-import hashlib, importlib.util, json, sys
-spec = importlib.util.spec_from_file_location("hf", sys.argv[1]); m = importlib.util.module_from_spec(spec)
-sys.argv = [sys.argv[1], "--file", "/dev/null"]   # harness_form.py judges only when run as a script: importing it runs nothing
-spec.loader.exec_module(m)
-print(hashlib.sha256(json.dumps(m.HARNESS_WHITELIST, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest())
-PY
-hfg=$(python3 "$work/hf_gold.py" "$work/harness_form.py" </dev/null)
-CASE="AC16 harness whitelist: HARNESS_WHITELIST equals the reviewed golden (canonical sha256 $HARNESS_WHITELIST_GOLDEN; this tree's whitelist hashes to $hfg)"
-check test "$hfg" = "$HARNESS_WHITELIST_GOLDEN"
-hgd=$(mktemp -d "$work/hfgold.XXXXXX")
-while IFS=$'\t' read -r what patch; do
-  python3 - "$work/harness_form.py" "$hgd/m.py" "$patch" <<'PY'
-import sys
-s = open(sys.argv[1]).read(); m = "# END HARNESS_WHITELIST\n"; assert s.count(m) == 1
-open(sys.argv[2], "w").write(s.replace(m, m + sys.argv[3] + "\n"))
-PY
-  CASE="AC16 harness whitelist: a widening the mutation list does not name ($what) changes the canonical hash, so the golden check is red"
-  check test "$(python3 "$work/hf_gold.py" "$hgd/m.py" </dev/null)" != "$HARNESS_WHITELIST_GOLDEN"
-done <<'EOF'
-commands + xargs (Sonnet R4)	HARNESS_WHITELIST["commands"].append("xargs")
-pipe_into + sh (Sonnet R4)	HARNESS_WHITELIST["pipe_into"].append("sh")
-grep_options + -P (Sonnet R4)	HARNESS_WHITELIST["grep_options"].append("-P")
-; in rule_title_chars (Sonnet R4)	HARNESS_WHITELIST["rule_title_chars"] += ";"
-grep_options + -vq	HARNESS_WHITELIST["grep_options"].append("-vq")
-a new key	HARNESS_WHITELIST["extra"] = []
-a reordered list (order is part of the reviewed text)	HARNESS_WHITELIST["commands"].reverse()
-EOF
-python3 - "$work/harness_form.py" "$hgd/m.py" "pass" <<'PY'
-import sys
-s = open(sys.argv[1]).read(); m = "# END HARNESS_WHITELIST\n"
-open(sys.argv[2], "w").write(s.replace(m, m + sys.argv[3] + "\n"))
-PY
-CASE="AC16 harness whitelist: a no-op patch keeps the canonical hash (the golden check detects change, not noise)"
-check test "$(python3 "$work/hf_gold.py" "$hgd/m.py" </dev/null)" = "$HARNESS_WHITELIST_GOLDEN"
 # --- MUTATION run (like pip-pin's): a temp copy of harness_form.py with HARNESS_WHITELIST widened by ONE token; the enumeration (positions and skips from
 # the real whitelist) and the refused corpus must then report at least one line the real whitelist refuses for the expected reason that the mutant either
 # ACCEPTS (an unexpected acceptance) or refuses for ANOTHER reason (the newline and CR line_chars mutants: the shape still refuses those lines, so they

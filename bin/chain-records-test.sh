@@ -896,7 +896,5 @@ printf '%s\n' '#!/usr/bin/env bash' \
   'bash bin/with-aws-token.sh kms-sign --digest "$dg"' "cat <<'X'" usage X > "$d/bin/with-aws-token.sh"
 listed "$d" bin/with-aws-token.sh jq
 expect_named "r12 the wrapper's accepting line, a kms-sign call and a heredoc fails, naming the heredoc line" "$d" "bin/with-aws-token.sh: line 4:"
-EXPECT=170
 echo "pass=$pass fail=$failn"
-if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

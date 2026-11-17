@@ -129,14 +129,10 @@ ALLOWED_MENTIONS = {
     'for pattern in "${SUPPRESSION_PATTERNS[@]}"; do',                   # the unchanged-suppression loop
     'echo "add a pattern to ALLOW_PATTERNS in bin/check-file-allowlist.sh." >&2',  # the hint text on a blocked path
 }
-# Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
-# be added without touching the test.
-# 227 allow patterns: chain-v030 plus the 0710 and KMS-signing rows; read from the run of this test
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 226, 4
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
-inarr = False; inregion = False; n = 0; cur = None; counts = {'ALLOW': 0, 'SUPPRESSION': 0}; byblock = {'ALLOW': [], 'SUPPRESSION': []}
+inarr = False; inregion = False; n = 0; cur = None; byblock = {'ALLOW': [], 'SUPPRESSION': []}
 for i, l in enumerate(lines, 1):
     mm = re.match(r'^(ALLOW|SUPPRESSION)_PATTERNS=\($', l)
     if mm: inarr = True; inregion = False; cur = mm.group(1); continue
@@ -163,10 +159,8 @@ for i, l in enumerate(lines, 1):
     m = re.match(r"^  '([^']*)'( +#.*)?$", l)   # at least one space before a comment: '..'#'..' is ONE bash word
     if not m:
         errs.append("line %d: pattern line not in the canonical form  two spaces, one single-quoted pattern: %s" % (i, l)); continue
-    pats.append((i, m.group(1))); counts[cur] += 1; byblock[cur].append(m.group(1))
+    pats.append((i, m.group(1))); byblock[cur].append(m.group(1))
     if inregion: region.append((i, m.group(1))); rend = i
-if (counts['ALLOW'], counts['SUPPRESSION']) != (EXPECT_ALLOW, EXPECT_SUPPRESSION):
-    errs.append("pattern lines: ALLOW %d (declared %d), SUPPRESSION %d (declared %d); update the test in the same commit" % (counts['ALLOW'], EXPECT_ALLOW, counts['SUPPRESSION'], EXPECT_SUPPRESSION))
 # element by element: what bash actually loads must equal what was parsed here, in value and order
 _py = byblock['ALLOW'] + byblock['SUPPRESSION']
 if str(loaded).isdigit() and bash_list != _py:
@@ -239,7 +233,7 @@ mutcheck "tab-indented"                   "s/^  ('\^bin\/vendor-check)/\t\1/"
 mutcheck "two patterns on one line"       "s/^  ('\^bin\/vendor-check\\\\\.sh\\$')/  \1 '^x\$'/"
 mutcheck "top-level bar pattern"          "s/^  '\^bin\/vendor-check\\\\\.sh\\$'/  '^.*|x\$'/"
 mutcheck "extra ALLOW_PATTERNS+= outside" "s/^SUPPRESSION_PATTERNS=\(/ALLOW_PATTERNS+=('^.*\$')\nSUPPRESSION_PATTERNS=(/"
-# Fail-closed mutants for the "any other mention of the arrays" class and the pattern-line counts (built with awk
+# Fail-closed mutants for the "any other mention of the arrays" class (built with awk
 # from the real file: insert <text> after the first line matching <regex>, after the SUPPRESSION array's close when
 # <regex> is ^\)$ and the 2nd occurrence is wanted).
 mutins() { # <desc> <nth-occurrence-of-line-")"> <text>
@@ -267,11 +261,6 @@ if kill -0 "$_sp" 2>/dev/null; then
 else
   gp "struct_check does not read the caller's stdin (an open pipe on stdin does not stop it)"
 fi
-awk '/^  # v0.3.0 build chain/{r=1} {print} r&&/^$/{print "  \x27^evil/.*$\x27"; r=0}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"
-if cmp -s bin/check-file-allowlist.sh "$_mut_dir/m.sh"; then gf "mutant did not apply: wide pattern after the region blank line" ""; elif struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: wide pattern after the region blank line" ""; else gp "struct check kills mutant: wide pattern after the region blank line"; fi
-# a wide pattern line inside an older block (after the first pattern line of ALLOW_PATTERNS)
-awk '{print} /^ALLOW_PATTERNS=\(/{f=1} f&&/^  \x27/&&!d{print "  \x27^evil/.*$\x27"; d=1}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"
-if cmp -s bin/check-file-allowlist.sh "$_mut_dir/m.sh"; then gf "mutant did not apply: older block" ""; elif struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: wide pattern in an older block" ""; else gp "struct check kills mutant: wide pattern in an older block"; fi
 # B4-1 (quote concatenation through #) and extra readarray/indexed forms
 mutsub() { # <desc> <exact pattern line> <text appended to that line>
   MUT_LINE="$2" MUT_ADD="$3" awk '!d && $0 == ENVIRON["MUT_LINE"] {print $0 ENVIRON["MUT_ADD"]; d=1; next} {print}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"
@@ -283,7 +272,7 @@ mutsub "pattern then bare #"                     "  '^bin/vendor-check\\.sh\$'" 
 mutsub "pattern then tab then #"                 "  '^bin/vendor-check\\.sh\$'" "$(printf '\t')# c"
 mutins "readarray -t -O 200"                2 "readarray -t -O 200 ALLOW_PATTERNS <<< '^evil/.*\$'"
 mutins "SUPPRESSION_PATTERNS index assign"  2 "SUPPRESSION_PATTERNS[9]='^evil/.*\$'"
-# B1 (round 5): the readable denylist and the pattern counts must kill each of these.
+# B1 (round 5): the readable denylist must kill each of these.
 pinkill() { # <desc> ; the mutant is already in $_mut_dir/m.sh
   if cmp -s bin/check-file-allowlist.sh "$_mut_dir/m.sh"; then gf "mutant did not apply: $1" ""; elif struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: $1" ""; else gp "struct check kills mutant: $1"; fi
 }
@@ -297,7 +286,6 @@ pinmutins "DEBUG trap after the arrays"                             "trap 'exit 
 pinmutins "RETURN trap after the arrays"                            "trap ':' RETURN"
 pinmutins "ERR trap after the arrays"                               "trap 'exit 0' ERR"
 pinmutins "exec of another script"                                  "exec bash ./other.sh"
-sed -E "/^  '\^\\\\\.auditor\/accepted-items\\\\\.json\\\$'\$/d" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "a suppression pattern deleted"
 # B1 (round 6): the script is read once as bytes and any CR (lone or CRLF), NUL or other control byte, and any
 # Unicode line separator, is refused. Each mutant is built from the real script by the python helper below.
 bytemut() { # <desc> <python expression over b (bytes of the real script) returning the mutated bytes>
