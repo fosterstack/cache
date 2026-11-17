@@ -875,6 +875,31 @@ jobs:
       - uses: actions/checkout@$sha # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/download-artifact@$sha # v8.0.2
+        with:
+          name: tag-request
+          path: tag-request
+      - name: install the pinned aws CLI
+        run: bash bin/install-scanner.sh aws-cli
+      - name: make the tag object and the digest to sign
+        run: |
+          set -euo pipefail
+          mkdir tag-work
+          python3 bin/tag-sign.py prepare --tag "\$(cat tag-request/tag)" --commit "\$GITHUB_SHA" --notes tag-request/notes.md \
+            --tagger 'fosterstack release <release@users.noreply.github.com>' --time "\$(cat tag-request/time)" \
+            --object tag-work/tag.object --digest tag-work/tag.digest
+      - name: sign the digest with the release key
+        env:
+          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          AWS_REGION: us-east-1
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
+        run: bash bin/with-aws-token.sh kms-sign --aws "\$RUNNER_TEMP/aws-cli/aws" --key-ref "\$RELEASE_KMS_KEY_REF" --digest "\$(cat tag-work/tag.digest)" --signing-config .github/policy/cosign-signing-config.json --public-key build/keys/release.rsa.pub --out tag-work/tag.sig --bundle tag-work/tag.bundle
+      - name: put the signature into the tag object
+        run: python3 bin/tag-sign.py assemble --object tag-work/tag.object --signature tag-work/tag.sig --signer-file .github/policy/release_tag_signer --out tag-work/tag.signed
+      - uses: actions/upload-artifact@$sha # v7.0.2
+        with:
+          name: signed-tag
+          path: tag-work/tag.signed
 EOF
 # mutate LABEL  python-regex  replacement : writes $work/LABEL.yml, or counts a FAILURE if the mutation did not apply
 mutate() {
@@ -3614,7 +3639,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='5a14c07e506322e4761736e6ee0553ad587d214b6708d5fe6c3b903c8ebf1579'
+FX_PIN='08e0ba0820a5cca7c7af0bb50d90a48617a671308024482f4e3c3456b06ea60d'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
