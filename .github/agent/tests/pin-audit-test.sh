@@ -1995,6 +1995,15 @@ def c_registry():
     for body in (b"{}", b'{"results": [1]}', b'{"results": [{"images": 5}]}', b'{"results": [{"digest": "%s", "tag_last_pushed": 7}]}' % img.version.encode(), b'{"results": [], "next": 7}'):
         http(body); refuse(("hub", body), lambda: age._registry_push(img))
     http(b'{"results": [{"images": [{}]}]}'); assert accepts("hub optional digest", lambda: age._registry_push(img)) is None
+def c_main_fixtures():
+    # --fixtures is the tests' own input, not an answer: a file that is not a JSON object ends the daily audit in exit 2 (cannot run), before any work
+    import contextlib
+    for body in ("not json", "null", "[]"):
+        fx = os.path.join(tmp, "fx.json"); open(fx, "w").write(body)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            rc = pa.main(["--root", tmp, "--fixtures", fx, "--now", "2026-10-05T12:00:00Z"])
+        assert rc == 2 and "cannot" in out.getvalue(), (body, rc, out.getvalue()[:160])
 def c_local_files():
     f = os.path.join(tmp, "x.json"); open(f, "w").write("{}")
     refuse("base inputs {}", lambda: (_ for _ in ()).throw(age.CouldNotLook("x")) if False else _runtime(lambda: age.load_base_inputs(f, True)))
