@@ -249,7 +249,7 @@ def tree():
     for s in ("release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify"):
         src = os.path.join(BIN, s + ".sh")
         if os.path.exists(src): shutil.copy(src, os.path.join(t, "bin", s + ".sh"))
-    for extra in ("release-postverify.py", "release-metadata.py", "release-layout.py"):
+    for extra in ("build-admit.py", "release-postverify.py", "release-metadata.py", "release-layout.py"):
         if os.path.exists(os.path.join(BIN, extra)): shutil.copy(os.path.join(BIN, extra), os.path.join(t, "bin", extra))
     os.makedirs(os.path.join(t, "build/keys")); open(os.path.join(t, "build/keys/release.rsa.pub"), "w").write("-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----\n")
     os.makedirs(os.path.join(t, ".vex")); open(os.path.join(t, ".vex/fosterstack-cache.openvex.json"), "w").write("{}")
@@ -1027,7 +1027,7 @@ def seed_manifest(t, body=None, signer="root", root_pub="root", sig=None, drop=(
         os.remove(os.path.join(rp, as_dir)); os.mkdir(os.path.join(rp, as_dir))
 def real_verifier(t):
     """release-postverify.py loads the verifier and the verifier loads its helpers, each by the sha256 in chain-scripts.json: the real files go over the fake chain-verify.py the other scripts' tests use"""
-    for extra in ("chain-verify.py", "chain_common.py", "chain_hostile.py", "chain_items.py"):
+    for extra in ("build-admit.py", "chain-verify.py", "chain_common.py", "chain_hostile.py", "chain_items.py"):
         if os.path.exists(os.path.join(BIN, extra)): shutil.copy(os.path.join(BIN, extra), os.path.join(t, "bin", extra))
     if os.path.exists(os.path.join(BIN, "..", ".github/policy/chain-scripts.json")):
         os.makedirs(os.path.join(t, ".github/policy"), exist_ok=True); shutil.copy(os.path.join(BIN, "..", ".github/policy/chain-scripts.json"), os.path.join(t, ".github/policy/chain-scripts.json"))
