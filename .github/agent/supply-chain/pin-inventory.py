@@ -1450,7 +1450,6 @@ bin/check-govulncheck.py
 bin/check-no-outbound-test.sh
 bin/check-no-outbound.py
 bin/install-scanner.sh
-bin/release-metadata.py
 bin/build-apk-helper.py
 bin/chain-test-shape.py
 """.split())
