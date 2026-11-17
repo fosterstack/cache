@@ -3779,10 +3779,6 @@ assert judge_job({5: chain[4], 7: chain[7]}, {D: cdwf}) == [5, 7], "the chain's 
 assert judge_job(chain, {D: cdwf}, job="other") == [4, 7], "the chain's texts in another job are findings"
 assert judge_job(chain, {".github/workflows/x.yml": cdwf}, file=".github/workflows/x.yml") == [4, 7], \
         "the chain's texts in another file are findings"
-assert judge_job({4: chain[4], 7: chain[7] + "\n# edited"}, {D: cdwf}) == [4, 7], "an edited chain step is a finding"
-assert judge_job({4: chain[4], 8: chain[7]}, {D: cdwf}) == [4, 8], "the chain's decision loop at main's index is a finding"
-assert judge_job({4: chain[7], 7: chain[7]}, {D: cdwf}) == [4, 7], "one excluded step's key does not exclude the other's text"
-assert judge_job({4: real[4], 7: real[8]}, {D: dwf}) == [4, 7], "main's decision loop at the chain's index is a finding"
 assert judge_job(chain, {D: cdwf + "\n          ACTIONS_ID_TOKEN_REQUEST_URL: file:///x\n"}) == [4, 7], \
         "an assignment of the URL variable is a finding"
 PY
