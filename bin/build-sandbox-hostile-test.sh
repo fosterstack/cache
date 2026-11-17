@@ -20,13 +20,14 @@ exits() {
   if [ "$r" = "$want" ]; then ok; else bad "$ac" "$d (exit $r, wanted $want)"; fi
 }
 
+git_before=$(git -C "$root" status --porcelain -- bin build 2>&1)
 PROBE="$root/bin/chain-sandbox-probe.sh"
 WALLS="read-record write-record read-keydir read-token network"
 mkdir -p "$work/bin" "$work/rt" "$work/tmp"
-# The fixture checkout the probe runs in: the committed bin/ and build/ by link, a Witness record and an archive of
-# its own.
+# The fixture checkout the probe runs in: copies of bin/ and build/ (never links: nothing a run writes may reach the
+# repository), a Witness record and an archive of its own.
 co="$work/co"; mkdir -p "$co/witness-apk" "$co/archive/keys"
-ln -s "$root/bin" "$co/bin"; ln -s "$root/build" "$co/build"
+cp -R "$root/bin" "$co/bin"; cp -R "$root/build" "$co/build"
 printf '{"record": "fixture"}\n' > "$co/witness-apk/apk-collection.local.json"
 : > "$co/archive/keys/wolfi-signing.rsa.pub"
 SENT_TOKEN="SENTINEL-TOKEN-$$-4d1c"
@@ -56,11 +57,20 @@ cat > "$work/bin/sudo" << 'STUB'
 if [ "$1" = rm ]; then for a in "${@:3}"; do chmod -R u+w "$a" 2> /dev/null; done; fi
 exec "$@"
 STUB
-# python3 stub: the net probe (unshare -n python3 bin/net-probe.py) answers the status the case set; any other use is
-# the real python3
+# The helper judges the sealed call against the fixed unshare and melange paths. The python3 stub below runs this
+# copy of the helper, whose one constants line names the stubs, in place of bin/build-apk-helper.py.
+swap='ENV_PATH, UNSHARE_PATH, MELANGE_PATH = "/usr/bin/env", "'$work'/bin/unshare", "'$work'/bin/melange"'
+hits=$(grep -c '^ENV_PATH, UNSHARE_PATH, MELANGE_PATH = ' "$root/bin/build-apk-helper.py")
+[ "$hits" = 1 ] || { echo "FIXTURE SETUP FAILED: helper constants line"; exit 1; }
+sed "s#^ENV_PATH, UNSHARE_PATH, MELANGE_PATH = .*#$swap#" "$root/bin/build-apk-helper.py" > "$work/helper-copy.py"
+t "AC5" "the helper copy differs from build-apk-helper.py in the constants line only" \
+  bash -c "[ \$(diff '$root/bin/build-apk-helper.py' '$work/helper-copy.py' | grep -c '^<') = 1 ]"
+# python3 stub: the net probe (unshare -n python3 bin/net-probe.py) answers the status the case set; the helper is
+# the copy above; any other use is the real python3
 cat > "$work/bin/python3" << STUB
 #!/usr/bin/env bash
 case "\$*" in *net-probe.py*) exit \$(cat "$work/netrc" 2> /dev/null || echo 101);; esac
+case "\$*" in "-I -B bin/build-apk-helper.py "*) exec /usr/bin/python3 -I -B "$work/helper-copy.py" "\${@:4}";; esac
 exec /usr/bin/python3 "\$@"
 STUB
 chmod +x "$work/bin/"*
@@ -116,11 +126,11 @@ t "AC5" "each attempt names its wall: the record (host path, copy), key folder, 
   python3 - "$root" << 'PY'
 import sys
 d = sys.argv[1] + "/build/probe/"
-want = {"read-record": ["cat @RECORD@", "/home/build/witness-apk/apk-collection.local.json"],
-        "write-record": [">> @RECORD@"],
-        "read-keydir": ["@KEYDIR@/dummy"],
-        "read-token": ["ACTIONS_ID_TOKEN_REQUEST|ACTIONS_RUNTIME_TOKEN|GH_TOKEN|GITHUB_TOKEN", "cut -d = -f 1"],
-        "network": ["192.0.2.1:9", "/proc/net/route"]}
+want = {"read-record": ['cat "@RECORD@"', "/home/build/witness-apk/apk-collection.local.json"],
+        "write-record": ['>> "@RECORD@"'],
+        "read-keydir": ['cat "@KEYDIR@/dummy"'],
+        "read-token": ["ACTIONS_ID_TOKEN_REQUEST|ACTIONS_RUNTIME_TOKEN|GH_TOKEN|GITHUB_TOKEN", "AWS_", "cut -d = -f 1"],
+        "network": ["/proc/net/route", "ipv6"]}
 for k, v in want.items():
     for x in v: assert x in open(d + k + ".yaml.tmpl").read(), (k, x)
 PY
@@ -128,12 +138,12 @@ t "AC5" "the control reads the route table the network wall depends on" \
   grep -q 'cat /proc/net/route' "$root/build/probe/control.yaml.tmpl"
 # the six templates are bound by hash: a template-only change must change a hash here (the hashes are data, no
 # template text)
-HASHES="277db462b97327e3cbc0731850f96c951f6fb64b81538930b588c851faa7fac3  build/probe/control.yaml.tmpl
-6a8c80b624b77ebb004ef2528260bbfdae119e3aab290435d8c4b71e4096d3fc  build/probe/read-record.yaml.tmpl
-8cbe432aa1741f9903fb2bd8419a0c27288270a056a4a4b855a43673b92f4bdb  build/probe/write-record.yaml.tmpl
-32d50e8b55421866d20bbc620e8b7dd0fc7d8d3646eac82ee4467220e9083e9e  build/probe/read-keydir.yaml.tmpl
-9f365493701556423ef2622e76a46e414191acb745c1e56ffb8f6247bdf36208  build/probe/read-token.yaml.tmpl
-b7e43370bc58dfdeb3ad3c140c0651a523c6624e20f14e8169d562e9d843c095  build/probe/network.yaml.tmpl"
+HASHES="4001dd1ab79625d0cd0cb6973ff669f0d6804a0ac91e544e3cf93480e9146970  build/probe/control.yaml.tmpl
+86a5d1e0abb517719aec4f29953e4b8f8f3a93480dfc0c4c66e44d05870c0601  build/probe/read-record.yaml.tmpl
+0dabe69d25d60139d78d088bf3e6f2e628bbf703eb49fe98eaf12bee0f110e55  build/probe/write-record.yaml.tmpl
+49004320540eb84f7e212250f320daf66d009500fafe4fe21c2ad670a565d77e  build/probe/read-keydir.yaml.tmpl
+82f2ebf932271a9d691cef7da932c0a84f4e2ab59624adc4cec14589af468501  build/probe/read-token.yaml.tmpl
+e1793239e22eedbdf02b1b955293223e788a9ead4de20807a8e4881f1a3cec9c  build/probe/network.yaml.tmpl"
 t "AC5" "the six templates equal the hashes bound in this test" \
   bash -c "cd '$root' && printf '%s\\n' \"\$0\" | sha256sum -c --quiet -" "$HASHES"
 
@@ -208,6 +218,50 @@ setrc 0
 exits "AC5" "RUNNER_TEMP unset is a refusal (exit 2) that leaves no temporary folder" \
   2 bash -c "cd '$co' && env -u RUNNER_TEMP TMPDIR='$work/tmp' bash '$work/probe.sh'"
 t "AC5" "...and the temporary folder is empty" bash -c "[ -z \"\$(ls -A '$work/tmp')\" ]"
+# the repository was not written to: bin/ and build/ show what they showed before the run
+t "AC5" "the run left bin/ and build/ of the repository as they were (git status unchanged)" \
+  bash -c "[ \"\$(git -C '$root' status --porcelain -- bin build 2>&1)\" = \"\$0\" ]" "$git_before"
+
+# the paths pasted into a recipe's shell line: a path with a space, &, | or a quote is refused (exit 2, the message
+# names it) before any melange call; a plain path still runs
+withrec() { # withrec OUT PATH : the probe copy with its RECORD line naming PATH (quoted for the shell)
+  python3 - "$work/probe.sh" "$1" "$2" << 'PY'
+import re, shlex, sys
+t = open(sys.argv[1]).read()
+t = re.sub(r"(?m)^RECORD=\S*", lambda m: "RECORD=" + shlex.quote(sys.argv[3]), t)
+open(sys.argv[2], "w").write(t)
+PY
+}
+hostile_names=("sp ace" "am&per" "pi|pe" "sin'gle" 'dou"ble')
+setrc 0
+for hn in "${hostile_names[@]}"; do
+  rd="$work/rec $hn"; mkdir -p "$rd"; cp "$co/witness-apk/apk-collection.local.json" "$rd/r.json"
+  withrec "$work/probe-rec.sh" "$rd/r.json"; : > "$work/calls"
+  exits "AC5" "a RECORD path containing [$hn] is refused (exit 2)" 2 runprobe "$work/probe-rec.sh"
+  t "AC5" "...the message names the record path ([$hn])" grep -qF -e "$rd/r.json" "$work/o"
+  t "AC5" "...and melange never ran ([$hn])" bash -c "[ ! -s '$work/calls' ]"
+  kr="$work/rtk $hn"; mkdir -p "$kr"; : > "$work/calls"
+  exits "AC5" "a RUNNER_TEMP (key folder) path containing [$hn] is refused (exit 2)" 2 \
+    bash -c 'cd "$1" && TMPDIR="$2" RUNNER_TEMP="$3" bash "$4"' _ "$co" "$work/tmp" "$kr" "$work/probe.sh"
+  t "AC5" "...the message names the key folder path ([$hn])" grep -qF -e "$kr" "$work/o"
+  t "AC5" "...and melange never ran for the key folder ([$hn])" bash -c "[ ! -s '$work/calls' ]"
+done
+# a $ or a backtick in a pasted path would be expanded by the recipe's shell: refused too, before any melange call
+for hn in 'dol$lar' 'back`tick'; do
+  rd="$work/rec-$hn"; mkdir -p "$rd"; cp "$co/witness-apk/apk-collection.local.json" "$rd/r.json"
+  withrec "$work/probe-rec.sh" "$rd/r.json"; setrc 0
+  exits "AC5" "a RECORD path containing [$hn] is refused (exit 2)" 2 runprobe "$work/probe-rec.sh"
+  t "AC5" "...the message names the record path ([$hn])" grep -qF -e "$rd/r.json" "$work/o"
+  t "AC5" "...and melange never ran ([$hn])" bash -c "[ ! -s '$work/calls' ]"
+  kr="$work/rtk-$hn"; mkdir -p "$kr"; : > "$work/calls"
+  exits "AC5" "a RUNNER_TEMP (key folder) path containing [$hn] is refused (exit 2)" 2 \
+    bash -c 'cd "$1" && TMPDIR="$2" RUNNER_TEMP="$3" bash "$4"' _ "$co" "$work/tmp" "$kr" "$work/probe.sh"
+  t "AC5" "...the message names the key folder path ([$hn])" grep -qF -e "$kr" "$work/o"
+  t "AC5" "...and melange never ran for the key folder ([$hn])" bash -c "[ ! -s '$work/calls' ]"
+done
+mkdir -p "$work/rec-plain"; cp "$co/witness-apk/apk-collection.local.json" "$work/rec-plain/r.json"
+withrec "$work/probe-plain.sh" "$work/rec-plain/r.json"; setrc 0
+exits "AC5" "a plain RECORD path in another folder still runs (exit 0)" 0 runprobe "$work/probe-plain.sh"
 
 echo "build-sandbox-hostile-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

@@ -307,6 +307,8 @@ mkbase() { # base fixture in $W/base: origin.git + repo with main, a signed tagg
   mkdir -p .github/workflows; printf 'name: Release\n' > .github/workflows/release.yml
   cp "$root/bin/chain-bytes-sha.py" bin/ 2> /dev/null || printf 'x\n' > bin/chain-bytes-sha.py
   printf '{"scripts":[{"path":"bin/chain-bytes-sha.py"}]}\n' > .github/policy/chain-scripts.json
+  mkdir -p build/locks
+  for f in sealed-env.json archive.json melange.yaml apko.yaml locks/fips-module.txt; do printf 'x\n' > "build/$f"; done
   git add -A; git commit -q -S -m "chain files"; git tag v0.3.0-rc1; C_A=$(git rev-parse HEAD)
   cat > requirements/requirements.yaml <<'YAML'
 requirements:
@@ -397,6 +399,31 @@ echo "gitsign $*" >> "${FAKE_LOG:-/dev/null}"
 exit "${FAKE_GITSIGN_RC:-0}"
 EOF
 chmod +x "$FB/gh" "$FB/gitsign"
+# build-admit.py finds its programs at fixed paths, not on PATH: the cases run a copy whose TEST-SUBST lines
+# hold the real tools and the fake gh
+BAPROD=$BA
+mkba() { # mkba OUT [NAME=PATH...] : the copy, with the given paths in place of the defaults;
+  # every TEST-SUBST line must get one
+  python3 - "$BAPROD" "$1" GIT="$(command -v git)" GH="$FB/gh" GPG="$(command -v gpg)" GPGCONF="$(command -v gpgconf)" \
+    SSH_KEYGEN="$(command -v ssh-keygen)" PYTHON3="$(command -v python3)" BASH="$(command -v bash)" "${@:2}" <<'PY'
+import re, sys
+src, out = sys.argv[1:3]
+subst = dict(a.split("=", 1) for a in sys.argv[3:])
+seen, res = set(), []
+for ln in open(src).read().split("\n"):
+    m = re.match(r"^([A-Z_0-9]+) = .*#\s*TEST-SUBST\s*$", ln)
+    if m:
+        if m.group(1) not in subst: sys.exit("no substitution given for %s" % m.group(1))
+        seen.add(m.group(1)); res.append('%s = "%s"  # TEST-SUBST' % (m.group(1), subst[m.group(1)]))
+    else:
+        res.append(ln)
+if seen != set(subst): sys.exit("substitutions with no TEST-SUBST line: %s" % sorted(set(subst) - seen))
+open(out, "w").write("\n".join(res))
+PY
+}
+if [ -f "$BAPROD" ]; then
+  mkba "$W/build-admit.py" && BA="$W/build-admit.py" || { echo "FAIL the build-admit copy"; exit 1; }
+fi
 # case DIR runner: each case gets a fresh copy of the base repo
 fresh() { rm -rf "$W/c"; mkdir -p "$W/c"; cp -a "$W/base/origin.git" "$W/c/origin.git"; git init -q "$W/c/repo"; git -C "$W/c/repo" remote add origin "$W/c/origin.git"
   (cd "$W/c/repo";
@@ -524,19 +551,36 @@ else
     bad "AC4 admission.json $l (no admission.json)"
   done
 fi
+# fixed program paths: the real file holds absolute paths, so a `git` first on PATH is never run by it
+badpath=
+for c in GIT GH GPG GPGCONF SSH_KEYGEN PYTHON3 BASH; do
+  grep -Eq "^$c = \"/[^\"]+\" +# TEST-SUBST$" "$BAPROD" || badpath="$badpath $c"
+done
+[ -z "$badpath" ] && ok "AC4 build-admit.py holds an absolute path for every program it runs (none is found on PATH)" \
+  || bad "AC4 build-admit.py holds no absolute path for:$badpath"
+mkdir -p "$W/fakegit"
+printf '#!/bin/sh\necho used >> "%s/fakegit.log"\nexit 1\n' "$W" > "$W/fakegit/git"
+chmod +x "$W/fakegit/git"
+fresh; BA_COPY=$BA; BA=$BAPROD
+run_admit GITHUB_SHA=0000000000000000000000000000000000000000 PATH="$W/fakegit:$PATH"; BA=$BA_COPY
+expect_refuse "AC4 the real file run with a fake git first on PATH uses the real git \
+(the fake would say the tag does not exist)" tag-ref moved
+[ ! -e "$W/fakegit.log" ] && ok "AC4 the fake git on PATH was never run" || bad "AC4 the fake git on PATH was run"
 ! grep -Eq '\b(curl|wget)\b|api\.github\.com' "$BA" \
   && ok "AC4 the script makes no network call of its own (only gh api)" || bad \
     "AC4 build-admit.py calls the network itself"
 # ---- tag-ref, tag-syntax ---------------------------------------------------------------------------------------------------------
 fresh; run_admit GITHUB_REF=refs/heads/main;                  expect_refuse "AC4 a branch ref is refused (tag pushes only)" tag-ref
 fresh; run_admit GITHUB_REF= GITHUB_REF_NAME=;                 expect_refuse "AC4 an empty ref is refused" tag-ref
-for t in v1.2 v1.2.3-rc V0.3.0 "v0.3.0 " v0.3.0-rc.x 0.3.0 v0.3.0-rc.1-x v0.3.0-rc.1 v0.3.0-RC1 v0.3.0-rc1x v0.3.0rc1 v0.3.0-rc1-rc1 "v0.3.0
+for t in v1.2 v1.2.3-rc V0.3.0 "v0.3.0 " \
+    v0.3.0-rc.x 0.3.0 v0.3.0-rc.1-x v0.3.0-rc.1 v0.3.0-RC1 v0.3.0-rc1x v0.3.0rc1 v0.3.0-rc1-rc1 \
+    v01.2.3 v1.02.3 v0.3.0-rc0 v0.3.0-rc01 "v0.3.0
 x"; do
   fresh;
   run_admit "GITHUB_REF=refs/tags/$t" "GITHUB_REF_NAME=$t";
   expect_refuse "AC4 the tag syntax gate refuses '$(printf '%s' "$t" | tr '\n' '|')'" tag-syntax
 done
-for t in v0.3.0-rc1 v0.3.0-rc01 v10.20.30;
+for t in v0.3.0-rc1 v1.2.3 v10.20.30;
 do fresh;
 run_admit "GITHUB_REF=refs/tags/$t" "GITHUB_REF_NAME=$t";
 { [ "$RC" = 0 ] || ! grep -q 'tag-syntax' "$W/c/err";
@@ -609,6 +653,35 @@ run_admit;
 expect_refuse "AC4 a commit signed by a GPG key that is not the pinned web-flow key is refused" commit-signature
 fresh; commit_move web "web-flow"; retag owner; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; run_admit
 expect_ok "AC4 a commit signed by the pinned web-flow GPG key is admitted"
+# an OpenPGP signature that the runner's own GNUPGHOME knows is no owner-ssh signature, even when gpg says Good
+printf '#!/bin/sh\necho "[GNUPG:] GOODSIG 0123456789ABCDEF other"\necho "[GNUPG:] VALIDSIG %s x 1 0 4 0 22 8 00 %s"\n' \
+  "$SHA" "$SHA" > "$W/fakegpg"; chmod +x "$W/fakegpg"
+fresh; commit_move other "other gpg"; retag owner; run_admit GNUPGHOME="$W/gpg-other"
+expect_refuse "AC4 a commit signed by a GPG key of the runner's own GNUPGHOME \
+is refused: only the pinned web-flow key counts" commit-signature
+fresh; commit_move other "other gpg"; retag owner; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; BA_COPY=$BA
+mkba "$W/ba-fakegpg.py" GPG="$W/fakegpg"; BA="$W/ba-fakegpg.py"
+run_admit GNUPGHOME="$W/gpg-other"; BA=$BA_COPY
+if [ "$RC" = 1 ] ||
+  { [ -f "$W/c/repo/admission.json" ] &&
+    jq -e '.commit_signature != "owner-ssh"' "$W/c/repo/admission.json" > /dev/null; }; then
+  ok "AC4 an OpenPGP signature that gpg calls Good is never recorded as owner-ssh"
+else bad "AC4 an OpenPGP signature was recorded as owner-ssh: $(head -c 200 "$W/c/repo/admission.json" 2> /dev/null)"
+fi
+# build-admit.py runs git and gpg by fixed path with an empty GNUPGHOME: a `gpg` first on PATH must never be run
+mkdir -p "$W/fakegpgbin"
+printf '#!/bin/sh\necho '"'"'Good "git" signature for owner with ED25519 key SHA256:fake'"'"' >&2\nexit 0\n' > "$W/fakegpgbin/gpg"
+chmod +x "$W/fakegpgbin/gpg"
+fresh; commit_move other "other gpg"; retag owner; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"
+run_admit PATH="$W/fakegpgbin:$FB:$PATH"
+expect_refuse "AC4 an OpenPGP-signed commit is refused at commit-signature even when a fake gpg on PATH says Good" \
+  commit-signature
+if [ ! -e "$W/c/repo/admission.json" ] || ! grep -q owner-ssh "$W/c/repo/admission.json"; then
+  ok "AC4 a fake gpg on PATH never makes the admission say owner-ssh"
+else bad "AC4 a fake gpg on PATH made the admission say owner-ssh"; fi
+fresh; commit_move other "other gpg"; retag owner; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; run_admit
+expect_refuse "AC4 a commit signed by a real OpenPGP key that main does not pin is refused at commit-signature" \
+  commit-signature
 # ---- ancestor-of-main ----------------------------------------------------------------------------------------------------------------
 fresh;
 G checkout -q -b side v0.3.0 2> /dev/null;
@@ -645,6 +718,44 @@ fresh; sig_tag v0.3.0 "Audit-approved: dddddddddddddddddddddddddddddddddddddddd"
 expect_refuse "AC7 an approval line that names another commit than the record is refused" audit-approval
 fresh; sig_tag v0.3.0 "audit-approved: $REC"; run_admit
 expect_refuse "AC7 an approval line in the wrong case is refused" audit-approval Audit-approved
+# an owner-decision item (Critical / KEV acceptance) on main holds release authorization (REQ-AUD-17-AC5): main's judge reads
+# .auditor/accepted-items.json of the admission root, so the file must be on origin/main itself, not in the working tree
+accepted_on_main() { # accepted_on_main THRESHOLD : commit the file to main, then tag and fixtures follow the new head
+  mkdir -p "$W/c/repo/.auditor"
+  printf '{"accepted_items":[{"cve":"CVE-2099-1","severity":"Critical","package":"p","threshold":"%s","owner_issue":1,"expiry":"2099-01-01"}]}\n' \
+    "$1" > "$W/c/repo/.auditor/accepted-items.json"
+  G add .auditor/accepted-items.json; commit_move owner "accepted items"; retag owner
+  gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; }
+fresh; accepted_on_main at_or_above; run_admit
+expect_refuse "REQ-AUD-17-AC5 an open owner-decision item on main refuses admission at audit-approval" audit-approval "owner-decision"
+fresh; accepted_on_main below; run_admit
+expect_ok "REQ-AUD-17-AC5 a below-threshold item on main holds nothing: the tag is admitted"
+fresh; run_admit
+expect_ok "REQ-AUD-17-AC5 no accepted-items file on main: nothing is open, the tag is admitted"
+# a file that main lists but whose blob cannot be read is a refusal naming it, never taken for an absent file
+fresh; accepted_on_main below
+blob=$(G rev-parse "origin/main:.auditor/accepted-items.json"); blob_file="$W/c/repo/.git/objects/${blob:0:2}/${blob:2}"
+if [ -f "$blob_file" ]; then rm -f "$blob_file"; fi
+if [ -n "$(G ls-tree --name-only origin/main -- .auditor/accepted-items.json)" ] && ! G cat-file -e "$blob" 2> /dev/null; then
+  ok "fixture: main lists the accepted-items file but its blob cannot be read"
+else bad "fixture: the accepted-items blob is still readable (or main does not list the file)"; fi
+run_admit
+expect_refuse "REQ-AUD-17-AC5 an accepted-items file that main lists but cannot be read is refused at audit-approval, naming it" audit-approval ".auditor/accepted-items.json"
+# the hold is main's, never the tagged commit's: the tagged commit (an older commit on main) carries a copy of the file with no open
+# item, main later makes the file hold an at_or_above item without moving the tag; the tagged copy must not drop main's hold
+fresh; accepted_on_main below; TAGGED=$(G rev-parse HEAD)
+printf '{"accepted_items":[{"cve":"CVE-2099-1","severity":"Critical","package":"p","threshold":"at_or_above","owner_issue":1,"expiry":"2099-01-01"}]}\n' \
+  > "$W/c/repo/.auditor/accepted-items.json"
+G add .auditor/accepted-items.json; commit_move owner "main now holds an open item"
+G checkout -q --detach "$TAGGED"; gh_fixtures "$W/c/gh" "$TAGGED"
+tagged_copy=$(G show "$TAGGED:.auditor/accepted-items.json"); main_copy=$(G show "origin/main:.auditor/accepted-items.json")
+if [[ "$tagged_copy" == *'"below"'* && "$tagged_copy" != *at_or_above* && "$main_copy" == *at_or_above* ]] \
+    && [ "$(G rev-parse v0.3.0^{commit})" = "$TAGGED" ] \
+    && G merge-base --is-ancestor "$TAGGED" origin/main && [ "$TAGGED" != "$(G rev-parse origin/main)" ]; then
+  ok "fixture: the tagged commit's accepted-items copy has no open item, origin/main's (a later commit) holds an at_or_above one"
+else bad "fixture: the tagged commit's accepted-items copy and origin/main's are not as the case claims"; fi
+run_admit
+expect_refuse "REQ-AUD-17-AC5 the open owner-decision item in origin/main's accepted-items file holds the release though the tagged commit's own copy has none" audit-approval "owner-decision"
 # release candidates are held to the same rule, in the chain's -rcN form (and -rc.N is not a chain tag at all)
 fresh; sig_tag v0.3.0-rc1; run_admit GITHUB_REF=refs/tags/v0.3.0-rc1 GITHUB_REF_NAME=v0.3.0-rc1
 expect_refuse "AC7 a release candidate tag with no approval line is refused at audit-approval" audit-approval Audit-approved
@@ -700,11 +811,9 @@ mutant_escapes() { # mutant_escapes LABEL OLD NEW [ENV...] : the mutant admits t
   [ "$RC" = 0 ] && ok "AC7 mutant caught: $label (the mutant admits what the real script refuses)" || bad "AC7 mutant NOT caught: $label -> exit $RC, $(head -1 "$W/c/err")"
 }
 rm -f "$W/pwned-judge"
-mutant_escapes "the judge read from the tagged commit instead of origin/main" '        data = git_show("origin/main:" + path)
-        if data is None:
-            raise Refusal("audit-approval"' '        data = git_show(ctx.sha + ":" + path)
-        if data is None:
-            raise Refusal("audit-approval"' AUDIT_MODE=missing
+mutant_escapes "the judge read from the tagged commit instead of origin/main" '    for path in AUDIT_FILES:
+        data = git_show("origin/main:" + path)' '    for path in AUDIT_FILES:
+        data = git_show(ctx.sha + ":" + path)' AUDIT_MODE=missing
 [ -e "$W/pwned-judge" ] && ok "AC7 the planted judge of the tagged tree does run in that mutant (the case above is a real probe)" || bad "AC7 the planted judge did not run in the mutant"
 fresh; mutant_escapes "the audit-approval check not called" '        check_audit_approval(ctx)
 ' '' AUDIT_MODE=missing
@@ -1092,6 +1201,6 @@ wf_fprs=$(gpg --batch --show-keys --with-colons "$root/.github/policy/github-web
 TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # a skipped or added case fails the suite
-EXPECT_TOTAL=203
+EXPECT_TOTAL=222
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

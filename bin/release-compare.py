@@ -6,15 +6,14 @@ read, no network.
 In:  witness-rapk-<runner>/rapk-collection.json   the records Sign signed for Rebuild's apk legs (artifacts signed-witness-rapk-<runner>)
      apks/<runner>/<apk arch>/<file>.apk   Build's apks (artifacts apk-ubuntu-24.04, x86_64, and apk-ubuntu-24.04-arm, aarch64)
      rapks/<runner>/<apk arch>/<file>.apk  Rebuild's apks, laid out the same (artifacts rapk-...)
-Out: apk-compare/apk-compare.json  {"verdict": "pass", "pairs": [four rows: arch, variant, name, build_sha256, rebuild_sha256, build_digest, rebuild_digest]}
+Out: apk-compare/apk-compare.json  {"verdict": "pass", "pairs": [four rows: arch, variant, name, build_digest, rebuild_digest]}
      written only when all four pairs agree. The verify and release jobs read only this file; the release-verify step checks it against Build's attested apk digests.
 Each of the four expected pairs (amd64 and arm64, standard and fips) must exist on both sides exactly once. So must the one image-only apk per runner (the base layout,
 fscache-baselayout-*): it is checked like a pair (signer, signature, equal control and data) but has no row in the record, because no release ships it. Any other .apk, a symlink, a name with a control character, an apk
 that is not a regular file, a signer other than assembly.rsa.pub, or a signature that does not verify against build/keys/assembly.rsa.pub is refused (exit 2). Apks that differ
 in their control or data section exit 1 and name the apk; the signature section is not compared, only checked against the committed key."""
-import hashlib, json, os, re, shutil, stat, subprocess, sys
+import json, os, re, shutil, stat, subprocess, sys
 
-ROOT_MSG = "run the comparison from the repository root (the helpers are named by their repo-relative paths)"
 TOOL = [sys.executable, "-I", "-B", "bin/apk-tool.py"]
 CHAIN = [sys.executable, "-I", "-B", "bin/chain-verify.py"]
 # the four expected pairs, one fixed table (REQ-CHAIN-007-AC17): artifact (runner) -> apk architecture directory -> short name; variant -> file name pattern
@@ -78,14 +77,7 @@ def walk(top):
     return sorted(found)
 
 
-def sha256(path):
-    with open(path, "rb") as fh:
-        return hashlib.sha256(fh.read()).hexdigest()
-
-
 def main():
-    if not (os.path.isfile("bin/release-compare.py") and os.path.isfile("bin/apk-tool.py")):
-        die(ROOT_MSG)
     if not os.path.isfile("build/keys/assembly.rsa.pub"):
         die("build/keys/assembly.rsa.pub is missing")
     shutil.rmtree("apk-compare", ignore_errors=True)
@@ -146,7 +138,7 @@ def main():
             if res.returncode != 0:
                 die("cannot compute the digest of %s" % f)
             digs.append(res.stdout.strip())
-        rows.append({"arch": short, "variant": variant, "name": os.path.basename(b), "build_sha256": sha256(b), "rebuild_sha256": sha256(r),
+        rows.append({"arch": short, "variant": variant, "name": os.path.basename(b),
                      "build_digest": digs[0], "rebuild_digest": digs[1]})
     os.mkdir("apk-compare")
     tmp = "apk-compare/apk-compare.json.tmp"

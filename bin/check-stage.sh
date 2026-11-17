@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bin/check-stage.sh PHASE  (PHASE: scanners | acceptance | runtime)
+# bin/check-stage.sh PHASE  (PHASE: scanners | acceptance | runtime | arm64)
 # Check's one dispatcher (v0.3.0 rules 55, 58, 72, 79; REQ-CHAIN-006-AC3). Every phase first makes the release policy for the run's tag
 # (as PR 2's Rebuild does), then verifies Build's record (its previous stage, rule 58; Release verifies
 # Sign's own record) for the digests it was given, isolated (python3 -I -B, as PR 1's Sign step runs the verifier; a failure stops here, before any check), then runs only that phase's checks, each a
@@ -22,6 +22,9 @@ case "$1" in
     bash bin/check-fips.sh --digests witness-build/digests.json --images images --out check-results
     bash bin/check-artifacts.sh --digests witness-build/digests.json --images images --archives dist --out check-results
     bash bin/check-guide.sh --guide docs/verify-release.md --digests witness-build/digests.json --images images --out check-results
+    ;;
+  arm64)
+    bash bin/check-artifacts.sh --arch arm64 --digests witness-build/digests.json --images images --archives dist --out check-results
     ;;
   *) echo "unknown phase: $1" >&2; exit 2 ;;
 esac

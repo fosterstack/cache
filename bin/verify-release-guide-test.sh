@@ -289,18 +289,15 @@ def needs_registry(segs):
             if image_ref(w): return True
             i += 1
     return False
-# A release asset is a file Sign or Release makes and publishes (provenance.bundle.json, <image>.sbom.json[.bundle], <image>.full.lock.json[.bundle], see
-# bin/release-assets.sh): Check holds Build's records and the candidate image, not these, so pipeline's planner cannot run a command that reads one.
-ASSET = re.compile(r"^(provenance\.bundle\.json|(production|fips)\.(sbom|full\.lock)\.json(\.bundle)?)$")
-def reads_asset(segs):
-    return any(ASSET.match(w) for s in segs for w in s)
+# Only an image reference needs a registry and is listed; a file command (provenance.bundle.json, .sbom.json, .full.lock.json) is
+# placed and run in CI (release-apks, postverify) with a checked result, so it is not listed.
 for c, ln, bo, segs in parsed:
     if not segs: continue
-    unrunnable = needs_registry(segs) or reads_asset(segs)
+    unrunnable = needs_registry(segs)
     if unrunnable and c not in listed:
-        err("AC7", "line %d: `%s` needs a registry image or a release asset file and cannot run on a candidate, but the cannot-run list does not name it" % (ln+1, c))
+        err("AC7", "line %d: `%s` needs a registry image and cannot run on a candidate, but the cannot-run list does not name it" % (ln+1, c))
     if c in listed and not unrunnable:
-        err("AC7", "line %d: `%s` is on the cannot-run list but needs no registry image and reads no release asset (a runnable command is run, never excused)" % (ln+1, c))
+        err("AC7", "line %d: `%s` is on the cannot-run list but needs no registry image (a runnable command is run, never excused)" % (ln+1, c))
     if c in listed:
         j = ln - 1
         while j >= 0 and not lines[j].strip(): j -= 1
@@ -508,7 +505,11 @@ mutant "the -fips registry command not listed" "the cannot-run list does not nam
 mutant "gh attestation verify oci:// is not a verify form" "is not cosign verify" 's.replace("jq -e", "gh attestation verify oci://<IMAGE_REF> --repo fosterstack/cache | jq -e")'
 mutant "a literal registry reference not listed" "the cannot-run list does not name it" 's.replace("jq -e", "cosign verify-attestation --key release.rsa.pub --type https://slsa.dev/provenance/v1 ghcr.io/fosterstack/cache:<TAG> | jq -e")'
 mutant "verify-blob on an image placeholder not listed" "the cannot-run list does not name it" 's.replace("sbom.json\n", "<IMAGE_REF_FIPS>\n")'
-mutant "a release-asset command not listed" "the cannot-run list does not name it" 's.replace("jq -e '"'"'.subject[].digest.sha256'"'"' provenance.json", "jq -e '"'"'.subject[].digest.sha256'"'"' provenance.bundle.json")'
+# R5: a file command is accepted without being on the list
+python3 -I -c 'import sys; s=open(sys.argv[1]).read(); open(sys.argv[2],"w").write(s.replace("cosign verify-blob --bundle sbom", "cosign verify-blob --bundle provenance.bundle.json --key release.rsa.pub x.txt\ncosign verify-blob --bundle sbom", 1))' "$work/f/good.md" "$work/f/fc.md" </dev/null
+cp "$work/f/good.cannot-run.json" "$work/f/fc.cannot-run.json"
+if cmp -s "$work/f/good.md" "$work/f/fc.md"; then bad "file command case did not apply" "replace missed"; else
+  out=$(judge "$work/f/fc.md" draft); rc=$?; [ "$rc" -eq 0 ] && ok "a file command (provenance.bundle.json) is accepted without being on the cannot-run list" || bad "a file command not on the cannot-run list was refused" "$out"; fi
 mutant "the identity placeholder is back" "the placeholder <IDENTITY> is not one of" 's.replace("cosign verify <IMAGE_REF> --key release.rsa.pub\n", "cosign verify <IMAGE_REF> --certificate-identity <IDENTITY>\n", 1)' '[{"command": "cosign verify <IMAGE_REF> --certificate-identity <IDENTITY>", "reason": "needs a registry image"},
  {"command": "cosign verify <IMAGE_REF_FIPS> --key release.rsa.pub", "reason": "needs a registry image"}]'
 mutant "a stale cannot-run entry"       "a stale entry"                's.replace("cosign verify <IMAGE_REF> --key release.rsa.pub\n", "cosign verify <IMAGE_REF> --key=release.rsa.pub\n")'

@@ -56,8 +56,10 @@ def tree(spec=None, skip=()):
                 continue
             WRITE[s](os.path.join(root, s, img), BASE, (spec or {}).get((s, img), []))
     return root
+def dirs_of(root):             # the direct tree is <root>/<scanner>/<image>; a skipped scanner's folder is simply not there
+    return {s_: os.path.join(root, s_) for s_ in P.EXPECTED}
 def judge(root):
-    return P.tally(root, P.load_vex(VEX))
+    return P.tally(root, P.load_vex(VEX), dirs_of(root))
 
 # --- rule 1 shape the judge expects (the workflow wiring test checks the jobs)
 check("the expected set: Grype, Scout, Inspector on all four images (production and fips, each on both architectures); Google on the two amd64 images only",
@@ -118,10 +120,22 @@ json.dump({"@context": "x", "statements": [{"vulnerability": {"name": "CVE-2099-
                   "subcomponents": [{"@id": "pkg:deb/debian/tzdata@2026%63?arch=all"}]}]}]}, open(vexf, "w"))   # %63 = c
 row = ("CVE-2099-0009", "tzdata", "2026c")
 r = tree({(s_, img): [row] for s_ in ("inspector", "google") for img in ("production-amd64", "fips-amd64")})
-v = P.tally(r, P.load_vex(vexf))
+v = P.tally(r, P.load_vex(vexf), dirs_of(r))
 check("a per-image statement filters only its own image (Codex r2 B2) and matches the decoded version (r2 R9)",
       [f["image"] for f in v["findings"]] == ["fips-amd64"] and [c["image"] for c in v["vex_covered"]] == ["production-amd64", "production-amd64"],
       ([f["image"] for f in v["findings"]], v["vex_covered"]))
+
+# a version written %2541 is the text %41 after ONE decode (not "A" after two); one statement whose product covers both
+# images feeds both indexes, so a second decode applied per image over the shared statement shows in either
+vexd = os.path.join(tempfile.mkdtemp(), "d.json")
+json.dump({"@context": "x", "statements": [{"vulnerability": {"name": "CVE-2099-0010"}, "status": "not_affected",
+    "products": [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache",
+                  "subcomponents": [{"@id": "pkg:generic/tzdata@%2541"}]}]}]}, open(vexd, "w"))
+idx2 = P.load_vex(vexd)
+got = {img: {k: [sorted(subs) for subs, _ in e] for k, e in idx2[img].items()}
+       for img in ("production-amd64", "fips-amd64")}
+check("a purl version written %2541 loads as the version %41 in both images' indexes, never decoded twice",
+      all(g == {"CVE-2099-0010": [[("tzdata", "%41")]]} for g in got.values()), got)
 
 # --- the same exact scope grammar as the PR gate (inspector-gate.py::scope_of; cache#548 rulings): a product whose qualifiers are not exactly
 # repository_url/variant/arch, lower-case, once each, non-blank, with known values covers NO image, so the finding stays on every image
@@ -134,7 +148,7 @@ def scoped_vex(product, name):
 def covered_images(product, name):
     r = tree({(s_, img): [row] for s_ in ("inspector", "google") for img in ("production-amd64", "fips-amd64", "production-arm64", "fips-arm64")
               if s_ == "inspector" or img.endswith("amd64")})
-    v = P.tally(r, P.load_vex(scoped_vex(product, name)))
+    v = P.tally(r, P.load_vex(scoped_vex(product, name)), dirs_of(r))
     return sorted({c["image"] for c in v["vex_covered"]})
 check("a well-formed variant+arch scope covers its image only", covered_images(R + "&variant=production&arch=amd64", "ok.json") == ["production-amd64"],
       covered_images(R + "&variant=production&arch=amd64", "ok.json"))
@@ -156,7 +170,7 @@ def id_images(at, purl, name):
         "products": [{"@id": at, "identifiers": {"purl": purl}, "subcomponents": [{"@id": "pkg:generic/tzdata@2026c"}]}]}]}, open(f, "w"))
     r = tree({(s_, img): [row] for s_ in ("inspector", "google") for img in ("production-amd64", "fips-amd64", "production-arm64", "fips-arm64")
               if s_ == "inspector" or img.endswith("amd64")})
-    return len({c["image"] for c in P.tally(r, P.load_vex(f))["vex_covered"]})
+    return len({c["image"] for c in P.tally(r, P.load_vex(f), dirs_of(r))["vex_covered"]})
 check("an empty @id beside an identifiers.purl of our image covers nothing (the @id that is present is the id, as the rescan reads it)", id_images("", R, "e1.json") == 0)
 check("a null @id beside an identifiers.purl is that purl", id_images(None, R, "e2.json") == 4)
 
@@ -171,7 +185,7 @@ def lw_images(statuses, name):
     json.dump({"@context": "x", "statements": sts}, open(f, "w"))
     r = tree({(s_, img): [row] for s_ in ("inspector", "google") for img in ("production-amd64", "fips-amd64", "production-arm64", "fips-arm64")
               if s_ == "inspector" or img.endswith("amd64")})
-    return len({c["image"] for c in P.tally(r, P.load_vex(f))["vex_covered"]})
+    return len({c["image"] for c in P.tally(r, P.load_vex(f), dirs_of(r))["vex_covered"]})
 check("latest wins: not_affected alone covers every image", lw_images([("not_affected", None)], "lw0.json") == 4)
 check("latest wins: a later affected retracts the earlier not_affected on every image", lw_images([("not_affected", None), ("affected", None)], "lw1.json") == 0)
 check("latest wins: affected then not_affected covers", lw_images([("affected", None), ("not_affected", None)], "lw2.json") == 4)
@@ -187,7 +201,7 @@ def covered_by(products, name):
     r = tree({(s_, img): [row] for s_ in ("inspector", "google") for img in ("production-amd64", "fips-amd64", "production-arm64", "fips-arm64")
               if s_ == "inspector" or img.endswith("amd64")})
     sub = [{"@id": "pkg:generic/tzdata@2026c"}]
-    v = P.tally(r, P.load_vex(vex_with_products([dict(p_, subcomponents=sub) for p_ in products], name)))
+    v = P.tally(r, P.load_vex(vex_with_products([dict(p_, subcomponents=sub) for p_ in products], name)), dirs_of(r))
     return sorted({c["image"] for c in v["vex_covered"]})
 CAND = "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates"
 got = covered_by([{"identifiers": {"purl": R}}], "p1a.json")
@@ -250,6 +264,15 @@ for what, fp, ver, sp, want in (
         ("R1 a generic stdlib finding at go1.27.2 whose purl the verdict refuses (a repeated qualifier) keeps its identity: NOT covered by a generic stdlib@1.27.2 statement", "pkg:generic/stdlib@go1.27.2?a=1&a=2", "go1.27.2", "pkg:generic/stdlib@1.27.2", False),
         ("R1 a generic stdlib finding at 1.27.2 is covered by a generic stdlib@1.27.2 statement", "pkg:generic/stdlib@1.27.2", "1.27.2", "pkg:generic/stdlib@1.27.2", True)):
     check(what, purl_covered(fp, "stdlib", ver, sp) == want, purl_covered(fp, "stdlib", ver, sp))
+# a golang statement covers only a golang finding, and a golang finding only a golang statement
+for what, fp, name, ver, sp in (
+        ("R1 a generic stdlib finding at go1.27.2 is NOT covered by a golang stdlib@1.27.2 statement",
+         "pkg:generic/stdlib@go1.27.2", "stdlib", "go1.27.2", "pkg:golang/stdlib@1.27.2"),
+        ("R1 a golang stdlib finding at go1.27.2 is NOT covered by a generic stdlib@go1.27.2 statement",
+         "pkg:golang/stdlib@go1.27.2", "stdlib", "go1.27.2", "pkg:generic/stdlib@go1.27.2"),
+        ("R1 an apk busybox finding at 1.37.0 is NOT covered by a golang busybox@1.37.0 statement",
+         "pkg:apk/alpine/busybox@1.37.0", "busybox", "1.37.0", "pkg:golang/busybox@1.37.0")):
+    check(what, purl_covered(fp, name, ver, sp) is False, purl_covered(fp, name, ver, sp))
 pub = P.load_vex(VEX)
 want_ids = ["CVE-2024-51744", "CVE-2024-58251", "CVE-2025-46394", "CVE-2025-60876"]
 check("the published VEX covers the same ids (the four CVEs and their aliases) on every one of the four images as before",
@@ -616,6 +639,38 @@ check("artifact layout: scout-diag that is a link is refused", "scout-diag" in e
 nd = as_artifacts(tree()); shutil.copytree(os.path.join(nd, "panel-scout", "scout-diag"), os.path.join(nd, "panel-grype", "scout-diag"))
 e = layout_error(nd)
 check("artifact layout: scout's diagnostics folder inside panel-grype is refused (only scout's own artifact may carry it)", "panel-grype" in e and "scout-diag" in e, e)
+# --- load_vex decodes the subcomponent ids from a copy, once, before the image loop
+enc = os.path.join(tempfile.mkdtemp(), "enc.json")
+doc = {"@context": "x", "statements": [{"vulnerability": {"name": "CVE-2099-0010"}, "status": "not_affected",
+    "products": [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache",
+                  "subcomponents": [{"@id": "pkg:generic/tzdata@2026%252Bx"}]}]}]}      # %252B is %2B once decoded, + twice
+json.dump(doc, open(enc, "w"))
+idx = P.load_vex(enc)
+check("two images reading one statement see identical ids", len({repr(x) for x in idx.values()}) == 1, [repr(x)[:80] for x in idx.values()])
+check("%252B is decoded once: it ends as %2B, never as +", all("2026%2Bx" in repr(x) and "2026+x" not in repr(x) for x in idx.values()), [repr(x)[:80] for x in idx.values()])
+check("the loaded document is left as it was read", doc["statements"][0]["products"][0]["subcomponents"][0]["@id"] == "pkg:generic/tzdata@2026%252Bx")
+# --- the scan dirs are explicit: a scanner with no dir did not run, whatever the root holds
+r = tree(); dirs = {s_: os.path.join(r, s_) for s_ in P.EXPECTED if s_ != "google"}
+v = P.tally(r, P.load_vex(VEX), dirs)
+check("a scanner missing from the dirs is marked did-not-run on its images, not caught as a crash",
+      all("google" in v["images"][i]["did_not_run"] for i in P.EXPECTED["google"]) and v["exit"] == 2, str(v["images"]["production-amd64"]))
+# --- input errors exit 2; any other crash is not rc 1 ("findings to report")
+good_ = as_artifacts(tree())
+def cli(args):
+    p_ = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(P.__file__)), "panel.py")] + args, capture_output=True, text=True)
+    return p_.returncode, p_.stdout + p_.stderr
+bad_vex = os.path.join(tempfile.mkdtemp(), "bad.json"); open(bad_vex, "w").write("{not json")
+for name, extra in (("a missing VEX file", ["--vex", "/nonexistent/vex.json"]), ("a VEX file that is not JSON", ["--vex", bad_vex]),
+                    ("a VEX file with no statements list", ["--vex", enc.replace("enc.json", "none.json")])):
+    if "none.json" in extra[1]:
+        json.dump({"statements": 5}, open(extra[1], "w"))
+    rc_, o_ = cli(["tally", "--in", good_] + extra + ["--out", tempfile.mkdtemp()])
+    check("%s is an input error: exit 2, no traceback" % name, rc_ == 2 and "Traceback" not in o_, (rc_, o_[-200:]))
+rc_, o_ = cli(["tally", "--in", "/nonexistent/in", "--vex", VEX, "--out", tempfile.mkdtemp()])
+check("a missing artifacts folder is an input error: exit 2", rc_ == 2 and "Traceback" not in o_, (rc_, o_[-200:]))
+crash = "import json, runpy, sys; json.dump = lambda *a, **k: 1 / 0; sys.argv = sys.argv[1:]; runpy.run_path(sys.argv[0], run_name='__main__')"
+p_ = subprocess.run([sys.executable, "-c", crash, P.__file__, "tally", "--in", good_, "--vex", VEX, "--out", tempfile.mkdtemp()], capture_output=True, text=True)
+check("a crash that is not an input error exits 3, never 1", p_.returncode == 3, (p_.returncode, p_.stderr[-200:]))
 print("panel: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

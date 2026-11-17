@@ -14,7 +14,7 @@ from auditorlib import parsers as P  # noqa: E402
 
 def good():
     """A valid full-matrix verdict: every scanner ran everywhere, two reported findings and one unique."""
-    pm = P._panel_module()
+    pm = P.panel_module()
     images = {}
     for im in sorted(P.panel_images()):
         ran = sorted(s for s in P.PANEL_SCANNERS if P.panel_expected(s, im))
@@ -137,7 +137,7 @@ class Validator(unittest.TestCase):
         second["of"] = len(d["images"]["production-arm64"]["ran"])
         second["details"]["grype"]["purl"] = "pkg:deb/debian/openssl@3.0.1?arch=arm64&distro=debian-12"
         d["findings"].append(second)
-        d["issue"] = P._panel_module().render_issue([x for x in d["findings"] if x["status"] == "report"])
+        d["issue"] = P.panel_module().render_issue([x for x in d["findings"] if x["status"] == "report"])
         path = tempfile.mkstemp(suffix=".json")[1]; self.addCleanup(os.unlink, path)
         with open(path, "w") as fh:
             json.dump(d, fh)
@@ -188,7 +188,7 @@ class Loader(unittest.TestCase):
         second["details"] = {"grype": {"severity": "critical", "fixed_version": "9.9", "aliases": ["GHSA-dddd-eeee-ffff"],
                                        "purl": d["findings"][0]["details"]["grype"]["purl"]}, "inspector": {}}       # the same package URL on both images: one record
         d["findings"].append(second)
-        d["issue"] = P._panel_module().render_issue([x for x in d["findings"] if x["status"] == "report"])
+        d["issue"] = P.panel_module().render_issue([x for x in d["findings"] if x["status"] == "report"])
         path = self.write(json.dumps(d))
         g = P.parse_panel(path, "grype")[0]
         self.assertEqual((g["severity"], g["fixed_version"], g["extra"].get("known_exploited")), ("critical", "3.0.2", True))

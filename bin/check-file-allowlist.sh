@@ -101,8 +101,6 @@ ALLOW_PATTERNS=(
   '^bin/analyze-egress-trace-test\.sh$'
   '^bin/install-scanner\.sh$'
   '^bin/install-scanner-test\.sh$'
-  '^bin/required-check-guard\.sh$'
-  '^bin/required-check-guard-test\.sh$'
   '^bin/dependabot-reviewer\.py$'
   '^bin/dependabot-reviewer-test\.sh$'
   '^bin/dependabot-screen\.sh$'
@@ -112,6 +110,8 @@ ALLOW_PATTERNS=(
   '^bin/patch-decide\.py$'
   '^bin/patch-decide-test\.sh$'
   '^bin/acceptance-maven-413-test\.sh$'
+  '^bin/acceptance-gradle-test\.sh$'
+  '^bin/acceptance-k8s-manifests-test\.sh$'
   '^bin/admission-tag-signer\.py$'
   '^bin/admission-tag-signer-test\.sh$'
   '^bin/panel-test\.sh$'
@@ -151,18 +151,18 @@ ALLOW_PATTERNS=(
   '^bin/chain-test-signers\.(py|json)$'
   '^\.github/policy/cosign-signing-config\.json$'
   '^\.github/policy/rekor\.pub$'
-  '^\.github/policy/fulcio-chain\.pem$'
   '^test-evidence/witness-real/(build|apk)-collection\.real\.txt$'
   '^results/\.gitkeep$'
   # The v0.3.0 release chain, Build and Rebuild (PR 2): the Witness wrapper, the per-job stage scripts and their snapshot variants, the admission
   # script (the former stage-admission.yml), the items and archive helpers, the list of the old admission steps the comparison test reads, and the
   # suites with their two test helpers
   '^bin/witnessed\.sh$'
+  '^bin/install-scanner-test-lib\.sh$'
   '^bin/witnessed-local\.sh$'
   '^bin/witness-sign-staged\.sh$'
   '^bin/witness-kms-test\.sh$'
   '^bin/rebuild-records-digests\.sh$'
-  '^bin/build-stage-(apk|assemble|rebuild-apk|rebuild-assemble|snapshot-apk|snapshot-assemble|snapshot-rebuild-apk|snapshot-rebuild-assemble|refuse-mode)\.sh$'
+  '^bin/build-stage-(apk|assemble|rebuild-apk|snapshot-apk|snapshot-rebuild-apk|refuse-mode)\.sh$'
   '^bin/build-(admit|archives|version-check)\.py$'
   '^bin/chain_items\.py$'
   '^bin/chain-admission-old-steps\.txt$'
@@ -179,6 +179,8 @@ ALLOW_PATTERNS=(
   '^bin/(un)?pack-govulncheck\.sh$'
   '^bin/check-records-digests\.sh$'
   '^bin/check-(guide-plan|osv-db|image-platforms|bind|osv-vex)\.py$'
+  '^bin/guide-judge-test\.sh$'
+  '^bin/guide_plan_judge\.py$'
   '^bin/acceptance-(gradle|gradle-capped|maven|maven-capped|egress|k8s|serve)\.sh$'
   '^bin/acceptance-k8s-(manifests|smoke)\.py$'
   '^bin/chain-check-(scripts|wiring)-test\.sh$'
@@ -191,7 +193,7 @@ ALLOW_PATTERNS=(
   # The marker-only pull request gate (REQ-CHAIN-001-AC6, slice 4b-6): the script and its suite.
   '^bin/marker-(pr-gate\.py|gate-test\.sh)$'
   # Release (PR 4): the six Witness-step scripts and the post-publish planner, the crane pin test, and the Release wiring and script tests with their judge.
-  '^bin/release-(verify|apks|compare|publish|sign|stage|assets|postverify)\.sh$'
+  '^bin/release-(verify|apks|compare|publish|sign|signatures|stage|assets|postverify)\.sh$'
   '^bin/release-(postverify|metadata|layout|compare)\.py$'
   '^bin/chain-(install-crane|release-scripts|release-wiring|release-metadata)-test\.sh$'
   '^bin/chain-release-shape\.py$'
@@ -206,8 +208,6 @@ ALLOW_PATTERNS=(
   # REQ-AUD-18 AC1: the auditor's suites (matrix, mutants, parser runner, govulncheck fixture
   # materializer) and its requirements matrix live under .github/agent/ with the code.
   '^\.github/agent/tests/[A-Za-z0-9._-]+\.(sh|py)$'
-  # REQ-SUP-001: recorded publisher signatures (public Sigstore data: certificates, signatures, log entries) for the pin-age tests; JSON files in this one folder.
-  '^\.github/agent/tests/fixtures/image-publishers/[A-Za-z0-9._-]+\.json$'
   # REQ-AUD-18 AC2: the hash-pinned coverage tool and the reasoned exclusion ranges.
   '^\.github/agent/coverage-requirements\.txt$'
   # the report lint's hash-pinned, test-only renderer (GitHub's cmark-gfm)
@@ -307,12 +307,12 @@ ALLOW_PATTERNS=(
   '^build/keys/assembly\.rsa(\.pub)?$'
   '^build/keys/release\.rsa\.pub$'
   # Build-chain scripts: build-apk, assemble-image, apko-lock, install-build-tools, release-sign-apks,
-  # sealed-proof, lock-proof, refresh-inputs (.sh); apk-tool, gen-recipes, go-module-sbom (.py).
+  # sealed-proof, lock-proof, refresh-inputs (.sh); apk-tool, gen-recipes, go-module-sbom, refresh-inputs (.py).
   '^bin/(build-apk|assemble-image|apko-lock|install-build-tools|release-sign-apks|sealed-proof|lock-proof|refresh-inputs)\.sh$'
   '^bin/build-freeze\.sh$'
   # The wrapper that hands the release role and its token file to a release step as AWS variables.
   '^bin/with-aws-token\.sh$'
-  '^bin/(apk-tool|gen-recipes|go-module-sbom|install-host-bwrap)\.py$'
+  '^bin/(apk-tool|gen-recipes|go-module-sbom|install-host-bwrap|refresh-inputs)\.py$'
   # The shared test library and the split build-chain tests.
   '^bin/melange-apko-lib\.sh$'
   '^bin/(build-helpers|refresh-inputs|build-apk|assemble-image|archive)-test\.sh$'
@@ -352,6 +352,11 @@ ALLOW_PATTERNS=(
   '^bin/evidence-letter\.py$'
   '^bin/evidence-letter(-fetch|-publish|-verify|-present|-test|-job-test)\.sh$'
   '^docs/evidence-letter-signatory\.txt$'
+  # REQ-REL-009: CI cuts a patch tag and the one release KMS key signs it: the tag signer, the tag jobs judge and their tests
+  '^bin/tag-sign\.py$'
+  '^bin/tag-sign-test\.sh$'
+  '^bin/chain-tag-jobs-(judge\.py|test\.sh)$'
+  '^bin/patch-tag-texts-test\.sh$'
 
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'

@@ -26,6 +26,12 @@ unmapped:
 # They cannot be listed above: the validator refuses a residual that is also mapped, and both ACs are mapped for production and -fips (Check, PR 3).
   - ac: REQ-GUIDE-001-AC8
     reason: "manual acceptance not done yet: the owner's cold reading, the second reader on a clean machine, and pipeline's AC7 run executing every command against a candidate; recorded as manual evidence in mappings.yaml when each is done"
+  - ac: REQ-DEP-002-AC1
+    reason: "deprecated: the required-check guard was removed from the release branch, so no test remains for it; the requirement is kept, marked deprecated, never deleted"
+  - ac: REQ-DEP-002-AC2
+    reason: "deprecated: the required-check guard and its drift issue were removed from the release branch, so no test remains for them; the requirement is kept, marked deprecated, never deleted"
+  - ac: REQ-DEP-002-AC3
+    reason: "the suite that held it was deleted with the required-check guard; no check holds this criterion now"
   - ac: REQ-DEP-004-AC1
     reason: "deprecated: the fixer dispatch was removed from the repository, so no test remains for it; the requirement is kept, marked deprecated, never deleted"
   - ac: REQ-DEP-004-AC2
@@ -34,11 +40,11 @@ unmapped:
     reason: "no test proves it yet: the automatic VEX patch release is decided in release.yml decide, which the section 1 fix removes; section 3 amends the AC to what remains and the test for that text is credited then"
 # The checks these criteria named were deleted by the release audit ruling of Nov 12 (cache#359 section 1); no check holds them now. An entry goes when its criterion is withdrawn in a requirements text change or a check holds it again.
   - ac: REQ-DEP-005-AC1
-    reason: "the cases that held it were deleted from bin/required-check-guard-test.sh and bin/check-file-allowlist-test.sh by the release audit ruling of Nov 12; no check holds this criterion now"
+    reason: "the cases that held it were deleted from bin/check-file-allowlist-test.sh by the release audit ruling of Nov 12, and the suite that held the rest was deleted with the required-check guard; no check holds this criterion now"
   - ac: REQ-DEP-005-AC2
-    reason: "the cases that held it were deleted from bin/required-check-guard-test.sh by the release audit ruling of Nov 12; no check holds this criterion now"
+    reason: "the suite that held it was deleted with the required-check guard; no check holds this criterion now"
   - ac: REQ-DEP-005-AC3
-    reason: ".github/agent/tests/queue-gate-judge-test.sh was deleted by the release audit ruling of Nov 12, and the proves: line of bin/required-check-guard-test.sh no longer claims this criterion; no check holds it now"
+    reason: ".github/agent/tests/queue-gate-judge-test.sh was deleted by the release audit ruling of Nov 12, and the merge queue wiring suite was deleted with the required-check guard; no check holds it now"
   - ac: REQ-REL-009-AC10
     reason: "the check it named was deleted by the release audit ruling of Nov 12; no check holds this criterion now"
   - ac: REQ-CI-001-AC1

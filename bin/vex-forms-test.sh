@@ -335,7 +335,7 @@ mods = {a.name for n in ast.walk(gsrc) if isinstance(n, ast.Import) for a in n.n
        {n.module for n in ast.walk(gsrc) if isinstance(n, ast.ImportFrom)}
 env_reads = [n.attr for n in ast.walk(gsrc) if isinstance(n, ast.Attribute) and n.attr in ("environ", "getenv", "environb")]
 check("AC7 the generator imports no clock, randomness or network module and reads no environment variable",
-      mods <= {"argparse", "json", "os", "re", "sys", "urllib.parse"} and not env_reads, (sorted(mods), env_reads))
+      mods <= {"argparse", "importlib.util", "json", "os", "re", "sys", "urllib.parse"} and not env_reads, (sorted(mods), env_reads))
 # --- AC1, AC2 on the real OpenVEX file. AC2 is read as the advisor's reading (a), handoff 0389: "all statements" means
 # every statement that applies to THIS release's images; a statement whose products are images the release does not ship
 # does not belong in its forms. "Applies" is computed here from the products alone, independent of the generator.
@@ -729,6 +729,51 @@ check("G the published document no longer describes a :debug image or busybox",
 check("G the document's version moved past the fixture's (6)", real["version"] > json.load(open(BBVEX))["version"], real["version"])
 check("G the busybox fixture keeps the three retired statements for the generator's tests",
       sorted(s_["vulnerability"]["name"] for s_ in json.load(open(BBVEX))["statements"]) == ["CVE-2024-51744", "CVE-2024-58251", "CVE-2025-46394", "CVE-2025-60876"])
+# --- one reading of @id: null is skipped (the identifiers.purl is read), anything else that is not a string is a ValueError
+def tried(f):                      # the result, or the exception's name: a crash is one failed check, not the end of the run
+    try:
+        return f()
+    except Exception as e:
+        return type(e).__name__
+check("a null @id is skipped and the identifiers.purl names the product",
+      tried(lambda: V._purl_of({"@id": None, "identifiers": {"purl": OURS}}, "CVE-N1")) == OURS)
+def raises_value(c):
+    try:
+        V._purl_of(c, "CVE-N2"); return False
+    except ValueError:
+        return True
+    except Exception:
+        return False
+for name, comp in (("a null @id and no purl", {"@id": None}), ("a number @id", {"@id": 5}), ("a list @id", {"@id": ["x"]}),
+                   ("a dict @id", {"@id": {}}), ("a number @id beside a purl", {"@id": 5, "identifiers": {"purl": OURS}})):
+    check("%s raises ValueError" % name, raises_value(comp))
+check("a null @id on a subcomponent is read from its identifiers.purl",
+      tried(lambda: V._scopes(scoped("CVE-N3", "affected", [{"@id": OURS, "subcomponents": [
+          {"@id": None, "identifiers": {"purl": "pkg:generic/busybox@1.37.0"}}]}]), [D("1")])) == [([D("1")], ("busybox", "1.37.0"))])
+check("the panel reads a null @id as the identifiers.purl, as the forms do",
+      PANEL._product_id({"@id": None, "identifiers": {"purl": OURS}}) == OURS)
+# --- superseded statements are applied before the conflict check
+def two(first, second):
+    a, b = scoped("CVE-SUP", first, BB), scoped("CVE-SUP", second, BB)
+    a["timestamp"], b["timestamp"] = "2026-09-01T00:00:00Z", "2026-09-02T00:00:00Z"
+    return dict(VEX, statements=[a, b])
+def made(doc):
+    r = tried(lambda: V.inspector(doc, IMAGES, "v0.3.0"))
+    return "refused" if r == "ValueError" else [x["filterCriteria"]["vulnerabilityId"][0]["value"] for x in r["filters"]]
+check("a not_affected replaced by a later affected is no conflict, and makes no rule", made(two("not_affected", "affected")) == [],
+      made(two("not_affected", "affected")))
+check("an affected replaced by a later not_affected is no conflict, and makes the rule", made(two("affected", "not_affected")) == ["CVE-SUP"],
+      made(two("affected", "not_affected")))
+check("the CSAF form applies the same order", tried(lambda: V.csaf(two("not_affected", "affected"), IMAGES, "v0.3.0")) != "ValueError")
+other = scoped("CVE-SUP", "affected", [{"@id": OURS, "subcomponents": [{"@id": "pkg:generic/zlib@1.3"}]}])
+check("a statement on another package does not supersede, so the conflict stays",
+      made(dict(VEX, statements=[scoped("CVE-SUP", "not_affected", [{"@id": OURS}]), other])) == "refused")
+# --- the delimiter count refuses a delimiter that was only percent-encoded, in the name or the version
+for sid in ("pkg:generic/busybox%2Fx@1", "pkg:generic/busybox%40x@1", "pkg:generic/busybox%3Fx@1", "pkg:generic/busybox%23x@1",
+            "pkg:generic/busybox@1%2F2", "pkg:generic/busybox@1%3Fx", "pkg:generic/busybox@1%23x",
+            "pkg:golang/github.com%2Fa/b@v1", "pkg:golang/github.com/a%40b@v1", "pkg:golang/github.com/a%3Fb@v1",
+            "pkg:golang/github.com/a%23b@v1", "pkg:golang/github.com/a/b@v1%2F2", "pkg:golang/github.com/a/b@v1%3Fx"):
+    check("an encoded delimiter is refused: %s" % sid, refused({"@id": OURS, "subcomponents": [{"@id": sid}]}))
 # --- AC-B2: the generator leaves out every Go standard library subcomponent whose version is not the one build/melange.yaml pins
 def sub_doc(*subs):
     return {"statements": [scoped("CVE-B2", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": x} for x in subs]}])]}
@@ -765,6 +810,7 @@ def melange_with(ver_amd, ver_arm):
 def run_in_tree(melange_text, doc):
     t_ = tempfile.mkdtemp(); os.makedirs(t_ + "/bin"); os.makedirs(t_ + "/build"); os.makedirs(t_ + "/out")
     open(t_ + "/bin/vex-forms.py", "w").write(open(GEN).read())
+    open(t_ + "/bin/inspector-gate.py", "w").write(open(os.path.join(root, "bin", "inspector-gate.py")).read())   # the generator loads the gate from <tree>/bin
     if melange_text is not None: open(t_ + "/build/melange.yaml", "w").write(melange_text)
     p_ = t_ + "/in.openvex.json"; json.dump(doc, open(p_, "w")); o_ = t_ + "/out"
     f_ = t_ + "/digests.json"; open(f_, "w").write(J(IMAGES))
@@ -830,6 +876,41 @@ for what, extra in (("a .src.tar.gz line of another version", "      uri: https:
           r_.returncode == 0 and got_ == ok_got and ok_r.returncode == 0, (r_.returncode, r_.stderr[-300:]))
 r_, got_ = run_with(MEL + "\n      uri: https://go.dev/dl/go%s.linux-s390x.tar.gz\n" % other_ver, sub_doc(f"pkg:golang/stdlib@{BUILD_GO}"))
 check("R6 a third real linux line of another version still refuses", r_.returncode == 1 and "vex-forms: refused, nothing written" in r_.stderr and not got_, (r_.returncode, r_.stderr[-200:]))
+for what, extra in (("a comment line holding a go.dev Go URL of another version",
+                     "      # Previous toolchain: https://go.dev/dl/go%s.linux-amd64.tar.gz\n" % other_ver),
+                    ("a uri line on another host with another version",
+                     "      uri: https://evil.example/dl/go%s.linux-amd64.tar.gz\n" % other_ver)):
+    r_, got_ = run_with(MEL + "\n" + extra, two)
+    check("R6 a melange.yaml with the normal lines plus %s works as with the normal lines" % what,
+          r_.returncode == 0 and got_ == ok_got and ok_r.returncode == 0, (r_.returncode, r_.stderr[-300:]))
+foreign_ = MEL.replace("https://go.dev/dl/", "https://evil.example/dl/")
+r_, got_ = run_with(foreign_, sub_doc(f"pkg:golang/stdlib@{BUILD_GO}"))
+check("R6 a melange.yaml whose Go fetch URIs are all on another host refuses, nothing written",
+      r_.returncode == 1 and "vex-forms: refused, nothing written" in r_.stderr and not got_,
+      (r_.returncode, r_.stderr[-200:]))
+# R8: a YAML scalar's quotes and trailing ' #' comment are read before the host is checked
+def uri_of(arch): return "https://go.dev/dl/go%s.linux-%s.tar.gz" % (BUILD_GO, arch)
+def with_uris(amd, arm): return MEL.replace(uri_of("amd64"), amd).replace(uri_of("arm64"), arm)
+DOC8 = sub_doc(f"pkg:golang/stdlib@{BUILD_GO}")
+KEPT8 = lambda g: [f["filterCriteria"]["vulnerablePackages"][0]["version"]["value"]
+                   for f in g.get(FORMS[0], {}).get("filters", [])]
+AMD, ARM = uri_of("amd64"), uri_of("arm64")
+for what, fmt in (("single-quoted", "'%s'"),
+                  ("double-quoted with a trailing comment", '"%s" # toolchain'),
+                  ("unquoted with a trailing comment", "%s # toolchain")):
+    r_, got_, o_ = run_in_tree(with_uris(fmt % AMD, fmt % ARM), DOC8)
+    check("R8 Go URIs that are %s give the build's version" % what,
+          r_.returncode == 0 and "refused" not in r_.stderr and KEPT8(got_) == [f"go{BUILD_GO}"],
+          (r_.returncode, r_.stderr[-300:]))
+arm_other = ARM.replace(BUILD_GO, OTHER_GO) + " # ARM toolchain"
+r_, got_, o_ = run_in_tree(with_uris(AMD, arm_other), DOC8)
+check("R8 an arm64 URI of another version with a trailing comment makes two versions: refused",
+      r_.returncode == 1 and "names 2 Go versions, not one" in r_.stderr and not got_,
+      (r_.returncode, r_.stderr[-300:], list(got_)))
+r_, got_, o_ = run_in_tree(with_uris("'%s\"" % AMD, "'%s\"" % ARM), DOC8)
+check("R8 a Go URI with mismatched quotes is not a URI: refused",
+      r_.returncode == 1 and "vex-forms: refused, nothing written" in r_.stderr and not got_,
+      (r_.returncode, r_.stderr[-300:], list(got_)))
 many = {"statements": [scoped("CVE-R6-%d" % i, "not_affected", [{"@id": OURS, "subcomponents": [{"@id": "pkg:golang/stdlib@%s.%s.%d" % (_maj, _min, int(_pat) - 1 - i)} for i in range(5)] + [{"@id": f"pkg:golang/stdlib@{BUILD_GO}"}]}]) for i in range(2)]}
 count_open = ("import builtins, io, atexit, sys\n_n = [0]; _o = builtins.open\n"
               "def _op(f, *a, **k):\n    if str(f).endswith('melange.yaml'): _n[0] += 1\n    return _o(f, *a, **k)\n"
@@ -874,6 +955,31 @@ r_ = run_gen(J(IMAGES), os.path.join(op, "out"), openvex=pp)
 lp = [l for l in r_.stderr.splitlines() if "left out" in l]
 check("R7 one statement naming two products with the same stale stdlib gives two different 'left out' lines",
       r_.returncode == 0 and len(lp) == 2 and len(set(lp)) == 2, (r_.returncode, r_.stderr[-400:]))
+# --- identifiers.purl is normalized before superseded() reads the statements: a subcomponent known only by
+#     identifiers.purl is the package it names
+def live_n(*stmts): return len(V._live({"statements": list(stmts)})["statements"])
+def sub_ids(p): return [{"@id": OURS, "subcomponents": [{"identifiers": {"purl": p}}]}]
+check("R7 two statements for one image whose packages are named only by identifiers.purl (busybox, wget) stay two",
+      live_n(scoped("CVE-SUP1", "not_affected", sub_ids("pkg:generic/busybox@1.37.0")),
+             scoped("CVE-SUP1", "affected", sub_ids("pkg:generic/wget@1.21"))) == 2)
+BB_ID = [{"@id": OURS, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]
+check("R7 the same package named by @id in one statement and by identifiers.purl in a later one: the later "
+      "replaces the earlier",
+      live_n(scoped("CVE-SUP2", "not_affected", BB_ID),
+             scoped("CVE-SUP2", "affected", sub_ids("pkg:generic/busybox@1.37.0"))) == 1)
+# AC-B2-3: a comment line is not a fetch URL, whatever it names
+DOC_ = sub_doc(f"pkg:golang/stdlib@{BUILD_GO}")
+KEPT = lambda g: [f["filterCriteria"]["vulnerablePackages"][0]["version"]["value"]
+                  for f in g.get(FORMS[0], {}).get("filters", [])]
+r_, got_, o_ = run_in_tree(MEL + "\n# uri: https://go.dev/dl/go%s.linux-amd64.tar.gz\n" % OTHER_GO, DOC_)
+check("AC-B2-3 a comment line holding a go.dev Go URL naming another version is not a second version",
+      r_.returncode == 0 and "refused" not in r_.stderr and KEPT(got_) == [f"go{BUILD_GO}"],
+      (r_.returncode, r_.stderr[-300:]))
+# AC-B2-4: only the host the form names (go.dev) is a Go fetch host
+r_, got_, o_ = run_in_tree(MEL.replace("https://go.dev/dl/", "https://example.invalid/dl/"), DOC_)
+check("AC-B2-4 Go fetch lines on a host other than go.dev make the generator refuse (exit 1, nothing written)",
+      r_.returncode == 1 and "vex-forms: refused, nothing written" in r_.stderr and not got_,
+      (r_.returncode, r_.stderr[-300:], list(got_)))
 print("vex-forms: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

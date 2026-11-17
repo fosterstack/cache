@@ -1,8 +1,9 @@
 """The records sweep's library: a dependency-bump branch gets ONE signed commit holding the vendored tree and the
-provenance records its go.mod and go.sum change calls for, so nobody finishes a bump by hand (the gap behind
-cache#394, cache#620 B1/B2).
+provenance records its go.mod and go.sum change calls for, so nobody finishes a bump by hand.
 
 process_branch(repo, branch, ws, run, regenerate): for one dependabot/go_modules/* or auditor/bump-* branch,
+  0. every commit from the merge base to the head must be verified and authored by dependabot[bot] or the App
+     (the branch name alone proves nothing: anyone who can push can name a branch);
   1. the branch must change go.mod (and go.sum) and otherwise only records paths (anything under vendor/, the
      provenance record, the reviewed licences), and its go.mod must add no replace, toolchain or godebug line:
      go mod vendor decides what to vendor from the package imports, so the branch's own tree equals the base's
@@ -37,9 +38,6 @@ PROVENANCE = "dependency-provenance.json"
 
 class Skip(Exception):
     """The branch is left alone; the message is the reason that goes in the log."""
-
-
-subject = signed_commit.records_message
 
 
 def modules_of(text):
@@ -133,18 +131,23 @@ def _export(ws, head, dest):
             except UnicodeDecodeError:
                 raise Skip(NOT_UTF8)
             mode, _, sha = meta.split(" ")
+            if any(part in ("", ".", "..") for part in path.split("/")):
+                raise Skip("%r is not a plain relative path" % path)
             if mode not in ("100644", "100755"):
                 raise Skip("%s is a link or a submodule" % path)
             files[path] = sha
     blobs = subprocess.run(["git", "-C", ws, "cat-file", "--batch"],
-        input="".join(sha + "\n" for sha in sorted(set(files.values()))).encode(),
+                           input="".join(sha + "\n" for sha in sorted(set(files.values()))).encode(),
                            capture_output=True)
     if blobs.returncode != 0:
         raise RuntimeError("git cat-file failed: %s" % " ".join(blobs.stderr.decode("utf-8", "replace").split())[-300:])
     contents, out, at = {}, blobs.stdout, 0
     for sha in sorted(set(files.values())):
         header_end = out.index(b"\n", at)
-        size = int(out[at:header_end].split(b" ")[2])
+        header = out[at:header_end].split(b" ")
+        if len(header) != 3 or header[1] != b"blob":
+            raise RuntimeError("git cat-file has no blob %s" % sha)
+        size = int(header[2])
         contents[sha] = out[header_end + 1:header_end + 1 + size]
         at = header_end + 1 + size + 1
     for path, sha in files.items():
@@ -160,17 +163,19 @@ def _skip_reason(names, base_go_mod, head_go_mod):
             return "the branch changes %s, which is not go.mod, go.sum or a records path" % name
     if "go.mod" not in names:
         return "the branch does not change go.mod"
-    added = {l.strip() for l in head_go_mod.decode("utf-8",
-        "replace").split("\n")} - {l.strip() for l in base_go_mod.decode("utf-8", "replace").split("\n")}
+    head_lines = head_go_mod.decode("utf-8", "replace").split("\n")
+    base_lines = base_go_mod.decode("utf-8", "replace").split("\n")
+    added = {l.strip() for l in head_lines} - {l.strip() for l in base_lines}
     if any(l.startswith(_GO_MOD_DIRECTIVES) or "=>" in l for l in added):
         return "go.mod adds a replace, toolchain or godebug line"
     return None
 
 
-def process_branch(repo, branch, ws, run, regenerate, dry_run=False):
-    """One branch; returns the line the sweep logs: 'committed <oid>', 'up to date', 'dry run: ...', 'gone',
+def process_branch(repo, branch, ws, run, regenerate, dry_run=False, app_login=None):
+    """One branch (app_login: the App's login, e.g. 'name[bot]'; without it only Dependabot's commits are trusted);
+    returns the line the sweep logs: 'committed <oid>', 'up to date', 'dry run: ...', 'gone',
     'skipped: <reason>' or 'failed: <reason>'."""
-    if not signed_commit._BUMP_BRANCH.match(branch):
+    if not signed_commit.is_bump_branch(branch):
         return "skipped: not a dependency-bump branch"
     try:
         head = signed_commit._head(run, repo, branch)
@@ -181,6 +186,10 @@ def process_branch(repo, branch, ws, run, regenerate, dry_run=False):
         if _git(ws, "rev-parse", "refs/remotes/origin/" + branch).decode().strip() != head:
             return "skipped: the branch moved while it was fetched"
         base = _git(ws, "merge-base", "origin/main", head).decode().strip()
+        logins = {"dependabot[bot]", app_login}
+        notes = []
+        if not signed_commit.commits_authored_by(run, repo, base, head, logins, notes):
+            return "skipped: " + "; ".join(notes)
         names = [n for n in _git(ws, "diff", "--name-only", "-z", "--no-renames", base, head).decode().split("\0") if n]
         why = _skip_reason(names, _show(ws, base, "go.mod") or b"", _show(ws, head, "go.mod") or b"")
         if why:
@@ -200,12 +209,13 @@ def process_branch(repo, branch, ws, run, regenerate, dry_run=False):
             shutil.rmtree(tmp, ignore_errors=True)
         if not changes:
             return "up to date"
-        if _git(ws, "log", "-1", "--format=%B", head).decode().strip() == subject(branch):
+        if _git(ws, "log", "-1", "--format=%B", head).decode().strip() == signed_commit.records_message(branch):
             return ("skipped: the records commit on the head does not match what is regenerated (%d files differ)"
                     % len(changes))
         if dry_run:
             return "dry run: would commit %d files" % len(changes)
-        return "committed " + signed_commit.commit_on_branch(repo, branch, head, subject(branch), changes, run=run)
+        message = signed_commit.records_message(branch)
+        return "committed " + signed_commit.commit_on_branch(repo, branch, head, message, changes, run=run)
     except Skip as e:
         return "skipped: %s" % e
     except UnicodeDecodeError:
@@ -226,11 +236,11 @@ def go_env(scratch):
     """A closed environment: only these variables, the checksum database on at its default, no workspace file, no
     credential helper."""
     return {"GOTOOLCHAIN": "local", "GOFLAGS": "", "GOENV": "off", "GOWORK": "off", "GOAUTH": "off",
-        "GOSUMDB": "sum.golang.org",
+            "GOSUMDB": "sum.golang.org",
             "GOPROXY": "https://proxy.golang.org", "GOPATH": os.path.join(scratch, "gopath"),
-                "GOMODCACHE": os.path.join(scratch, "gopath", "pkg", "mod"),
+            "GOMODCACHE": os.path.join(scratch, "gopath", "pkg", "mod"),
             "GOCACHE": os.path.join(scratch, "gocache"), "HOME": os.path.join(scratch, "home"), "TMPDIR": scratch,
-                "PATH": os.environ.get("PATH", "")}
+            "PATH": os.environ.get("PATH", "")}
 
 
 def make_regenerate(tools, runner=subprocess.run, go=GO):
@@ -253,8 +263,8 @@ def make_regenerate(tools, runner=subprocess.run, go=GO):
                 os.makedirs(os.path.join(scratch, d))
             r = runner([go, "mod", "vendor"], cwd=work, env=env, capture_output=True, stdin=subprocess.DEVNULL)
             if r.returncode != 0:
-                raise Skip("go mod vendor failed: %s" % " ".join((r.stderr or b"").decode("utf-8",
-                    "replace").split())[-300:])
+                tail = " ".join((r.stderr or b"").decode("utf-8", "replace").split())[-300:]
+                raise Skip("go mod vendor failed: %s" % tail)
             with open(os.path.join(work, "vendor", "modules.txt"), "rb") as fh:
                 modules = modules_of(fh.read())
             def new_license(path):
@@ -269,18 +279,18 @@ def make_regenerate(tools, runner=subprocess.run, go=GO):
             script = lambda name: os.path.join(tools, "bin", name)
             vendor_args = ["--vendor-dir", "vendor", "--go-sum", "go.sum"]
             step("the records step", ["python3", "-I", script("vendor-provenance-records.py"), *vendor_args,
-                "--licenses", LICENCES,
+                                      "--licenses", LICENCES,
                                       "--recorded-origins", ORIGINS, "--out-dir", out], work, env)
             # build refuses a destination that exists, and the branch has one
             built = os.path.join(scratch, "provenance.json")
             step("the provenance build", ["python3", "-I", script("vendor-provenance.py"), "build", *vendor_args,
-                "--sumdb-record", out + "/sumdb.json",
+                                          "--sumdb-record", out + "/sumdb.json",
                                           "--origins", out + "/origins.json", "--licenses", out + "/licenses.json",
-                                              "--recorded-origins", ORIGINS,
+                                          "--recorded-origins", ORIGINS,
                                           "--out", built], work, env)
             os.replace(built, os.path.join(work, PROVENANCE))
             step("the provenance check", ["python3", "-I", script("vendor-provenance.py"), "check", *vendor_args,
-                "--provenance", PROVENANCE], work, env)
+                                          "--provenance", PROVENANCE], work, env)
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
     return regenerate

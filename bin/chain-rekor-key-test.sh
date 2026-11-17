@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-002-AC3
 # Ratify B (owner, Oct 29): a record signed by the KMS release key must carry a Rekor entry, and Release refuses a signature without one.
-# These tests call three functions of bin/chain-verify.py:
+# These tests call two functions of bin/chain-verify.py:
 #   check_rekor_entry(pol, entry, body, sig, key_der) -> None when good, else the reason it is not
 #   check_rekor(pol, stage, entries_path, payload, sig, key_der)   raises Refuse when no entry binds this record
-#   rekor_with_retry(fetch, sleep)  one try, then up to six retries after waits of 1, 2, 4, 8, 16 and 32 seconds; then Refuse in one line naming Rekor
 # `key_der` is the DER of the manifest's KMS public key; the entry's `verifier` must be that key. No certificate, no Fulcio, and no time
 # inside the entry is trusted (an entry integrated long ago is accepted; only the log's signature over it counts).
 # Nothing here opens a network connection: every entry is built in this file and signed with a throwaway key made for this run
@@ -156,43 +155,8 @@ refused("an entries value that is not a list is refused", entries_file("notlist.
 refused("an empty list of entries is refused: no entry binds this record", entries_file("empty.json", {"entries": []}), "no rekor entry")
 refused("an entry for another payload is refused", entries_file("otherp.json", {"entries": [e_good]}), "no rekor entry", payload_=b"another payload")
 
-# the wait and retry when Rekor is down: one try, then six retries after 1, 2, 4, 8, 16, 32 seconds (about a minute), then one refusing line
-slept = []
-calls = {"n": 0}
-
-
-def down():
-    calls["n"] += 1
-    raise OSError("connection refused")
-
-
-try:
-    cv.rekor_with_retry(down, slept.append)
-except cv.Refuse as ex:
-    line = str(ex)
-    ok("Rekor down: refused after the last retry in one line naming Rekor (%s)" % line) if ("\n" not in line and "ekor" in line) else bad("Rekor down: the refusal is not one line naming Rekor: %r" % line)
-except Exception as ex:
-    bad("Rekor down -> %s: %s" % (type(ex).__name__, ex))
-else:
-    bad("Rekor down -> accepted")
-ok("Rekor down: seven tries in all") if calls["n"] == 7 else bad("Rekor down: %d tries, wanted 7 (one, then six retries)" % calls["n"])
-ok("Rekor down: waits 1, 2, 4, 8, 16, 32 seconds") if slept == [1, 2, 4, 8, 16, 32] else bad("Rekor down: waits %r" % slept)
-
-slept2, calls2 = [], {"n": 0}
-
-
-def flaky():
-    calls2["n"] += 1
-    if calls2["n"] < 3:
-        raise OSError("connection refused")
-    return {"entries": [e_good]}
-
-
-try:
-    got = cv.rekor_with_retry(flaky, slept2.append)
-    ok("Rekor back on the third try: the entries are returned after waits 1 and 2") if (slept2 == [1, 2] and got == {"entries": [e_good]}) else bad("Rekor back on the third try: waits %r, got %r" % (slept2, got))
-except Exception as ex:
-    bad("Rekor back on the third try -> %s: %s" % (type(ex).__name__, ex))
+# nothing retries the log read: the retry helper and its exception have no caller but tests, so both are gone
+(ok if not hasattr(cv, "rekor_with_retry") and not hasattr(cv, "RekorDown") else bad)("rekor_with_retry and RekorDown are deleted")
 
 # the wiring: verify_record asks for the Rekor entry of every record type:
 # the provenance, the release policy and a Witness collection
@@ -372,7 +336,7 @@ def fake_aws(fb, d, algs, rc=0, sign_rc=0):
            "    print(json.dumps({'SigningAlgorithms': %r, 'PublicKey': %r} if 'PublicKey' in q else %r)); sys.exit(0)\n"
            "if a[:2] == ['kms', 'sign']:\n    if %d:\n        sys.stderr.write('An error occurred (AccessDeniedException)'); sys.exit(%d)\n"
            "    print(json.dumps({'SigningAlgorithm': %r, 'Signature': %r})); sys.exit(0)\nsys.exit(3)\n"
-           % (os.path.join(d, "aws-calls"), rc, rc or 255, list(algs), b64(kms_der), list(algs), sign_rc, sign_rc or 255, PKCS1, b64(sig)))
+           % (os.path.join(d, "aws-calls"), rc, rc or 255, algs if isinstance(algs, str) else list(algs), b64(kms_der), algs if isinstance(algs, str) else list(algs), sign_rc, sign_rc or 255, PKCS1, b64(sig)))
     open(os.path.join(fb, "aws"), "w").write(src); os.chmod(os.path.join(fb, "aws"), 0o755)
 
 
@@ -555,6 +519,28 @@ for tag, mk in (("no newline after the END line", lambda t: t.rstrip("\n")), ("a
     (ok if sh("openssl", "pkey", "-pubin", "-in", badpem, "-outform", "DER") == kms_der else bad)("C8 fixture: openssl reads the key file with %s as the KMS key" % tag)
     calls, posts, slept, out, _ = ks("kms_sign: a public key file with %s is refused naming the public key" % tag, "public key", public_key=badpem)
     (ok if n_sign(calls) == 0 and posts == [] and not os.path.exists(out) else bad)("kms_sign: the key file with %s is refused with 0 KMS Sign calls, 0 POSTs and no record: signs %d, POSTs %d" % (tag, n_sign(calls), len(posts)))
+# release_pub_pem takes the whole key file or nothing: one PEM public key block, an optional single trailing newline, no text before it, after it or a second block.
+# The CLI path is bundle-check (a readable bundle, so the key file is the only thing that can refuse): one refusal line naming the key file, exit 1, no traceback.
+def rpp_file(tag, text):
+    p = os.path.join(work, "rpp-%s.pub" % tag.replace(" ", "_")); open(p, "w", newline="").write(text); return p
+def rpp_cli(p):
+    bundle = os.path.join(work, "rpp-bundle.json")
+    open(bundle, "w").write('{"verificationMaterial":{"tlogEntries":[]},"messageSignature":{"signature":"AAAA"}}')
+    r = subprocess.run(["python3", "-I", os.path.join(root, "bin", "chain-verify.py"), "bundle-check", "--bundle", bundle, "--digest", "0" * 64, "--public-key", p,
+                        "--signing-config", SIGNING_CONFIG], capture_output=True, text=True)
+    return r.returncode, r.stderr
+for tag, mk in (("text before the PEM", lambda t: "note: this is the release key\n" + t), ("text after the PEM", lambda t: t + "note: end of file\n"),
+                ("two PEM blocks", lambda t: t + t)):
+    p = rpp_file(tag, mk(kms_pem))
+    (ok if cv.release_pub_pem(p) is None else bad)("release_pub_pem: a key file with %s is refused (None)" % tag)
+    rc, err = rpp_cli(p)
+    (ok if rc != 0 and "cannot read the public key" in err and "Traceback" not in err else bad)(
+        "bundle-check: a key file with %s is refused naming the public key, exit nonzero, no traceback: exit %d, stderr %r" % (tag, rc, err[:200]))
+(ok if cv.release_pub_pem(KMSPUB) == kms_pem.encode() else bad)("release_pub_pem: a valid key file is read as its own bytes")
+(ok if cv.release_pub_pem(rpp_file("crlf", kms_pem.replace("\n", "\r\n"))) == kms_pem.encode() else bad)("release_pub_pem: a valid key file with CRLF line ends is read as the LF key (as the C8 note above says)")
+r = subprocess.run(["python3", "-I", os.path.join(root, "bin", "chain-known-red.py"), "judge", "--inner-rc", "0"], input="pass=0 fail=0\n", capture_output=True, text=True)
+(ok if r.returncode != 0 and "Traceback" not in r.stdout + r.stderr and len((r.stdout + r.stderr).splitlines()) == 1 else bad)(
+    "chain-known-red.py judge without --suite prints one line, no traceback, and exits nonzero: exit %d, %d lines, output %r" % (r.returncode, len((r.stdout + r.stderr).splitlines()), (r.stdout + r.stderr)[:300]))
 _pin_ok = cv.pinned_rekor_pem
 def _pin_bad(cfg): raise cv.Refuse("sign", "the pinned Rekor key cannot be read")
 cv.pinned_rekor_pem = _pin_bad
@@ -576,7 +562,7 @@ try:
 except cv.Refuse as ex:
     (ok if "exists" in ex.reason and not os.path.exists(os.path.join(d, "aws-calls")) and not RK["posts"] else bad)("kms_sign: an existing record is refused before aws is asked (%s)" % ex.reason)
 
-# ---- sign-record checks the key reference in one place, refuses before KMS when either path exists,
+# ---- kms-sign refuses when either path exists,
 # writes the entries file first and the record last (the record is the commit point).
 # R2: refuse when either path exists (a symlink or a directory counts), before aws is asked
 def kr(label, setup, want):
@@ -612,40 +598,35 @@ calls, posts, slept, out, _ = ks("kms_sign: the entries path is taken while Reko
 def plant_record(): os.makedirs(RK["out"])
 calls, posts, slept, out, _ = ks("kms_sign: the record path is taken while Rekor answers", "nothing is left behind", after=plant_record)
 (ok if not os.path.lexists(out[:-len(".json")] + ".rekor.json") else bad)("kms_sign: when the record cannot be written, the entries file this call made is removed")
-# W2: sign-record refuses an unset or different RELEASE_KMS_KEY_REF with exit 2 before cosign; the equal value reaches cosign
-def sr_run(label, refval, want_rc, want_cosign, algs=(PKCS1,), aws_rc=0, text=None, want_aws=None):
-    # the real sign-record in a subprocess with a fake aws whose KMS Sign is refused: the run ends there, before any Rekor POST (no network); a fake cosign records that nothing calls it
+# W2: sign-record refuses an unset or different RELEASE_KMS_KEY_REF with exit 2 before any aws call; the equal value reaches KMS Sign (the fake refuses it)
+def sr_run(label, refval, want_rc, algs=(PKCS1,), aws_rc=0, text=None, want_aws=None):
     d = os.path.join(work, "w2-" + label.replace(" ", "_")[:30]); fb = os.path.join(d, "fakebin"); os.makedirs(fb)
-    open(os.path.join(fb, "cosign"), "w").write("#!/bin/sh\necho called >> %s/calls\nexit 1\n" % d); os.chmod(os.path.join(fb, "cosign"), 0o755)
     if algs is not None: fake_aws(fb, d, list(algs), aws_rc, sign_rc=255)
     open(os.path.join(d, "payload"), "wb").write(STATEMENT)
     env = {"PATH": fb + ":/usr/bin:/bin", "LC_ALL": "C"}
     if refval is not None: env["RELEASE_KMS_KEY_REF"] = refval
     r = subprocess.run([sys.executable, "-I", "-B", os.path.join(root, "bin", "chain-verify.py"), "sign-record", "--payload", os.path.join(d, "payload"),
-                        "--out", os.path.join(d, "o", "a-collection.json"), "--template", os.path.join(root, ".github", "policy", "release-policy.template.json"), "--public-key", KMSPUB],
-                       env=env, capture_output=True, text=True)
-    called = os.path.exists(os.path.join(d, "calls"))
+                        "--out", os.path.join(d, "o", "a-collection.json"), "--template", os.path.join(root, ".github", "policy", "release-policy.template.json"),
+                        "--aws", os.path.join(fb, "aws"), "--public-key", KMSPUB], env=env, capture_output=True, text=True)
     asked = os.path.exists(os.path.join(d, "aws-calls"))
-    good = r.returncode == want_rc and called == want_cosign and (text is None or text in r.stderr) and (want_aws is None or asked == want_aws)
-    (ok if good else bad)("sign-record: RELEASE_KMS_KEY_REF %s -> exit %d, cosign %s (got exit %d, cosign called %s, aws asked %s: %s)" % (
-        label, want_rc, "called" if want_cosign else "not called", r.returncode, called, asked, r.stderr.strip()[:160]))
-sr_run("unset", None, 2, False)
-sr_run("another alias", "awskms:///alias/other", 2, False)
-sr_run("not a KMS reference", "alias/fosterstack-release-signing", 2, False)
-sr_run("equal to the pinned key", cv.RELEASE_KEY_REF, 1, False, want_aws=True, text="aws kms sign failed")       # KMS Sign is asked once (the fake refuses it) and cosign is never called
-# KA-0: before KMS is asked to sign, the release key must list RSASSA_PKCS1_V1_5_SHA_256
-# (kms-sign names the algorithm on every call, so its place in the list does not matter).
-# A key that lists it, in any place, passes the guard and reaches the KMS Sign call
-# (which the fake refuses: exit 1, "aws kms sign failed")
-sr_run("KA-0 key lists another algorithm first, PKCS1 second: the guard passes", cv.RELEASE_KEY_REF, 1, False, algs=("RSASSA_PSS_SHA_256", PKCS1), text="aws kms sign failed", want_aws=True)
-sr_run("KA-0 key lists PKCS1 second of three: the guard passes", cv.RELEASE_KEY_REF, 1, False, algs=("RSASSA_PKCS1_V1_5_SHA_384", "RSASSA_PSS_SHA_256", PKCS1), text="aws kms sign failed")
-sr_run("KA-0 key does not list PKCS1 at all", cv.RELEASE_KEY_REF, 2, False, algs=("RSASSA_PSS_SHA_256",), text="does not support RSASSA_PKCS1_V1_5_SHA_256")
-sr_run("KA-0 empty algorithm list", cv.RELEASE_KEY_REF, 2, False, algs=(), text="does not support RSASSA_PKCS1_V1_5_SHA_256")
-sr_run("KA-0 aws CLI fails", cv.RELEASE_KEY_REF, 1, False, aws_rc=255, text="aws kms get-public-key failed")
-sr_run("KA-0 aws CLI missing", cv.RELEASE_KEY_REF, 1, False, algs=None, text="cannot run the aws CLI")
-sr_run("KA-0 a wrong alias is refused before aws is asked", "awskms:///alias/other", 2, False, algs=("RSASSA_PSS_SHA_256", PKCS1), want_aws=False)
+    good = r.returncode == want_rc and (text is None or text in r.stderr) and (want_aws is None or asked == want_aws)
+    (ok if good else bad)("sign-record: RELEASE_KMS_KEY_REF %s -> exit %d (got exit %d, aws asked %s: %s)" % (label, want_rc, r.returncode, asked, r.stderr.strip()[:160]))
+sr_run("unset", None, 2, text="RELEASE_KMS_KEY_REF", want_aws=False)
+sr_run("another alias", "awskms:///alias/other", 2, text="not a KMS key reference of the release key", want_aws=False)
+sr_run("not a KMS reference", "alias/fosterstack-release-signing", 2, text="not a KMS key reference of the release key", want_aws=False)
+sr_run("equal to the pinned key", cv.RELEASE_KEY_REF, 1, want_aws=True, text="aws kms sign failed")
+# a legitimate run reaches KMS Sign and ends there (the fake refuses it)
+sr_run("legitimate run reaches KMS Sign", cv.RELEASE_KEY_REF, 1, text="aws kms sign failed", want_aws=True)
+# KA-0: before KMS is asked to sign, the release key must list RSASSA_PKCS1_V1_5_SHA_256, in any place of the list
+sr_run("KA-0 key lists another algorithm first, PKCS1 second: the guard passes", cv.RELEASE_KEY_REF, 1, algs=("RSASSA_PSS_SHA_256", PKCS1), text="aws kms sign failed", want_aws=True)
+sr_run("KA-0 key lists PKCS1 second of three: the guard passes", cv.RELEASE_KEY_REF, 1, algs=("RSASSA_PKCS1_V1_5_SHA_384", "RSASSA_PSS_SHA_256", PKCS1), text="aws kms sign failed")
+sr_run("KA-0 key does not list PKCS1 at all", cv.RELEASE_KEY_REF, 2, algs=("RSASSA_PSS_SHA_256",), text="does not support RSASSA_PKCS1_V1_5_SHA_256")
+sr_run("KA-0 empty algorithm list", cv.RELEASE_KEY_REF, 2, algs=(), text="does not support RSASSA_PKCS1_V1_5_SHA_256")
+sr_run("KA-0 aws CLI fails", cv.RELEASE_KEY_REF, 1, aws_rc=255, text="aws kms get-public-key failed")
+sr_run("KA-0 aws CLI missing", cv.RELEASE_KEY_REF, 1, algs=None, text="cannot run the aws CLI")
+sr_run("KA-0 a wrong alias is refused before aws is asked", "awskms:///alias/other", 2, algs=("RSASSA_PSS_SHA_256", PKCS1), text="not a KMS key reference of the release key", want_aws=False)
 
-# W2, second half (Q/W2 ruling): the one check is also the subcommand `key-ref-check`, which release-sign.sh and release-sign-apks.sh call before any tool (exit 2 everywhere);
+# W2 (Q/W2 ruling): the key reference check is the subcommand `key-ref-check`, which release-sign.sh and release-sign-apks.sh call before any tool (exit 2 everywhere);
 # with --algorithm-guard it is the KA-0 check release-sign.sh needs before its kms-sign calls
 def kc_run(label, refval, args, want_rc, text=None, algs=(PKCS1,), want_aws=None):
     d = os.path.join(work, "kc-" + re.sub(r"[^A-Za-z0-9_]", "_", label)[:30]); fb = os.path.join(d, "fakebin"); os.makedirs(fb)
@@ -665,9 +646,17 @@ kc_run("guard: PKCS1 first proceeds", cv.RELEASE_KEY_REF, ["--algorithm-guard", 
 kc_run("guard: another algorithm first, PKCS1 listed second proceeds", cv.RELEASE_KEY_REF, ["--algorithm-guard", "--aws", "aws"], 0, algs=("RSASSA_PSS_SHA_256", PKCS1), want_aws=True)
 kc_run("guard: algorithm not listed", cv.RELEASE_KEY_REF, ["--algorithm-guard", "--aws", "aws"], 2, algs=("RSASSA_PSS_SHA_256",), text="does not support RSASSA_PKCS1_V1_5_SHA_256", want_aws=True)
 kc_run("guard: another alias is refused before aws", "awskms:///alias/other", ["--algorithm-guard", "--aws", "aws"], 2, want_aws=False)
-kc_run("guard without --aws asks the aws CLI by name", cv.RELEASE_KEY_REF, ["--algorithm-guard"], 0, want_aws=True)
-kc_run("guard without --aws, another algorithm first, PKCS1 listed second proceeds", cv.RELEASE_KEY_REF, ["--algorithm-guard"], 0, algs=("RSASSA_PSS_SHA_256", PKCS1), want_aws=True)
-kc_run("guard without --aws, algorithm not listed", cv.RELEASE_KEY_REF, ["--algorithm-guard"], 2, algs=("RSASSA_PSS_SHA_256",), text="does not support RSASSA_PKCS1_V1_5_SHA_256", want_aws=True)
+# --aws names the aws CLI on every call: there is no default looked up on PATH
+kc_run("guard without --aws is a usage error and asks no aws", cv.RELEASE_KEY_REF, ["--algorithm-guard"], 2, text="--aws", want_aws=False)
+# a string where the list of algorithms belongs is refused by an explicit check, also under python -O (an assert is gone there, and a substring match passes)
+def kc_string_algs(opt):
+    d = os.path.join(work, "kc-str" + opt.strip("-")); fb = os.path.join(d, "fakebin"); os.makedirs(fb)
+    fake_aws(fb, d, PKCS1)
+    env = {"PATH": fb + ":/usr/bin:/bin", "LC_ALL": "C", "RELEASE_KMS_KEY_REF": cv.RELEASE_KEY_REF}
+    r = subprocess.run([sys.executable, "-I", "-B", opt, os.path.join(root, "bin", "chain-verify.py"), "key-ref-check", "--algorithm-guard", "--aws", "aws"],
+                       env=env, capture_output=True, text=True)
+    (ok if r.returncode != 0 and "Traceback" not in r.stderr else bad)("key-ref-check: a string SigningAlgorithms is refused under python %s (exit %d: %s)" % (opt, r.returncode, r.stderr.strip()[:120]))
+kc_string_algs("-O"); kc_string_algs("-OO")
 
 # KMS rule 4 / build-apk rule 22: production code holds no test hook. The flags that swapped the trust root or the clock are gone from every
 # subcommand, and verify_record takes no `now`.
@@ -696,6 +685,7 @@ for rel, n, cmd in lines:
     cmd = re.split(r"\s(?:2>|>|\|\||&&|\||;)\s*", cmd)[0].rstrip("\\ ")
     try:
         words = shlex.split(cmd)
+        words = [w for w in words if not re.fullmatch(r"\$\{\w+\[@\]\}", w)]     # "${name[@]}" stands for zero words
         argv = [(("1" if words[i - 1] == "--exit-code" else "x") if "$" in w else w) for i, w in enumerate(words)][1:]
         cv.build_parser().parse_args(argv)
         parsed += 1
@@ -707,16 +697,53 @@ if lines and parsed == len(lines):
     ok("every pinned chain-verify.py line (%d, in the workflows and bin/*.sh) parses through build_parser()" % len(lines))
 else:
     bad("no pinned chain-verify.py line was found to parse")
+# mutation: the array word is dropped, but a bad flag next to it still fails to parse
+for tail, want in (("--items items.json", True), ("--no-such-flag x", False)):
+    try:
+        base = 'items-merge --fragment f --images i --archives a --version v --archive archive "${digests[@]}" '
+        w = [w for w in shlex.split(base + tail)
+             if not re.fullmatch(r"\$\{\w+\[@\]\}", w)]
+        cv.build_parser().parse_args(w)
+        parses = True
+    except SystemExit:
+        parses = False
+    verdict = "parses" if want else "is refused"
+    (ok if parses == want else bad)("a line with \"${digests[@]}\" and %s %s" % (tail, verdict))
 try:
-    cv.build_parser().parse_args(["verify", "--stage", "sign", "--record", "x", "--policy", "x", "--rekor-stub", "x"])
-    ok("--rekor-stub is accepted by verify")
-    cv.build_parser().parse_args(["stage-start", "--stage", "release", "--previous", "sign", "--record", "x", "--digests", "x", "--policy", "x", "--rekor-stub", "x"])
-    ok("--rekor-stub is accepted by stage-start")
+    cv.build_parser().parse_args(["verify", "--stage", "sign", "--record", "x", "--policy", "x", "--rekor-entries", "x"])
+    ok("--rekor-entries is accepted by verify")
+    cv.build_parser().parse_args(["stage-start", "--stage", "release", "--previous", "sign", "--record", "x", "--digests", "x", "--policy", "x", "--rekor-entries", "x"])
+    ok("--rekor-entries is accepted by stage-start")
 except SystemExit:
-    bad("--rekor-stub is not accepted by the parser")
+    bad("--rekor-entries is not accepted by the parser")
+
+
+def parses(argv):
+    with contextlib.redirect_stderr(io.StringIO()):
+        try:
+            cv.build_parser().parse_args(argv)
+            return True
+        except SystemExit:
+            return False
+
+
+# the production entries option has one name; the old name of a test stub is gone
+(ok if not parses(["verify", "--stage", "sign", "--record", "x", "--policy", "x", "--rekor-stub", "x"]) else bad)("verify refuses --rekor-stub")
+(ok if not parses(["stage-start", "--stage", "release", "--previous", "sign", "--record", "x", "--digests", "x", "--policy", "x", "--rekor-stub", "x"]) else bad)("stage-start refuses --rekor-stub")
+SIGN = ["sign", "--check", "--public-key", "k", "--out", "o", "--items", "i", "--digests", "d", "--build-record", "b", "--policy", "p"]
+(ok if parses(SIGN + ["--aws", "/x/aws"]) else bad)("sign parses with --aws and without --signer")
+(ok if not parses(SIGN + ["--aws", "/x/aws", "--signer", "cosign"]) else bad)("sign has no --signer option")
+(ok if not parses(SIGN) else bad)("sign requires --aws (no default aws from PATH)")
+(ok if not parses(["key-ref-check", "--algorithm-guard"]) else bad)("key-ref-check requires --aws (no default aws from PATH)")
+# the scripts that call `chain-verify.py sign-record` pass flags the parser accepts (with-aws-token.sh adds --aws and --public-key for the staged call)
+for script in ("witness-sign-staged.sh",):   # bin/witnessed.sh signs nothing: Release's steps record with a throwaway key only
+    lines = open(os.path.join(root, "bin", script)).read().split("\n")
+    i = [n for n, l in enumerate(lines) if re.search(r"(chain-verify\.py|with-aws-token\.sh) sign-record --payload", l)][0]
+    flags = set(re.findall(r" (--[a-z-]+)", "\n".join(lines[i:i + 2]))) | {"--aws", "--public-key"}
+    (ok if parses(["sign-record"] + [x for f in sorted(flags) for x in (f, "x")]) else bad)("%s: its sign-record call (%s) is accepted by the parser" % (script, " ".join(sorted(flags))))
 
 print("pass=%d fail=%d" % (passed, failed))
-EXPECT = 159
+EXPECT = 175
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))
     sys.exit(1)

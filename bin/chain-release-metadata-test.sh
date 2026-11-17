@@ -2,7 +2,7 @@
 # proves: REQ-CHAIN-007-AC19, REQ-CHAIN-007-AC21
 # bin/release-metadata.py: the release metadata files and their signed list. It is offline and deterministic
 # (no clock, no network).
-# Tested subcommands: images, manifest, list, gate, tag-notes, checksums. Every refusal exits 1 with a message
+# Tested subcommands: images, manifest, baseline, list, gate, tag-notes, bind-archives, checksums. Every refusal exits 1 with a message
 # that names the file or the key.
 # Runs on ubuntu-24.04 or macOS with bash and python3.
 set -euo pipefail
@@ -84,13 +84,15 @@ def repo(t, base=V):
     r = t + "/repo"; os.makedirs(r + "/requirements/releases", exist_ok=True); os.makedirs(r + "/test-evidence", exist_ok=True)
     open("%s/requirements/releases/%s.yaml" % (r, base), "w").write("baseline of " + base + "\n"); open(r + "/test-evidence/mappings.yaml", "w").write("evidence\n")
     return r
-def manifest(t, out, version=V, commit="a" * 40, extra=(), base=None, root=None):
+PUB, REASON = "2026-11-13T09:30:00Z", "Regular release.\nSecond line of the reason.\n"
+def manifest(t, out, version=V, commit="a" * 40, extra=(), base=None, root=None, pub=PUB, reason=REASON):
     return run("manifest", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images",
                "--items", t + "/witness-build/items.json", "--modules-dir", t + "/modules",
                "--vex-dir", vexdir(t, version),
                "--version", version, "--commit", commit, "--baseline-version", base or version,
                "--repo-root", root or repo(t, base or version),
-               "--ci-url", "https://github.com/fosterstack/cache/actions/runs/1/attempts/1", "--workflow", "fosterstack/cache/.github/workflows/release.yml@refs/tags/v0.3.0", "--out", out, *extra)
+               "--ci-url", "https://github.com/fosterstack/cache/actions/runs/1/attempts/1", "--workflow", "fosterstack/cache/.github/workflows/release.yml@refs/tags/v0.3.0", "--out", out,
+               *(("--published-at", pub) if pub is not None else ()), *(("--reason", reason) if reason is not None else ()), *extra)
 t, d = tree(); m1, m2 = t + "/m1.json", t + "/m2.json"; rc, so, se = manifest(t, m1); rc2, _, _ = manifest(t, m2)
 mj = json.load(open(m1)) if os.path.exists(m1) else {}
 check(rc == 0 and rc2 == 0 and open(m1, "rb").read() == open(m2, "rb").read(), "manifest: two runs give the same bytes (no clock, no random value)", se[:200])
@@ -99,13 +101,25 @@ check(mj.get("version") == V and mj.get("commit") == "a" * 40 and "generated_at"
 check({a["name"]: a["digest"] for a in mj.get("archives", [])} == {k: v for k, v in d.items() if k.startswith("archive-")} and {a["name"]: a["digest"] for a in mj.get("apks", [])} == {k: v for k, v in d.items() if k.startswith("apk-")}, "manifest: archives and apks are exactly Build's attested digests")
 hexs = lambda n: hashlib.sha256(open(t + "/vex/" + n, "rb").read()).hexdigest()
 check([(x.get("form"), x.get("file"), x.get("sha256")) for x in mj.get("vex", [])] == [("openvex", "fosterstack-cache.openvex.json", hexs("fosterstack-cache.openvex.json")), ("inspector-suppression-rules", "fosterstack-cache-%s.inspector-filters.json" % V, hexs("fosterstack-cache-%s.inspector-filters.json" % V)), ("csaf-2.0-vex", "fosterstack-cache-%s.csaf.json" % V, hexs("fosterstack-cache-%s.csaf.json" % V))], "manifest: records the sha256 of the OpenVEX, inspector-filters and CSAF files it was made after (generated before the manifest)", str(mj.get("vex")))
+check(mj.get("published_at") == PUB and mj.get("reason") == REASON, "manifest: records published_at and the whole reason as given", str((mj.get("published_at"), mj.get("reason"))))
+t, d = tree(); m3 = t + "/m3.json"; rc3, _, _ = manifest(t, m3, reason="Another reason"); mk = json.load(open(m3)) if rc3 == 0 else {}
+check(mk.get("reason") == "Another reason" and mk.get("published_at") == PUB and {k: v for k, v in mk.items() if k != "reason"} == {k: v for k, v in mj.items() if k != "reason"}, "manifest: the reason is the only key that changes with the reason", str(rc3))
+for label, bad_pub in (("a date only", "2026-11-13"), ("a +00:00 offset", "2026-11-13T09:30:00+00:00"), ("no Z", "2026-11-13T09:30:00"), ("an empty value", "")):
+    t, d = tree(); rc, so, se = manifest(t, t + "/m.json", pub=bad_pub)
+    check(rc == 1 and "published-at %r is not a UTC YYYY-MM-DDTHH:MM:SSZ time" % bad_pub in se and not os.path.exists(t + "/m.json"), "manifest: published-at as " + label + " is refused, naming it", "rc=%s %s" % (rc, se[:160]))
+for label, bad_reason in (("empty", ""), ("only whitespace", " \t\n"), ("blank on its first line", "\nreal text after\n")):
+    t, d = tree(); rc, so, se = manifest(t, t + "/m.json", reason=bad_reason)
+    check(rc == 1 and "the reason is empty" in se and not os.path.exists(t + "/m.json"), "manifest: a reason that is " + label + " is refused", "rc=%s %s" % (rc, se[:160]))
+for opt in ("pub", "reason"):
+    t, d = tree(); rc, so, se = manifest(t, t + "/m.json", **{opt: None})
+    check(rc == 2 and "--" + ("published-at" if opt == "pub" else "reason") in se and not os.path.exists(t + "/m.json"), "manifest: a missing --%s is an argument error (exit 2)" % ("published-at" if opt == "pub" else "reason"), "rc=%s %s" % (rc, se[:160]))
 for n in ("fosterstack-cache.openvex.json", "fosterstack-cache-%s.csaf.json" % V, "fosterstack-cache-%s.inspector-filters.json" % V):
     t, d = tree(); rc, so, se = manifest(t, t + "/m.json"); os.remove(t + "/vex/" + n)
     rc, so, se = run("manifest", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images",
                      "--items", t + "/witness-build/items.json", "--modules-dir", t + "/modules",
                      "--vex-dir", t + "/vex",
                      "--version", V, "--commit", "a" * 40, "--baseline-version", V, "--repo-root", t + "/repo",
-                     "--ci-url", "u", "--workflow", "w", "--out", t + "/m2.json")
+                     "--ci-url", "u", "--workflow", "w", "--out", t + "/m2.json", "--published-at", PUB, "--reason", REASON)
     check(rc == 1 and n in se and not os.path.exists(t + "/m2.json"), "manifest: a missing %s (not generated before the manifest) is refused, naming it" % n, se[:160])
 for label, ver, com in (("a version that is not vX.Y.Z", "v0.3", "a" * 40), ("a release candidate (no release is made for one)", "v0.3.0-rc1", "a" * 40), ("a commit that is not 40 hex", V, "abc")):
     t, d = tree(); rc, so, se = manifest(t, t + "/m.json", ver, com); check(rc == 1 and not os.path.exists(t + "/m.json"), "manifest: " + label + " is refused", "rc=%s %s" % (rc, se[:160]))
@@ -151,7 +165,7 @@ for bad_base in ("main", "0.3.0", "v0.3", "../v0.3.0", "v0.3.0/x", ""):
                      "--items", t + "/witness-build/items.json", "--modules-dir", t + "/modules",
                      "--vex-dir", vexdir(t),
                      "--version", V, "--commit", "a" * 40, "--baseline-version", bad_base, "--repo-root", r,
-                     "--ci-url", "u", "--workflow", "w", "--out", t + "/m.json")
+                     "--ci-url", "u", "--workflow", "w", "--out", t + "/m.json", "--published-at", PUB, "--reason", REASON)
     check(rc == 1 and not os.path.exists(t + "/m.json"), "baseline: the version %r is not vX.Y.Z and is refused" % bad_base, se[:120])
 t, d = tree(); r = repo(t); f = r + "/requirements/releases/%s.yaml" % V; os.remove(f); os.symlink(r + "/test-evidence/mappings.yaml", f); rc, so, se = manifest(t, t + "/m.json", root=r)
 check(rc == 1 and "symlink" in se, "baseline: a symlinked baseline file is refused", se[:120])
@@ -261,6 +275,23 @@ for what, raw, tag in cases:
     want_rc = 0 if what == "a generated patch tag" else 1
     check(r.returncode == want_rc and (r.returncode != 0 or r.stdout.startswith("## v0.3.1 \u2014 patch release")) and (r.returncode == 0 or r.stdout == ""),
           "tag-notes: %s exits %d" % (what, want_rc), "rc=%s out=%r" % (r.returncode, r.stdout[:60]))
+# ---- usage: the docstring (the script's usage text) names every subcommand it has, and no other ----------------------------------------
+import ast
+SUBS = ("images", "manifest", "baseline", "list", "gate", "tag-notes", "bind-archives", "checksums")
+doc = ast.get_docstring(ast.parse(open(os.path.join(BIN, "release-metadata.py")).read())) or ""
+check(all("release-metadata.py %s " % n in doc for n in SUBS),
+      "usage: the docstring has a usage line for every subcommand", doc[:300])
+rc, so, se = run("--help")
+check(rc == 0 and all(n in so for n in SUBS), "usage: --help names every subcommand", so[:200])
+# ---- strict JSON: a duplicate key is refused, never taken last-wins ---------------------------------------------------------------------
+t, d = tree(); dup = t + "/witness-build/digests.json"
+open(dup, "w").write(json.dumps(d)[:-1] + ', "image-production": "%s"}' % sha(b"other"))
+rc, so, se = run("images", "--digests", dup, "--images-dir", t + "/images", "--items", t + "/witness-build/items.json", "--out", t + "/o.json")
+check(rc == 1 and "duplicate" in se and not os.path.exists(t + "/o.json"), "strict json: a duplicate key in digests.json is refused", "rc=%s %s" % (rc, se[:200]))
+t = tempfile.mkdtemp(); adm = t + "/admission.json"
+open(adm, "w").write('{"baseline": "requirements/releases/v0.3.0.yaml", "baseline_version": "v0.3.0", "sha": "%s", "tag": "v0.3.1", "tag": "v0.3.2"}' % ("a" * 40))
+rc, so, se = run("baseline", "--admission", adm, "--tag", "v0.3.2", "--commit", "a" * 40)
+check(rc == 1 and "duplicate" in se and so == "", "strict json: a duplicate key in the admission file is refused", "rc=%s %s" % (rc, se[:200]))
 # ---- requirements.yaml says what the code does ----------------------------------------------------------
 import yaml
 REQS = {r["id"]: r for r in yaml.safe_load(open(os.path.join(BIN, "..", "requirements", "requirements.yaml")))["requirements"]}
@@ -272,9 +303,10 @@ check("and the command run as plain `bash SCRIPT ARGS` (GitHub's default job tim
       "text: REQ-CHAIN-004-AC2 says the command runs as plain bash SCRIPT ARGS, no timeout -k 20 540")
 n4, n7 = REQS["REQ-CHAIN-004"]["notes"], REQS["REQ-CHAIN-007"]["notes"]
 check("Every command run under Witness is plain `bash SCRIPT ARGS`; GitHub's default job time limit bounds a hung command" in n4 and "timeout -k 20 540" not in n4 and "timeout 540" not in n4
-      and "with the command run as plain `bash SCRIPT ARGS` inside it" in n7 and "timeout -k 20 540" not in n7 and "timeout 540" not in n7
+      and "every Witness step runs through bin/witnessed.sh STEP SCRIPT, except the verify job's release-verify, which runs through bin/witnessed-local.sh, with the command run as plain `bash SCRIPT ARGS` inside it; the stage file never repeats Witness flags" in n7
+      and "timeout -k 20 540" not in n7 and "timeout 540" not in n7 and "single helper" not in n7
       and "Release has six such steps (release-verify, release-apks, release-publish, release-sign, release-assets, release-postverify)" in n7 and "Release has five such steps" not in n7,
-      "text: the REQ-CHAIN-004 and REQ-CHAIN-007 notes say plain bash SCRIPT ARGS, no timeout 540, and six Release steps")
+      "text: the REQ-CHAIN-004 and REQ-CHAIN-007 notes say plain bash SCRIPT ARGS, no timeout 540; the REQ-CHAIN-007 note says every Witness step runs through bin/witnessed.sh (release-verify through bin/witnessed-local.sh), no single helper, and six Release steps")
 t1 = ac("REQ-CHAIN-007", 1)["then"]
 check("and nothing else in the step except an `env` block of exactly the credential names AC2 and AC15 give that step and, for every step after release-verify, the one condition" in t1,
       "text: REQ-CHAIN-007-AC1 says the witnessed steps carry an env block of the credentials AC2 and AC15 name")
@@ -331,9 +363,9 @@ check("bind-archives" not in t21 and "bin/release-metadata.py checksums" in t21 
       "text: REQ-CHAIN-007-AC21 names only the checksums command (it makes the archive check itself) and says no test creates the signed file")
 # the texts, comments and the reason say what the scripts do
 t6, t10 = ac("REQ-CHAIN-007", 6)["then"], ac("REQ-CHAIN-007", 10)["then"]
-check("--rebuild-dir" not in t6 and "compares Build's and Rebuild's" not in t6 and "release-sign-apks.sh --build-dir B --key K" in t6 and "release-compare.sh" in t6,
-      "text: REQ-CHAIN-007-AC6 runs release-sign-apks.sh with --build-dir and --key only; the comparison is release-compare.sh's")
-check("release-sign: cosign, git, jq and python3" in t10, "text: REQ-CHAIN-007-AC10 lists git among release-sign's tools")
+check("--rebuild-dir" not in t6 and "compares Build's and Rebuild's" not in t6 and "release-sign-apks.sh --build-dir B` with the key reference from RELEASE_KMS_KEY_REF" in t6 and "--key K" not in t6 and "release-compare.sh" in t6,
+      "text: REQ-CHAIN-007-AC6 runs release-sign-apks.sh with --build-dir and the key reference from RELEASE_KMS_KEY_REF; the comparison is release-compare.sh's")
+check("release-sign: cosign, git, jq, python3, sha256sum and trap;" in t10, "text: REQ-CHAIN-007-AC10 lists git, sha256sum and trap among release-sign's tools")
 b7 = ac("REQ-BUILDAPK-001", 7)["then"]
 check("Build and Rebuild apk" not in b7 and "PROPOSED" not in b7 and "counterpart in Rebuild" not in b7 and "same control AND data sections" not in b7 and "--rebuild-dir" in b7 and "unknown argument" in b7 and "release-compare.sh" in b7,
       "text: REQ-BUILDAPK-001-AC7 signs Build's apks only; a --rebuild-dir is an unknown argument; the comparison is release-compare.sh's")
@@ -359,7 +391,7 @@ check(row["tools"] == ["bash", "git", "jq", "python3", "sha256sum", "trap"] and 
 check(row["sha256"] == hashlib.sha256(open(os.path.join(BIN, "release-signatures.sh"), "rb").read()).hexdigest(),
       "G2 the sha256 of that row is the script's own, after the policy make line was added")
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "140"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "155"))
 if EXPECT and passn + failn != EXPECT: print("FAIL case count %d != expected %d" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
 PY

@@ -15,7 +15,7 @@
 # bin/build-apk-helper.py, which prints the refusal and sets the exit status. Run it from the repository root.
 #
 # Environment: SOURCE_DATE_EPOCH (digits) is required: the commit time of the tagged commit, which the stage script
-# gets from the apk driver's --print-source-date-epoch. Refused: APK_RELEASE_SIGNING_KEY defined, GOPROXY other than
+# gets from the apk driver's --print-source-date-epoch. Refused: RELEASE_KMS_KEY_REF defined, GOPROXY other than
 # off, HTTP(S)_PROXY / ALL_PROXY defined. There is no --signing-key: the apk is signed with the committed, non-secret
 # assembly key build/keys/assembly.rsa and nothing else. The package is assembled into the images only, never released.
 #
