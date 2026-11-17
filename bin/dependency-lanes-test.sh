@@ -2,7 +2,8 @@
 # proves: REQ-DEP-001-AC1, REQ-DEP-001-AC3, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-001-AC10, REQ-DEP-003-AC1, REQ-DEP-003-AC2, REQ-DEP-003-AC3
 # The dependency lanes' wiring (register rows 75, 80): the reviewer runs hourly from main and never on a PR
 # event, one run at a time; it arms or holds and posts its check but opens no PR and edits nothing; its
-# evidence upload can never fail a run; the patch/minor lane arms squash auto-merge only for the head it screened, and never for a major. Each real workflow
+# evidence upload can never fail a run; the
+# patch/minor lane arms squash auto-merge only for the head it screened, and never for a major. Each real workflow
 # must pass; each mutated copy must be caught.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -184,10 +185,10 @@ elif kind == "automerge":
             bad.append("auto-merge is armed for a PR whose file list is at the API's cap of 100 (it cannot be judged: the arming step must hold >= 100 files)")
         if hold < 0 or hold > merge or "--json files" not in ar[:merge] or "exit 0" not in ar[hold:merge]:
             bad.append("auto-merge is armed for a PR that touches tools/govulncheck/ (the arming step must read the PR's files and leave the PR out of auto-merge before it merges: a normal lane PR)")
-    major = "${{ !cancelled() && (steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true' || steps.screen.outcome == 'failure') }}"
+    major = "${{ !cancelled() && (steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true' || steps.screen.outcome != 'success') }}"
     disarm = [(s, r) for s, r in runs(job) if "gh pr merge --disable-auto" in r]
     if len(disarm) != 1 or disarm[0][0].get("if") != major or "continue-on-error" in disarm[0][0]:
-        bad.append("a push to a major PR does not turn its auto-merge off (the reviewed head's verdict is void)")
+        bad.append("a push to a major PR, or a failed or skipped screen, does not turn its auto-merge off (the reviewed head's verdict is void)")
     elif "check-runs?check_name=dependabot-reviewer" not in disarm[0][1] or "headRefOid" not in disarm[0][1]:
         bad.append("the disarm does not judge the PR's CURRENT head by its reviewer check (a stale push job must not disarm a newer approved head)")
     if (job.get("permissions") or {}).get("checks") != "read":
@@ -276,6 +277,7 @@ case_ automerge $A automerge-summary-inline bad "[s.__setitem__('run', s['run'].
 case_ automerge $A automerge-screen-late    bad "i = [n for n, s in enumerate($as_) if s.get('id') == 'screen'][0]; g = $as_.pop(i); $as_.append(g)"
 case_ automerge $A automerge-screen-body-inline bad "[s.__setitem__('run', s['run'] + ' echo \${{ github.event.pull_request.body }}') for s in $as_ if s.get('id') == 'screen']"
 case_ automerge $A automerge-failed-screen-keeps-arm bad "[s.__setitem__('if', \"steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true'\") for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
+case_ automerge $A automerge-skipped-screen-keeps-arm bad "[s.__setitem__('if', \"\${{ !cancelled() && (steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true' || steps.screen.outcome == 'failure') }}\") for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
 case_ automerge $A automerge-flagged-no-void bad "[s.__setitem__('if', \"steps.meta.outputs.update-type == 'version-update:semver-major'\") for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
 case_ automerge $A automerge-checkout      bad "$as_.insert(0, {'uses': 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'})"
 

@@ -181,6 +181,9 @@ mkgit nobase
 rc AC2 "origin/main cannot be read: fails (1)" 1 vc "$work/g-nobase"
 mkdir -p "$work/g-nogit"; cp "$fx/go.mod" "$fx/go.sum" "$work/g-nogit/"
 rc AC2 "no git tree to read origin/main from: fails (1)" 1 vc "$work/g-nogit"
+mkdir -p "$work/inherited-scratch"; echo keep >"$work/inherited-scratch/marker"
+rc AC2 "an early refusal with scratch inherited from the caller's environment: fails (1)" 1 env scratch="$work/inherited-scratch" bash "$bin_vc" "$work/g-nogit"
+t AC2 "(inherited scratch) the caller's directory and its marker file are not deleted" test -f "$work/inherited-scratch/marker"
 mkdir -p "$work/findfail"; printf '#!/bin/sh\nexit 1\n' >"$work/findfail/find"; chmod 755 "$work/findfail/find"
 rc AC2 "a listing of the tree that fails is no proof of absence: fails (1)" 1 env PATH="$work/findfail:$PATH" bash "$bin_vc" "$work/g-absent"
 for nm in "vendor/a	b.go" "vendor/caf$(printf '\303\251').go" 'vendor/a"b.go'; do

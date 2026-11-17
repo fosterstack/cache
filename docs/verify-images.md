@@ -108,7 +108,7 @@ Witness records (Witness is the tool that records what each job did):
 
 - Build: `build-collection.json`, `digests.json`, `items.json`, `admission-baseline.json`
 - Rebuild: `rebuild-collection.json`, `verdict.json`
-- Check: `scanners-collection.json`, `acceptance-collection.json`, `runtime-collection.json`, `arm64-collection.json`
+- Check: the `scanners`, `acceptance` and `runtime` collections of each of the two runners, attached as `ubuntu-24.04-scanners-collection.json`, `ubuntu-24.04-arm-scanners-collection.json` and so on
 
 The jobs that build or run workloads hold no signing identity. The Sign stage
 (`stage-sign.yml` at the release tag) signs Build's, Rebuild's and Check's

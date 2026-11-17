@@ -325,7 +325,7 @@ import json, subprocess, sys
 root, a = sys.argv[1:3]
 r = subprocess.run([sys.executable, root + "/bin/chain-bytes-sha.py", "sha", "--commit", a, "--repo", "."], capture_output=True, text=True)
 sha = r.stdout.strip() or "0" * 64
-keys = ["build", "sign", "rekor", "rebuild", "scanners", "acceptance", "runtime", "arm64", "hostile_verdict"]
+keys = ["build", "sign", "rekor", "rebuild", "scanners-ubuntu-24.04", "acceptance-ubuntu-24.04", "runtime-ubuntu-24.04", "scanners-ubuntu-24.04-arm", "acceptance-ubuntu-24.04-arm", "runtime-ubuntu-24.04-arm", "hostile_verdict"]
 print(json.dumps({"rc_tag": "v0.3.0-rc1", "run_id": "1234567890", "chain_sha256": sha, "records": {k: "0" * 64 for k in keys}}, indent=1, sort_keys=True))
 PY
   git add -A; git commit -q -S -m "release prep"; git push -q origin main 2> /dev/null; git push -q origin refs/tags/v0.3.0-rc1 2> /dev/null; git fetch -q origin
