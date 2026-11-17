@@ -7,10 +7,20 @@ included: the owner's own key still signs minor, major and patch tags). Everythi
 PGP signature, two signature blocks, and a keyless (x509) signature, because the release chain signs with the release
 key and no keyless signer is left (KMS rule 2).
 """
-import argparse, datetime, hashlib, os, re, subprocess, sys
+import argparse, datetime, hashlib, importlib.util, os, re, subprocess, sys
 
 BLOCKS = {"SSH SIGNATURE": "ssh", "SIGNED MESSAGE": "x509", "PGP SIGNATURE": "pgp"}
-PATCH = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.([1-9][0-9]*)$")
+# the one tag grammar (REQ-CHAIN-004-AC19), loaded from the file beside this one
+_spec = importlib.util.spec_from_file_location("build_admit", os.path.join(os.path.dirname(os.path.abspath(__file__)), "build-admit.py"))
+_admit = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_admit)
+
+
+def final_parts(tag):
+    """(major, minor, patch) as strings of a final release tag, else None."""
+    if _admit.TAG_SYNTAX.fullmatch(tag) and "-rc" not in tag:
+        return tuple(tag[1:].split("."))
+    return None
 
 
 def kind(tag_object):
@@ -106,24 +116,24 @@ def baseline(tag, baselines, baseline_requirements, requirements):
     (an unapproved one is skipped, not a blocker: B02), and only if (a) the release-blocking AC set is
     identical to the baseline's AND (b) every AC added, removed or changed since the baseline belongs to a
     PIPELINE_ONLY requirement — both required (advisor 0150); otherwise no patch, it waits for the owner."""
-    m = PATCH.match(tag)
-    if not m:
+    m = final_parts(tag)
+    if not m or m[2] == "0":
         return None, "%s is not a patch tag" % tag
     line = []
     for v, d in baselines.items():
-        b = PATCH.match(v) or re.match(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0)$", v)
-        if not b or not isinstance(d, dict) or d.get("version") != v or b.group(1, 2) != m.group(1, 2):
+        b = final_parts(v)
+        if not b or not isinstance(d, dict) or d.get("version") != v or b[:2] != m[:2]:
             continue
-        if int(b.group(3)) >= int(m.group(3)) or d.get("approved") is not True:
+        if int(b[2]) >= int(m[2]) or d.get("approved") is not True:
             continue
         try:
             datetime.date.fromisoformat(str(d.get("approved_on")))
         except ValueError:
             continue
-        line.append((int(b.group(3)), v, d))
+        line.append((int(b[2]), v, d))
     if not line:
         return None, "no owner-approved ACs baseline on the v%s.%s line below %s: the patch waits for the owner" % (
-            m.group(1), m.group(2), tag)
+            m[0], m[1], tag)
     _, v, d = max(line)
     # the content admission requires (Codex #163 pin pass, B03): decide's pre-check and admission refuse the same
     # baselines; a malformed latest one is no patch, never a fallback to an older one
@@ -167,17 +177,17 @@ def owner_baselines(tag, repo, allowed_signers, out):
     v:requirements/releases/v.yaml and v:requirements/requirements.yaml — the second lets baseline() compare
     the full AC set, not just its blocking subset, advisor 0150). A CI-signed, unsigned, lightweight or
     other-key tag, and the tagged commit itself, never supply a baseline (Codex #163 r1, B01)."""
-    m = PATCH.match(tag)
+    m = final_parts(tag)
     os.makedirs(out, exist_ok=True)
-    if not m:
+    if not m or m[2] == "0":
         return []
 
     got = []
     tag_list = subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers, "tag", "-l",
-        "v%s.%s.*" % m.group(1, 2)], capture_output=True, text=True)
+        "v%s.%s.*" % m[:2]], capture_output=True, text=True)
     for v in tag_list.stdout.split():
-        b = PATCH.match(v) or re.match(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0)$", v)
-        if not b or b.group(1, 2) != m.group(1, 2) or int(b.group(3)) >= int(m.group(3)):
+        b = final_parts(v)
+        if not b or b[:2] != m[:2] or int(b[2]) >= int(m[2]):
             continue
         tag_kind = subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers, "cat-file",
             "-t", "refs/tags/" + v], capture_output=True, text=True)
@@ -214,10 +224,10 @@ def _load_baselines(directory):
     import yaml
     freeze, reqs = {}, {}
     for f in sorted(os.listdir(directory)):
-        if re.match(r"^v[0-9]+\.[0-9]+\.[0-9]+\.yaml$", f):
+        if f.endswith(".yaml") and not f.endswith(".requirements.yaml") and final_parts(f[:-len(".yaml")]):
             with open(os.path.join(directory, f)) as fh:
                 freeze[f[:-len(".yaml")]] = yaml.safe_load(fh)
-        elif re.match(r"^v[0-9]+\.[0-9]+\.[0-9]+\.requirements\.yaml$", f):
+        elif f.endswith(".requirements.yaml") and final_parts(f[:-len(".requirements.yaml")]):
             with open(os.path.join(directory, f), "rb") as fh:
                 reqs[f[:-len(".requirements.yaml")]] = fh.read()
     return freeze, reqs
