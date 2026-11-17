@@ -1,25 +1,21 @@
 #!/usr/bin/env python3
-"""The pin scan (REQ-SUP-001-AC2): names every version a pull request moves and passes only a pin it can read.
+"""The pin scan (REQ-SUP-001-AC2, AC3): every version a pull request moves is named, and a moved version passes only as a pin the scan can read.
 
   pin-age-check.py --root REPO --base REV --head REV [--json FILE] [--base-inputs FILE] [--exceptions FILE]
 
-Exit 0: nothing moved, or every moved version is a pin the scan can read (an exact version, a commit or a
-digest) or is ruled. Exit 1: a moved item the scan
-cannot read or pin (a range, a moving name, an expression, an unpinned install) and that no ruling covers.
-Exit 2: the check could not run (unreadable input,
-a tree that does not parse). No time is measured: the scan never waits for a version to age.
+Exit 0: nothing moved, or every moved version is a readable pin (an exact version, a commit or a digest) or ruled. Exit 1: a moved version that is not a pin
+the scan can read and has no ruling. Exit 2: the scan could not run (unreadable input, a tree that does not parse).
+The scan measures no time: it reads the two trees and the base branch's rulings.
 """
 import argparse
 import hashlib
 import http.client
-import datetime as dt
 import importlib.util
 import json
 import os
 import re
 import subprocess
 import sys
-import tempfile
 import urllib.parse
 import urllib.error
 import urllib.request
@@ -37,33 +33,6 @@ def _load(name):
 inv = _load("pin-inventory")
 
 
-def parse_time(s, clock=False):
-    """ISO 8601 -> aware datetime, or None when it is not one."""
-    if not isinstance(s, str):
-        return None
-    t = s.strip()
-    m = re.match(r"^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}:?\d{2})?$", t)
-    if not m:
-        return None
-    base, frac, tz = m.groups()
-    try:
-        d = dt.datetime.strptime(base.replace(" ", "T"), "%Y-%m-%dT%H:%M:%S")
-    except ValueError:
-        return None
-    if tz and tz != "Z":
-        sign = 1 if tz[0] == "+" else -1
-        hh, mm = int(tz[1:3]), int(tz[-2:])
-        if hh > 23 or mm > 59:
-            return None
-        d = d - sign * dt.timedelta(hours=hh, minutes=mm)
-    d = d.replace(tzinfo=dt.timezone.utc)
-    if frac and not clock:
-        # a publication time's fractional second is rounded UP, a clock's (clock=True) is truncated:
-        # a publication time is never shown earlier than it was
-        d += dt.timedelta(seconds=1)
-    return d
-
-
 # the one predicate lives in pin-inventory.py (its kernel-lock reader needs it); the names stay here for every caller
 # and test
 _PIN = inv._PIN
@@ -74,15 +43,22 @@ INSTALLER_TOOLS = {tool for inputs in inv.INSTALLER_INPUTS.values() for _, tool 
 
 
 def judge_item(item):
-    """(ok, reason): a moved item passes when it is a pin the scan can read."""
-    if re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or "$" in (item.path or "") or "`" in (item.path or "") or not is_pin(item.version) \
+    """(ok, reason): a moved item passes only as a pin the scan can read."""
+    if re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or "$" in (item.path or "") \
+        or "`" in (item.path or "") or not is_pin(item.version) \
             or (item.kind == "action" and not re.fullmatch(r"[0-9a-f]{40}", item.version or "")):
         return False, (f"not a pin: {item.version!r} is a range, a moving name, a wildcard or an expression, "
                        "or an action not named by its commit")
     if item.kind == "tool" and item.name in INSTALLER_TOOLS and len(item.version.lstrip("v").split(".")) < 3:
         return False, (f"not a pin: {item.version!r} is a series, not an exact release "
                        "(the installer picks the newest patch)")
-    return True, f"pinned at {item.version}"
+    if item.kind == "image" and _image_registry(item.name) not in ("ghcr.io", "docker.io") \
+            and _publisher_entry(item.name) is None:
+        return False, f"registry {_image_registry(item.name)} is not in image-publishers.json, so nothing vouches for the image"
+    return True, f"{item.version!r} is a pin the scan can read"
+
+
+# ---------- the server answers the advisory audit reads (pin-audit.py) ----------
 class CouldNotLook(Exception):
     """The server could not be asked (rate limit, outage): the check cannot run. Never read as 'no proof', never a
     pass."""
@@ -257,7 +233,22 @@ def _go_module(path, version):
     return None, None
 
 
-DOCKER_SECONDS = 600
+HUB_HOSTS = ("docker.io", "index.docker.io", "registry-1.docker.io")
+
+
+def _split_image(name):
+    """(registry, path) of an image name. A first part with a dot, a colon or localhost is the registry, lowercase,
+    without :443, Docker Hub's hosts as docker.io; else Docker Hub (a name of three parts without a host has no
+    registry we know, so its first part stands)."""
+    first, _, rest = name.partition("/")
+    if rest and ("." in first or ":" in first or first == "localhost"):
+        host = first.lower().removesuffix(":443")
+        return ("docker.io" if host in HUB_HOSTS else host), rest
+    return ("docker.io" if name.count("/") <= 1 else first), name
+
+
+def _image_registry(name):
+    return _split_image(name)[0]
 
 
 def _json_file(path):
@@ -303,24 +294,6 @@ def _checked_pins(pins):
     return entries
 
 
-HUB_HOSTS = ("docker.io", "index.docker.io", "registry-1.docker.io")
-
-
-def _split_image(name):
-    """(registry, path) of an image name. A first part with a dot, a colon or localhost is the registry, lowercase,
-    without :443, Docker Hub's hosts as docker.io; else Docker Hub (a name of three parts without a host has no
-    registry we know, so its first part stands)."""
-    first, _, rest = name.partition("/")
-    if rest and ("." in first or ":" in first or first == "localhost"):
-        host = first.lower().removesuffix(":443")
-        return ("docker.io" if host in HUB_HOSTS else host), rest
-    return ("docker.io" if name.count("/") <= 1 else first), name
-
-
-def _image_registry(name):
-    return _split_image(name)[0]
-
-
 def _publisher_entry(name, pins=None):
     """The image-publishers.json entry for an image, named by its registry and path; None when it is not enrolled."""
     try:
@@ -331,54 +304,6 @@ def _publisher_entry(name, pins=None):
     return pins.get(f"{host}/{path}")
 
 
-def cosign_verify_images(root, rev, cosign_image, run):
-    """For each image the tree at `rev` names by digest, run `cosign verify` once per pinned identity.
-    An image passes when any run succeeds. An image on a registry not in image-publishers.json fails, and one whose
-    entry says the publisher signs nothing is reported as "no signature published", never as verified. Images on
-    ghcr.io and Docker Hub are dated by their registry time and left to that check unless enrolled. The age of any
-    other image is never proven: the age check fails it.
-    `run(cmd)` returns the exit code. Only `verify` is run, never a write."""
-    pins = _checked_pins(_json_file(PUBLISHER_PINS_FILE))
-    results, seen = [], set()
-    with tempfile.TemporaryDirectory() as d:
-        for it in inv.load_at(root, rev).values():
-            by_digest = (it.version or "").startswith("sha256:")
-            if it.kind != "image" or not by_digest or (it.name, it.version) in seen:
-                continue
-            seen.add((it.name, it.version))
-            pin = _publisher_entry(it.name, pins)
-            if pin is None and _image_registry(it.name) in ("ghcr.io", "docker.io"):
-                continue
-            if pin is None or "unsigned" in pin:
-                reason = "no signature published" if pin else f"registry {_image_registry(it.name)} is not enrolled"
-                results.append({"name": it.name, "digest": it.version, "ok": pin is not None, "reason": reason,
-                                "verified": False})
-                continue
-            ref, cmds, docker_run = f"{it.name}@{it.version}", [], ["docker", "run", "--rm"]
-            if "key" in pin:
-                key_file = os.path.join(d, f"key{len(seen)}.pub")
-                with open(key_file, "w") as f:
-                    f.write(pin["key"])
-                mount = f"{key_file}:/pin/key.pub:ro"
-                cmds.append(docker_run + ["-v", mount, cosign_image, "verify", "--key", "/pin/key.pub", ref])
-            for ident in pin.get("keyless", []):
-                cmds.append(docker_run + [cosign_image, "verify", "--certificate-identity", ident["subject"],
-                                          "--certificate-oidc-issuer", ident["issuer"], ref])
-            codes = [run(c) for c in cmds]                      # every pinned identity is tried, so the log shows each
-            ok = any(c == 0 for c in codes)
-            reason = "" if ok else f"cosign verify found no pinned identity that signed it ({len(cmds)} tried)"
-            results.append({"name": it.name, "digest": it.version, "ok": ok, "reason": reason, "verified": ok})
-    return results
-
-
-def _run_docker(cmd):
-    """The exit code of one `docker run ... cosign verify` command."""
-    try:
-        return subprocess.run(cmd, stdout=subprocess.DEVNULL, timeout=DOCKER_SECONDS).returncode
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("docker timed out") from None
-
-
 def _one_line(error):
     """An error as one line. Its text can hold a pull request's file path, and a path may contain newlines;
     a log line that starts with :: is an Actions command, and the runner reads ##[command] anywhere in a line."""
@@ -386,50 +311,17 @@ def _one_line(error):
     return text.replace("##[", "## [")
 
 
-def _cosign_verify_main(argv):
-    ap = argparse.ArgumentParser(prog="pin-age-check.py cosign-verify")
-    ap.add_argument("--root", default=".")
-    ap.add_argument("--head", required=True)
-    ap.add_argument("--cosign-image", help="the pinned cosign image, by digest")
-    ap.add_argument("--tools-file", help="the file whose \"cosign\" entry pins it (bin/persona-uat-tools.json)")
-    a = ap.parse_args(argv)
-    try:
-        if bool(a.cosign_image) == bool(a.tools_file):
-            raise ValueError("give exactly one of --cosign-image and --tools-file")
-        if a.tools_file:
-            tools = _json_file(a.tools_file)
-            if not isinstance(tools, dict):
-                raise ValueError("the tools file is not an object")
-            a.cosign_image = tools["cosign"]
-        by_digest = r"[A-Za-z0-9._/-]+@sha256:[0-9a-f]{64}"
-        if not isinstance(a.cosign_image, str) or not re.fullmatch(by_digest, a.cosign_image):
-            raise ValueError("the cosign image must be named by digest")
-    except (OSError, ValueError, KeyError) as e:
-        print(f"pin-age: cannot run: {_one_line(e)} (not a pass)", file=sys.stderr)
-        return 2
-    try:
-        results = cosign_verify_images(a.root, a.head, a.cosign_image, _run_docker)
-    except (OSError, ValueError, RuntimeError) as e:
-        print(f"pin-age: cannot run: {_one_line(e)} (not a pass)", file=sys.stderr)
-        return 2
-    if not results:
-        print("pin-age: no pinned image in the tree, nothing to verify")
-    for r in results:
-        status = "ok   " if r["verified"] else "none " if r["ok"] else "FAIL "
-        print(f"{status}{r['name']}@{r['digest']}" + ("" if r["verified"] else f": {r['reason']}"))
-    return 0 if all(r["ok"] for r in results) else 1
-
-
 def main(argv=None):
-    if (argv if argv is not None else sys.argv[1:])[:1] == ["cosign-verify"]:
-        return _cosign_verify_main((argv if argv is not None else sys.argv[1:])[1:])
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=".")
     ap.add_argument("--base", required=True)
     ap.add_argument("--head", required=True)
     ap.add_argument("--json")
-    ap.add_argument("--base-inputs", help="the base-inputs list (default: .github/policy/base-inputs.json beside this script's own checkout, the base branch in CI)")
-    ap.add_argument("--exceptions", help="the rulings file (default: the one beside this script's own checkout, the base branch in CI)")
+    ap.add_argument("--base-inputs",
+        help="the base-inputs list (default: .github/policy/base-inputs.json beside this script's own checkout, the "
+            "base branch in CI)")
+    ap.add_argument("--exceptions",
+        help="the rulings file (default: the one beside this script's own checkout, the base branch in CI)")
     a = ap.parse_args(argv)
     try:
         base_items = inv.load_at(a.root, a.base)
@@ -440,7 +332,7 @@ def main(argv=None):
     moved = inv.moved(base_items, head_items)
     try:
         return _run(a, moved)
-    except RuntimeError as e:
+    except (RuntimeError, CouldNotLook) as e:
         print(f"pin-age: cannot run: {_one_line(e)} (not a pass)", file=sys.stderr)
         return 2
     # an answer of a shape nobody guarded: the check cannot run, it is never a pass and never a traceback
@@ -1160,7 +1052,7 @@ def _run(a, moved):
             rows.append({"item": it.key, "label": it.label, "ok": ok, "reason": reason})
         for it in go_free:
             rows.append({"item": it.key, "label": it.label, "ok": True, "reason": GO_INSTALL_REASON})
-        print(f"pin-age: {len(rows)} moved version(s):")
+        print(f"pin-age: {len(rows)} moved version(s), each must be a pin the scan can read:")
         for r in rows:
             print(f"  {'ok  ' if r['ok'] else 'FAIL'} {_one_line(r['item'])}: {_one_line(r['reason'])}")
     for path, what, line in added:
@@ -1183,7 +1075,7 @@ def _run(a, moved):
     if a.json:
         json.dump({"moved": rows}, open(a.json, "w"), indent=1)
     if failing:
-        print(f"pin-age: FAIL: {len(failing)} of {len(rows)} moved version(s) not a pin the scan can read")
+        print(f"pin-age: FAIL: {len(failing)} of {len(rows)} moved version(s) not a pin the scan can read or ruled")
         return 1
     return 0
 

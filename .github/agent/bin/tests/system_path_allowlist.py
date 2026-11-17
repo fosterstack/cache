@@ -15,6 +15,12 @@ ROWS = [
     ('.github/agent/bin/tests/test_panel_io.py',
      '',
      'container-image-internal paths: tar member names written into an in-memory layer archive and read back from a temp .oci file; assertions compare the parsed in-image paths, never the host filesystem (go_buildinfo takes the in-image name as a dict key and copies to its own temp file)'),
+    ('.github/agent/bin/tests/test_pin_writes_redirect.py',
+     "'/tmp/x', '/dev/null'",
+     "shell-script TEXT handed to the pin checker's _writes (a redirect or tee target); the checker places the target as text and never opens, stats or resolves it"),
+    ('.github/agent/bin/tests/test_pin_writes_redirect.py',
+     "'{c} /tmp/out',",
+     "shell-script TEXT handed to the pin checker's _writes; a fixture line, never opened, stat-ed or resolved"),
 ]
 
 # Link creations with an absolute target that are pure data: command text inside a fixture workflow/script that the pin checker

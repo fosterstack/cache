@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC5
+# proves: REQ-SUP-001-AC3, REQ-SUP-001-AC5
 # cache#359 round 5, section 2, group P2, rows 1-3: a lookup that cannot be answered is a FAILURE, never "no proof" or
 # "nothing there".
-#   (1) pin-audit's published-name query to PyPI is strict: an outage is a failure, not the pinned name alone.
-#   (2) an action.yml that cannot be read fails in nested() (Fail), which the nested pass turns into an incomplete run,
+#   (1) pin-audit's published-name query to PyPI is strict (an outage is a failure, not the pinned name alone).
+#   (3) an action.yml that cannot be read fails in nested() (Fail), which the nested pass turns into an incomplete run,
 #   and prints no "no known-compromised" line.
 # In-process: the network is replaced by a fake urlopen, gh by a script on a scratch path. Written from the English
 # rows only.
@@ -75,7 +75,7 @@ msg = caught((aud.Fail, aud.age.CouldNotLook), lambda: net.lists(it))
 assert msg and "could not be asked" in msg, ("PyPI outage ignored by the advisory query", msg)
 PY
 
-# --- an unreadable action.yml -------------------------------------------------------------------------------------
+# --- (3) an unreadable action.yml -------------------------------------------------------------------------------------
 # the run: pin-audit's nested pass reads action.yml through LiveNet.nested; a Fail there is turned into incomplete by
 # nested_safe
 cat >"$work/nested-run.py" <<'PY'

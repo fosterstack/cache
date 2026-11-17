@@ -176,7 +176,7 @@ jobs:
         run: |
           set -uo pipefail
           head=''
-          if printf '%s' "${RESCAN_HEAD}" | grep -Eq '^[0-9a-f]{40}$'; then
+          if printf '%s' "${RESCAN_HEAD}" | grep -Eqx '[0-9a-f]{40}'; then
             st=$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${RESCAN_HEAD}" --jq .status 2>/dev/null || true)
             # compare main...head: "behind" = head is an ancestor of main, "identical" = head is main
             case "${st}" in behind|identical) head="${RESCAN_HEAD}" ;; *) echo "::warning::rescan head is not an ancestor of main (compare: '${st}'); the source scan will be recorded 'did not run'" ;; esac

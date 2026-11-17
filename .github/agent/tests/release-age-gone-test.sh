@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC30, REQ-SUP-001-AC32, REQ-SUP-001-AC33
-# The owner's ruling of Nov 11 2026 removed the release-age wait. Proved on the tracked files: no text of the old wait
-# is left, Dependabot carries no cooldown and one
-# entry per ecosystem root, the context pin-age stays while the job behind it measures nothing, no job holds actions:
-# write, and the tag observer is gone.
+# proves: REQ-SUP-001-AC1, REQ-SUP-001-AC2, REQ-SUP-001-AC30, REQ-SUP-001-AC32, REQ-SUP-001-AC33
+# The owner's ruling of Nov 11 2026 removed the release-age hold: a pull request never waits for a version to age, and the pin scan measures no time. Proved on the
+# tracked files, with nothing run: (a) pin-age-check.py and (b) pin-audit.py hold none of the words of the removed hold, (c) the tag observer is gone and no tracked
+# file refers to it, (d) Dependabot carries no cooldown and one entry per ecosystem and directory, the context and the job pin-age stay, the pin-age job runs no
+# re-run, no run listing and no publication-time lookup, and no workflow holds actions: write.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
@@ -12,28 +12,25 @@ pass=0 failn=0
 ok()  { pass=$((pass+1)); echo "ok   $1"; }
 bad() { failn=$((failn+1)); echo "FAIL $1"; }
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+py() { python3 -I - "$@"; }
 
-# Files that may keep the phrases, each with its reason:
-#   this test                      names the phrases it forbids.
-#   docs/quality/traceability.md   is GENERATED from requirements.yaml (its first lines say so), so it repeats that
-#   file.
-#   .github/agent/tests/pin-wiring-landing.sh is chain-v030's judge byte for byte (pin-wiring-test.sh checks it with
-#   cmp), and names the old steps until chain-v030 takes main.
-#   vendor/                        is third-party Go source (time-window prose in prometheus), not ours; go.sum/go.mod
-#   hold no prose.
-# No CHANGELOG or release-history file is tracked (checked by the name test below), so none is excluded.
-if git ls-files | grep -qiE '(^|/)(CHANGELOG|HISTORY|NEWS)'; then bad "a changelog-style file is tracked: add it to \
-the exclusions with a reason"; else ok "no changelog-style file needs excluding"; fi
-if head -5 docs/quality/traceability.md | grep -q 'GENERATED'; then ok "docs/quality/traceability.md is generated (so \
-excluded)"; else bad "docs/quality/traceability.md is generated (so excluded)"; fi
+# a, b: the two programs hold none of the words of the removed hold (this test names them, so it is not read)
+for f in .github/agent/supply-chain/pin-age-check.py .github/agent/supply-chain/pin-audit.py; do
+  for w in MIN_DAYS min-days rerun_held observations-out cosign-verify tag_observer; do
+    rc=0; grep -qF -- "$w" "$f" || rc=$?
+    if [ "$rc" -eq 1 ]; then ok "$f does not contain $w"
+    elif [ "$rc" -eq 0 ]; then bad "$f does not contain $w ($(grep -nF -- "$w" "$f" | head -2 | cut -c1-100 | tr '\n' '|'))"
+    else bad "$f can be read"; fi
+  done
+done
 
+# e: no tracked file names the removed hold, except the files that say it was removed (AC30)
+# Files that may name it, each with its reason: this test (it names the phrases it forbids); the generated
+# docs/quality/traceability.md (it repeats requirements.yaml); requirements/requirements.yaml, whose origin line records
+# the removal; the three suites whose headers say what the removal took out (pin-age-check, pin-audit and
+# s2-p2-time-exceptions); vendor/ is third-party Go source.
 self=.github/agent/tests/release-age-gone-test.sh
-git ls-files -z | grep -zvE \
-    "^(vendor/|$self\$|docs/quality/traceability\.md\$|\.github/agent/tests/pin-wiring-landing\.sh\$)" >"$work/files"
-# The hold's own phrases only (not 'cooldown' or '7-day', which the Wolfi no-wait rule 48 also uses). This test's own
-# file name contains 'release-age': (?!-gone-test) skips it.
-# grep exits 1 for no match and 2 for an error: an unreadable file fails the test. Symlinks and submodules (not
-# regular files) are skipped.
+git ls-files -z | grep -zvE "^(vendor/|$self\$|docs/quality/traceability\.md\$|requirements/requirements\.yaml\$|\.github/agent/tests/(pin-age-check|pin-audit|s2-p2-time-exceptions)-test\.sh\$)" >"$work/files"
 phrases='release[ -]age(?!-gone-test)|\bage hold\b|held pull request|rerun-held'
 : >"$work/hits"
 while IFS= read -r -d '' f; do
@@ -41,73 +38,84 @@ while IFS= read -r -d '' f; do
   rc=0; grep -IHniP -- "$phrases" "$f" >>"$work/hits" || rc=$?
   [ "$rc" -le 1 ] || { echo "FAIL cannot read $f"; exit 1; }
 done <"$work/files"
-if [ ! -s "$work/hits" ]; then ok "no tracked file names the release-age wait"; else bad "no tracked file names the \
-release-age wait ($(wc -l <"$work/hits") lines, first: $(head -3 "$work/hits" | cut -c1-140 | tr '\n' '|'))"; fi
+if [ ! -s "$work/hits" ]; then ok "no tracked file names the release-age wait"; else bad "no tracked file names the release-age wait ($(wc -l <"$work/hits") lines, first: $(head -3 "$work/hits" | cut -c1-140 | tr '\n' '|'))"; fi
+
+# c: the tag observer is gone, and no tracked file refers to it
+f=.github/agent/supply-chain/tag_observer.py
+if [ ! -e "$f" ] && ! git ls-files --error-unmatch "$f" >/dev/null 2>&1; then ok "$f does not exist"; else bad "$f does not exist"; fi
+self=.github/agent/tests/release-age-gone-test.sh
+git ls-files -z | grep -zvxF -- "$self" >"$work/files" || true
 : >"$work/hits"
 while IFS= read -r -d '' f; do
   [ -f "$f" ] || continue
-  rc=0; grep -IHnE 'tag_observer' "$f" >>"$work/hits" || rc=$?
+  rc=0; grep -IHnF -- 'tag_observer' "$f" >>"$work/hits" || rc=$?
   [ "$rc" -le 1 ] || { echo "FAIL cannot read $f"; exit 1; }
 done <"$work/files"
-if [ ! -s "$work/hits" ]; then ok "nothing refers to tag_observer"; else bad "nothing refers to tag_observer \
-($(wc -l <"$work/hits") lines)"; fi
+if [ ! -s "$work/hits" ]; then ok "no tracked file refers to tag_observer"; else bad "no tracked file refers to tag_observer ($(wc -l <"$work/hits") lines, first: $(head -3 "$work/hits" | cut -c1-120 | tr '\n' '|'))"; fi
 
-# the tag observer is gone
-f=.github/agent/supply-chain/tag_observer.py
-if [ ! -e "$f" ] && ! git ls-files --error-unmatch "$f" >/dev/null 2>&1; then ok "$f does not exist"; else bad "$f \
-does not exist"; fi
-
-py() { python3 -I - "$@"; }
-# AC32: dependabot.yml
-py .github/dependabot.yml >"$work/dep" 2>&1 <<'PY' && ok "dependabot.yml: no cooldown key anywhere, one entry per \
-ecosystem and directory" || { bad "dependabot.yml: no cooldown key anywhere, one entry per ecosystem and directory"; \
-    sed 's/^/     /' "$work/dep"; }
-import sys, yaml, collections
+# d: dependabot.yml has no cooldown key anywhere and one entry per ecosystem and directory
+py .github/dependabot.yml >"$work/dep" 2>&1 <<'PY' && ok "dependabot.yml: no cooldown key anywhere, one entry per ecosystem and directory" || { bad "dependabot.yml: no cooldown key anywhere, one entry per ecosystem and directory"; sed 's/^/     /' "$work/dep"; }
+import collections, sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 def has(o):
     if isinstance(o, dict): return "cooldown" in o or any(has(v) for v in o.values())
     if isinstance(o, list): return any(has(v) for v in o)
     return False
 if has(d): sys.exit("a cooldown key is present")
-ups = d["updates"]
-c = collections.Counter(
-    (u["package-ecosystem"], u.get("directory", u.get("directories") and tuple(u["directories"]))) for u in ups)
-dup = [k for k, n in c.items() if n > 1]
-if dup: sys.exit("duplicate entries: %r" % dup)
+c = collections.Counter()
+for u in d["updates"]:
+    dirs = u["directories"] if "directories" in u else [u.get("directory", "/")]
+    for x in dirs: c[(u["package-ecosystem"], x)] += 1
+dup = sorted(k for k, n in c.items() if n > 1)
+if dup: sys.exit("more than one entry for %r" % (dup,))
 PY
 
-# AC33: the context stays; the job stays and measures nothing; no actions: write anywhere
-if grep -q '"context": "pin-age"' .github/policy/required-checks.json; then ok "required-checks.json still has the \
-context pin-age"; else bad "required-checks.json still has the context pin-age"; fi
-py .github/workflows/supply-chain.yml >"$work/sc" 2>&1 <<'PY' && ok "supply-chain.yml still has the pin-age job" || { \
-    bad "supply-chain.yml still has the pin-age job"; sed 's/^/     /' "$work/sc"; }
+# d (REQ-SUP-001-AC1): the github-actions, pip and tools/govulncheck gomod entries are there (the last weekly), the root gomod entry keeps its weekly schedule and its one minor-patch group, no docker entry
+py .github/dependabot.yml >"$work/ac1" 2>&1 <<'PY' && ok "dependabot.yml: github-actions, pip and govulncheck entries present, root gomod unchanged, no docker entry" || { bad "dependabot.yml: github-actions, pip and govulncheck entries present, root gomod unchanged, no docker entry"; sed 's/^/     /' "$work/ac1"; }
+import sys, yaml
+u = {(e["package-ecosystem"], e["directory"]): e for e in yaml.safe_load(open(sys.argv[1]))["updates"]}
+for k in [("github-actions", "/"), ("pip", "/.github/agent"), ("gomod", "/tools/govulncheck")]:
+    if k not in u: sys.exit("no entry for %r" % (k,))
+if u[("gomod", "/tools/govulncheck")]["schedule"] != {"interval": "weekly"}: sys.exit("govulncheck entry is not weekly")
+r = u.get(("gomod", "/"))
+if not r or r["schedule"] != {"interval": "weekly"} or r.get("groups") != {"gomod-minor-patch": {"patterns": ["*"], "update-types": ["minor", "patch"]}}: sys.exit("root gomod entry changed")
+if any(k[0] == "docker" for k in u): sys.exit("a docker entry exists")
+PY
+
+# d: the context pin-age and the job pin-age stay
+py .github/policy/required-checks.json >"$work/rc" 2>&1 <<'PY' && ok "required-checks.json still names the context pin-age" || { bad "required-checks.json still names the context pin-age"; sed 's/^/     /' "$work/rc"; }
+import json, sys
+def ctx(o):
+    if isinstance(o, dict): return ([o["context"]] if isinstance(o.get("context"), str) else []) + [c for v in o.values() for c in ctx(v)]
+    if isinstance(o, list): return [c for v in o for c in ctx(v)]
+    return []
+if "pin-age" not in ctx(json.load(open(sys.argv[1]))): sys.exit("no context pin-age")
+PY
+py .github/workflows/supply-chain.yml >"$work/sc" 2>&1 <<'PY' && ok "supply-chain.yml still has the job pin-age" || { bad "supply-chain.yml still has the job pin-age"; sed 's/^/     /' "$work/sc"; }
 import sys, yaml
 j = yaml.safe_load(open(sys.argv[1]))["jobs"]
-if "pin-age" not in j and not any(v.get("name") == "pin-age" for v in j.values()): sys.exit("no job named pin-age")
+if "pin-age" not in j and not any(isinstance(v, dict) and v.get("name") == "pin-age" for v in j.values()): sys.exit("no job pin-age")
 PY
-py >"$work/aw" 2>&1 <<'PY' && ok "no workflow holds actions: write, at the top or in any job" || { bad "no workflow \
-holds actions: write, at the top or in any job"; sed 's/^/     /' "$work/aw"; }
-import glob, yaml, sys
-bad = []
-for p in sorted(glob.glob(".github/workflows/*.y*ml")):
-    d = yaml.safe_load(open(p)) or {}
-    def w(perm): return isinstance(perm, dict) and perm.get("actions") == "write" or perm == "write-all"
-    if w(d.get("permissions")): bad.append(p + " (workflow)")
-    for n, j in (d.get("jobs") or {}).items():
-        if isinstance(j, dict) and w(j.get("permissions")): bad.append("%s job %s" % (p, n))
-if bad: sys.exit("actions: write in " + ", ".join(bad))
-PY
-# the pin-age job's steps run no re-run of runs and no timing of versions
-py .github/workflows/supply-chain.yml >"$work/sc2" 2>&1 <<'PY' && ok "the pin-age job runs no re-run, no run listing \
-and no publication-time lookup" || { bad "the pin-age job runs no re-run, no run listing and no publication-time \
-lookup"; sed 's/^/     /' "$work/sc2"; }
-import sys, yaml, re
+py .github/workflows/supply-chain.yml >"$work/sc2" 2>&1 <<'PY' && ok "the pin-age job runs no re-run, no run listing and no publication-time lookup" || { bad "the pin-age job runs no re-run, no run listing and no publication-time lookup"; sed 's/^/     /' "$work/sc2"; }
+import re, sys, yaml
 j = yaml.safe_load(open(sys.argv[1]))["jobs"]
-job = j.get("pin-age") or next((v for v in j.values() if v.get("name") == "pin-age"), None)
-if job is None: sys.exit("no pin-age job")
-t = yaml.dump(job)
-m = re.search(r"run rerun|gh run |/rerun|published_at|--now|first.seen|tag_observer", t)
+job = j.get("pin-age") or next((v for v in j.values() if isinstance(v, dict) and v.get("name") == "pin-age"), None)
+if job is None: sys.exit("no job pin-age")
+m = re.search(r"gh run|/rerun|published_at|--now|first.seen|tag_observer", yaml.dump(job))
 if m: sys.exit("found: " + m.group(0))
+PY
+
+# d: no workflow holds actions: write, at the top or in a job
+py >"$work/aw" 2>&1 <<'PY' && ok "no workflow holds actions: write, at the top or in any job" || { bad "no workflow holds actions: write, at the top or in any job"; sed 's/^/     /' "$work/aw"; }
+import glob, sys, yaml
+found = []
+def w(p): return (isinstance(p, dict) and p.get("actions") == "write") or p == "write-all"
+for path in sorted(glob.glob(".github/workflows/*.y*ml")):
+    d = yaml.safe_load(open(path)) or {}
+    if w(d.get("permissions")): found.append(path + " (workflow)")
+    for n, job in (d.get("jobs") or {}).items():
+        if isinstance(job, dict) and w(job.get("permissions")): found.append("%s job %s" % (path, n))
+if found: sys.exit("actions: write in " + ", ".join(found))
 PY
 
 echo "$pass passed, $failn failed"

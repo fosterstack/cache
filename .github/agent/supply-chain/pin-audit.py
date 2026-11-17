@@ -227,8 +227,6 @@ class FixtureNet:
     def versions(self, item):
         return (self.fx.get("versions") or {}).get(item.name) or []
 
-
-
 GO_TOOLS = {"trivy": "github.com/aquasecurity/trivy", "grype": "github.com/anchore/grype",
             "syft": "github.com/anchore/syft",
             "osv": "github.com/google/osv-scanner/v2", "golangci-lint": "github.com/golangci/golangci-lint/v2",
@@ -898,9 +896,6 @@ class LiveNet:
         return _run(["git", "-C", self.root, "fetch", "-q", "origin", f"pull/{number}/head", base_ref],
                     capture_output=True, text=True)
 
-
-
-
 def _is_text_list(x):
     return isinstance(x, list) and bool(x) and all(isinstance(i, str) for i in x)
 
@@ -1433,9 +1428,11 @@ def main(argv=None):
                 raise Fail(f"unreadable fixtures: {e}")
             if not isinstance(fx, dict):
                 raise Fail("unreadable fixtures: not a JSON object")
-        now = age.parse_time(a.now, True) if a.now else dt.datetime.now(dt.timezone.utc)
-        if now is None:
-            raise Fail("--now is not an ISO time")
+        try:
+            now = dt.datetime.strptime(a.now, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc) if a.now \
+                else dt.datetime.now(dt.timezone.utc)
+        except ValueError:
+            raise Fail("--now is not a UTC time like 2026-10-05T12:00:00Z")
         gh = Gh(a.gh)
         net = FixtureNet(fx) if fx is not None else LiveNet(gh.cmd, a.root)
         default_ex = os.path.join(a.root, ".github", "supply-chain-exceptions.json")

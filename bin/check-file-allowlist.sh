@@ -108,8 +108,6 @@ ALLOW_PATTERNS=(
   '^bin/dependency-lanes-test\.sh$'
   '^bin/panel\.py$'
   '^bin/scout-selfcheck\.py$'
-  '^bin/patch-decide\.py$'
-  '^bin/patch-decide-test\.sh$'
   '^bin/acceptance-maven-413-test\.sh$'
   '^bin/acceptance-gradle-test\.sh$'
   '^bin/acceptance-k8s-manifests-test\.sh$'
@@ -175,8 +173,7 @@ ALLOW_PATTERNS=(
   # suite), and the Check suites with their shape judge
   '^bin/loopback-get\.sh$'
   '^bin/loopback-get-test\.sh$'
-  '^bin/check-(stage|scan|fips|artifacts|acceptance|guide)\.sh$'
-  '^bin/check-phase-(scanners|acceptance|runtime|arm64)\.sh$'
+  '^bin/check-(scan|fips|artifacts|acceptance|guide|phase)\.sh$'
   '^bin/(un)?pack-govulncheck\.sh$'
   '^bin/check-records-digests\.sh$'
   '^bin/check-(guide-plan|osv-db|image-platforms|bind|osv-vex)\.py$'
@@ -348,11 +345,6 @@ ALLOW_PATTERNS=(
   # The release key page (docs/verify-key.md) is judged by bin/verify-key-page-test.sh, REQ-CHAIN-008.
   '^bin/verify-key-page-test\.sh$'
   '^bin/layout-archive(-test)?\.sh$'
-  # The monthly evidence letter (REQ-REL-014): the letter script, the fetch, publish, verify and presence scripts, the
-  # two tests and the signatory text.
-  '^bin/evidence-letter\.py$'
-  '^bin/evidence-letter(-fetch|-publish|-verify|-present|-test|-job-test)\.sh$'
-  '^docs/evidence-letter-signatory\.txt$'
 
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'

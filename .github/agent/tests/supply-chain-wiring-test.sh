@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC1, REQ-SUP-001-AC4, REQ-SUP-001-AC36
+# proves: REQ-SUP-001-AC4, REQ-SUP-001-AC36
 # Where the supply-chain checks run (owner ratified Oct 5; advisor 0172, 0175): Dependabot carries no cooldown and one entry per ecosystem root; the pull request check is a
 # job that runs on EVERY pull request on pull_request (never pull_request_target), with a read-only token and no secrets, so it can be the owner's required check without
 # ever blocking an unrelated PR (AC4); the daily job may write issues and nothing else; no job holds actions: write; REQ-SUP-001 is pipeline-only for automatic patches; CI
@@ -8,17 +8,28 @@
 set -euo pipefail
 export SC_ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 python3 - <<'PY'
-import copy, os, re, subprocess, sys, yaml
+import copy, json, os, re, subprocess, sys, yaml
 
 CANON = {}   # job -> the exact normalised run text of its check step (filled below from the shipped workflow's ratified text)
 
 root = os.environ["SC_ROOT"]
 WF = os.path.join(root, ".github/workflows/supply-chain.yml")
 DB = os.path.join(root, ".github/dependabot.yml")
-SUITES = os.path.join(root, ".github/policy/ci-suites.json")
+FLOORS = os.path.join(root, "test-evidence/suite-floors.json")
 ADM = os.path.join(root, "bin/admission-tag-signer.py")
 PIN = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 ALLOWED_ACTIONS = ("actions/checkout",)
+
+# AUDIT_DEADLINE is read from pin-audit.py's deadline_for (the --base number): a changed deadline turns this fit red.
+# SETUP: two checkouts, measured <= 8 s.
+# BOUND + AUDIT_DEADLINE + SETUP must fit timeout-minutes, so a slow age check ends with a line, not a silent cancel.
+BOUND = 540
+_audit_src = open(os.path.join(root, ".github/agent/supply-chain/pin-audit.py")).read()
+_m = re.search(r"return (\d+) if a\.base else \d+", _audit_src)
+if not _m:
+    sys.exit("supply-chain-wiring-test: deadline_for's --base number not found in pin-audit.py")
+AUDIT_DEADLINE = int(_m.group(1))
+SETUP = 60
 
 CANONICAL_RUNS = {
     'pin-age':
@@ -339,10 +350,10 @@ def judge_rest():
     m = re.search(r"PIPELINE_ONLY = frozenset\(\[(.*?)\]\)", src, re.S)
     if not m or "REQ-SUP-001" not in m.group(1):
         bad.append("REQ-SUP-001 is not in PIPELINE_ONLY (left off, it is product by default and freezes automatic patches)")
-    suites = open(SUITES).read()
+    floors = json.load(open(FLOORS))
     for t in ("pin-age-check-test.sh", "pin-audit-test.sh", "supply-chain-wiring-test.sh"):
-        if f'"suite": "{t}"' not in suites:
-            bad.append(f"the CI suite list does not run .github/agent/tests/{t}")
+        if t not in floors:
+            bad.append(f"the suite floors file does not list .github/agent/tests/{t}, so CI does not run it")
     return bad
 
 real_wf, real_db = None, None

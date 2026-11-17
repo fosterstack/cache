@@ -117,11 +117,8 @@ bin/layout-archive.sh bin/layout-archive-test.sh
 bin/chain-sandbox-probe.sh bin/build-sandbox-hostile-test.sh
 build/probe/control.yaml.tmpl build/probe/read-record.yaml.tmpl build/probe/write-record.yaml.tmpl
 build/probe/read-keydir.yaml.tmpl build/probe/read-token.yaml.tmpl build/probe/network.yaml.tmpl
-bin/evidence-letter.py bin/evidence-letter-test.sh docs/evidence-letter-signatory.txt
-bin/evidence-letter-fetch.sh bin/evidence-letter-publish.sh bin/evidence-letter-job-test.sh
-bin/evidence-letter-verify.sh bin/evidence-letter-present.sh
 """.split())
-if len(DECLARED) != 97: errs.append("declared list is not 97 paths: %d" % len(DECLARED))
+if len(DECLARED) != 89: errs.append("declared list is not 89 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -131,9 +128,8 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 228 allow patterns: chain-v030 plus the 0710 and KMS-signing rows, plus main's ^bin/dependabot-reviewer-version\.sh$
-# and ^\.github/policy/fulcio-chain\.pem$, minus the tag observer's file (main); read from the run of this test
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 228, 4
+# 222 allow patterns: chain-v030's 220 plus main's ^bin/dependabot-reviewer-version\.sh$ and ^\.github/policy/fulcio-chain\.pem$; read from the run of this test
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 222, 4
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -181,7 +177,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
 # the script text outside the v0.3.0 region; history is in git
-PINNED_SHA256 = "ac400abc32ed200b43b009ee5e0b9811341ba326b5658a92fbcafaebf4d8c99c"
+PINNED_SHA256 = "d16c1b5c33fe17f18e309cbd2e6fc28f52eef08f25f441f08741a0ccbdf26347"
 if rstart and rend:
     import hashlib
     _b = _rawlines
@@ -854,6 +850,10 @@ runeach fail "feature/x" "reviewer-version near-miss refused" \
   "bin/dependabot-reviewer-version.sh.bak" "bin/dependabot-reviewer-version-x.sh" \
   "bin/dependabot-reviewer-version.py" "bin/Dependabot-Reviewer-Version.sh" \
   "bin/sub/dependabot-reviewer-version.sh" "bin/dependabot-reviewer-version.sh "
+
+# REQ-CHAIN-006-AC1: Check has ONE script for all three phases and both chips, bin/check-phase.sh; the dispatcher and the per-phase targets are gone
+passfam "feature/x" "REQ-CHAIN-006: the one Check script" "bin/check-phase.sh"
+runeach fail "feature/x" "REQ-CHAIN-006: the old Check dispatcher, the per-phase targets and the arm64 target are not admitted" "bin/check-stage.sh" "bin/check-phase-scanners.sh" "bin/check-phase-acceptance.sh" "bin/check-phase-runtime.sh" "bin/check-phase-arm64.sh"
 
 # Deferred (not admitted until the PR that adds them): the vendored tree.
 

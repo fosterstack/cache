@@ -129,8 +129,8 @@ jobs:
           head=$(printf '%s' "$snap" | jq -r '.headRefOid')
           held=$(printf '%s' "$snap" | jq '[.files[].path | select(startswith("tools/govulncheck/"))] | length')
           total=$(printf '%s' "$snap" | jq '.files | length')
-          [[ "$head" =~ ^[0-9a-f]{40}$ ]] || { echo "could not read the PR's head" >&2; exit 1; }
-          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "could not read the head this run screened" >&2; exit 1; }
+          [[ "$head" =~ ^[0-9a-f]{40}$ ]] || { echo "could not get the PR's head" >&2; exit 1; }
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "could not get the head this run screened" >&2; exit 1; }
           if [ "$head" != "$HEAD_SHA" ]; then
             echo "### Not armed: the PR has a newer head than the one this run screened" >> "$GITHUB_STEP_SUMMARY"
             exit 0
@@ -171,7 +171,7 @@ jobs:
           # the reviewer has already approved. One read gives the head and the arm state; if it fails, disarm.
           disarm() { gh pr merge --disable-auto "$PR_URL" || echo "::error::could not turn auto-merge off"; }
           if ! pr=$(gh pr view "$PR_URL" --json headRefOid,autoMergeRequest); then
-            disarm; echo "::error::could not read the pull request"; exit 1
+            disarm; echo "::error::could not get the pull request"; exit 1
           fi
           head=$(jq -r .headRefOid <<<"$pr"); armed=$(jq -r '.autoMergeRequest != null' <<<"$pr")
           [ "$head" = "$HEAD_SHA" ] ||
@@ -181,9 +181,10 @@ jobs:
               --jq 'if (.check_runs | length) >= 100 then error("the check runs are cut") else . end
                     | [.check_runs[] | select(.app.slug == "fosterstack-automation")] | sort_by(.id) | last
                     | "\(.conclusion // "none") \(.external_id // "")"'); then
-            disarm; echo "::error::could not read the reviewer's verdict on ${head:0:7}"; exit 1
+            disarm; echo "::error::could not get the reviewer's verdict on ${head:0:7}"; exit 1
           fi
-          read -r verdict external_id <<<"$verdict"
+          external_id=${verdict#* }
+          verdict=${verdict%% *}
           success_counts=false
           if [ "$verdict" = success ] && [ "$WAITS_FOR_VERDICT" = true ]; then success_counts=true; fi
           if [ "$success_counts" = true ]; then
@@ -194,10 +195,10 @@ jobs:
             fetch() { # <path>
               mkdir -p "$main/$(dirname "$1")"
               gh api "repos/${GITHUB_REPOSITORY}/contents/$1?ref=main" --jq .content | base64 -d > "$main/$1" ||
-                fail "could not read $1 on main"
+                fail "could not get $1 on main"
             }
             gh api "repos/${GITHUB_REPOSITORY}/contents/bin/dependabot-reviewer-version.sh?ref=main" --jq .content \
-              | base64 -d > "$RUNNER_TEMP/dependabot-reviewer-version.sh" || fail "could not read the version script"
+              | base64 -d > "$RUNNER_TEMP/dependabot-reviewer-version.sh" || fail "could not get the version script"
             files=$(bash "$RUNNER_TEMP/dependabot-reviewer-version.sh" --files) ||
               fail "could not list the reviewer's files"
             [ -n "$files" ] || fail "the list of the reviewer's files is empty"

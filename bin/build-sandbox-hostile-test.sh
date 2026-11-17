@@ -82,10 +82,15 @@ mkprobe() { # mkprobe OUT [sed expression]
     -e "s#^UNSHARE=[^ ]*#UNSHARE=$work/bin/unshare#" \
     -e "s#^MELANGE=[^ ]*#MELANGE=$work/bin/melange#; s#^REPO=[^ ]*#REPO=$co/archive#" \
     -e "s#^KEYRING=[^ ]*#KEYRING=$co/archive/keys/wolfi-signing.rsa.pub#" \
-    -e "s#^RECORD=[^ ]*#RECORD=$co/witness-apk/apk-collection.local.json#" \
     ${2:+-e "$2"} "$PROBE" > "$1" && chmod +x "$1"
 }
-runprobe() { # runprobe COPY : from the fixture checkout, tmp folders under $work, a sentinel token in the environment
+# runprobe COPY [RECORD-NAME]: from the fixture checkout, tmp folders under $work, a sentinel token in the environment;
+# the probe gets the record's file name as its one argument (default apk-collection.local.json)
+runprobe() {
+  (cd "$co" && TMPDIR="$work/tmp" RUNNER_TEMP="$work/rt" GH_TOKEN="$SENT_TOKEN" \
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN="$SENT_TOKEN" bash "$1" "${2:-apk-collection.local.json}")
+}
+runprobe_noarg() {
   (cd "$co" && TMPDIR="$work/tmp" RUNNER_TEMP="$work/rt" GH_TOKEN="$SENT_TOKEN" \
     ACTIONS_ID_TOKEN_REQUEST_TOKEN="$SENT_TOKEN" bash "$1")
 }
@@ -187,7 +192,27 @@ setrc 0; echo 126 > "$work/rc/network"
 exits "AC5" "melange not executable (exit 126) is a probe error (exit 1)" 1 runprobe "$work/probe.sh"
 setrc 0; mv "$co/witness-apk/apk-collection.local.json" "$work/rec.saved"
 exits "AC5" "a missing Witness record is a refusal (exit 2)" 2 runprobe "$work/probe.sh"
+t "AC5" "...naming the record" grep -q "apk-collection.local.json" "$work/o"
+# the record is the file the argument names, read from witness-apk/, with no fallback to another name (SCF rule 8)
+SNAP=snapshot-apk-collection.local.json
+printf '{"record": "snapshot"}\n' > "$co/witness-apk/$SNAP"
+setrc 0
+exits "AC5" "snapshot record argument, only that record present: the walls are judged (exit 0)" \
+  0 runprobe "$work/probe.sh" "$SNAP"
+t "AC5" "...and melange ran the control and five walls" \
+  bash -c "[ \$(grep -c '^melange build probe-' '$work/calls') = 6 ]"
+rm "$co/witness-apk/$SNAP"
 mv "$work/rec.saved" "$co/witness-apk/apk-collection.local.json"
+setrc 0
+exits "AC5" "snapshot record argument with only the ordinary record present is a refusal (exit 2), no fallback" \
+  2 runprobe "$work/probe.sh" "$SNAP"
+t "AC5" "...naming the missing snapshot record" grep -q "$SNAP" "$work/o"
+t "AC5" "...and melange never ran (no fallback)" bash -c "[ ! -s '$work/calls' ]"
+setrc 0
+exits "AC5" "no argument is a refusal (exit 2), the ordinary record present" 2 runprobe_noarg "$work/probe.sh"
+t "AC5" "...and melange never ran (no argument)" bash -c "[ ! -s '$work/calls' ]"
+exits "AC5" "the ordinary record argument with the ordinary record present: the walls are judged (exit 0)" \
+  0 runprobe "$work/probe.sh" apk-collection.local.json
 
 # the sealed shape, judged by the pinned helper before melange runs: each mutant is refused (exit 2) and melange never
 # runs

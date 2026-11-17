@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC2
+# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3
 # cache#359 round 5, section 2, group P2, row "a series is not a pin": for EVERY installer-input tool (INSTALLER_INPUTS
 # of pin-inventory.py: golangci-lint,
 # python, java, node, goreleaser, cosign, gcloud, helm, buildx, kind, kubectl) a version of fewer than three numeric
 # parts (v2.1, 2.1, 3) is a series, not an
-# exact release: the age judge refuses it ("not a pin"/"series") whatever it is given. Three numeric parts still
-# pass.
+# exact release: the pin check refuses it ("not a pin"/"series") whatever else is known of the release. Three numeric parts still
+# pass as a pin the scan can read.
 # Written from the English rows only; judge_item is called in-process.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -39,6 +39,7 @@ assert TOOLS == sorted(
     "golangci-lint python java node goreleaser cosign gcloud helm buildx kind kubectl".split()), TOOLS
 PY
 CASE="every installer-input tool: a two-part version (v2.1 and 2.1) is a series, refused as 'not a pin' "
+CASE+="whatever else is known of the release"
 check python3 - "$work/pre.py" <<'PY'
 import sys; exec(open(sys.argv[1]).read())
 bad = []
@@ -57,7 +58,7 @@ ok, why = age.judge_item(age.inv.Item("tool", sys.argv[2], "v2.1"))
 assert not ok and ("series" in why or "not a pin" in why), (ok, why)
 PY
 done
-CASE="every installer-input tool: three numeric parts (v2.1.3 and 2.1.3) still pass"
+CASE="every installer-input tool: three numeric parts (v2.1.3 and 2.1.3) still pass as a pin the scan can read"
 check python3 - "$work/pre.py" <<'PY'
 import sys; exec(open(sys.argv[1]).read())
 bad = []

@@ -8,6 +8,7 @@
 # proves: REQ-REFRESH-001-AC29
 # proves: REQ-REFRESH-001-AC30
 # proves: REQ-REFRESH-001-AC31
+# proves: REQ-UAT-001-AC6
 # go-freshness.yml opens its bump PR with the auditor App's token (owner, Oct 2; advisor 0055): the check job's own token
 # is read-only; it runs in the main-only agent environment; the App token is minted with exactly the auditor's scope
 # (repositories: cache; contents and pull-requests write; nothing else) and only the bump step uses it; the checkout
@@ -74,22 +75,12 @@ jobs = d.get("jobs") or {}
 got = hashlib.sha256(json.dumps(mask(jobs.get("check") or {}), sort_keys=True).encode()).hexdigest()
 if got != REVIEWED_CHECK_JOB:
     bad.append("the privileged check job differs from its reviewed form (%s)" % got[:12])
-if sorted(jobs) not in (["check", "refresh"], ["check", "persona-uat", "refresh"]):      # persona-uat's PRESENCE is persona-uat-wiring-test.sh's job
-    bad.append("jobs other than check, refresh and persona-uat: %s" % sorted(jobs))
+if sorted(jobs) != ["check", "refresh"]:      # REQ-UAT-001-AC6: no persona job here (persona-uat.yml holds them); the file keeps its freshness jobs only
+    bad.append("jobs other than check and refresh: %s" % sorted(jobs))
 if d.get("env") or d.get("defaults"):
     bad.append("a workflow-level env/defaults reaches the privileged job")
 for j, v in jobs.items():
     if j in ("check", "refresh"):
-        continue
-    if j == "persona-uat":
-        # REQ-UAT-001's weekly job (its exact shape is pinned by persona-uat-wiring-test.sh): its own environment and the model identity secrets ONLY;
-        # never the App token, never the privileged check job's environment, outputs or secrets
-        t = json.dumps(v)
-        allowed = {"ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_SERVICE_ACCOUNT_ID", "ANTHROPIC_WORKSPACE_ID",
-                   "PERSONA_UAT_MODEL", "PERSONA_UAT_COMPLIANCE_MODEL"}      # the model ids are environment secrets (advisor 0233)
-        used = set(re.findall(r"secrets\.([A-Za-z0-9_]+)", t))
-        if used - allowed or "app-token" in t or "create-github-app-token" in t or v.get("environment") != "persona-uat" or "check" in str(v.get("needs", "")):
-            bad.append("the persona-uat job touches more than its own environment and the model identity secrets (%s)" % sorted(used - allowed))
         continue
     t = json.dumps(v)
     if "secrets" in t or "app-token" in t or "create-github-app-token" in t or v.get("environment") or "check" in str(v.get("needs", "")):
@@ -126,8 +117,8 @@ if re.sub(r"\s+", " ", cond).strip() != "${{ github.ref == 'refs/heads/main' && 
     bad.append("AC25: the refresh job's condition is not main plus schedule or dispatch: %s" % cond)
 trig = d.get("on") or d.get(True) or {}
 sched = trig.get("schedule") if isinstance(trig, dict) else None
-if not isinstance(sched, list) or {"cron": "23 6 * * *"} not in sched:
-    bad.append("AC25: the schedule the refresh job runs on (cron 23 6 * * *) is missing from the triggers: %s" % sched)
+if sched != [{"cron": "23 6 * * *"}]:      # REQ-UAT-001-AC6: the weekly persona cron moved to persona-uat.yml; this file keeps the daily freshness cron alone
+    bad.append("AC25: the schedule is not exactly the daily freshness cron (cron 23 6 * * *): %s" % sched)
 conc = r.get("concurrency")
 if not isinstance(conc, dict) or conc.get("group") != "refresh-inputs" or str(conc.get("cancel-in-progress")).lower() != "false" or sorted(conc) != ["cancel-in-progress", "group"]:
     bad.append("AC29: the refresh jobs are not serialized (concurrency group refresh-inputs, cancel-in-progress false): %s" % r.get("concurrency"))
@@ -277,7 +268,9 @@ case_ second-checkout-cred   bad "$C['steps'].append({'uses': 'actions/checkout@
 case_ token-printed          bad "[s.__setitem__('run', s['run'] + 'printf %s \"\$GH_TOKEN\" | od -An -tx1\\n') for s in $C['steps'] if 'go-bump-open-pr.sh' in (s.get('run') or '')]"
 case_ another-agent-job      bad "d['jobs']['x'] = {'runs-on': 'ubuntu-latest', 'environment': 'agent', 'steps': [{'uses': 'actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1', 'with': {'permission-checks': 'write'}}]}"
 case_ secrets-to-json        bad "$C.setdefault('env', {})['AGENT_SECRETS'] = '\${{ toJSON(secrets) }}'"
-case_ key-through-outputs    bad "$C['outputs'] = {'k': '\${{ secrets.AUDITOR_APP_PRIVATE_KEY }}'}; d['jobs']['persona-uat']['needs'] = 'check'"
+case_ key-through-outputs    bad "$C['outputs'] = {'k': '\${{ secrets.AUDITOR_APP_PRIVATE_KEY }}'}; d['jobs']['extra'] = {'needs': 'check', 'runs-on': 'ubuntu-latest', 'steps': []}"
+case_ persona-job-back       bad "d['jobs']['persona-uat'] = {'runs-on': 'ubuntu-24.04', 'environment': 'persona-uat', 'steps': []}"
+case_ weekly-persona-cron-back bad "d['on']['schedule'].append({'cron': '43 6 * * 1'})"
 case_ bump-gutted            bad "[s.__setitem__('run', ':') for s in $C['steps'] if 'go-bump-open-pr.sh' in (s.get('run') or '')]"
 case_ github-env-write       bad "[s.__setitem__('run', s['run'] + 'echo INPUT_PERMISSION-checks=write >> \"\$GITHUB_ENV\"\\n') for s in $C['steps'] if s.get('id') == 'cmp']"
 case_ workflow-env           bad "d['env'] = {'INPUT_PERMISSION-checks': 'write'}"
