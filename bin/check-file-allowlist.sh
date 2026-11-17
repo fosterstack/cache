@@ -101,7 +101,6 @@ ALLOW_PATTERNS=(
   '^bin/analyze-egress-trace-test\.sh$'
   '^bin/install-scanner\.sh$'
   '^bin/install-scanner-test\.sh$'
-  '^bin/required-check-guard\.sh$'
   '^bin/required-check-guard-test\.sh$'
   '^bin/dependabot-reviewer\.py$'
   '^bin/dependabot-reviewer-test\.sh$'

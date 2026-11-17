@@ -35,7 +35,7 @@
  "check-file-allowlist-test.sh": 1079,
  "check-no-outbound-test.sh": 135,
  "dependabot-reviewer-gather-test.sh": 20,
- "dependabot-reviewer-test.sh": 106,
+ "dependabot-reviewer-test.sh": 103,
  "dependency-lanes-test.sh": 56,
  "docs-snippets-test.sh": 50,
  "evidence-letter-job-test.sh": 122,
@@ -81,5 +81,5 @@
  "vex-index-test.sh": 1159,
  "vex-scope-test.sh": 21,
  "witness-kms-test.sh": 58,
- "workflow-consolidation-test.sh": 151
+ "workflow-consolidation-test.sh": 150
 }

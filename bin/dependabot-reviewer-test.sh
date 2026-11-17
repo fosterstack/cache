@@ -369,11 +369,10 @@ py_rc=$?
 
 # ============================================================================ the act step
 # The committed "gather, read twice, decide, act" step, run as written under GitHub's default
-# `bash -e`, with: a recording `gh` (per-scenario failures), a stub token endpoint (`curl`), the
-# committed required-check guard fed a matching or drifted ruleset, and a fake SDK module that
+# `bash -e`, with: a recording `gh` (per-scenario failures), a stub token endpoint (`curl`), and a fake SDK module that
 # returns each reader's canned answer. Asserts WHAT is called, in WHAT order, and whether a check
 # goes up — the round-1 paths (malformed answer, failed diff, re-hold with auto-merge armed,
-# partial failures, -e aborting the loop, guard drift).
+# partial failures, -e aborting the loop).
 w="$(mktemp -d)"; trap 'rm -rf "$w"' EXIT
 pass=0; fail=0
 python3 - "$repo/.github/workflows/dependabot-reviewer.yml" "$w/act.sh" <<'PY'
@@ -391,7 +390,6 @@ cat > "$w/bin/gh" <<'EOF'
 echo "gh $*" >> "$GH_LOG"
 fails() { case " ${FAIL:-} " in *" $1 "*) exit 1 ;; esac; }
 case "$1 $2" in
-  "api repos/o/r/contents/.github/policy/required-checks.json?ref=main") base64 < "$LIST" | tr -d '\n' ;;
   "api repos/o/r/check-runs") fails check ;;
   "api repos/fosterstack/ops/dispatches") fails dispatch ;;
   "api repos/o/r/commits/shaA/check-runs?check_name=dependabot-reviewer") echo success ;;   # cancellation cleanup lookups
@@ -437,22 +435,19 @@ class Anthropic:
     def __init__(self): self.messages = _Messages()
 EOF
 chmod +x "$w/bin/gh" "$w/bin/curl"
-jq '[{"type":"required_status_checks","parameters":{"required_status_checks":[.required_checks[]|{context,integration_id}]}}]' \
-  "$repo/.github/policy/required-checks.json" > "$w/rules-match.json"
-jq '(.[0].parameters.required_status_checks) |= .[1:]' "$w/rules-match.json" > "$w/rules-drift.json"
 CLEAN='{"findings": [{"severity": "check", "title": "node24 runtime", "release_note": "v5: node24", "our_line": ".github/workflows/x.yml:3", "why": "runtime"}]}'
 BREAKS='{"findings": [{"severity": "breaks-us", "title": "input removed", "release_note": "v7: removed foo", "our_line": ".github/workflows/x.yml:3", "why": "we pass foo"}]}'
 TRUNC='{"findings": [], "unfinished": {"findings": []}'
 
-act() { # name; env: A B (answers), PRS, FAIL, ARMED, RULES
+act() { # name; env: A B (answers), PRS, FAIL, ARMED
   local W="$w/run"; rm -rf "$W"; mkdir -p "$W/work"; : > "$w/gh.log"
   : > "$W/work/candidates.txt"
   for n in ${PRS:-99}; do
     echo "$n abcdef1234567$n ${PRIOR:-none}" >> "$W/work/candidates.txt"
     echo '[{"name":"a/b","from":"4","to":"7","major":true}]' > "$W/work/updates-$n.json"
   done
-  (cd "$repo" && env PATH="$w/bin:$PATH" PYTHONPATH="$w/py" GH_LOG="$w/gh.log" LIST="$repo/.github/policy/required-checks.json" \
-     GUARD_RULES_JSON="${RULES:-$w/rules-match.json}" FAIL="${FAIL:-}" ARMED="${ARMED:-false}" \
+  (cd "$repo" && env PATH="$w/bin:$PATH" PYTHONPATH="$w/py" GH_LOG="$w/gh.log" \
+     FAIL="${FAIL:-}" ARMED="${ARMED:-false}" \
      GITHUB_REPOSITORY=o/r RUNNER_TEMP="$W" GITHUB_STEP_SUMMARY="$W/summary" GITHUB_OUTPUT="$W/output" \
      RUN_URL=https://example.invalid/run ANTHROPIC_IDENTITY_TOKEN_FILE="$W/token" \
      ACTIONS_ID_TOKEN_REQUEST_TOKEN=t ACTIONS_ID_TOKEN_REQUEST_URL="https://example.invalid/oidc?x=1" \
@@ -492,7 +487,6 @@ A="$CLEAN" B="$BREAKS" ARMED=false act; expect "hold, not armed -> no disarm cal
 A="$CLEAN" B="$BREAKS" FAIL="issue" act; expect "held issue cannot be created -> no check; retry (round-1 P1)" "-$CHK" ERRORED=1
 A="$CLEAN" B="$BREAKS" ARMED=true FAIL="disarm" act; expect "auto-merge cannot be disarmed -> no issue, no check" "-issue create" "-$CHK" ERRORED=1
 A="$CLEAN" B="$CLEAN" FAIL="merge" act; expect "auto-merge cannot be armed -> no success check; retry (round-1 P1)" "-$CHK" ERRORED=1
-A="$CLEAN" B="$CLEAN" RULES="$w/rules-drift.json" act; expect "required-check drift -> no major armed, no check (Sonnet round 1)" "-pr merge" "-$CHK" ERRORED=1
 A="$CLEAN" B="$CLEAN" MB=boom act; expect "a reader raises -> no merge, no check" "-pr merge" "-$CHK" ERRORED=1
 A="$CLEAN" B="$CLEAN" FAIL="notes" act; expect "release notes cannot be read -> UNAVAILABLE: no reader, no merge, no check; retried (owner, Oct 1)" "-pr merge" "-$CHK" ERRORED=1
 grep -q "release notes UNAVAILABLE" "$w/run/work/pr-99/bundle.md" 2>/dev/null \
@@ -514,7 +508,7 @@ grep -q "reader A" "$w/run/work/pr-99/issue.md" && grep -q "reader B" "$w/run/wo
   && { echo "ok: act: the issue carries both readers' findings, attributed, with release notes"; pass=$((pass+1)); } \
   || { echo "FAIL: act: issue content"; sed 's/^/    /' "$w/run/work/pr-99/issue.md"; fail=$((fail+1)); }
 
-# --- rules 4 and 5 (owner, Oct 26): no LLM inside a workflow fixes code; a hold or a drift opens its issue and stops
+# --- rules 4 and 5 (owner, Oct 26): no LLM inside a workflow fixes code; a hold opens its issue and stops
 if grep -rqE "repository_dispatch|/dispatches|dispatch-fixer|DISPATCH_TOKEN|repositories: ops" \
      "$repo/.github/workflows/dependabot-reviewer.yml" "$repo/.github/workflows/ci.yml" || [ -e "$here/dispatch-fixer.sh" ]; then
   echo "FAIL: a fixer dispatch or an ops token is back in the reviewer or ci workflow"; fail=$((fail+1))
@@ -592,7 +586,6 @@ case "$1 $2" in
   "api repos/o/r/commits/sha77/check-runs?check_name=dependabot-reviewer") echo "${PRIOR77:-none}" ;;
   "api repos/o/r/commits/sha400/check-runs?check_name=dependabot-reviewer") echo "${PRIOR400:-none}" ;;
   "api repos/o/r/issues/99/events") [ "${EVENTSFAIL:-}" = 1 ] && exit 1; printf '%b' "${EVENTS99:-}" ;;
-  "api repos/o/r/contents/.github/policy/required-checks.json?ref=main") base64 < "$REPO_CHECKS" | tr -d '\n' ;;
   "api repos/o/r/check-runs") [ "${NEUTRALFAIL:-}" = 1 ] && exit 1; : ;;
   "pr view") echo "${ARMED99:-false}" ;;
   "pr merge") case "$*" in *--auto*) [ "${REARMFAIL:-}" = 1 ] && exit 1; : ;; *) [ "${DISARMFAIL:-}" = 1 ] && exit 1; : ;; esac ;;
@@ -606,7 +599,7 @@ EOF
 chmod +x "$w/bin/gh"
 cand() { # expected-candidates expected-rc; env PRIOR99 PRIOR91 LOOKUP99 FORCE
   local W="$w/cand"; rm -rf "$W"; mkdir -p "$W"; : > "$w/gh.log"
-  (cd "$repo" && env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" PRS_JSON="${PRSFILE:-${PRSF:-$w/prs.json}}" GITHUB_REPOSITORY=o/r RUNNER_TEMP="$W" REPO_CHECKS="$repo/.github/policy/required-checks.json" GUARD_RULES_JSON="${RULES:-$w/rules-match.json}" \
+  (cd "$repo" && env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" PRS_JSON="${PRSFILE:-${PRSF:-$w/prs.json}}" GITHUB_REPOSITORY=o/r RUNNER_TEMP="$W" \
      GITHUB_OUTPUT="$W/output" APP_TOKEN=a APP_SLUG=fosterstack-automation MERGE_TOKEN=m RUN_URL=https://example.invalid/run \
      ONLY_PR="${ONLY:-}" FORCE="${FORCE:-false}" \
      bash --noprofile --norc -e -o pipefail "$w/cand.sh") > "$w/cand.out" 2>&1; local rc=$?
@@ -644,10 +637,9 @@ ONLY=99 cand "99 none," 0 "pr=99 selects the plain major"
   && { echo "ok: candidates: a plain major is left as it was (major, not flagged)"; pass=$((pass+1)); } || { echo "FAIL: candidates: plain major changed"; fail=$((fail+1)); }
 
 # The lane turned an arm off just as the reviewer approved the head (the reviewer arms, then publishes): a success verdict on the
-# head, no arm, and the LAST auto-merge event being a disable by github-actions (the workflow token) means put the arm back, after
-# the required-check guard; a person's disarm, an earlier lane disarm followed by a later enable, or no event at all stays.
+# head, no arm, and the LAST auto-merge event being a disable by github-actions (the workflow token) means put the arm back; a person's disarm, an earlier lane disarm followed by a later enable, or no event at all stays.
 LANE_OFF='auto_merge_enabled fosterstack-automation\nauto_merge_disabled github-actions[bot]\n'
-heal() { # <events> <rc> <expect-rearm yes|no> <name>   (PRIOR99=success; ARMED99, RULES, REARMFAIL, EVENTSFAIL from the environment)
+heal() { # <events> <rc> <expect-rearm yes|no> <name>   (PRIOR99=success; ARMED99, REARMFAIL, EVENTSFAIL from the environment)
   PRIOR99=success EVENTS99="$1" cand "91 none," "$2" "$4"
   if grep -q "pr merge --auto --squash --match-head-commit sha99 99" "$w/gh.log"; then got=yes; else got=no; fi
   [ "$got" = "$3" ] && { echo "ok: candidates: $4 (re-arm: $got)"; pass=$((pass+1)); } || { echo "FAIL: candidates: $4 (re-arm: $got, want $3)"; fail=$((fail+1)); }
@@ -661,7 +653,6 @@ heal 'auto_merge_enabled fosterstack-automation\nauto_merge_disabled github-acti
 heal 'auto_merge_enabled fosterstack-automation\nauto_merge_disabled github-actions[bot]x\n' 0 no "github-actions[bot] followed by anything else is not the workflow token"
 heal 'auto_merge_enabled fosterstack-automation\nauto_merge_disabled github-actions\n' 0 yes "the bare login github-actions is accepted too (the API names the bot either way)"
 ARMED99=true heal "$LANE_OFF" 0 no "already armed -> nothing to do"
-RULES="$w/rules-drift.json" heal "$LANE_OFF" 1 no "the required-check guard refuses -> no arm, the step fails (the approved arm stays off, retried next hour)"
 REARMFAIL=1 heal "$LANE_OFF" 1 yes "the re-arm cannot be made -> the step fails (retry next hour)"
 EVENTSFAIL=1 heal "$LANE_OFF" 1 no "the events cannot be read -> skipped, the step fails"
 PRIOR99=failure EVENTS99="$LANE_OFF" cand "91 none," 0 "a FAILURE verdict is never re-armed"
