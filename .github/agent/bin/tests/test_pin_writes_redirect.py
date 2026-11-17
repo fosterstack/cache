@@ -342,6 +342,48 @@ class RunnerFileSetByOtherForms(unittest.TestCase):
         hits, out = self.hits('read -r line <<< hello\ncp payload "$GITHUB_OUTPUT"\nbash scripts/build.sh')
         self.assertFalse(hits, out)
 
+    def test_cp_runner_file_set_by_read_with_semicolon_in_prompt_is_reported(self):
+        self.reported_cp('n=GITHUB_; read -r -p ";" "${n}OUTPUT" <<< scripts/build.sh')
+
+    def test_cp_runner_file_set_by_read_with_ampersand_in_prompt_is_reported(self):
+        self.reported_cp('n=GITHUB_; read -r -p "&" "${n}OUTPUT" <<< scripts/build.sh')
+
+    def test_cp_runner_file_set_by_read_with_pipe_in_prompt_is_reported(self):
+        self.reported_cp('n=GITHUB_; read -r -p "|" "${n}OUTPUT" <<< scripts/build.sh')
+
+    def test_cp_runner_file_set_by_read_with_newline_in_prompt_is_reported(self):
+        self.reported_cp('n=GITHUB_; read -r -p "\n" "${n}OUTPUT" <<< scripts/build.sh')
+
+    def test_fills_dir_runner_file_set_by_read_with_semicolon_in_prompt_is_not_exempt(self):
+        self.assertTrue(M._writes('n=GITHUB_; read -r -p ";" "${n}OUTPUT" <<< scripts\ntar -xf a.tar -C "$GITHUB_OUTPUT"\n', "scripts/build.sh"))
+
+    def test_cp_with_arithmetic_command_with_expansion_before_it_is_reported(self):
+        self.reported_cp('x=1\n(( $x + 1 ))')
+
+    def test_cp_with_printf_v_expansion_is_reported(self):
+        self.reported_cp('y=a\nprintf -v x %s "$y"')
+
+    def test_cp_with_printf_v_unrelated_literal_keeps_exemption(self):
+        hits, out = self.hits('printf -v x %s y\ncp payload "$GITHUB_OUTPUT"\nbash scripts/build.sh')
+        self.assertFalse(hits, out)
+
+    def test_cp_with_builtin_name_only_inside_jq_program_keeps_exemption(self):
+        hits, out = self.hits("m=1\njq -r 'select(.a) | $m' file > out\ncp payload \"$GITHUB_OUTPUT\"\nbash scripts/build.sh")
+        self.assertFalse(hits, out)
+
+    def test_cp_runner_file_set_by_command_read_with_run_time_name_is_reported(self):
+        self.reported_cp('n=GITHUB_;\ncommand read -r "${n}OUTPUT" <<< scripts/build.sh')
+
+    def test_cp_runner_file_set_by_while_read_with_run_time_name_is_reported(self):
+        self.reported_cp('n=GITHUB_\nwhile read -r "${n}OUTPUT"; do :; done <<< scripts/build.sh')
+
+    def test_cp_with_indirect_expansion_anywhere_is_reported(self):
+        self.reported_cp('echo "${!PATH}"')
+
+    def test_cp_with_only_plain_reads_not_reported(self):
+        hits, out = self.hits('echo "$x" "${y}"\ncp payload "$GITHUB_OUTPUT"\nbash scripts/build.sh')
+        self.assertFalse(hits, out)
+
 
 if __name__ == "__main__":
     unittest.main()

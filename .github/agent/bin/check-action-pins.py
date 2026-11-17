@@ -2000,13 +2000,14 @@ def _touches(script, name, consumer):
 OUTSIDE = ("$RUNNER_TEMP", "${RUNNER_TEMP}", "/", "$(mktemp")   # outside the checkout: never the file's directory
 
 
-# whole commands that may set a variable whose name is made at run time, each read as text and never by word: any ${!,
-# a builtin that takes a variable name with a $ or backtick anywhere up to the command's end, printf -v likewise, (( ))
+# commands that may set a variable whose name is made at run time, each read as text and never by word: a command led
+# by a builtin that takes a variable name, or by printf -v, with a $ or backtick anywhere up to the command's end
+_LED = r"\s*(?:(?:\w+=\S*|while|until|if|then|do|elif|else|time|!|\{|command|builtin)\s+)*"
 RUNTIME_NAME = re.compile(
-    r"\$\{!"
-    r"|(?<![\w-])(?:read|mapfile|readarray|getopts|declare|typeset|local|export|readonly|let|select)(?![\w-])[^;&|\n]*[$`]"
-    r"|(?<![\w-])printf(?![\w-])(?=[^;&|\n]*-v)[^;&|\n]*[$`]"
-    r"|\(\([^\n]*[$`]")
+    _LED + r"(?:read|mapfile|readarray|getopts|declare|typeset|local|export|readonly|let|select)(?![\w-]).*[$`]"
+    r"|" + _LED + r"printf(?![\w-])(?=.*-v).*[$`]", re.S)
+# read across the whole script: ${!ref} and (( $x ))
+RUNTIME_EXPANSION = re.compile(r"\$\{!|\(\([^\n]*[$`]")
 
 
 def _only_read(name, script):
@@ -2015,12 +2016,13 @@ def _only_read(name, script):
     check cannot read). Any other mention (read, for, printf -v, ${name:=x}, (( )), let, name[0]=, …) may set it."""
     if "$'" in script:
         return False
-    script = re.sub(r"\\(.)|[\"']", lambda m: m.group(1) or "", script)
+    words = _unquoted(script)
     word = r"(?<![A-Za-z0-9_])" + name + r"(?![A-Za-z0-9_])"
     reads = r"\$" + name + r"(?![A-Za-z0-9_])|\$\{" + name + r"\}"
-    return (len(re.findall(word, script)) == len(re.findall(reads, script))
-            and not re.search(r"(?<![\w-])eval(?![\w-])", script)
-            and not RUNTIME_NAME.search(script))
+    return (len(re.findall(word, words)) == len(re.findall(reads, words))
+            and not re.search(r"(?<![\w-])eval(?![\w-])", words)
+            and not RUNTIME_EXPANSION.search(words)
+            and not any(RUNTIME_NAME.match(_unquoted(c)) for c in _split_commands(script)))
 
 
 def _outside(target, script, depth=0):
