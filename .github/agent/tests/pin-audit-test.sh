@@ -1583,6 +1583,8 @@ UNPINNED_GO=(
   "v1|go install example.com/x@v1"
   "v12|go install example.com/x@v1.2"
   "short|go install example.com/x@abc1234"
+  "vsuffix|go install example.com/x@v1.2.3branch"
+  "shasuffix|go install example.com/x@${SHA4}branch"
   # no range case: the inventory does not read a quoted range (go install 'example.com/x@>=1.0.0'), so the rule cannot judge it
   "bare|go install example.com/x"
   "var|go install \"\$TOOL\""

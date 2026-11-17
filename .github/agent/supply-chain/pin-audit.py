@@ -1390,7 +1390,7 @@ def main(argv=None):
         for e in dormant:
             print(f"information: dormant exception: the ruling for {_ruling_label(e)} waits for its pin; nobody holds it")
         # REQ-SUP-001-AC34: a go install whose version is not exact is a finding of the daily run (the pull-request scan that judged it is deleted)
-        unpinned = [] if a.base else sorted(k for k, i in head.items() if i.kind == "gotool" and not GO_EXACT.match(i.version))
+        unpinned = [] if a.base else sorted(k for k, i in head.items() if i.kind == "gotool" and not GO_EXACT.fullmatch(i.version))
         for k in unpinned:
             print(f"audit: UNPINNED GO TOOL: {clean(k)} is not an exact version (vMAJOR.MINOR.PATCH or a full commit)")
         plan, disputes, per_item, pending = [], {}, {}, []
