@@ -380,6 +380,21 @@ class RunnerFileSetByOtherForms(unittest.TestCase):
     def test_cp_with_indirect_expansion_anywhere_is_reported(self):
         self.reported_cp('echo "${!PATH}"')
 
+    def test_cp_runner_file_set_by_read_after_leading_redirection_is_reported(self):
+        self.reported_cp('n=GITHUB_; <<< scripts/build.sh read -r "${n}OUTPUT"')
+
+    def test_cp_runner_file_set_by_read_after_wrapper_option_is_reported(self):
+        self.reported_cp('n=GITHUB_; command -p read -r "${n}OUTPUT" <<< scripts/build.sh')
+
+    def test_cp_runner_file_set_by_read_after_quoted_assignment_with_space_is_reported(self):
+        self.reported_cp('n=GITHUB_; A="has space" read -r "${n}OUTPUT" <<< scripts/build.sh')
+
+    def test_cp_runner_file_set_by_read_after_assignment_and_redirection_is_reported(self):
+        self.reported_cp('n=GITHUB_; x=1 2>/dev/null read -r "${n}OUTPUT" <<< scripts/build.sh')
+
+    def test_fills_dir_runner_file_set_by_read_after_leading_redirection_is_not_exempt(self):
+        self.assertTrue(M._writes('n=GITHUB_; <<< scripts read -r "${n}OUTPUT"\ntar -xf a.tar -C "$GITHUB_OUTPUT"\n', "scripts/build.sh"))
+
     def test_cp_with_only_plain_reads_not_reported(self):
         hits, out = self.hits('echo "$x" "${y}"\ncp payload "$GITHUB_OUTPUT"\nbash scripts/build.sh')
         self.assertFalse(hits, out)

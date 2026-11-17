@@ -2000,14 +2000,20 @@ def _touches(script, name, consumer):
 OUTSIDE = ("$RUNNER_TEMP", "${RUNNER_TEMP}", "/", "$(mktemp")   # outside the checkout: never the file's directory
 
 
-# commands that may set a variable whose name is made at run time, each read as text and never by word: a command led
-# by a builtin that takes a variable name, or by printf -v, with a $ or backtick anywhere up to the command's end
-_LED = r"\s*(?:(?:\w+=\S*|while|until|if|then|do|elif|else|time|!|\{|command|builtin)\s+)*"
+# a command that may set a variable whose name is made at run time: a builtin that takes a variable name, or printf -v,
+# as a word anywhere in it (any prefix bash takes can come before it), with a $ or backtick in the same command
+_WORD = r"(?<![\w./-])(?:{})(?![\w./(-])"
 RUNTIME_NAME = re.compile(
-    _LED + r"(?:read|mapfile|readarray|getopts|declare|typeset|local|export|readonly|let|select)(?![\w-]).*[$`]"
-    r"|" + _LED + r"printf(?![\w-])(?=.*-v).*[$`]", re.S)
+    _WORD.format("read|mapfile|readarray|getopts|declare|typeset|local|export|readonly|let|select"))
+PRINTF = re.compile(_WORD.format("printf"))
 # read across the whole script: ${!ref} and (( $x ))
 RUNTIME_EXPANSION = re.compile(r"\$\{!|\(\([^\n]*[$`]")
+
+
+def _builds_name(command):
+    if "$" not in command and "`" not in command:
+        return False
+    return bool(RUNTIME_NAME.search(command) or (PRINTF.search(command) and "-v" in command))
 
 
 def _only_read(name, script):
@@ -2022,7 +2028,7 @@ def _only_read(name, script):
     return (len(re.findall(word, words)) == len(re.findall(reads, words))
             and not re.search(r"(?<![\w-])eval(?![\w-])", words)
             and not RUNTIME_EXPANSION.search(words)
-            and not any(RUNTIME_NAME.match(_unquoted(c)) for c in _split_commands(script)))
+            and not any(_builds_name(_unquoted(c)) for c in _split_commands(script)))
 
 
 def _outside(target, script, depth=0):
