@@ -8,7 +8,7 @@ Two small things, and nothing else:
      sign` keeps its signer).
  (2) the stage-file GRAMMAR (advisor decision b, Oct 9; finite grammar; replaces the script-reach scan of rounds 4-11): the engine no
      longer tries to work out what a shell might reach. A release-chain stage file may only run what a committed allowlist names:
-       .github/policy/chain-scripts.json  {"env_names":[...],"scripts":[{"path","sha256","tools":[...],"signs":false|"provenance"|"other",
+       .github/policy/chain-scripts.json  {"env_names":[...],"scripts":[{"path","tools":[...],"signs":false|"provenance"|"other",
                                                       "runs":[listed paths it may start],"reason"}]}
      * KEYS are closed at workflow (name, on, permissions, jobs), job (name, needs, if, runs-on, permissions, steps, outputs,
        timeout-minutes, strategy.matrix of literal labels, environment) and step level (name, id, uses, with, run, env, if,
@@ -27,7 +27,7 @@ Two small things, and nothing else:
        literal path in `runs`; setting PATH/BASH_ENV/LD_*/PYTHON*... Its signing calls are judged from the row's `signs` on the raw
        text (comments, quotes and heredocs included). `provenance` is allowed only for a script that stage-sign.yml alone runs.
        STATED EXCLUSION: a command or script path built at run time inside a listed script is not detected; listed scripts are
-       committed, sha256-bound and reviewed at PR time (row 78). Python/JS argv-array signers and downloaded binaries likewise.
+       committed and reviewed at PR time (row 78). Python/JS argv-array signers and downloaded binaries likewise.
      * other workflows (ci.yml, scan.yml ...), composite actions and release.yml's non-stage jobs are NOT stage files: they keep only
        the direct signer-call scan (listed with a reason in .github/policy/chain-signers.json).
 Modelled on: in-toto-witness options/run.go:64 (attestations flag forms), docs/commands.md."""
@@ -637,7 +637,7 @@ CLOSED = "not in the closed secret list"
 #  - round 3: comment stripping inside ${..}, backticks and $'..' contexts; strings that span lines (a quote spanning lines pairs with a later quote on
 #    its own line, read as unterminated and so left unmasked); brace expansion that builds a command word ({se,d}); and the ambient handoff is judged on
 #    the script text only (textual order of simple commands, no loops or conditionals followed), not on what runs.
-#  - the AC8 `unset GH_TOKEN` placement relative to child scripts is a reviewed line bound by the script's sha256 and the exact-text row below
+#  - the AC8 `unset GH_TOKEN` placement relative to child scripts is a reviewed line, bound by the exact-text row below
 #    (ambient_env `handoff_line`), not modelled: the judge does not follow order, depth, lists, functions, subshells or here-documents.
 #  - round 4: quote-split word forms in the raw-token words beyond what the normalized reader resolves; trap and alias string bodies; a bare "$x" command
 #    word (not refused: it would be a new class of finding for plain variable use, not measured against real scripts); git rebase -x, bisect run,
@@ -647,7 +647,7 @@ CLOSED = "not in the closed secret list"
 #    pip, dpkg, su, crontab, script, trap (quote-split and backslash-escaped spellings such as \curl, cu""rl, c\x27\x27url are a stated limit); the positional
 #    skip of a deny budget was tried (e059a3f on branch pipeline-chain-judge-exceptions-fix5) and withdrawn: it skipped a token whenever any command
 #    word started there and read CRLF text as LF.
-#  - deny exceptions bind the exact physical line with its sha256 and an exact count; the normalized-word check for \curl, cu""rl, c\x27\x27url is a stated limit.
+#  - deny exceptions bind the exact physical line text and an exact count; the normalized-word check for \curl, cu""rl, c\x27\x27url is a stated limit.
 class EnvNames(set):
     """The closed `env_names` (a set of names) that also carries `.ambient`: {name: {listed script paths that read it from their own
     environment}} from the top-level `ambient_env` list of chain-scripts.json (PR 1b, B). A step env name that its run line does not read
@@ -823,7 +823,7 @@ def load_scripts(base):
     env_names is the closed set of names a stage step may put in env: (never BASH_ENV, PATH, LD_*, PYTHON*, ...)."""
     f = os.path.join(base, ".github/policy/chain-scripts.json")
     if not os.path.exists(f):
-        return {}, ["missing .github/policy/chain-scripts.json (the scripts a release-chain stage file may run, by path and sha256)"], set()
+        return {}, ["missing .github/policy/chain-scripts.json (the scripts a release-chain stage file may run, by path)"], set()
     errs, rows = [], {}
     try:
         doc = jload(f)
@@ -937,7 +937,7 @@ def load_scripts(base):
             hl = e.get("handoff_line")
             if "handoff_line" in e and (not isinstance(hl, str) or any(not (" " <= ch <= "~") for ch in hl)):
                 errs.append("chain-scripts.json: ambient_env %s for %s: handoff_line must be one line of printable ASCII" % (nm, sc)); continue
-            if isinstance(hl, str) and hl.strip():       # round 4 (B): ONE exact source line, once, outside comments (its position is bound by the sha256 pin and review)
+            if isinstance(hl, str) and hl.strip():       # round 4 (B): ONE exact source line, once, outside comments (its position is bound by review)
                 n_hl = sum(1 for l in strip(open(os.path.join(base, sc), errors="replace").read()).splitlines() if l.strip() == hl.strip())
                 if n_hl != 1:
                     errs.append("chain-scripts.json: ambient_env %s for %s: handoff_line %r occurs %d times outside comments in %s (exactly once is required)" % (nm, sc, hl, n_hl, sc)); continue
@@ -1667,7 +1667,7 @@ def scan_script(path, text, row, rows, base):
     (c) `witness run ... --`: the first word after `--` must be a literal path in `runs` (never $@, "$@", $*, a variable or
     substitution); (d) setting PATH, BASH_ENV, ENV, LD_*, PYTHON*, NODE_OPTIONS, IFS ... anywhere. Signing calls are judged by the
     caller from the row's `signs` (raw text, comments and quotes included). Stated exclusion: a command or script path BUILT AT RUN
-    TIME inside a listed script is not detected; listed scripts are committed, sha256-bound and reviewed at PR time (row 78).
+    TIME inside a listed script is not detected; listed scripts are committed and reviewed at PR time (row 78).
     PR 1b, reviewed exceptions: a finding of rule launcher, evaluator, deny, script-name or witness-target carries the exact text it matched
     (launcher / evaluator / script-name at a command position: the WHOLE simple command, command word through the next ; & | ) } or end of line, as
     written; deny and a script token: the

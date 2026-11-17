@@ -2224,8 +2224,7 @@ TEST_HARNESS = re.compile(r"^(\.github/agent/tests/[^/]+\.sh|bin/[^/]+-test\.sh)
 # melange call of bin/build-apk.sh through fixed absolute paths held in variables (the lines of the script that end in
 # TEST-SUBST), the one form the chain judge (bin/chain-test-signers.py) admits, while this check reads a variable
 # program as unreadable. It installs nothing, pulls no image and starts only the pinned tools at fixed paths. It is
-# still read at its committed bytes and bound like any script (READ_SCRIPTS), never inlined; it is held whole by
-# sha256 (chain-scripts.json, NS_SHA) and every change to it gets both reviewers; the chain judge refuses on this
+# still read at its committed bytes and bound like any script (READ_SCRIPTS), never inlined; every change to it gets both reviewers; the chain judge refuses on this
 # listed script a deny word not in its tools, a deny name by path and an interpreter handed an unlisted path. ONE
 # exact path: no pattern, no directory match, so the same text under another name, or in another directory, is read as
 # every script is.

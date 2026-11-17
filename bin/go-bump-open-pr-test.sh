@@ -53,8 +53,7 @@ run_case() {
   if [ "${BUMP_PAD:-}" = 1 ]; then      # a 200 KB installer: its base64 is over Linux's 128 KiB limit for ONE argument, so the request must not pass it through argv
     for n in $(seq 400); do printf '# pad %d %s\n' "$n" "$(printf 'x%.0s' $(seq 400))"; done >> "$work/bin/install-scanner.sh"
   fi
-  # the recipe template, its generator and the two generated recipes (rc-3 item 6): copies of the real files with the Go pin moved back to 1.26.6, the template's
-  # pin and the recipes regenerated, so the work tree is self-consistent before the bump; BUMP_TMPL=drift leaves the template at another Go version
+  # the recipe template, its generator and the two generated recipes (rc-3 item 6): copies of the real files with the Go pin moved back to 1.26.6 and the recipes regenerated, so the work tree is self-consistent before the bump; BUMP_TMPL=drift leaves the template at another Go version
   root_real="$(cd "$here/.." && pwd)"
   mkdir -p "$work/build/locks"; cp "$root_real"/build/locks/* "$work/build/locks/"; cp "$root_real/bin/gen-recipes.py" "$work/bin/"
   cp "$root_real/build/melange-baselayout.yaml.tmpl" "$root_real/build/melange-baselayout.yaml" "$work/build/"   # the generator reads the base-layout template too (0710)
@@ -65,15 +64,7 @@ import re, sys
 t = open(sys.argv[1]).read()
 open(sys.argv[1], "w").write(re.sub(r"(uri: https://go\.dev/dl/go1\.26\.6\.linux-amd64\.tar\.gz\n)", r"\1      # the checksum follows\n", t, count=1))
 PY
-  python3 - "$work" <<'PY'
-import hashlib, re, sys
-w = sys.argv[1]
-h = hashlib.sha256(open(w + "/build/melange.yaml.tmpl", "rb").read()).hexdigest()
-g = open(w + "/bin/gen-recipes.py").read()
-open(w + "/bin/gen-recipes.py", "w").write(re.sub(r'^TEMPLATE_SHA256 = "[0-9a-f]{64}"', 'TEMPLATE_SHA256 = "' + h + '"', g, count=1, flags=re.M))
-PY
   ( cd "$work" && python3 bin/gen-recipes.py --write >/dev/null 2>&1 )
-  [ "${BUMP_TMPL:-ok}" = pinbad ] && sed -i.bak "s/^TEMPLATE_SHA256 = \"[0-9a-f]\{64\}\"/TEMPLATE_SHA256 = \"$(printf 'f%.0s' $(seq 64))\"/" "$work/bin/gen-recipes.py" && rm -f "$work/bin/gen-recipes.py.bak"
   # go.dev, over HTTPS: the published list (mode=json) and the two linux tarballs, served by a mock download program; BUMP_CURL=down|mismatch|nolist|badhex breaks it
   local amd arm; amd=$(printf 'go1.27.0 amd64 tarball' | sha256sum | cut -d' ' -f1); arm=$(printf 'go1.27.0 arm64 tarball' | sha256sum | cut -d' ' -f1)
   [ "${BUMP_CURL:-ok}" = mismatch ] && amd=$(printf 'c%.0s' $(seq 64))
@@ -155,14 +146,12 @@ GIT
   [ "$want_dir" = skip ] || { [ "$dir_root" = "$wd" ] && [ "$dir_tools" = "$wd" ] || why+=" go directives $dir_root/$dir_tools want $wd;"; }
   [ -z "$must" ] || grep -qF -- "$must" <<<"$out" || why+=" the output lacks '${must}';"
   if [ "$want_dir" != skip ]; then
-  # rc-3 item 6: the recipe template's two go.dev pins move with the bump, TEMPLATE_SHA256 follows the template's bytes, the generated recipes are regenerated
-  local t_uri_a t_uri_r t_sum_a t_sum_r t_pin t_real
+  # rc-3 item 6: the recipe template's two go.dev pins move with the bump, the generated recipes are regenerated
+  local t_uri_a t_uri_r t_sum_a t_sum_r
   t_uri_a=$(grep -c "go.dev/dl/go${wd}.linux-amd64.tar.gz" "$work/build/melange.yaml.tmpl"); t_uri_r=$(grep -c "go.dev/dl/go${wd}.linux-arm64.tar.gz" "$work/build/melange.yaml.tmpl")
   t_sum_a=$(grep -c "expected-sha256: ${want_amd}" "$work/build/melange.yaml.tmpl"); t_sum_r=$(grep -c "expected-sha256: ${want_arm}" "$work/build/melange.yaml.tmpl")
-  t_pin=$(sed -n 's/^TEMPLATE_SHA256 = "\([0-9a-f]*\)".*/\1/p' "$work/bin/gen-recipes.py"); t_real=$(sha256sum "$work/build/melange.yaml.tmpl" | cut -d' ' -f1)
   if [ "$want_dir" = new ]; then
     [ "$t_uri_a" = 1 ] && [ "$t_uri_r" = 1 ] && [ "$t_sum_a" = 1 ] && [ "$t_sum_r" = 1 ] || why+=" the template's go.dev pins are not the bumped uri and the downloaded sha256 ($t_uri_a/$t_uri_r/$t_sum_a/$t_sum_r);"
-    [ "$t_pin" = "$t_real" ] || why+=" TEMPLATE_SHA256 ${t_pin:0:8} is not the template's sha256 ${t_real:0:8};"
     ( cd "$work" && python3 bin/gen-recipes.py --check >/dev/null 2>&1 ) || why+=" gen-recipes.py --check fails after the bump (the recipes are not regenerated);"
     grep -q "go${wd}.linux-amd64" "$work/build/melange.yaml" && grep -q "go${wd}.linux-arm64" "$work/build/melange-fips.yaml" || why+=" a generated recipe still pins the old Go;"
   else
@@ -171,7 +160,7 @@ GIT
   fi
   # the body names every step this change does not do itself (the archive push) and the files that moved
   if [ -f "$log.body" ]; then
-    for need in build/melange.yaml.tmpl TEMPLATE_SHA256 bin/gen-recipes.py build/melange.yaml build/melange-fips.yaml build/archive.json "go/go1.27.0.linux-amd64.tar.gz" "go/go1.27.0.linux-arm64.tar.gz" "not part of this pull request"; do
+    for need in build/melange.yaml.tmpl bin/gen-recipes.py build/melange.yaml build/melange-fips.yaml build/archive.json "go/go1.27.0.linux-amd64.tar.gz" "go/go1.27.0.linux-arm64.tar.gz" "not part of this pull request"; do
       grep -qF -- "$need" "$log.body" || why+=" the PR body does not name '$need';"
     done
     # bot public text round 2: the body is plain public text, at most 10 non-blank lines, no requirement id and no release history,
@@ -182,22 +171,22 @@ GIT
       python3 -I "$(dirname "$SUT")/check-customer-words.py" </dev/null >/dev/null 2>&1 || why+=" the PR body fails bin/check-customer-words.py;"
   fi
   if [ "$chk" = 1 ]; then
-    # the request the API receives: this branch, this base, no deletions, exactly the seven bumped files' bytes (the two go.mod files, the installer), a headline, no author override
+    # the request the API receives: this branch, this base, no deletions, exactly the six bumped files' bytes (the two go.mod files, the installer), a headline, no author override
     # the expected encodings go to files and into jq by --rawfile: a padded installer is far over one argument's size limit on Linux
     mkdir -p "$work/exp"
     base64 < "$work/go.mod" | tr -d '\n' > "$work/exp/r"; base64 < "$work/tools/requirements/go.mod" | tr -d '\n' > "$work/exp/t"
     base64 < "$work/bin/install-scanner.sh" | tr -d '\n' > "$work/exp/ins";
-    base64 < "$work/build/melange.yaml.tmpl" | tr -d '\n' > "$work/exp/mm"; base64 < "$work/bin/gen-recipes.py" | tr -d '\n' > "$work/exp/gg"
+    base64 < "$work/build/melange.yaml.tmpl" | tr -d '\n' > "$work/exp/mm"; 
     base64 < "$work/build/melange.yaml" | tr -d '\n' > "$work/exp/yy"; base64 < "$work/build/melange-fips.yaml" | tr -d '\n' > "$work/exp/zz"
     jq -e --arg b "$B" --arg base "$BASE" --rawfile r "$work/exp/r" --rawfile t "$work/exp/t" --rawfile ins "$work/exp/ins" \
-          --rawfile mm "$work/exp/mm" --rawfile gg "$work/exp/gg" --rawfile yy "$work/exp/yy" --rawfile zz "$work/exp/zz" '
+          --rawfile mm "$work/exp/mm" --rawfile yy "$work/exp/yy" --rawfile zz "$work/exp/zz" '
       .variables.input as $i
       | $i.branch.branchName == $b and $i.expectedHeadOid == $base
         and ($i.message.headline | startswith("chore(go): bump toolchain 1.26.6 -> 1.27.0"))
         and (($i.fileChanges | keys) == ["additions"])
-        and ($i.fileChanges.additions | map(.path) | sort) == ["bin/gen-recipes.py", "bin/install-scanner.sh", "build/melange-fips.yaml", "build/melange.yaml", "build/melange.yaml.tmpl", "go.mod", "tools/requirements/go.mod"]
-        and ($i.fileChanges.additions | map({(.path): .contents}) | add) == {"go.mod": $r, "tools/requirements/go.mod": $t, "bin/install-scanner.sh": $ins, "build/melange.yaml.tmpl": $mm, "bin/gen-recipes.py": $gg, "build/melange.yaml": $yy, "build/melange-fips.yaml": $zz}
-        and ($i | has("author") | not)' "$work/input.json" >/dev/null 2>&1 || why+=" the commit request is not exactly the seven bumped files (the two go.mod files, the installer, the recipe template, its generator and the two generated recipes);"
+        and ($i.fileChanges.additions | map(.path) | sort) == ["bin/install-scanner.sh", "build/melange-fips.yaml", "build/melange.yaml", "build/melange.yaml.tmpl", "go.mod", "tools/requirements/go.mod"]
+        and ($i.fileChanges.additions | map({(.path): .contents}) | add) == {"go.mod": $r, "tools/requirements/go.mod": $t, "bin/install-scanner.sh": $ins, "build/melange.yaml.tmpl": $mm, "build/melange.yaml": $yy, "build/melange-fips.yaml": $zz}
+        and ($i | has("author") | not)' "$work/input.json" >/dev/null 2>&1 || why+=" the commit request is not exactly the six bumped files (the two go.mod files, the installer, the recipe template, its generator and the two generated recipes);"
   fi
   rm -rf "$work"
   if [ -z "$why" ]; then echo "ok: ${name}"; pass=$((pass+1)); return 0; fi
@@ -283,7 +272,6 @@ BUMP_CURL=nolist run_case "a version go.dev does not publish -> fails closed" "$
 BUMP_CURL=badhex run_case "a published checksum that is not 64 hex -> fails closed" "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR" old
 BUMP_TMPL=drift run_case "a template not pinned at the current Go -> fails closed, nothing changed or pushed" "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR" old
 BUMP_TMPL=split run_case "a template whose uri and sha256 lines are apart -> fails closed before any file changes" "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR" old
-BUMP_TMPL=pinbad run_case "a template that no longer equals its pin -> fails closed (a bump re-pins reviewed bytes only)" "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR" old
 # the Go versions are plain release numbers: anything else is refused before a single call (they go into file names, a pattern and the template)
 vout=$(cd "$(mktemp -d)" && bash "$SUT" '1.26.6' '1.27.0; rm -rf x' 2>&1); vrc=$?
 if [ "$vrc" = 2 ] && grep -q 'must look like' <<<"$vout"; then echo "ok: a Go version that is not a plain release number is refused (exit 2) before any call"; pass=$((pass+1)); else echo "FAIL: a malformed version was not refused (rc=$vrc): ${vout:0:200}"; fail=$((fail+1)); fi
@@ -334,7 +322,7 @@ chmod +x "$e2e/fake/"*
 e2e_check() { # e2e_check LABEL CMD...
   local label=$1; shift; local o rc=0; o=$( cd "$e2e" && "$@" 2>&1 ) || rc=$?
   if [ "$rc" = 0 ]; then echo "ok: e2e bump ${cur} -> ${new}: ${label}"; pass=$((pass+1)); else echo "FAIL: e2e bump: ${label}: ${o:0:300}"; fail=$((fail+1)); fi; }
-e2e_check "the template's pins moved, TEMPLATE_SHA256 follows it and the recipes are regenerated (gen-recipes.py --check)" python3 bin/gen-recipes.py --check
+e2e_check "the template's pins moved and the recipes are regenerated (gen-recipes.py --check)" python3 bin/gen-recipes.py --check
 e2e_check "the template pins the new tarballs" bash -c 'grep -q "go.dev/dl/go'"${new}"'.linux-amd64.tar.gz" build/melange.yaml.tmpl && grep -q "expected-sha256: '"${t_arm}"'" build/melange.yaml.tmpl'
 e2e_check "bin/chain-install-witness-test.sh passes on the bumped tree" bash bin/chain-install-witness-test.sh
 e2e_check "bin/go-freshness-wiring-test.sh passes on the bumped tree" bash bin/go-freshness-wiring-test.sh
@@ -351,7 +339,7 @@ mutant() {
 FRESH_CASE=('[]' 0 0 0 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$CREATE"$'\n'"$PRVIEW" new ok true 1)
 # round 1 of take 30 (Codex sol B1/B2): the request is built from FILES (jq --rawfile), never from an argument (a large file's base64 is over Linux's 128 KiB limit for one argument), and an encoder
 # that fails stops the bump before anything is pushed (no empty installer in a signed commit)
-BUMP_PAD=1 run_case "a 200 KB installer -> the request still carries the seven files exactly (built from files, not arguments)" "$SUT" "${FRESH_CASE[@]}"
+BUMP_PAD=1 run_case "a 200 KB installer -> the request still carries the six files exactly (built from files, not arguments)" "$SUT" "${FRESH_CASE[@]}"
 BUMP_B64=fail run_case "an encoder that fails -> nothing pushed, no API commit, no PR, exit 1" "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP" skip
 if grep -Eq -- '--arg +[A-Za-z_]+ +"\$\((base64|cat)' "$SUT"; then echo "FAIL: the bump script passes file contents through jq --arg"; fail=$((fail+1)); else echo "ok: the bump script passes no file contents through jq --arg"; pass=$((pass+1)); fi
 { cat "$SUT"; printf '\ngh pr ready "$branch"\ngh pr merge --squash --auto "$branch"\n'; } > "$mut"

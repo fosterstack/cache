@@ -365,9 +365,7 @@ jobs:
         env:
           SUITE: ${{ matrix.suite }}
           CHAIN_TEST_REQUIRE_NETCUT: '1'
-        run: |
-          path=$(git ls-files -- "bin/$SUITE" ".github/agent/tests/$SUITE")
-          bash "$path"
+        run: git ls-files -z -- "bin/$SUITE" ".github/agent/tests/$SUITE" | xargs -0 -n1 bash
 
   # The required check `allowlist-chain` (REQ-CI-001): this gate keeps the name, needs the suites, always runs, takes no checkout and no action, and
   # fails unless the suites job's result is exactly `success` (failed, skipped, cancelled, missing or empty fails: a skipped required check counts as passed).

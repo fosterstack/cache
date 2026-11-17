@@ -722,11 +722,7 @@ def listed(path, root):
 #   command by command with the lines held here (script, localhelper, shell_exact); a case, a loop, a function, a
 #   subshell or a read in a helper is one more command,
 #   so it is a finding. Line 1 of each is held too (the shebang picks the program that runs the file).
-#   held whole by sha256 (NS_SHA, 21 files): the 15 Python closure files and the 6 files that the two stage workflows
-#   run outside the stage scripts (archive-pull.sh,
-#   archive-verify.py, install-host-bwrap.py, chain-hostile-step.sh, loopback-get.sh, rebuild-records-digests.sh). Any
-#   change is a finding until NS_SHA is re-pinned in a
-#   security-tier change. The stage lines and every python3 child that a closure file starts (build-admit.py,
+#   The stage lines and every python3 child that a closure file starts (build-admit.py,
 #   chain_items.py) run python3 -I, so a file of bin/ cannot
 #   shadow a module for them and they ignore PYTHON* variables. The program python3 is still found by PATH, and a file
 #   written by one step and run by the next is not

@@ -192,7 +192,7 @@ PY
 fi
 
 body="$(cat <<EOF
-Automated Go toolchain bump: \`go ${CURRENT}\` -> \`go ${LATEST}\`. Eight files change together, so the installer's pin and the sealed build's compiler agree with go.mod.
+Automated Go toolchain bump: \`go ${CURRENT}\` -> \`go ${LATEST}\`. Six files change together, so the installer's pin and the sealed build's compiler agree with go.mod.
 - \`go.mod\` and \`tools/requirements/go.mod\`: \`go ${CURRENT}\` -> \`go ${LATEST}\`.
 - \`bin/install-scanner.sh\`: \`GO_VER\` and the sha256 of the go${LATEST} linux-amd64 and linux-arm64 tarballs, taken from the downloads and equal to go.dev's published checksums.
 - \`build/melange.yaml.tmpl\`: the two go.dev pins (uri and expected-sha256 of the linux-amd64 and linux-arm64 tarballs), the same checksums; \`build/melange.yaml\` and \`build/melange-fips.yaml\`: regenerated with \`bin/gen-recipes.py --write\` (\`--check\` passes).
