@@ -1420,7 +1420,6 @@ _VENDOR_NAMING_FILES = frozenset("""
 .github/agent/tests/auditor-matrix-test.sh
 .github/agent/tests/pin-age-check-test.sh
 .github/agent/tests/pin-audit-test.sh
-.github/agent/tests/pin-wiring-test.sh
 .github/workflows/ci.yml
 bin/assemble-image-test.sh
 bin/build-apk-test.sh
@@ -1428,13 +1427,11 @@ bin/build-apk.sh
 bin/build-helpers-test.sh
 bin/dependabot-reviewer.py
 bin/go-module-sbom.py
-bin/patch-decide.py
 bin/vex-forms.py
 bin/check-file-allowlist-test.sh
 bin/check-file-allowlist.sh
 bin/dependabot-reviewer-test.sh
 bin/melange-apko-lib.sh
-bin/patch-decide-test.sh
 bin/sealed-proof.sh
 bin/vendor-check.sh
 bin/vendor-provenance-test.sh

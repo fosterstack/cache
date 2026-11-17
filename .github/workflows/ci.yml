@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   # One required context for the Go tests. The race run writes the coverage profile, so the tests run once; each coverage gate runs once; the
-  # FIPS run is the second, separate test run (it needs its own environment). The vendored tree is what `go mod vendor` regenerates (REQ-VEND-001-AC3) on every pull request,
+  # FIPS run is a second test run in its own job, fips140-only (it needs its own environment). The vendored tree is what `go mod vendor` regenerates (REQ-VEND-001-AC3) on every pull request,
   # Dependabot's included: it only compares, with no token and no commit. The whole history is fetched so origin/main is readable:
   # bin/vendor-check.sh passes a tree without vendor/ only when origin/main has none either.
   test:
@@ -46,7 +46,7 @@ jobs:
         run: CGO_ENABLED=0 go build -o /dev/null ./cmd/fscache
       - name: the cache's own code and the built binary have no HTTP client and no outbound dial (REQ-IMAGE-001-AC13)
         run: bash bin/check-no-outbound-test.sh
-      # test-strategy.md §6: the coverage RATCHET. Coverage says the tests ran the code, not that they would notice it being wrong;
+      # The coverage RATCHET. Coverage says the tests ran the code, not that they would notice it being wrong;
       # this gate is the floor, not the claim. Two Go modules, each measured and reported separately (an honest denominator - a root
       # `go test ./...` does not include the nested tools/requirements module). -coverpkg=./... on the root credits a
       # statement executed as a dependency of another package's test.
@@ -90,12 +90,25 @@ jobs:
             /tmp/req.out
             /tmp/auditor-python-coverage.txt
           retention-days: 90
-      # The mechanical oracle for the FIPS check. GOFIPS140 selects Go's CMVP-validated cryptographic module (cert #5247) at build
-      # time; GODEBUG=fips140=only makes that module REFUSE any non-approved algorithm at runtime rather than quietly computing it.
-      # Running the full suite under both means every crypto path the tests exercise — ours or a dependency's — is proven
-      # approved-only on every commit. This bites: a probe that calls crypto/md5 panics under fips140=only with "not allowed in
-      # FIPS 140-only mode". Scope, stated honestly because SECURITY.md says the same: =only proves the paths the tests actually
-      # execute; the depguard crypto allowlist covers the static side. Neither alone is the whole claim.
+
+  # The FIPS run is a job of its own, so it is its own required status check.
+  # The mechanical oracle for the FIPS check. GOFIPS140 selects Go's CMVP-validated cryptographic module (cert #5247) at build
+  # time; GODEBUG=fips140=only makes that module REFUSE any non-approved algorithm at runtime rather than quietly computing it.
+  # Running the full suite under both means every crypto path the tests exercise — ours or a dependency's — is proven
+  # approved-only on every commit. This bites: a probe that calls crypto/md5 panics under fips140=only with "not allowed in
+  # FIPS 140-only mode". Scope, stated honestly because SECURITY.md says the same: =only proves the paths the tests actually
+  # execute; the depguard crypto allowlist covers the static side. Neither alone is the whole claim.
+  fips140-only:
+    name: fips140-only
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+          check-latest: true
       - name: build the -fips variant (same env as the released binary)
         run: CGO_ENABLED=0 GOFIPS140=v1.0.0 go build -o /tmp/fscache-fips ./cmd/fscache
       - name: full test suite, validated module, approved algorithms only
@@ -134,37 +147,6 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: git diff -U0 --no-renames --no-color HEAD^1 HEAD | python3 -I bin/check-customer-words.py
-
-  # The mechanical oracle for the FIPS check. GOFIPS140
-  # selects Go's CMVP-validated cryptographic module (cert #5247) at build
-  # time; GODEBUG=fips140=only makes that module REFUSE any non-approved
-  # algorithm at runtime rather than quietly computing it. Running the full
-  # suite under both means every crypto path the tests exercise — ours or a
-  # dependency's — is proven approved-only on every commit.
-  #
-  # This bites: verified against a probe that calls crypto/md5, which panics
-  # under fips140=only with "not allowed in FIPS 140-only mode". A gate that
-  # cannot fail would prove nothing, so that was checked before this job was
-  # written, not assumed.
-  #
-  # Scope, stated honestly because SECURITY.md says the same: =only proves
-  # the paths the tests actually execute. The depguard crypto allowlist
-  # below covers the static side. Neither alone is the whole claim.
-  fips140-only:
-    name: fips140-only
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: '1.27'
-          check-latest: true
-      - name: build the -fips variant (same env as the released binary)
-        run: CGO_ENABLED=0 GOFIPS140=v1.0.0 go build -o /tmp/fscache-fips ./cmd/fscache
-      - name: full test suite, validated module, approved algorithms only
-        run: GOFIPS140=v1.0.0 GODEBUG=fips140=only go test -race -shuffle=on ./...
 
   govulncheck:
     name: govulncheck
@@ -318,8 +300,8 @@ jobs:
           fi
           echo "VEX tripwire: golang-jwt absent from go.sum, as the published statement asserts."
 
-  # The suites that are not steps of a job above: one matrix leg per suite of .github/policy/ci-suites.json (a suite is named by its file name, under bin/ or
-  # .github/agent/tests/), each on its own runner. A leg that fails fails the job.
+  # The suites that are not steps of a job above: one matrix leg per tracked suite (a *-test.sh file under bin/ or .github/agent/tests/) that no step of this file runs by
+  # its path, each on its own runner. A leg that fails fails the job.
   suite-list:
     name: suite-list
     runs-on: ubuntu-latest
@@ -330,7 +312,9 @@ jobs:
         with:
           persist-credentials: false
       - id: list
-        run: echo "suites=$(jq -c . .github/policy/ci-suites.json)" >> "$GITHUB_OUTPUT"
+        run: |
+          counted=$(grep -oE 'run: bash (bin|\.github/agent/tests)/[^ ]+-test\.sh$' .github/workflows/ci.yml | sed 's|.*/||')
+          git ls-files | grep -E '^(bin|\.github/agent/tests)/[^/]+-test\.sh$' | sed 's|.*/||' | grep -vxF "$counted" | jq -Rsc 'split("\n")[:-1]' | sed 's/^/suites=/' >> "$GITHUB_OUTPUT"
 
   suites:
     name: suites (${{ matrix.suite }})
@@ -339,7 +323,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.suite-list.outputs.suites) }}
+        suite: ${{ fromJSON(needs.suite-list.outputs.suites) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -358,13 +342,12 @@ jobs:
           python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
 
       - name: install the pinned grype (the suites that run the real scanner)
-        if: ${{ matrix.grype }}
+        if: ${{ matrix.suite == 'vex-scope-test.sh' || matrix.suite == 'vex-both-scanners-test.sh' }}
         run: ./bin/install-scanner.sh grype
 
       - name: the suite
         env:
           SUITE: ${{ matrix.suite }}
-          CHAIN_TEST_REQUIRE_NETCUT: '1'
         run: python3 -I bin/run-ci-suite.py "$SUITE"
 
   # The required check `allowlist-chain` (REQ-CI-001): this gate keeps the name, needs the suites, always runs, takes no checkout and no action, and

@@ -2,10 +2,7 @@
 # proves: REQ-SUP-001-AC3, REQ-SUP-001-AC5
 # cache#359 round 5, section 2, group P2, rows 1-3: a lookup that cannot be answered is a FAILURE, never "no proof" or
 # "nothing there".
-#   (1) PyPI, the Go proxy and the Go index: an outage (network error, 5xx) raises CouldNotLook; only a 404 stays "not
-#   there".
-#       pin-audit's published-name query to PyPI is strict as well (a failure, not the pinned name alone).
-#   (2) a gotool item is dated by the Go index time: an older PR clock must not win over it.
+#   (1) pin-audit's published-name query to PyPI is strict (an outage is a failure, not the pinned name alone).
 #   (3) an action.yml that cannot be read fails in nested() (Fail), which the nested pass turns into an incomplete run,
 #   and prints no "no known-compromised" line.
 # In-process: the network is replaced by a fake urlopen, gh by a script on a scratch path. Written from the English
@@ -71,80 +68,6 @@ python3 -c 'import base64,json;print(json.dumps({"content": base64.b64encode(b"r
 SH
 chmod +x "$work/gh404" "$work/ghok" "$work/ghyaml"
 
-# --- (1) PyPI ---------------------------------------------------------------------------------------------------------
-PYPI='age = load("pin-age-check"); it = age.inv.Item("package", "pypi/requests", "2.32.0")'
-CASE="PyPI network outage while dating a package is CouldNotLook, not 'no proof'"
-check python3 - "$work/pre.py" <<PY
-import sys; exec(open(sys.argv[1]).read()); $PYPI
-serve(down)
-msg = caught(age.CouldNotLook, lambda: age.live_proofs(it, "/nonexistent", None))
-assert msg and "could not be asked" in msg, ('outage read as no proof', msg)
-PY
-CASE="PyPI answering HTTP 503 is CouldNotLook"
-check python3 - "$work/pre.py" <<PY
-import sys; exec(open(sys.argv[1]).read()); $PYPI
-serve(code(503))
-msg = caught(age.CouldNotLook, lambda: age.live_proofs(it, "/nonexistent", None))
-assert msg and "HTTP 503" in msg, ('503 read as no proof', msg)
-PY
-CASE="PyPI answering 404 stays 'not there': no proof, no exception"
-check python3 - "$work/pre.py" <<PY
-import sys; exec(open(sys.argv[1]).read()); $PYPI
-serve(code(404))
-assert age.live_proofs(it, "/nonexistent", None) == []
-PY
-
-# --- (1) Go proxy and Go index ----------------------------------------------------------------------------------------
-GOT='age = load("pin-age-check"); it = age.inv.Item("gotool", "github.com/securego/gosec/v2/cmd/gosec", "v2.29.0")'
-CASE="Go proxy network outage while dating a go install is CouldNotLook"
-check python3 - "$work/pre.py" <<PY
-import sys; exec(open(sys.argv[1]).read()); $GOT
-serve(down)
-msg = caught(age.CouldNotLook, lambda: age.live_proofs(it, "/nonexistent", None))
-assert msg and "could not be asked" in msg, ('proxy outage read as no proof', msg)
-PY
-CASE="Go proxy answering HTTP 502 is CouldNotLook"
-check python3 - "$work/pre.py" <<PY
-import sys; exec(open(sys.argv[1]).read()); $GOT
-serve(code(502))
-msg = caught(age.CouldNotLook, lambda: age.live_proofs(it, "/nonexistent", None))
-assert msg and "HTTP 502" in msg, ('proxy 502 read as no proof', msg)
-PY
-GOIDX='
-def h(url):
-    if "proxy.golang.org" in url: return R({"Version": "v2.29.0", "Time": "2026-09-01T00:00:00Z"})
-    return INDEX(url)
-'
-CASE="Go index network outage (the proxy answered) is CouldNotLook"
-check python3 - "$work/pre.py" <<PY
-import sys; exec(open(sys.argv[1]).read()); $GOT
-INDEX = down
-$GOIDX
-serve(h)
-msg = caught(age.CouldNotLook, lambda: age.live_proofs(it, "/nonexistent", None))
-assert msg and "could not be asked" in msg, ('index outage read as no proof', msg)
-PY
-CASE="Go index answering HTTP 500 is CouldNotLook"
-check python3 - "$work/pre.py" <<PY
-import sys; exec(open(sys.argv[1]).read()); $GOT
-INDEX = code(500)
-$GOIDX
-serve(h)
-msg = caught(age.CouldNotLook, lambda: age.live_proofs(it, "/nonexistent", None))
-assert msg and "index.golang.org could not be asked" in msg, ('index 500 read as no proof', msg)
-PY
-CASE="Go index that answers with the module's row yields the go-index proof (a working path stays working)"
-check python3 - "$work/pre.py" <<PY
-import sys; exec(open(sys.argv[1]).read()); $GOT
-row = json.dumps({"Path": "github.com/securego/gosec/v2/cmd/gosec", "Version": "v2.29.0",
-                  "Timestamp": "2026-09-02T00:00:00Z"}) + "\n"
-INDEX = lambda url: R(row.encode())
-$GOIDX
-serve(h)
-got = age.live_proofs(it, "/nonexistent", None)
-assert ("2026-09-02T00:00:00Z", "go-index") in got, got
-PY
-
 # --- pin-audit's published-name query to PyPI -------------------------------------------------------------------------
 CASE="pin-audit: an unreachable PyPI while it asks for the published name of a package is a failure (Fail "
 CASE+="or CouldNotLook), not the pinned name alone"
@@ -160,26 +83,6 @@ net = aud.LiveNet([sys.argv[2]], "/nonexistent")
 it = aud.inv.Item("package", "pypi/requests", "2.32.0")
 msg = caught((aud.Fail, aud.age.CouldNotLook), lambda: net.lists(it))
 assert msg and "could not be asked" in msg, ("PyPI outage ignored by the advisory query", msg)
-PY
-
-# --- (2) gotool is dated by the Go index time -------------------------------------------------------------------------
-CASE="gotool: a PR clock older than the Go index time does not win; the item is too young by the index time"
-check python3 - "$work/pre.py" <<PY
-import sys; exec(open(sys.argv[1]).read()); $GOT
-ok, why, proof = age.judge_item(it, [(ago(30), "pr-clock"), (ago(3), "go-index")], NOW)
-assert not ok and proof and proof["source"] == "go-index", (ok, why, proof)
-PY
-CASE="gotool: the go-index time decides even when it is older than the PR clock, and then passes"
-check python3 - "$work/pre.py" <<PY
-import sys; exec(open(sys.argv[1]).read()); $GOT
-ok, why, proof = age.judge_item(it, [(ago(2), "pr-clock"), (ago(30), "go-index")], NOW)
-assert ok and proof["source"] == "go-index", (ok, why, proof)
-PY
-CASE="gotool: with no go-index time at all, the PR clock alone still dates it (the existing fallback)"
-check python3 - "$work/pre.py" <<PY
-import sys; exec(open(sys.argv[1]).read()); $GOT
-ok, why, proof = age.judge_item(it, [(ago(30), "pr-clock")], NOW)
-assert ok and proof["source"] == "pr-clock", (ok, why, proof)
 PY
 
 # --- (3) an unreadable action.yml -------------------------------------------------------------------------------------

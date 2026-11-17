@@ -1270,8 +1270,8 @@ if which == "scan":
     IF_SDAY = "always()"
     IF_SAVE = "always() && steps.insp-scan.outputs.fresh != '' && steps.insp-scan.outputs.fresh != '0' && " + FORKP
     job, scan_name, marker = "inspector", "Amazon Inspector scan every image tar", "python3 bin/inspector-gate.py"
-    perms = {"top": {"contents": "read"}, "build": {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read"},
-             "rebuild": {"contents": "read"}, "reproducibility": None,
+    perms = {"top": {"contents": "read"}, "build": {"contents": "write", "packages": "write", "id-token": "write", "issues": "write", "checks": "read", "statuses": "read", "pull-requests": "read"},
+             "reproducibility": None,
              "scanner": {"contents": "read"}, "inspector": {"contents": "read", "id-token": "write"}, "scan": None}
 else:
     triggers = {"schedule": [{"cron": "41 7 * * *"}], "workflow_dispatch": {}}
@@ -1280,8 +1280,8 @@ else:
     IF_SDAY = "always()"
     IF_SAVE = "always() && steps.insp-scan.outputs.fresh != '' && steps.insp-scan.outputs.fresh != '0' && " + FORKP
     job, scan_name, marker = "panel-inspector", "Amazon Inspector every image", None
-    perms = {"top": {"contents": "read"}, "build": {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read"},
-             "vex-attach": {"contents": "read", "packages": "write"}, "panel-grype": {"contents": "read"}, "panel-scout": {"contents": "read", "packages": "read"},
+    perms = {"top": {"contents": "read"}, "build": {"contents": "write", "packages": "write", "id-token": "write", "issues": "write", "checks": "read", "statuses": "read", "pull-requests": "read"},
+             "panel-grype": {"contents": "read"}, "panel-scout": {"contents": "read"},
              "panel-inspector": {"contents": "read", "id-token": "write"},
              "panel-google": {"contents": "read", "id-token": "write"}, "panel": {"contents": "read", "issues": "write"},
              "manifests": None, "rescan": {"contents": "read", "issues": "write", "packages": "read"}}
@@ -1553,6 +1553,12 @@ for pair in "scan.yml scan" "main-candidate-rescan.yml rescan"; do
     wf "$f" "$k" role-assumed-after-the-scan bad "t = t.replace('      - name: Amazon Inspector - the UTC day at save time', '      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0\n        with:\n          role-to-assume: x\n      - name: Amazon Inspector - the UTC day at save time', 1)"
   fi
 done
+# release audit row C1: the rescan stays mechanical, no rescan job holds a registry write (only the build caller's ceiling, and the published-release rescan's read)
+wf main-candidate-rescan.yml rescan vex-attach-job-readded bad "t = t.replace('\n  panel-grype:\n', '\n  vex-attach:\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n      packages: write\n    steps:\n      - run: true\n\n  panel-grype:\n', 1)"
+wf main-candidate-rescan.yml rescan packages-write-on-panel-grype bad "i = t.index('  panel-grype:\n'); j = t.index('contents: read', i); t = t[:j] + 'contents: read\n      packages: write' + t[j+14:]"
+wf main-candidate-rescan.yml rescan packages-write-on-panel-scout bad "i = t.index('  panel-scout:\n'); j = t.index('contents: read', i); t = t[:j] + 'contents: read\n      packages: write' + t[j+14:]"
+wf main-candidate-rescan.yml rescan packages-read-on-panel-scout bad "i = t.index('  panel-scout:\n'); j = t.index('contents: read', i); t = t[:j] + 'contents: read\n      packages: read' + t[j+14:]"
+wf main-candidate-rescan.yml rescan packages-write-on-rescan bad "i = t.index('  rescan:\n'); j = t.index('packages: read', i); t = t[:j] + 'packages: write' + t[j+14:]"
 # the gate is still fed after the call site, and the tally still reads the result
 wf main-candidate-rescan.yml rescan panel-artifacts-separate ok ""
 wf main-candidate-rescan.yml rescan panel-artifacts-by-name bad "t = t.replace('artifact-ids: \${{ needs.panel-scout.outputs.artifact-id }}', 'name: panel-scout', 1)"

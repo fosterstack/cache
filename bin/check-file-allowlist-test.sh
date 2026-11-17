@@ -117,11 +117,8 @@ bin/layout-archive.sh bin/layout-archive-test.sh
 bin/chain-sandbox-probe.sh bin/build-sandbox-hostile-test.sh
 build/probe/control.yaml.tmpl build/probe/read-record.yaml.tmpl build/probe/write-record.yaml.tmpl
 build/probe/read-keydir.yaml.tmpl build/probe/read-token.yaml.tmpl build/probe/network.yaml.tmpl
-bin/evidence-letter.py bin/evidence-letter-test.sh docs/evidence-letter-signatory.txt
-bin/evidence-letter-fetch.sh bin/evidence-letter-publish.sh bin/evidence-letter-job-test.sh
-bin/evidence-letter-verify.sh bin/evidence-letter-present.sh
 """.split())
-if len(DECLARED) != 97: errs.append("declared list is not 97 paths: %d" % len(DECLARED))
+if len(DECLARED) != 89: errs.append("declared list is not 89 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -817,6 +814,10 @@ runeach fail "feature/x" "REQ-CHAIN-008: verify-key-page-test near-miss refused"
 passfam "feature/x" "REQ-CHAIN-007: the Release scripts and helpers" "bin/release-verify.sh" "bin/release-apks.sh" "bin/release-compare.sh" "bin/release-compare.py" "bin/release-publish.sh" "bin/release-sign.sh" "bin/release-assets.sh" "bin/release-postverify.sh" "bin/release-postverify.py" "bin/release-metadata.py" "bin/release-layout.py"
 runeach fail "feature/x" "REQ-CHAIN-007: Release helper near-misses refused" "bin/release-layout.py.bak" "bin/release-layout.pyx" "bin/Release-Layout.py" "bin/release-other.py" "bin/sub/release-layout.py" "./bin/release-layout.py"
 
+
+# REQ-CHAIN-006-AC1: Check has ONE script for all three phases and both chips, bin/check-phase.sh; the dispatcher and the per-phase targets are gone
+passfam "feature/x" "REQ-CHAIN-006: the one Check script" "bin/check-phase.sh"
+runeach fail "feature/x" "REQ-CHAIN-006: the old Check dispatcher, the per-phase targets and the arm64 target are not admitted" "bin/check-stage.sh" "bin/check-phase-scanners.sh" "bin/check-phase-acceptance.sh" "bin/check-phase-runtime.sh" "bin/check-phase-arm64.sh"
 
 # Deferred (not admitted until the PR that adds them): the vendored tree.
 
