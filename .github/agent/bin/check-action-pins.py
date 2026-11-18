@@ -2424,30 +2424,15 @@ BASE_SHA_REFS = (
 _BASE_WRITE = r"(?<![\w.-])(?:sed\s+-\w*i|perl\s+-\w*i|awk\s+-i|cp|mv|ln|install|tee|dd|rsync|curl|wget|truncate|patch|ed|ex|rm|chmod|tar|unzip|git\s+(?:checkout|apply|restore))(?![\w.-])"
 
 
-def _basename_is_other(arg, base, text, at):
-    """True when the argument of a `$(basename ARG)` write, found at offset `at` of the job text, is proven to name a file other
-    than `base`: one literal word of another name with no trailing slash (shell basename drops it), or one variable `v` whose
-    name occurs nowhere in the job text but in `for v in LIST; do` headers and as `$v`/`${v}` reads, the last header before the write
-    still open there and its LIST literal files of other names. Any other way to write `v` (read, printf -v, a header of another form) is an
-    occurrence that is no header."""
+def _basename_is_other(arg, base):
+    """True when the argument of a `$(basename ARG)` write is one literal word of a name other than `base`, with no trailing
+    slash (shell basename drops it). A variable argument is never proved: any other write of it (read, printf -v, a loop
+    header of another form) would change what the name is, so that write counts as a write onto the copy."""
     words = arg.split()
     if len(words) != 1:
         return False
     word = words[0].strip("\"'")
-    literal = r"[\w./-]*[\w.-]"
-    if re.fullmatch(literal, word):
-        return _base(word) != base
-    v = re.fullmatch(r"\$\{?(\w+)\}?", word)
-    if not v:
-        return False
-    name = re.escape(v.group(1))
-    headers = list(re.finditer(r"\bfor\s+" + name + r"\s+in\s+([^;\n]*?)\s*;\s*do\b", text))
-    loops = [h for h in headers if h.start() < at]
-    bare = re.sub(r"\$\{?" + name + r"\b\}?", "", text)
-    if not loops or re.search(r"\bdone\b", text[loops[-1].end():at]) or len(re.findall(r"(?<![\w.-])" + name + r"(?![\w.-])", bare)) != len(headers):
-        return False
-    files = loops[-1].group(1).split()
-    return all(re.fullmatch(literal, x) and _base(x) != base for x in files)
+    return bool(re.fullmatch(r"[\w./-]*[\w.-]", word)) and _base(word) != base
 
 
 def _resolve_script(path, text, entries, bases=()):
@@ -2482,9 +2467,9 @@ def _resolve_script(path, text, entries, bases=()):
     dpat = r"\$\{?RUNNER_TEMP\}?" if d.startswith("$") else re.escape(d)
     dst = r">\s*\"?" + dpat + r"/(" + re.escape(base) + r"|\$\(basename[^)]*\))"
     # a `$(basename …)` write names this copy unless its destination is proven another name: it is left out only when every
-    # such write's argument is a literal path, or a variable whose one definition is a literal `for v in` list, of other names
+    # such write's argument is a literal path of another name; a variable argument always counts
     writes_ = re.finditer(r">\s*\"?" + dpat + r"/\$\(basename([^)]*)\)", text)
-    if all(_basename_is_other(w.group(1), base, text, w.start()) for w in writes_):
+    if all(_basename_is_other(w.group(1), base) for w in writes_):
         dst = r">\s*\"?" + dpat + r"/(" + re.escape(base) + r")"
     writes = len(re.findall(dst + r"\"?", text))
     if writes != 1:

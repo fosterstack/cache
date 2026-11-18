@@ -1549,6 +1549,19 @@ class BasenameWriteProofFailsClosed(unittest.TestCase):  # the "another name" pr
                 'done\n' + self.RUN)
         self.assertIsNone(self.resolve(body))
 
+    def test_a_builtin_writing_the_loop_variable_with_a_glued_flag_is_refused(self):
+        body = (self.FETCH + 'for f in bin/a.sh bin/b.sh; do\n'
+                "printf -vf '%s' bin/tool.sh\n"
+                'printf x > "$RUNNER_TEMP/$(basename "$f")"\n'
+                'done\n' + self.RUN)
+        self.assertIsNone(self.resolve(body))
+
+    def test_a_plain_loop_over_other_names_still_counts_as_a_write(self):
+        body = (self.FETCH + 'for f in bin/a.sh bin/b.sh; do\n'
+                'printf x > "$RUNNER_TEMP/$(basename "$f")"\n'
+                'done\n' + self.RUN)
+        self.assertIsNone(self.resolve(body))
+
 
 if __name__ == "__main__":       # last: every test class above is defined first (Codex #164 adversarial r1, R02)
     unittest.main()
