@@ -5303,6 +5303,23 @@ probe sg_any_secret "stored secret outside the named env entries" "a stored secr
   "jstep $REL sign-check '      - name: x\n        env:\n          X_KEY: \${{ secrets.X_KEY }}\n        run: bash bin/install-scanner.sh cosign\n'"
 probe secret_in_if "stored secret outside" "a stored secret read in a step condition of Release" \
   "repl .github/workflows/release.yml '      - name: release-publish under Witness\n' '      - name: release-publish under Witness\n        if: \${{ secrets.DOCKERHUB_TOKEN != \"\" }}\n'"
+# REQ-CHAIN-004-AC20 (ruling (B)): nothing that holds a secret loads bin/build-admit.py, directly or through a script it runs. rowruns SCRIPT ADD...: appends to the `runs` of SCRIPT's row in the copy.
+rowruns() { python3 -c 'import json,sys; p=".github/policy/chain-scripts.json"; d=json.load(open(p))
+for r in d["scripts"]:
+    if r["path"] == sys.argv[1]: r["runs"] = r["runs"] + [x for x in sys.argv[2:] if x not in r["runs"]]
+json.dump(d, open(p,"w"), indent=1)' "$@"; }
+expect ok "REQ-CHAIN-004-AC20 control: the unmodified real tree passes the judge (no secret holder lists bin/build-admit.py in its runs, directly or through a script it runs)" tree "$REAL"
+for hold in release-sign release-publish release-assets; do
+  probe "ba_direct_$hold" "bin/build-admit.py" "bin/$hold.sh (a secret holder of the release job) listing bin/build-admit.py in its runs" "rowruns bin/$hold.sh bin/build-admit.py"
+done
+probe ba_via_verify "bin/build-admit.py" "bin/release-sign.sh running bin/chain-verify.py whose row lists bin/build-admit.py in its runs (a load through a script it runs)" \
+  "rowruns bin/chain-verify.py bin/build-admit.py"
+probe ba_via_layout "bin/build-admit.py" "bin/release-publish.sh running bin/release-layout.py whose row lists bin/build-admit.py in its runs" \
+  "rowruns bin/release-layout.py bin/build-admit.py"
+probe ba_via_layout_assets "bin/build-admit.py" "bin/release-assets.sh listing bin/release-layout.py, whose row lists bin/build-admit.py in its runs" \
+  "rowruns bin/release-layout.py bin/build-admit.py; rowruns bin/release-assets.sh bin/release-layout.py"
+probe ba_via_items "bin/build-admit.py" "bin/release-sign.sh running bin/chain-verify.py, which loads bin/chain_items.py, whose row lists bin/build-admit.py in its runs" \
+  "rowruns bin/chain_items.py bin/build-admit.py; rowruns bin/chain-verify.py bin/chain_items.py"
 
 # ---- the sign jobs' federation env (REQ-CHAIN-001-AC1 job keys, REQ-CHAIN-001-AC9): in release.yml the three jobs sign, sign-rebuild and sign-check, and no other job of any
 # workflow file, carry a job-level env of exactly three non-secret literals (AWS_ROLE_ARN, AWS_REGION, RELEASE_KMS_KEY_REF); no step of them repeats the literals; the release job and every

@@ -324,7 +324,7 @@ def tree():
     for s in ("release-verify", "release-apks", "release-publish", "release-sign", "release-signatures", "release-stage", "release-assets", "release-postverify"):
         src = os.path.join(BIN, s + ".sh")
         if os.path.exists(src): shutil.copy(src, os.path.join(t, "bin", s + ".sh"))
-    for extra in ("build-admit.py", "release-postverify.py", "release-metadata.py", "release-layout.py", "chain_common.py", "guide_plan_judge.py"):
+    for extra in ("build-admit.py", "release-postverify.py", "release-metadata.py", "release-gate.py", "release-layout.py", "chain_common.py", "guide_plan_judge.py"):
         if os.path.exists(os.path.join(BIN, extra)): shutil.copy(os.path.join(BIN, extra), os.path.join(t, "bin", extra))
     os.makedirs(os.path.join(t, "build/keys")); open(os.path.join(t, "build/keys/release.rsa.pub"), "w").write("-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----\n")
     os.makedirs(os.path.join(t, ".vex")); open(os.path.join(t, ".vex/fosterstack-cache.openvex.json"), "w").write("{}")
@@ -570,8 +570,8 @@ for s in ("release-sign", "release-publish", "release-assets"):
     src = open(os.path.join(BIN, s + ".sh")).read()
     check(not re.search(r"build-admit|tag-ok|tag-pattern|TAG_PATTERN|v\[0-9\]|\^v|-rc\[", src), "AC14 bin/%s.sh holds no tag regex and does not call or load bin/build-admit.py (the tag is judged once, in release-verify)" % s)
 import yaml
-_rel = yaml.safe_load(open(os.path.join(os.environ["RELEASE_ROOT"], ".github/workflows/stage-promote.yml")))["jobs"]["release"]
-check(_rel.get("if") == "${{ !contains(github.ref_name, '-') }}" and "verify" in _rel.get("needs", []), "AC14 the release job, which holds the credentials, needs the verify job (release-verify) and carries if: ${{ !contains(github.ref_name, '-') }}")
+_rel = yaml.safe_load(open(os.path.join(os.environ["RELEASE_ROOT"], ".github/workflows/release.yml")))["jobs"]["release"]
+check("!contains(github.ref_name, '-')" in str(_rel.get("if")) and {"release-verify", "release-compare"} <= set(_rel.get("needs", [])), "AC14 the release job, which holds the credentials, needs the release-verify and release-compare jobs and its if: holds the condition !contains(github.ref_name, '-')")
 t = tree(); rc, so, se = run(t, "release-publish", creds=REG, env={"REG_CORRUPT": "docker.io"})
 check(rc != 0 and "differ" in se and DIG["image-production"] in se and "docker.io" in se, "AC7 a registry that shows another digest blocks release, naming the image and both digests", "rc=%s %s" % (rc, first(se)))
 t = tree(); rc, so, se = run(t, "release-publish", creds=REG, env={"REG_CORRUPT": "ghcr.io"}); h = [p[3].split("/")[0] for p in pushes(t)]
@@ -1245,6 +1245,24 @@ t = full_assets(); rc, so, se = staged_assets(t, env={"GH_DROP": "release-files.
 check(rc != 0 and "release-files.sha256.bundle" in se, "AC13 the gate runs again AFTER publishing, on what the release stores: a missing asset fails the run", "rc=%s %s" % (rc, first(se)))
 t = full_assets(); rc, so, se = staged_assets(t, env={"GH_ALTER": "release-manifest.json"})
 check(rc != 0 and "release-manifest.json" in se, "AC13 the gate after publishing catches a stored file that differs from the staged one", "rc=%s %s" % (rc, first(se)))
+# REQ-CHAIN-004-AC20: release-assets.sh holds the release credentials, so it loads no tag grammar: it runs bin/release-gate.py (and nothing else of bin/), which works with bin/build-admit.py and the rest of bin/ absent
+t = full_assets(); rcs_, sos_, ses_ = run(t, "release-stage")
+for f_ in os.listdir(os.path.join(t, "bin")):
+    if f_.endswith(".py") and f_ != "release-gate.py": os.remove(os.path.join(t, "bin", f_))
+rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"], env={"GH_VIEW_ERR": "release not found"})
+check(rcs_ == 0 and os.path.exists(os.path.join(t, "bin", "release-gate.py")) and not os.path.exists(os.path.join(t, "bin", "build-admit.py")) and rc == 0 and any(l.startswith("gh release upload") for l in log(t)),
+      "AC20 release-assets publishes with only bin/release-gate.py among the Python files of bin/ (no build-admit.py, no release-metadata.py, no chain_common.py)", "rc=%s/%s %s" % (rcs_, rc, first(se)))
+t = full_assets(); rcs_, sos_, ses_ = run(t, "release-stage")
+for f_ in os.listdir(os.path.join(t, "bin")):
+    if f_.endswith(".py") and f_ != "release-gate.py": os.remove(os.path.join(t, "bin", f_))
+open(os.path.join(t, "release-upload", "stray.json"), "w").write("{}")
+rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"])
+check(rc != 0 and "stray.json" in se and "release-gate: " in se and not [l for l in log(t) if l.startswith("gh release upload")],
+      "AC20 release-assets with only bin/release-gate.py still refuses an asset covered by nothing before the upload, naming it (the gate's own verdict)", "rc=%s %s" % (rc, first(se)))
+for s_ in ("release-assets", "release-stage"):
+    src = open(os.path.join(BIN, s_ + ".sh")).read()
+    check("bin/release-gate.py --dir" in src and "release-metadata.py gate" not in src, "AC20 bin/%s.sh runs the gate as bin/release-gate.py --dir ..., not as a subcommand of release-metadata.py" % s_)
+check("release-gate.py --dir release-published --same-as release-upload" in open(os.path.join(BIN, "release-assets.sh")).read(), "AC20 release-assets.sh's gate after publishing compares the release with release-upload/ (--same-as)")
 for tag in ("v0.3.0-rc1", "v0.3.0-rc.1", "main"):
     t3 = tree(); rc3, so3, se3 = run(t3, "release-stage", tag=tag); check(rc3 != 0 and "tag" in se3 and not os.path.exists(os.path.join(t3, "release-upload")), "AC14 release-stage refuses the tag %r before it stages anything" % tag, "rc=%s %s" % (rc3, first(se3)))
 check(not [l for l in log(t) if re.search(r"release create(?!.*--verify-tag)|git ", l)], "AC9 no release is created without --verify-tag and no tag is made")
@@ -1284,7 +1302,7 @@ def gate_of(t, mutate):
     rc0, so0, se0 = staged_assets(t, env={"GH_VIEW_ERR": "release not found"})
     try: mutate(os.path.join(t, "release-upload"))
     except OSError: pass      # the run was refused before this file was staged
-    r = subprocess.run(["python3", "bin/release-metadata.py", "gate", "--dir", "release-upload"], cwd=t, capture_output=True, text=True)
+    r = subprocess.run(["python3", "-I", "-B", "bin/release-gate.py", "--dir", "release-upload"], cwd=t, capture_output=True, text=True)
     return r.returncode, r.stderr
 t = full_assets(); rcg, seg = gate_of(t, lambda d: os.remove(os.path.join(d, "ubuntu-24.04-scanners-collection.rekor.json")))
 check(

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-007-AC19, REQ-CHAIN-007-AC21
+# proves: REQ-CHAIN-007-AC19, REQ-CHAIN-007-AC21, REQ-CHAIN-004-AC20
 # bin/release-metadata.py: the release metadata files and their signed list. It is offline and deterministic
 # (no clock, no network).
-# Tested subcommands: images, manifest, baseline, list, gate, bind-archives, checksums. Every refusal exits 1 with a message
-# that names the file or the key.
+# Tested subcommands: images, manifest, baseline, list, bind-archives, checksums. Every refusal exits 1 with a message
+# that names the file or the key. The coverage gate of the release assets is bin/release-gate.py (REQ-CHAIN-004-AC20: it holds no
+# tag grammar and runs beside the release secrets, so it loads nothing and works with bin/build-admit.py absent); its cases are here.
 # Runs on ubuntu-24.04 or macOS with bash and python3.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -22,6 +23,10 @@ def run(*a, cwd=None):
     p = os.path.join(BIN, "release-metadata.py")
     if not os.path.exists(p): return 127, "", "bin/release-metadata.py does not exist"
     r = subprocess.run(["python3", p] + list(a), capture_output=True, text=True, cwd=cwd); return r.returncode, r.stdout, r.stderr
+def rungate(*a, bin_dir=None, cwd=None):
+    p = os.path.join(bin_dir or BIN, "release-gate.py")
+    if not os.path.exists(p): return 127, "", "bin/release-gate.py does not exist"
+    r = subprocess.run(["python3", "-I", "-B", p] + list(a), capture_output=True, text=True, cwd=cwd); return r.returncode, r.stdout, r.stderr
 def sha(b): return "sha256:" + hashlib.sha256(b).hexdigest()
 IP, IF = sha(b"index-production"), sha(b"index-fips")
 KIDS = {"production": {"amd64": sha(b"kp-amd64"), "arm64": sha(b"kp-arm64")}, "fips": {"amd64": sha(b"kf-amd64"), "arm64": sha(b"kf-arm64")}}
@@ -198,10 +203,43 @@ def release_dir():
     for n in ("provenance.json", "provenance.rekor.json", "provenance.bundle.json"): open(os.path.join(a, n), "w").write("{}")      # Sign's three files (REQ-CHAIN-007-AC9, AC19)
     return a
 def gate(label, mutate, word=None):
-    a = release_dir(); mutate(a); rc, so, se = run("gate", "--dir", a)
+    a = release_dir(); mutate(a); rc, so, se = rungate("--dir", a)
     if word is None: check(rc == 0, "gate: " + label, "rc=%s %s" % (rc, se[:200]))
-    else: check(rc == 1 and word in se, "gate: " + label, "rc=%s %s" % (rc, se[:200]))
+    else: check(rc == 1 and word in se and se.startswith("release-gate: "), "gate: " + label, "rc=%s %s" % (rc, se[:200]))
 gate("a complete release directory passes", lambda a: None)
+# bin/release-gate.py is the gate by itself (REQ-CHAIN-004-AC20): it takes --dir [--same-as] and no subcommand, and the old subcommand of release-metadata.py is gone
+rc, so, se = run("gate", "--dir", release_dir())
+check(rc != 0 and so == "", "gate: `release-metadata.py gate` is refused (the gate lives in bin/release-gate.py)", "rc=%s out=%r err=%s" % (rc, so[:60], se[:120]))
+rc, so, se = rungate("gate", "--dir", release_dir())
+check(rc != 0, "gate: release-gate.py takes no subcommand word", "rc=%s %s" % (rc, se[:120]))
+rc, so, se = rungate()
+check(rc != 0 and "--dir" in se, "gate: release-gate.py with no --dir is refused, naming --dir", "rc=%s %s" % (rc, se[:120]))
+# --same-as: what the release stores equals what was staged, name for name and byte for byte
+def _staged_copy(a):
+    st = tempfile.mkdtemp(); [shutil.copy(os.path.join(a, n), os.path.join(st, n)) for n in os.listdir(a)]; return st
+a = release_dir(); st = _staged_copy(a); rc, so, se = rungate("--dir", a, "--same-as", st)
+check(rc == 0, "gate: --same-as a byte-for-byte copy passes", "rc=%s %s" % (rc, se[:200]))
+a = release_dir(); st = _staged_copy(a); open(st + "/stray.json", "w").write("{}"); rc, so, se = rungate("--dir", a, "--same-as", st)
+check(rc == 1 and "stray.json" in se and se.startswith("release-gate: "), "gate: --same-as a staged directory with a file the release lacks is refused, naming it", "rc=%s %s" % (rc, se[:200]))
+a = release_dir(); st = _staged_copy(a); open(st + "/production.sbom.json", "w").write("{\"other\": 1}"); rc, so, se = rungate("--dir", a, "--same-as", st)
+check(rc == 1 and "production.sbom.json" in se and se.startswith("release-gate: "), "gate: --same-as a staged file whose bytes differ is refused, naming it", "rc=%s %s" % (rc, se[:200]))
+# bin/release-gate.py stands alone: copied by itself into an empty bin/ (no build-admit.py, no release-metadata.py, no chain_common.py, no other file) it gives the same verdicts
+alone = tempfile.mkdtemp(); os.makedirs(alone + "/bin")
+if os.path.exists(os.path.join(BIN, "release-gate.py")): shutil.copy(os.path.join(BIN, "release-gate.py"), alone + "/bin/release-gate.py")
+check(sorted(os.listdir(alone + "/bin")) == ["release-gate.py"] or not os.path.exists(os.path.join(BIN, "release-gate.py")), "gate: the scratch bin/ holds release-gate.py and nothing else")
+a = release_dir(); rc, so, se = rungate("--dir", a, bin_dir=alone + "/bin")
+check(rc == 0, "gate: release-gate.py alone in a scratch bin/ (no build-admit.py, no release-metadata.py, no chain_common.py) passes a complete release directory", "rc=%s %s" % (rc, se[:200]))
+a = release_dir(); os.remove(a + "/build-collection.rekor.json"); rc, so, se = rungate("--dir", a, bin_dir=alone + "/bin")
+check(rc == 1 and "build-collection.rekor.json" in se and se.startswith("release-gate: ") and "Traceback" not in se, "gate: release-gate.py alone in a scratch bin/ refuses a release directory as it does with the other files beside it, naming the file", "rc=%s %s" % (rc, se[:200]))
+a = release_dir(); st = _staged_copy(a); open(st + "/stray.json", "w").write("{}"); rc, so, se = rungate("--dir", a, "--same-as", st, bin_dir=alone + "/bin")
+check(rc == 1 and "stray.json" in se and "Traceback" not in se, "gate: release-gate.py alone in a scratch bin/ refuses a --same-as difference, naming the file", "rc=%s %s" % (rc, se[:200]))
+gate_text = open(os.path.join(BIN, "release-gate.py")).read() if os.path.exists(os.path.join(BIN, "release-gate.py")) else None
+check(gate_text is not None and "build-admit" not in gate_text and "build_admit" not in gate_text and "load_sibling" not in gate_text, "gate: the text of bin/release-gate.py names no build-admit and loads no sibling file", "release-gate.py missing" if gate_text is None else "")
+mtext = open(os.path.join(BIN, "release-metadata.py")).read()
+check("def cmd_gate" not in mtext and 'add_parser("gate")' not in mtext, "gate: bin/release-metadata.py holds no gate code and no gate subcommand")
+for n in ("release-assets.sh", "release-stage.sh"):
+    t_ = open(os.path.join(BIN, n)).read()
+    check("python3 -I -B bin/release-gate.py --dir " in t_ and "release-metadata.py gate" not in t_, "gate: bin/%s calls `python3 -I -B bin/release-gate.py --dir ...` and no longer `release-metadata.py gate`" % n)
 gate("a Witness record with no entries file beside it is refused, naming the missing file", lambda a: os.remove(a + "/build-collection.rekor.json"), "build-collection.rekor.json")
 gate("an entries file with no record beside it is refused, naming it", lambda a: open(a + "/other-collection.rekor.json", "w").write("{}"), "other-collection.rekor.json")
 # the record/entries pairing is checked for EVERY name, also for a name that checksums.txt or
@@ -254,12 +292,12 @@ check(rc != 0 and so == "", "tag-notes: a tag with SIGNED MESSAGE notes text is 
 check("tag-notes" not in open(os.path.join(BIN, "release-metadata.py")).read(), "tag-notes: the script holds no tag-notes code")
 # ---- usage: the docstring (the script's usage text) names every subcommand it has, and no other ----------------------------------------
 import ast
-SUBS = ("images", "manifest", "baseline", "list", "gate", "bind-archives", "checksums")
+SUBS = ("images", "manifest", "baseline", "list", "bind-archives", "checksums")
 doc = ast.get_docstring(ast.parse(open(os.path.join(BIN, "release-metadata.py")).read())) or ""
-check(all("release-metadata.py %s " % n in doc for n in SUBS) and "tag-notes" not in doc,
-      "usage: the docstring has a usage line for every subcommand and none for tag-notes", doc[:300])
+check(all("release-metadata.py %s " % n in doc for n in SUBS) and "tag-notes" not in doc and "release-metadata.py gate" not in doc,
+      "usage: the docstring has a usage line for every subcommand and none for tag-notes or gate", doc[:300])
 rc, so, se = run("--help")
-check(rc == 0 and all(n in so for n in SUBS) and "tag-notes" not in so, "usage: --help names every subcommand and no tag-notes", so[:200])
+check(rc == 0 and all(n in so for n in SUBS) and "tag-notes" not in so and "gate" not in so, "usage: --help names every subcommand and neither tag-notes nor gate", so[:200])
 # ---- strict JSON: a duplicate key is refused, never taken last-wins ---------------------------------------------------------------------
 t, d = tree(); dup = t + "/witness-build/digests.json"
 open(dup, "w").write(json.dumps(d)[:-1] + ', "image-production": "%s"}' % sha(b"other"))

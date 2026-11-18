@@ -588,7 +588,7 @@ check("items-merge: a release candidate's files merge to the oracle's items (PRO
 #   A and B are the admission.json of the two apk legs, already verified by `bind` (each is a product of its leg's record). Exit 0 writes F, canonical
 #   (sorted keys, indent 1): exactly {baseline, baseline_version, sha, tag}, taken from the legs, which must agree on those four fields (their evidence
 #   fields may differ). Exit 1, first line `refused at build: <cause>: <detail>`: missing (a file), shape (not a JSON object with those fields as strings),
-#   disagree (the legs differ), tag (not --tag), sha (not --sha), baseline (version not vX.Y.Z, or path not requirements/releases/<version>.yaml),
+#   disagree (the legs differ), tag (not --tag), sha (not --sha), baseline (an rc tag whose version is not the tag, any other tag whose version holds -rc, or a path not requirements/releases/<version>.yaml; no tag grammar is judged here, REQ-CHAIN-004-AC20),
 #   count (not exactly two --admission). Nothing is written on a refusal. Exit 2: a missing option.
 ADM = {"tag": "v0.3.1", "sha": "c" * 40, "baseline_version": "v0.3.0", "baseline": "requirements/releases/v0.3.0.yaml",
        "required_checks": [{"context": "ci", "id": 11}], "informational_statuses": [], "run": {"id": 1, "attempt": 1}}
@@ -629,8 +629,9 @@ adm("admission-baseline: legs that name different baselines are refused (disagre
 adm("admission-baseline: legs for different commits are refused (disagree)", adm_tree("adm11", None, dict(ADM, sha="d" * 40)), 1, "disagree")
 adm("admission-baseline: a leg for another tag than the run's is refused (tag)", adm_tree("adm12"), 1, "tag", tag="v0.3.2")
 adm("admission-baseline: a leg for another commit than the run's is refused (sha)", adm_tree("adm13"), 1, "sha", sha="e" * 40)
-for label, ver, path in (("a version that is not vX.Y.Z", "0.3.0", "requirements/releases/0.3.0.yaml"), ("a version with a path in it", "../v0.3.0", "requirements/releases/../v0.3.0.yaml"),
-                         ("a release candidate version", "v0.3.0-rc1", "requirements/releases/v0.3.0-rc1.yaml"), ("a path that is not the version's file", "v0.3.0", "requirements/releases/v0.2.0.yaml"),
+# no tag grammar is judged here (build-admit.py judged it at admission; chain_items.py holds none, REQ-CHAIN-004-AC20): a version of another spelling is taken as given
+adm("admission-baseline: a version that is not vX.Y.Z (0.3.0) with its own file is accepted, no grammar judged", adm_tree("adm14a", dict(ADM, baseline_version="0.3.0", baseline="requirements/releases/0.3.0.yaml"), dict(ADM, baseline_version="0.3.0", baseline="requirements/releases/0.3.0.yaml")), 0)
+for label, ver, path in (("a release candidate version", "v0.3.0-rc1", "requirements/releases/v0.3.0-rc1.yaml"), ("a path that is not the version's file", "v0.3.0", "requirements/releases/v0.2.0.yaml"),
                          ("an absolute path", "v0.3.0", "/etc/passwd")):
     adm("admission-baseline: %s is refused (baseline)" % label, adm_tree("adm14", dict(ADM, baseline_version=ver, baseline=path), dict(ADM, baseline_version=ver, baseline=path)), 1, "baseline")
 # A release candidate tag is admitted with its OWN baseline (version = tag, rc spelling) and the transfer must
@@ -641,7 +642,10 @@ adm("admission-baseline: a release candidate tag with a baseline that is not its
 adm("admission-baseline: a release candidate tag with another rc's baseline (v0.3.0-rc2) is refused (baseline)", adm_tree("adm22", dict(RCA, baseline_version="v0.3.0-rc2", baseline="requirements/releases/v0.3.0-rc2.yaml"), dict(RCA, baseline_version="v0.3.0-rc2", baseline="requirements/releases/v0.3.0-rc2.yaml")), 1, "baseline", tag="v0.3.0-rc1")
 adm("admission-baseline: a final tag with a release candidate baseline stays refused (baseline)", adm_tree("adm23", dict(ADM, tag="v0.3.0", baseline_version="v0.3.0-rc1", baseline="requirements/releases/v0.3.0-rc1.yaml"), dict(ADM, tag="v0.3.0", baseline_version="v0.3.0-rc1", baseline="requirements/releases/v0.3.0-rc1.yaml")), 1, "baseline", tag="v0.3.0")
 for label, ver in (("v0.3.0-rc", "v0.3.0-rc"), ("v0.3.0-RC1", "v0.3.0-RC1"), ("v0.3.0-rc.1", "v0.3.0-rc.1")):
-    adm("admission-baseline: the malformed candidate spelling %s is refused (baseline)" % label, adm_tree("adm24", dict(RCA, tag=ver, baseline_version=ver, baseline="requirements/releases/%s.yaml" % ver), dict(RCA, tag=ver, baseline_version=ver, baseline="requirements/releases/%s.yaml" % ver)), 1, "baseline", tag=ver)
+    adm("admission-baseline: the candidate spelling %s with its own baseline is accepted (the grammar was judged at admission, not here)" % label, adm_tree("adm24", dict(RCA, tag=ver, baseline_version=ver, baseline="requirements/releases/%s.yaml" % ver), dict(RCA, tag=ver, baseline_version=ver, baseline="requirements/releases/%s.yaml" % ver)), 0, tag=ver)
+adm("admission-baseline: a tag spelled v0.3.0-rc.1 whose baseline is v0.3.0-rc1 is refused (baseline: an -rc tag takes its own version)", adm_tree("adm25", dict(RCA, tag="v0.3.0-rc.1"), dict(RCA, tag="v0.3.0-rc.1")), 1, "baseline", tag="v0.3.0-rc.1")
+text = open(os.path.join(root, "bin/chain_items.py")).read() + open(os.path.join(root, "bin/chain-verify.py")).read()
+check("admission-baseline: chain_items.py and chain-verify.py hold no occurrence of build-admit (REQ-CHAIN-004-AC20)", "build-admit" not in text and "build_admit" not in text)
 rc, out, err = run(["admission-baseline", "--admission", "a.json", "--admission", "b.json", "--tag", "v0.3.1", "--out", "out.json"], adm_tree("adm15"))
 check("admission-baseline: a missing --sha is a usage error (exit 2)", rc == 2 and "Traceback" not in err, "exit %s" % rc)
 # ---- bind --local (the Witness move: a Build/Rebuild record made with a throwaway key, untrusted until Sign) ---------------------------------------------
