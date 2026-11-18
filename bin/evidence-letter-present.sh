@@ -9,8 +9,9 @@ set -euo pipefail
 die() { echo "evidence-letter-present: $*" >&2; exit 1; }
 repo=${REPO:-fosterstack/cache}
 today=$(date -u +%Y-%m-%d)
-[ "$((10#${today:8:2}))" -ge 3 ] || exit 0
-year=${today:0:4}; mon=$((10#${today:5:2}))
+IFS=- read -r year mon day <<< "$today"
+[ "$((10#$day))" -ge 3 ] || exit 0
+mon=$((10#$mon))
 if [ "$mon" -eq 1 ]; then year=$((year - 1)); mon=12; else mon=$((mon - 1)); fi
 month=$(printf '%04d-%02d' "$year" "$mon")
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT

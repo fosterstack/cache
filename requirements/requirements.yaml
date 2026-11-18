@@ -3396,7 +3396,7 @@ requirements:
       - id: REQ-CHAIN-001-AC8
         given: "the workflow files of the repository"
         when: "the chain test reads their jobs"
-        then: "exactly the three jobs sign, sign-rebuild and sign-check of release.yml run in the environment sign and request the identity token for the release signing role, and no other job of any workflow file does, so a job of any other environment or file cannot obtain the role; the role's trust itself, which accepts only the environment sign of release.yml, is applied in the ops repository"
+        then: "exactly the three jobs sign, sign-rebuild and sign-check of release.yml run in the environment sign and request the identity token for the release signing role, and no other job of any workflow file does except the job sign of evidence-letter.yml (REQ-REL-013, in the environment evidence-letter, the only job outside the environment sign that does), so a job of any other environment or file cannot obtain the role; the role's trust itself, which accepts only the environment sign of release.yml and the environment evidence-letter of evidence-letter.yml on main, is applied in the ops repository"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-001-AC9
