@@ -2236,7 +2236,7 @@ requirements:
       schedule or in the release chain, so release admission reads each of them on the exact tagged commit. The pin-age
       scan of pull requests is deleted; the daily pin audit is the supply-chain check. One check holds a security test
       that no release step runs, marker-gate (it verifies the release candidate run a marker pull request names), so it
-      stays on pull requests until the owner rules on it; customer-words-edited, agent-review-gate.yml and
+      stays on pull requests until a ruling moves it; customer-words-edited, agent-review-gate.yml and
       dependabot-auto-merge.yml are no checks of this list and are left as they are.
     source: [.github/workflows/ci.yml, .github/workflows/scan.yml, .github/workflows/codeql.yml, .github/workflows/acceptance.yml, .github/workflows/supply-chain.yml, .github/policy/required-checks.json]
     tier: community
@@ -2826,7 +2826,7 @@ requirements:
     introduced: v0.3.0
     origin: actions supply-chain checks (decided Oct 5 2026); AC14 comes from the Oct 9 reading (pin-audit Go major path), which lets cosign be pinned as a tool; AC16 comes from the Oct 10 ruling (ruled text lines instead of a lexer); the 7-day wait for new versions and its three exceptions were removed by the owner's ruling of Nov 11 2026 (ops/docs/ratify/2026-11-11-no-release-age-hold.md rule 1), and AC1, AC3, AC6, AC13, AC27 and AC34 say what holds without them
     notes: >
-      Removed Nov 17 2026 with the pin-age pull-request scan (the owner's order that only six checks run on a pull request): AC2, AC3, AC4, AC16, AC19, AC20, AC21, AC22, AC23, AC25, AC26, AC27, AC34 and AC35; their ids are not reused. AC37 holds the one judgment of that scan the daily audit keeps.
+      Removed Nov 17 2026 with the pin-age pull-request scan (only six checks run on a pull request): AC2, AC3, AC4, AC16, AC19, AC20, AC21, AC22, AC23, AC25, AC26, AC27, AC34 and AC35; their ids are not reused. AC37 holds the one judgment of that scan the daily audit keeps.
       AC14 design decision: a non-plain version of a table tool is a HIT only on the records the databases return for
       it. A version with no OSV record and no GitHub advisory (cosign@latest, or the (default) pins of cosign and kind
       in the real tree) reads clean, deliberately: with no record nothing is known to be affected at any version, and

@@ -140,11 +140,12 @@ res("pull_request" not in triggers(sc), "AC2: supply-chain.yml has no pull_reque
 res(set(triggers(sc)) == {"schedule", "workflow_dispatch"}, "AC2: supply-chain.yml runs on schedule and workflow_dispatch only (%s)" % sorted(triggers(sc)))
 res("pin-age" not in (sc.get("jobs") or {}), "AC2: supply-chain.yml has no pin-age job")
 res(not any(j.get("name") == "pin-age" for j in (sc.get("jobs") or {}).values()), "AC2: no job of supply-chain.yml is named pin-age")
-res(set(sc.get("jobs") or {}) == {"daily-audit"}, "AC2: daily-audit is the one job left in supply-chain.yml (%s)" % sorted(sc.get("jobs") or {}))
+res(set(sc.get("jobs") or {}) == {"daily-audit", "evidence-letter-present"}, "AC2: daily-audit and evidence-letter-present are the jobs left in supply-chain.yml (%s)" % sorted(sc.get("jobs") or {}))
 res(not any(k.startswith("supply-chain.yml:") for k in on_pr), "AC2: no job of supply-chain.yml runs on pull_request, merge_group or pull_request_target")
-da = (sc.get("jobs") or {}).get("daily-audit") or {}
-res(runs_on(da.get("if"), "schedule") and runs_on(da.get("if"), "workflow_dispatch") and not runs_on(da.get("if"), "pull_request"),
-    "AC2: daily-audit runs on schedule and workflow_dispatch and not on pull_request (%r)" % da.get("if"))
+for jn in ("daily-audit", "evidence-letter-present"):
+    jb = (sc.get("jobs") or {}).get(jn) or {}
+    res(runs_on(jb.get("if"), "schedule") and runs_on(jb.get("if"), "workflow_dispatch") and not runs_on(jb.get("if"), "pull_request"),
+        "AC2: %s runs on schedule and workflow_dispatch and not on pull_request (%r)" % (jn, jb.get("if")))
 checks = json.load(open(root + "/.github/policy/required-checks.json"))["required_checks"]
 scopes = {c["context"]: c["scope"] for c in checks}
 res(len(scopes) == len(checks), "AC2: required-checks.json names no context twice")
