@@ -160,7 +160,7 @@ jobs:
           fi
           if [ "$held" != 0 ] || [ "$total" -ge 100 ]; then
             echo "### Held out of auto-merge" >> "$GITHUB_STEP_SUMMARY"
-            echo "This PR touches tools/govulncheck/ (the pinned tool, which ci.yml builds through bin/install-scanner.sh) or lists 100 or more files (too many to judge): it is not armed here and is handled as a normal PR." >> "$GITHUB_STEP_SUMMARY"
+            echo "This PR touches tools/govulncheck/ (the pinned tool, which ci.yml builds from that module) or lists 100 or more files (too many to judge): it is not armed here and is handled as a normal PR." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_URL"
