@@ -801,7 +801,8 @@ def _tokens(chunk):
 
 
 def _paren_end(text, i):
-    """The index just past the ) that closes the ( at text[i], read with bash's quotes, escapes and comments."""
+    """The index just past the ) that closes the ( at text[i], read with bash's quotes, escapes and comments; None when
+    it never closes."""
     depth, j, aq, n = 1, i + 1, None, len(text)
     while j < n and depth:
         d = text[j]
@@ -814,7 +815,7 @@ def _paren_end(text, i):
             aq = None if d == '"' else aq            # NOT a new quote opening)
         elif d in "'\"":
             aq = d
-        elif d == "#" and (j == i + 1 or text[j - 1] in " \t\n"):
+        elif d == "#" and (j == i + 1 or text[j - 1] in " \t\n;&|()<>"):
             # a comment inside the array (Codex #164 r13, B1): its own ')' or apostrophe is not real
             # syntax and must not move depth or open a quote — same rule as the outer loop's own #
             while j < n and text[j] != "\n":
@@ -825,7 +826,10 @@ def _paren_end(text, i):
         elif d == ")":
             depth -= 1
         j += 1
-    return j
+    return None if depth else j
+
+
+CASE_WORD = re.compile(r"(?<![\w.-])case(?![\w.-])")
 
 
 def _split_commands(text):
@@ -862,14 +866,17 @@ def _split_commands(text):
                 i += 1
             continue
         elif c == "(" and cur and cur[-1] == "=":         # NAME=( … ): an array's words, not commands
-            j = _paren_end(text, i)
+            j = _paren_end(text, i) or n
             cur.append(text[i:j].replace("\n", " "))
             i = j
             continue
         elif c in "<>" and text[i + 1:i + 2] == "(":      # <( … ) / >( … ): the command keeps it, its inside is read too
             j = _paren_end(text, i + 1)
+            if j is None or CASE_WORD.search(text[i + 2:j - 1]):    # a case pattern's ) ends it early: refuse, read no more
+                out.append("__too_deep__ process-substitution")
+                break
             out += _split_commands(text[i + 2:j - 1])
-            cur.append(text[i:j].replace("\n", " "))
+            cur.append(c + "(_)")                         # one word, whatever is inside
             i = j
             continue
         elif c == "|" and cur and cur[-1] == ">" and len(cur) != escaped:   # `>|` is a redirection that overrides noclobber, not a pipe
@@ -1116,7 +1123,7 @@ def _commands(script, depth=0, in_container=False):
     import shlex
     text, inner = _cut_substitutions(re.sub(r"\\\n", "", script))
     out = []
-    if any(re.search(r"(?<![\w.-])case(?![\w.-])", sub) for sub in inner):
+    if any(CASE_WORD.search(sub) for sub in inner):
         out.append(["__too_deep__", "case ... esac inside $( )"])    # a case pattern's `)` ends the substitution early: refuse (Codex #164 r19, B10)
     if depth < 6:
         for sub in inner:
@@ -1130,6 +1137,9 @@ def _commands(script, depth=0, in_container=False):
         chunk = _skip_array_literal(chunk)
         toks = _tokens(chunk)
         if not toks or toks[0] in PRINTERS:
+            continue
+        if toks[0] == "__too_deep__":                      # the splitter refused a process substitution it cannot read
+            out.append(toks)
             continue
         for i, w in enumerate(toks):
             c = next((j for j in range(i + 1, len(toks)) if re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", toks[j])), None) \
@@ -2057,7 +2067,9 @@ def _cut_redirections(text):
     while i < len(text):
         c = text[i]
         if c == "\\" and q != "'" and i + 1 < len(text):
-            if not cut:
+            if cut:
+                bare = False                             # the escaped word is the operand
+            else:
                 out.append(text[i:i + 2])
             i += 2
             continue
@@ -2065,7 +2077,7 @@ def _cut_redirections(text):
             q = None if c == q else q
         elif c in "<>" and text[i + 1:i + 2] == "(":
             cut, bare = True, False
-            i = _paren_end(text, i + 1)
+            i = _paren_end(text, i + 1) or len(text)
             continue
         elif c in "'\"":
             q = c
@@ -2101,7 +2113,7 @@ def _default_target(toks):
     if words[0] == "select":
         return "REPLY"
     first, _ = _options(args, *OPTIONS[words[0]])
-    if first < len(args) or any(re.fullmatch(r"-[A-Za-z]*a", a) for a in args):
+    if first < len(args) or any(re.match(r"-[ers]*a", a) for a in args):
         return None
     return DEFAULT_TARGET[words[0]]
 
@@ -2161,7 +2173,7 @@ def _outside(target, script, depth=0):
         return False
     if _set_by_setter(m.group(1), script):
         return False                                     # set by read, printf -v, (( )), name[0]= …: an unknown value
-    values = re.findall(r"(?:^|[\s;(])" + m.group(1) + r"=[\"']?([^\s\"';)]*)", script)
+    values = re.findall(r"(?:^|[\s;(&|])" + m.group(1) + r"=(?!=)[\"']?([^\s\"';)]*)", script)
     return bool(values) and all(_outside(v, script, depth + 1) for v in values)
 
 
