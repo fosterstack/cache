@@ -1986,6 +1986,20 @@ def _touches(script, name, consumer):
 OUTSIDE = ("$RUNNER_TEMP", "${RUNNER_TEMP}", "/", "$(mktemp")   # outside the checkout: never the file's directory
 
 
+def _setter_values(name, script):
+    """The value of every `name=value` setter the shell reads in `script`: a value ends at a blank, `;`, `)` or an
+    unquoted `&` / `|`. Skipped: a comment (`#` opening a word), quoted text, and every other word whole, so a
+    backslash escape or `${...}` inside a word hides nothing and opens nothing."""
+    pat = re.compile(r"(?<![^\s;&|(])" + name + r"=(?:\"((?:\\.|[^\"\\])*)\"|'([^']*)'|((?:\\.|[^\s\"';)&|\\])*))"
+                     r"|(?<![^\s;&|(])#[^\n]*|\"(?:\\.|[^\"\\])*\"|'[^']*'|(?:\\.|\$\{[^}]*\}|[^\s;&|()\"'\\])+")
+    return [m.group(m.lastindex) for m in pat.finditer(script) if m.lastindex]
+
+
+def _loose_values(name, script):
+    """Every `name=value` the text spells, quotes and comments ignored: the fail-closed view."""
+    return re.findall(r"(?:^|[\s;&|(])" + name + r"=[\"']?([^\s\"';)]*)", script)
+
+
 def _outside(target, script, depth=0):
     """A destination that cannot be the checkout's directory: an absolute path outside the runner's workspace, a path
     under $RUNNER_TEMP or a fresh $(mktemp …), or a variable every assignment of which in the job is one of those —
@@ -1999,8 +2013,8 @@ def _outside(target, script, depth=0):
     m = re.match(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?(/.*)?$", target.strip("\"'"))
     if not m or depth > 4:
         return False
-    values = re.findall(r"(?:^|[\s;&|(])" + m.group(1) + r"=[\"']?([^\s\"';)]*)", script)
-    return bool(values) and all(_outside(v, script, depth + 1) for v in values)
+    values = _setter_values(m.group(1), script)
+    return bool(values) and all(_outside(v, script, depth + 1) for v in values + _loose_values(m.group(1), script))
 
 
 def _redirect_targets(chunk):
