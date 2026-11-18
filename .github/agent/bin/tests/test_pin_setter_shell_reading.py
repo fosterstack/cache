@@ -24,7 +24,6 @@ SCRIPTS = {
     "alt_pipe": ["out=${unset:+|}"],
     "heredoc_quote_hides_setter": ["cat <<EOF", '"', "EOF", "#\\", "out=.", "cat <<EOF", '"', "EOF"],
 }
-ONE_HEREDOC = ["cat <<EOF", '"', "EOF", "#\\", "out=."]
 
 CLEAN = {
     "comment_pipe": ["# note |", GOOD],
@@ -67,8 +66,11 @@ class SetterShellReading(unittest.TestCase):
                 with self.subTest(name):
                     self.flagged(INDENT.join([GOOD, *lines]))
 
-    def test_end_to_end_one_heredoc_then_comment_backslash_setter_is_flagged(self):
-        self.flagged(INDENT.join([GOOD, *ONE_HEREDOC]))
+    def test_end_to_end_quoted_hash_then_backslash_setter_is_flagged(self):
+        self.flagged(INDENT.join([GOOD, 'echo " #"; ou\\', "t=."]))
+
+    def test_end_to_end_escaped_hash_then_backslash_setter_is_flagged(self):
+        self.flagged(INDENT.join([GOOD, "echo \\#; ou\\", "t=."]))
 
     def test_lastpipe_with_semicolons_on_one_line_is_flagged(self):
         self.flagged("out=$RUNNER_TEMP/x; shopt -s lastpipe; true | out=.")

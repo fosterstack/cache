@@ -2947,8 +2947,7 @@ def check_runs(where_job, scripts, bad, tree=None):
     a digest). A step in a non-POSIX shell that names a container or package tool is a finding: this
     check reads POSIX shell only (Sonnet B8)."""
     def read(raw):
-        joined = re.sub(r"(?<![^\s;&|(])#[^\n]*|\\\n", lambda m: m.group() if m.group()[0] == "#" else "", raw)   # a comment never continues
-        return _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(joined)))
+        return _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", raw))))
     DEFAULT_ASSIGNED.clear()
     posix = [not item[2] or re.match(r"^(bash|sh)(\s|$)", item[2]) for item in scripts]
     # steps of one job share a workspace: a file changed in ANY step of the job counts (Sonnet #164 r6, NEW-7); the
