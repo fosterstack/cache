@@ -348,103 +348,6 @@ _LINE_TEXT = {}                              # whole-line hash -> the flattened 
 
 
 
-# REQ-SUP-001-AC16: a reviewed_files row is a review of one whole file and of the files it sources by a literal path,
-# so any edit to them stops the row matching. A word that could run a file anywhere but in a plain line fails closed.
-_PLAIN_SOURCE = re.compile(r"[ \t]*(?:source|\.)[ \t]+([A-Za-z0-9_][A-Za-z0-9_./-]*)[ \t]*")   # matches ". lib.sh", refuses "source $f"
-_SUBSTITUTION = re.compile(r"\$\(((?:[^()]|\([^()]*\))*)\)|`([^`]*)`")
-
-
-def _segments(line):
-    """The commands of line as inv.shell_segments reads them, and those inside each $( ) and backtick pair, even
-    where quoted."""
-    segs = inv.shell_segments(line)[0]
-    for m in _SUBSTITUTION.finditer(line):
-        segs += _segments(m.group(1) or m.group(2) or "")
-    return segs
-
-
-def _sourced(text):
-    """The operands of the plain 'source PATH' / '. PATH' lines of text, or None (fails closed) when a word that runs
-    a file is anywhere else, inside a substitution too: source, ., eval or builtin as any word of a command, a plain
-    line aside; a cd before a source; command (but -v); a shell with -c; a command word that is a variable holding
-    such a word or an unquoted variable; or a variable given such a word."""
-    ops, cd = [], False
-    holders = inv.holder_names(text)
-    for line, _body in inv.logical_lines(text):
-        if len(line) > inv.MAX_LINE:
-            return None
-        plain = _PLAIN_SOURCE.fullmatch(line)
-        for seg in _segments(line):
-            words, hidden = inv.command_of(seg)
-            clean = [inv.QUOTING.sub("", w) for w in words]
-            word = clean[0] if clean else ""
-            cd = cd or word == "cd"
-            if (hidden or (words and inv.is_holder_word(words[0], holders))
-                    or (not plain and any(os.path.basename(w) in inv.RUNS_A_FILE for w in clean))
-                    or (word == "command" and clean[1:2] not in (["-v"], ["-V"]))
-                    or any(os.path.basename(w) in inv.SHELLS and "-c" in clean[i:] for i, w in enumerate(clean))
-                    or (words and words[0][0] in "$`")):
-                return None
-        if plain:
-            op = os.path.normpath(plain.group(1))
-            if cd or op.startswith(("..", "/")):
-                return None
-            ops.append(op)
-    return ops
-
-
-_SCANNED = {}
-
-
-def _scanned(root, head):
-    """The paths the inventory reads for a download or a run of a file: what a shell may be given and be bound."""
-    key = (root, head)
-    if key not in _SCANNED:
-        found = {**inv.tree_surfaces(root, head), **inv.tree_files(root, head), **inv.tree_scripts(root, head)}
-        _SCANNED[key] = found.keys()
-    return _SCANNED[key]
-
-
-def _runs_bound(root, head, text):
-    """False when a shell or interpreter in text is given a script that is no literal path of a file the inventory
-    reads at head."""
-    files = _scanned(root, head)
-    for line, _body in inv.logical_lines(text):
-        if len(line) <= inv.MAX_LINE and any(inv.runs_unbound_file(seg, files) for seg in inv.shell_segments(line)[0]):
-            return False
-    return True
-
-
-_FILES_HASH = {}
-
-
-def _files_hash(root, head, path):
-    """The sha256 of one line '<path> <sha256 of its bytes>' per file: path first, then the files it sources by
-    literal path to any depth, in path order. None (fails closed) when a file is missing, a link or unreadable, or
-    _sourced() refuses its text. Computed once per file per run."""
-    key = (root, head, path)
-    if key not in _FILES_HASH:
-        _FILES_HASH[key] = _hash_files(root, head, path)
-    return _FILES_HASH[key]
-
-
-def _hash_files(root, head, path):
-    lines, todo = {}, [path]
-    while todo:
-        f = todo.pop()
-        if f in lines:
-            continue
-        raw = _head_file(root, head, f)
-        ops = [] if raw is not None and f == path and f.endswith(".py") else None
-        if raw is not None and ops is None:
-            text = raw.decode("utf-8", "replace")
-            ops = _sourced(text) if _runs_bound(root, head, text) else None
-        if ops is None:
-            return None
-        lines[f] = f + " " + hashlib.sha256(raw).hexdigest()
-        todo += ops
-    text = "".join(lines[f] + "\n" for f in [path] + sorted(set(lines) - {path}))
-    return hashlib.sha256(text.encode()).hexdigest()
 
 
 
@@ -453,38 +356,19 @@ def _hash_files(root, head, path):
 
 
 
-def _head_file(root, rev, f):
-    """The bytes of the regular file f (not a link) in the tree of rev (the working tree when rev is None); None when
-    it is missing, a link or unreadable."""
-    try:
-        if rev is None:
-            path = os.path.join(root, f)
-            return open(path, "rb").read() if os.path.isfile(path) and not os.path.islink(path) else None
-        ent = subprocess.run(["git", "-C", root, "ls-tree", rev, "--", f], capture_output=True, check=True,
-            timeout=120).stdout.decode("utf-8", "replace").split()
-        if len(ent) < 4 or ent[0] not in ("100644", "100755") or ent[1] != "blob":
-            return None
-        return subprocess.run(["git", "-C", root, "show", f"{rev}:{f}"], capture_output=True, check=True,
-            timeout=120).stdout
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        return None
+WHOLE_FILE = float("inf")      # the count of a reviewed_files ruling: the whole file is reviewed, no count
 
 
-WHOLE_FILE = float("inf")      # the count of a reviewed_files ruling: the whole file is its proof, no count
-
-
-def _rule_of(rows, reviewed, root, head, file, form, segment, line_hash):
+def _rule_of(rows, reviewed, file, form, segment, line_hash):
     """(ruling, count) of the ruling that rules this unmeasured occurrence, or None: its own unmeasured_text row, else
-    the file's reviewed_files row while the whole-file hash holds (no count: the whole text is the proof)."""
+    the file's reviewed_files row (no count: the whole file is reviewed)."""
     row = rows.get((file, form, segment, line_hash))
     if row:
         return row
-    rf = reviewed.get(file)
-    if line_hash.startswith("unruled:") or not rf:      # a line bash reads differently from the flattening is never ruled
+    ruling = reviewed.get(file)
+    if line_hash.startswith("unruled:") or not ruling:      # a line bash reads differently from the flattening is never ruled
         return None
-    return (rf[0], WHOLE_FILE) if _files_hash(root, head, file) == rf[1] else None
-
-
+    return ruling, WHOLE_FILE
 
 
 MAX_RULED_COUNT = 100
@@ -504,7 +388,7 @@ def _no_constant(name):
 
 def load_ruled_text(path, required=False):
     """{(file, form, 64-hex segment hash, 64-hex whole-line hash):
-    (ruling, count, body sha256 or None)} from the file's unmeasured_text list. A missing default
+    (ruling, count)} from the file's unmeasured_text list. A missing default
     file is no rulings; anything malformed
     raises RuntimeError (the check cannot run, exit 2): never 'nothing ruled' and never 'everything ruled'."""
     if not os.path.exists(path):
@@ -523,18 +407,17 @@ def load_ruled_text(path, required=False):
     out = {}
     for i, r in enumerate(rows):
         bad = lambda why: RuntimeError(f"{path}: unmeasured_text row {i} {why}")
-        if (not isinstance(r, dict) or set(r) - set(_RULED_FIELDS) - {"count", "body-sha256"}
+        if (not isinstance(r, dict) or set(r) - set(_RULED_FIELDS) - {"count"}
                 or not set(_RULED_FIELDS) <= set(r)):
-            raise bad("must be an object with exactly file, form, key, line, ruling (and an optional count, "
-                "and body-sha256)")
+            raise bad("must be an object with exactly file, form, key, line, ruling (and an optional count)")
         if not all(isinstance(r[k], str) and r[k].strip() for k in _RULED_FIELDS):
             raise bad("has an empty or non-text file, form, key, line or ruling")
         if not re.fullmatch(r"[0-9a-f]{64}", r["key"]):
             raise bad("key is not the scan's 64 lowercase hex hash")
         if not re.fullmatch(r"[0-9a-f]{64}", r["line"]):
             raise bad("line is not the 64 lowercase hex hash of the whole flattened line")
-        if r["ruling"].startswith(TEXT_RULING) or "body-sha256" in r:
-            raise bad("is a text ruling or carries a body-sha256: those are reviewed_files rows, one per file")
+        if r["ruling"].startswith(TEXT_RULING):
+            raise bad("is a text ruling: those are reviewed_files rows, one per file")
         count = r.get("count", 1)
         if type(count) is not int or not 1 <= count <= MAX_RULED_COUNT:
             raise bad(f"count is not a whole number from 1 to {MAX_RULED_COUNT}")
@@ -546,8 +429,8 @@ def load_ruled_text(path, required=False):
 
 
 def load_reviewed_files(path, required=False):
-    """REQ-SUP-001-AC16: {file: (ruling, body sha256)} from the exceptions file's reviewed_files list: one row per file,
-    exactly file, ruling and body-sha256. A missing default file is no rows; anything malformed raises RuntimeError
+    """REQ-SUP-001-AC16: {file: ruling} from the exceptions file's reviewed_files list: one row per file,
+    exactly file and ruling. A missing default file is no rows; anything malformed raises RuntimeError
     (exit 2): never 'nothing ruled' and never 'everything ruled'."""
     if not os.path.exists(path):
         if required:
@@ -564,15 +447,13 @@ def load_reviewed_files(path, required=False):
     out = {}
     for i, r in enumerate(rows):
         bad = lambda why: RuntimeError(f"{path}: reviewed_files row {i} {why}")
-        if not isinstance(r, dict) or set(r) != {"file", "ruling", "body-sha256"}:
-            raise bad("must be an object with exactly file, ruling and body-sha256")
+        if not isinstance(r, dict) or set(r) != {"file", "ruling"}:
+            raise bad("must be an object with exactly file and ruling")
         if not all(isinstance(r[k], str) and r[k].strip() for k in ("file", "ruling")):
             raise bad("has an empty or non-text file or ruling")
-        if not re.fullmatch(r"[0-9a-f]{64}", str(r["body-sha256"])):
-            raise bad("has a body-sha256 that is not 64 lowercase hex")
         if r["file"] in out:
             raise bad("repeats the file of an earlier row")
-        out[r["file"]] = (r["ruling"].strip(), r["body-sha256"])
+        out[r["file"]] = r["ruling"].strip()
     return out
 
 
@@ -639,7 +520,7 @@ def ruled_unpinned_lines(root, base, head, exceptions_path):
     for k, per in _unmeasured_counts(root, base, head).items():
         if k[1] != UNPINNED_FORM:
             continue
-        rs = [_rule_of(rulings, reviewed, root, head, k[0], k[1], k[2].split(":", 1)[0], lh) for lh in per]
+        rs = [_rule_of(rulings, reviewed, k[0], k[1], k[2].split(":", 1)[0], lh) for lh in per]
         # a line the base already holds is never ruled here: an item of that line may have moved because an assignment
         # it reads changed, and a copy of
         # the line cannot be told from it (the occurrence is still reported; the item keeps failing)

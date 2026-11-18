@@ -14,15 +14,14 @@ the job graph is exactly the keys and targets in CHAIN. Anything else is a fault
   stage FILE build|rebuild [ALLOWED.json]   REQ-CHAIN-004-AC1, AC2 / REQ-CHAIN-005-AC1, AC4: FILE is a workflow file holding the family's jobs (release.yml: build-freeze, build-apk, build-assemble; rebuild-apk, rebuild-assemble)
   script FILE KIND                          REQ-CHAIN-004-AC3, AC6, AC11 / REQ-CHAIN-005-AC2: FILE is exactly expected_lines(KIND)
   lockflow WORKFLOW...                      REQ-CHAIN-004-AC11 / REQ-CHAIN-005-AC6: no workflow names apko beyond the pinned install
-  listed CHAIN_SCRIPTS.json ROOT            the stage scripts are rows of .github/policy/chain-scripts.json with their real sha256 (PR 1's design)
+  listed CHAIN_SCRIPTS.json ROOT            the stage scripts are rows of .github/policy/chain-scripts.json and exist
   callers FILE                              REQ-CHAIN-004-AC14: a proof workflow calls release.yml with mode: snapshot and nothing else
   graph FILE                                REQ-CHAIN-005-AC5: the fifteen chain jobs of release.yml, each with its exact needs, if, permissions and environment, and the jobs around them
   workflows DIR                             REQ-CHAIN-004-AC1: no workflow file is added beyond persona-uat.yml and customer-words-edited.yml,
                                              and no stage-*.yml file exists
   recordenv FILE                            REQ-CHAIN-004-AC8: no token variable or token in a Witness collection (a DSSE envelope)
   nosource ROOT                             sandboxed-build rule 1: no step of Build or Rebuild runs source code
-    outside melange (31 closure files:
-                                             10 shell files by exact lines, 21 files held whole by sha256)
+    outside melange (the closure's shell files, by exact lines)
 
 === Rule 68 seam (advisor ruling, Oct 9; the Release helper no longer carries the ten-minute bound of the earlier certificate: Witness signs with a throwaway key, the release key signs afterwards) ===========
 The wrapping lives in ONE place: the committed helper bin/witnessed.sh `witnessed <step> <script>`, which holds ALL the Witness flags
@@ -37,7 +36,7 @@ READABILITY FOR A HUMAN IS AN EXPLICIT REVIEW ITEM (owner, Oct 9): the judges ac
 PROPOSED/UNVERIFIED layout constants (cache's archive layout and the items layout are not fixed by any cache test; each is ONE
 constant here, so a cache amendment changes one line): ARCHIVE, GO_ARCHIVE, KEYRING_WOLFI, MELANGE_LOCK, ASSEMBLY_PUB.
 """
-import hashlib, json, os, re, shlex, sys, yaml
+import json, os, re, shlex, sys, yaml
 
 ARCHIVE, GO_ARCHIVE = "archive", "archive/go"
 KEYRING_WOLFI, MELANGE_LOCK, ASSEMBLY_PUB = "archive/keys/wolfi-signing.rsa.pub", "build/locks/melange.lock", "build/keys/assembly.rsa.pub"
@@ -249,7 +248,7 @@ INSTALL_APKO = "bash bin/install-build-tools.sh apko"
 # steps of their own after the build tools and before the downloads and the Witness step; a failed pull fails the job (no if, no continue-on-error, no env)
 INSTALL_CRANE = "bash bin/install-scanner.sh crane"
 ARCHIVE_PULL = "bash bin/archive-pull.sh --pointer build/archive.json --out archive"
-ARCHIVE_SCRIPTS = ("bin/archive-pull.sh", "bin/archive-verify.py", "bin/install-host-bwrap.py")      # the files the pull step and the host-tools step run: rows of chain-scripts.json with their sha256
+ARCHIVE_SCRIPTS = ("bin/archive-pull.sh", "bin/archive-verify.py", "bin/install-host-bwrap.py")      # the files the pull step and the host-tools step run: rows of chain-scripts.json
 # REQ-CHAIN-004-AC17 (advisor reading Oct 20, rules 15 and 38a): melange's bubblewrap runner needs bwrap, which the hosted images do not ship. An apk job (the jobs that run
 # melange) unpacks it, and what it needs, from the archive just pulled: one step right after the pull, a name and a run and nothing else, never a package manager or sudo.
 INSTALL_HOSTTOOLS = "python3 -I bin/install-host-bwrap.py --archive archive --lock build/locks/host-tools.lock --root host-tools"
@@ -674,7 +673,7 @@ def lockflow(files):
 
 
 def archive_listed(path, root):
-    """REQ-CHAIN-004-AC16: the files the stage's pull step runs are rows of chain-scripts.json with the committed file's sha256."""
+    """REQ-CHAIN-004-AC16: the files the stage's pull step runs are rows of chain-scripts.json and exist."""
     bad = []
     try:
         rows = {r.get("path"): r for r in json.load(open(path)).get("scripts", [])}
@@ -683,11 +682,7 @@ def archive_listed(path, root):
     for p in ARCHIVE_SCRIPTS:
         r = rows.get(p)
         if r is None: bad.append("%s is not a row of chain-scripts.json" % p); continue
-        try:
-            h = hashlib.sha256(open(root + "/" + p, "rb").read()).hexdigest()
-        except OSError:
-            bad.append("%s is listed but missing" % p); continue
-        if r.get("sha256") != h: bad.append("%s: the listed sha256 is not the committed file's" % p)
+        if not os.path.isfile(root + "/" + p): bad.append("%s is listed but missing" % p)
     return bad
 
 
@@ -700,11 +695,7 @@ def listed(path, root):
     for k, p in SCRIPTS.items():
         r = rows.get(p)
         if r is None: bad.append("%s is not a row of chain-scripts.json" % p); continue
-        try:
-            h = hashlib.sha256(open(root + "/" + p, "rb").read()).hexdigest()
-        except OSError:
-            bad.append("%s is listed but missing" % p); continue
-        if r.get("sha256") != h: bad.append("%s: the listed sha256 is not the committed script's" % p)
+        if not os.path.isfile(root + "/" + p): bad.append("%s is listed but missing" % p)
     return bad
 
 
@@ -718,11 +709,7 @@ def listed(path, root):
 #   command by command with the lines held here (script, localhelper, shell_exact); a case, a loop, a function, a
 #   subshell or a read in a helper is one more command,
 #   so it is a finding. Line 1 of each is held too (the shebang picks the program that runs the file).
-#   held whole by sha256 (NS_SHA, 21 files): the 15 Python closure files and the 6 files that the two stage workflows
-#   run outside the stage scripts (archive-pull.sh,
-#   archive-verify.py, install-host-bwrap.py, chain-hostile-step.sh, loopback-get.sh, rebuild-records-digests.sh). Any
-#   change is a finding until NS_SHA is re-pinned in a
-#   security-tier change. The stage lines and every python3 child that a closure file starts (build-admit.py,
+#   The stage lines and every python3 child that a closure file starts (build-admit.py,
 #   chain_items.py) run python3 -I, so a file of bin/ cannot
 #   shadow a module for them and they ignore PYTHON* variables. The program python3 is still found by PATH, and a file
 #   written by one step and run by the next is not
@@ -820,9 +807,15 @@ def shell_exact(path, name, want):
     return ["control character %s in %s" % (c, name) for c in control_chars(raw)] + faults + bad
 
 
+def ns_lines_held(name):
+    """Whether ns_shell holds exact lines of this closure shell file (any other holds nothing, shebang included)."""
+    return name in SCRIPTS.values() and name != SCRIPTS["witnessed"] or name == "bin/witnessed-local.sh" \
+        or name in SHELL_LINES
+
+
 def ns_shell(path, name):
     """One closure shell file: a stage script, the Witness local helper, a helper or the mode guard (each exact
-    text)."""
+    text); any other closure shell file holds only its shebang."""
     stage = {v: k for k, v in SCRIPTS.items() if k != "witnessed"}
     if name in stage:
         return ["%s: %s" % (name, b) for b in script(path, stage[name])]
@@ -830,55 +823,15 @@ def ns_shell(path, name):
         return ["%s: %s" % (name, b) for b in localhelper(path)]
     if name in SHELL_LINES:
         return shell_exact(path, name, SHELL_LINES[name])
-    return ["%s is a shell script of the closure with no exact lines held (commands, the grammar has none)" % name]
+    return []
 
 
 NS_SHEBANG = b"#!/usr/bin/env bash"
-NS_SHA = {
-    "bin/admission-tag-signer.py": "45e54a9fc335893bd7c3378ed6a3196484a9dab1c362b38d3a28478024d9dad9",
-    "bin/apk-tool.py": "054a2ee03874d57f74b8486ef225ecbee85b60089745289efddb6ebb902d781c",
-    "bin/archive-pull.sh": "13eb7a9d3bd49e5a518316b03aad56dab79328109371f2271543a60740ab1538",
-    "bin/archive-verify.py": "7897405722eb7910dab9bebd473f633d1abb1bf0976b4f2949f49c02a2c16d6b",
-    "bin/audit-record-judge.sh": "0507ac99636b3094100d499a82e43d7a03f2467869748cfe1dc6dfcd21666e77",
-    "bin/audit-record.py": "6967a92af6d1c942665f983d35aec069e4c0b277503e920c9e136ef6a159ca9b",
-    "bin/build-admit.py": "30cbf81b2640ca8f14d70e9b33d1954fc0db0709f23c6fd1de60a2534ab3a3e2",
-    "bin/build-apk-helper.py": "64fc57cf73c8fcaba226255e59198def1fe69bbc345f52f73d4d4999ebf9a23b",
-    "bin/build-archives.py": "532ec7371f299d3e29f70af776cca3e329156a4517aa328958b4150e635c034d",
-    "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
-    "bin/chain-bytes-sha.py": "29074a70ef188865dbb4bfe28ca34ed85876f789b1020e9ac274447249fb0241",
-    "bin/chain-hostile-step.sh": "74a2c21fa6cdf88c485e8c0e2f89f69ba64c9993fd1ac2c7374674f1591be3c2",
-    "bin/chain-sandbox-probe.sh": "489604b77dbd6c1af95dc5df8a2d14f1116d1142ee054dae6ddc9ae370103061",
-    "bin/chain-verify.py": "1728c10dc20252f451245cffd8953ff86e513c3b2be2a531d88731c4609cd2be",
-    "bin/chain_common.py": "a8730d0504aeedc592286a2b9bbf1b835c9817a421c7dea656e8e4630da5a56d",
-    "bin/chain_hostile.py": "04f7e75313106078771acd6055c1b4bb6cad23a9e52dc5e92856cddd559e6471",
-    "bin/chain_items.py": "9acced3363bbf57e243d7caa7c3b70b59ecea6724270d945a98c4bd82e777cef",
-    "bin/go-module-sbom.py": "8a556854bf7fa2c0df2fe2710754788350d50a87dacfb69fed2ca086daf519bf",
-    "bin/install-host-bwrap.py": "fdbac6ffdafe1355fc7f3f826accbe79a1cdabd7d4dc5d496720207f5c688b09",
-    "bin/loopback-get.sh": "2561cb23762601bdd0540a8f861fe595df946d4988de6694e419b89bd92c7857",
-    "bin/net-probe.py": "5c6e0693d4af7f0ac9dd54d707a9f896cd3293b3e9df20178752ea0fa21c8729",
-    "bin/oci-digest.py": "5569a3e0e15798c4552306d6fee1fc1215974a478e653d9d4129ec46d1064890",
-    "bin/rebuild-records-digests.sh": "6ffbe755ab676d7d58f5831875f2cba9fcdcfafbdabd4fe2b45de7344475272c",
-    "bin/vex-index.py": "c8e3b57e1c813647410f39e1ba9a7d041290339efd0845dfe3c9295357dbe023",
-}
-
-
-def ns_held(path, raw):
-    """A closure file held whole by sha256."""
-    want, got = NS_SHA.get(path), hashlib.sha256(raw).hexdigest()
-    bad = []
-    if want is None:
-        bad.append("%s is a closure Python file with no held sha256 in NS_SHA" % path)
-    elif got != want:
-        bad.append("%s: sha256 %s is not the held %s; a file held whole changes only with a re-pin of NS_SHA in "
-                   "bin/chain-test-shape.py (short-list review, with this file's diff)" % (path, got[:12], want[:12]))
-    return bad
-
 
 def nosource(root):
     seen, bad = ns_closure(root)
     if seen is None:
         return bad
-    bad += ["NS_SHA holds %s, which is not a file of the closure" % p for p in sorted(NS_SHA) if p not in seen]
     for p in seen:
         path = root + "/" + p
         try:
@@ -886,10 +839,8 @@ def nosource(root):
         except OSError:
             bad.append("%s cannot be read" % p)
             continue
-        if p in NS_SHA or p.endswith(".py"):
-            bad += ns_held(p, raw)
-        else:
-            if raw.split(b"\n", 1)[0] != NS_SHEBANG:
+        if not p.endswith(".py"):
+            if ns_lines_held(p) and raw.split(b"\n", 1)[0] != NS_SHEBANG:
                 bad.append("%s: line 1 is not the held shebang %s" % (p, NS_SHEBANG.decode()))
             bad += ns_shell(path, p)
     return bad

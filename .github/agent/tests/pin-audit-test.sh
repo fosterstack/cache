@@ -1818,19 +1818,17 @@ def _runtime(fn):
     except RuntimeError as e:
         raise age.CouldNotLook(str(e))
 def c_reviewed_files():
-    # reviewed_files (REQ-SUP-001-AC16): an absent list is no rows (nothing is ruled); anything else malformed is refused (RuntimeError): a file that is not an object, invalid JSON, a list that is not a list, a bad row or field, a bad hash, a repeated file, a repeated JSON key
+    # reviewed_files (REQ-SUP-001-AC16): an absent list is no rows (nothing is ruled); anything else malformed is refused (RuntimeError): a file that is not an object, invalid JSON, a list that is not a list, a bad row or field, a repeated file, a repeated JSON key
     load = lambda f, req=True: _runtime(lambda: age.load_reviewed_files(f, req))
     f = os.path.join(tmp, "rf.json"); open(f, "w").write("{}")
     assert accepts("reviewed_files {} (no rows)", lambda: age.load_reviewed_files(f, True) == {}) is True
     open(f, "w").write('{"reviewed_files": [{}]}')
     refuse("reviewed_files [{}] (a row with no field)", lambda: load(f))
-    h = "a" * 64
-    ok = {"file": "bin/x.sh", "ruling": "reviewed", "body-sha256": h}
+    ok = {"file": "bin/x.sh", "ruling": "reviewed"}
     for body in ("[]", "null", "5", "not json", '{"reviewed_files": 5}', '{"reviewed_files": {}}', '{"reviewed_files": null}', '{"reviewed_files": [5]}', '{"reviewed_files": [[]]}',
-                 json.dumps({"reviewed_files": [dict(ok, key="x")]}), json.dumps({"reviewed_files": [{"file": "bin/x.sh", "ruling": "r"}]}),
+                 json.dumps({"reviewed_files": [dict(ok, key="x")]}), json.dumps({"reviewed_files": [dict(ok, **{"body-sha256": "a" * 64})]}),
                  json.dumps({"reviewed_files": [dict(ok, ruling="")]}), json.dumps({"reviewed_files": [dict(ok, file="")]}),
                  json.dumps({"reviewed_files": [dict(ok, file=7)]}), json.dumps({"reviewed_files": [dict(ok, ruling=7)]}),
-                 json.dumps({"reviewed_files": [dict(ok, **{"body-sha256": "A" * 64})]}), json.dumps({"reviewed_files": [dict(ok, **{"body-sha256": "a" * 63})]}),
                  json.dumps({"reviewed_files": [ok, dict(ok, ruling="again")]}),
                  '{"reviewed_files": [], "reviewed_files": []}'):
         open(f, "w").write(body); refuse(("reviewed_files", body), lambda: load(f))

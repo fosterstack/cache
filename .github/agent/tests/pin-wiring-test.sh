@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # proves: REQ-CI-001-AC1, REQ-CI-001-AC2, REQ-CI-001-AC3, REQ-CI-001-AC4 — the gate allowlist-chain is accepted only exactly (the gate cases)
-# proves: REQ-CI-005-AC2 — a counting step is accepted only in exactly its form, and the suites matrix only in its judged form (the count-step and suites cases)
+# proves: REQ-CI-005-AC2 — a suite counted by its own step is accepted only as exactly `bash PATH`, and the suites matrix only in its judged structure (the count-step and suites cases)
 # proves: REQ-REL-004-AC1 — the pull-request gate's govulncheck job judges the way Check does: it is accepted only in exactly its form (the govulncheck-gate cases)
-# proves: REQ-REL-014-AC1 — the jobs allowlist, suite-list and suites run on push to main only and the gate allowlist-chain only as `always() && github.event_name == 'push'` (plain or in an expression), accepted only exactly (the push-condition cases)
-# The workflow ci.yml runs the floored suites as counting steps (jobs allowlist, test, requirements) and as the legs of the suites matrix listed from
-# test-evidence/suite-floors.json; the required check allowlist-chain is the one gate over the suites job. The judge below takes the pinned actions, permissions and
-# env of every job of ci.yml, the exact step lists of the jobs allowlist, suite-list, suites and allowlist-chain, the required-check policy and the check names of
+# The workflow ci.yml runs a suite by a counting step (`bash PATH`) or by its own leg of the suites matrix, which the job suite-list computes from the tracked files;
+# the required check allowlist-chain is the one gate over the suites job. The judge below takes the pinned actions, permissions and
+# env of every job of ci.yml, the step lists' shape of the jobs allowlist, suite-list, suites and allowlist-chain (not the text of the list and leg steps: ci-suites-matrix-test.sh
+# judges those by running them), the required-check policy and the check names of
 # every other workflow. The real ci.yml must pass; each mutated copy must be caught.
 # Known limit (by design): later steps of the CI allowlist job can edit this test on disk;
 # the trusted gate (.github/workflows/agent-review-gate.yml) re-runs main's copy of it over the PR head.
@@ -14,7 +14,7 @@ here=$(cd "$(dirname "$0")/../../.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 
-judge() { PIN_WIRING_WORKFLOWS_DIR="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}" PIN_WIRING_FLOORS_FILE="${PIN_WIRING_FLOORS_FILE:-$here/test-evidence/suite-floors.json}" PIN_WIRING_POLICY_FILE="${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}" python3 - "$1" <<'PY'
+judge() { PIN_WIRING_WORKFLOWS_DIR="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}" PIN_WIRING_POLICY_FILE="${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}" python3 - "$1" <<'PY'
 import sys, os, yaml
 # cheap pre-parse, BEFORE any structure is built: a token scan is linear and expands nothing, so an
 # anchor/alias bomb cannot hang the judge; the pin checker refuses anchors and aliases too
@@ -45,42 +45,30 @@ if _dups:
     print("the workflow has duplicate YAML key(s): " + ", ".join(_dups[:5])); sys.exit(1)
 d = yaml.load(_text, Loader=yaml.BaseLoader)   # every scalar a string, as GitHub reads it
 bad = []
-# REQ-CI-005: a floored suite is run by a counting step, `python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json NAME PATH` (NAME the file name of
-# PATH, a suite the committed floors file names), which runs it once and holds it to its floor and to exit 0. Every such line (optionally after env assignments, and
-# with a trailing </dev/null) is read back to the plain `bash PATH` line it stands for, so every exact-run check below judges one text for both forms; a line that
-# is not exactly this form is left as written and is judged (and refused) as any other unknown run text. A counting step has no key but name and run (a skipped or
-# failure-tolerant step would drop the suite from the run), and a suite is counted by one step of the workflow at most.
+# REQ-CI-005: a suite counted by its own step is run by exactly `bash PATH` (PATH the suite's repo path). A counting step has no key but name and run (a skipped or
+# failure-tolerant step would drop the suite from the run), shares its run with no other line, and a suite is counted by one step of the workflow at most.
+# A line that names a suite path in any other form is refused.
 import json, re
-try:
-    _floored_ = set(json.load(open(os.environ["PIN_WIRING_FLOORS_FILE"])))
-except Exception:
-    _floored_ = set()
-_COUNT_ = re.compile(r"((?:CHAIN_TEST_REQUIRE_NETCUT=1 )?)python3 -I bin/suite-guard-run\.py run test-evidence/suite-floors\.json (\S+) (\S+)( </dev/null)?")
-# the two other lines that name the runner: a suites leg runs its suite by the matrix name, and the list step reads the counted names back from this file
-_RUNNER_LINES_ = ('python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json "$SUITE" "$path"',)
-def _unwrap_(line):
-    m = _COUNT_.fullmatch(line)
-    if not m or m.group(2) not in _floored_ or os.path.basename(m.group(3)) != m.group(2):
-        return line
-    return m.group(1) + "bash " + m.group(3) + (m.group(4) or "")
+_COUNT_ = re.compile(r"bash ((?:bin|\.github/agent/tests)/[^ /]+-test\.sh)")
+_SUITE_PATH_ = re.compile(r"(?:bin|\.github/agent/tests)/[^ /]+-test\.sh")
 _counted_ = []
 if isinstance(d, dict):
     for _jid_, _j_ in (d.get("jobs") or {}).items():
         for _st_ in (_j_.get("steps") or []) if isinstance(_j_, dict) else []:
             if isinstance(_st_, dict) and isinstance(_st_.get("run"), str):
                 _old_ = _st_["run"].split("\n")
-                _new_ = [_unwrap_(l) for l in _old_]
-                for _o_, _w_ in zip(_old_, _new_):
+                for _o_ in _old_:
+                    if _o_.lstrip().startswith("#"):
+                        continue
                     _m_ = _COUNT_.fullmatch(_o_)
-                    if _w_ != _o_:
-                        _counted_.append(_m_.group(2))
+                    if _m_:
+                        _counted_.append(_m_.group(1))
                         for _k_ in sorted(set(_st_) - {"name", "run"}):
                             bad.append(f"the counting step `{_o_}` has `{_k_}` (a counting step has no key but name and run)")
                         if len(_old_) != 1:
                             bad.append(f"the counting step `{_o_}` shares its run text with other lines")
-                    elif "suite-guard-run.py run" in _o_ and _o_.strip() not in _RUNNER_LINES_ and not _o_.lstrip().startswith("counted=$(grep -o 'suite-guard-run.py run test-evidence/suite-floors.json"):
-                        bad.append(f"the job {_jid_} has a line that runs the suite runner in a form that is not exactly a counting step: `{_o_.strip()}`")
-                _st_["run"] = "\n".join(_new_)
+                    elif _SUITE_PATH_.search(_o_):
+                        bad.append(f"the job {_jid_} has a line that runs a suite in a form that is not exactly a counting step: `{_o_.strip()}`")
 for _c_ in sorted({c for c in _counted_ if _counted_.count(c) > 1}):
     bad.append(f"the suite {_c_} is counted by more than one step (REQ-CI-005-AC1: a suite is run once)")
 for k in sorted(set(d) - {"name", "on", "permissions", "jobs", "concurrency"}):
@@ -152,13 +140,10 @@ for _jid, _j in (d.get("jobs") or {}).items():
         _u = _st_.get("uses") if isinstance(_st_, dict) else None
         if _u is not None and not (isinstance(_u, str) and re.fullmatch(r"(%s)@[0-9a-f]{40}" % "|".join(map(re.escape, _PINNED_ACTIONS)), _u)):
             bad.append(f"the {_jid} step {_i + 1} ({_st_.get('name') or _u}) uses an action that is not a pinned one of ci.yml")
-# the allowlist job: exactly name / runs-on / steps and the one `if` of a push-only check (REQ-REL-014-AC1): no `needs` (a skipped prerequisite skips the whole job),
-# `timeout-minutes`, `permissions`, `strategy`, `concurrency`, `container`, `services`, `env`, `defaults`, ...
-PUSH_IF = "github.event_name == 'push'"
-for k in sorted(set(job) - {"name", "runs-on", "steps", "if"}):
+# the allowlist job: exactly name / runs-on / steps: no `needs` (a skipped prerequisite skips the whole job), `if`, `timeout-minutes`, `permissions`, `strategy`,
+# `concurrency`, `container`, `services`, `env`, `defaults`, ...
+for k in sorted(set(job) - {"name", "runs-on", "steps"}):
     bad.append(f"the allowlist job has `{k}`")
-if job.get("if") != PUSH_IF:
-    bad.append(f"the allowlist job's `if` is not exactly `{PUSH_IF}` (it runs on push to main only)")
 if job.get("runs-on") != "ubuntu-latest":
     bad.append("the allowlist job does not run on exactly `ubuntu-latest` (GitHub-hosted)")
 if job.get("name") != "allowlist":
@@ -208,7 +193,7 @@ else:
         bad.append("the allowlist fetch step is not exactly name, env {BASE: ${{ github.base_ref }}} and run")
 # the exact step lists (name, uses, with, env, if and run text with its comment lines dropped, in order) of the jobs that gate the required check: a suite cannot be deleted,
 # edited, wrapped (|| true), reordered or given an environment (BASH_ENV, SHELLOPTS ...) without this judge, which a PR cannot change for itself (the gate runs
-# main's copy), being changed first. Adding a step to one of these jobs means adding it here. A step that is a counting step is listed as the `bash PATH` line it stands for.
+# main's copy), being changed first. Adding a step to one of these jobs means adding it here. The run text of the suite-list `list` step and of the suites leg is not judged here (ci-suites-matrix-test.sh runs it).
 def _by_shape(st):
     """A step with `uses: name@<full 40-hex commit>` stands for every digest of
     that action: the digest VALUE is judged by check-action-pins --verify-tags and the daily audit (a Dependabot bump moves it), not by these lists. The
@@ -221,6 +206,8 @@ def _by_shape(st):
             st = dict(st, uses=(name, "@40-hex"))
     if "run" in st:
         st = dict(st, run=norm(st["run"]))
+    if st.get("id") == "list" or "SUITE" in (st.get("env") or {}):   # the list step and the leg: run text (and the leg's name) are judged by ci-suites-matrix-test.sh
+        st = dict(st, run="<judged elsewhere>", **({"name": "<judged elsewhere>"} if "SUITE" in (st.get("env") or {}) else {}))
     return st
 JUDGED = json.loads(r'''{
  "steps": {
@@ -257,15 +244,6 @@ JUDGED = json.loads(r'''{
    {
     "name": "suite guard (no tracked test file is empty)",
     "run": "bash bin/suite-guard.sh files"
-   },
-   {
-    "name": "suite floors only rise (against the merge base on a pull request)",
-    "if": "${{ github.base_ref != '' }}",
-    "env": {
-     "BASE": "${{ github.base_ref }}",
-     "PR_BODY": "${{ github.event.pull_request.body }}"
-    },
-    "run": "bash bin/suite-guard.sh floors-vs-base --allow-from-body \"$(git merge-base HEAD \"origin/${BASE}\")\" \\\n  test-evidence/suite-floors.json"
    },
    {
     "name": "set up Python",
@@ -347,7 +325,7 @@ JUDGED = json.loads(r'''{
    },
    {
     "id": "list",
-    "run": "counted=$(grep -o 'suite-guard-run.py run test-evidence/suite-floors.json [^ ]*' .github/workflows/ci.yml | cut -d' ' -f4)\necho \"suites=$(jq -c --arg counted \"$counted\" '[keys[] | select(. as $k | $counted | split(\"\\n\") | index($k) | not)]' test-evidence/suite-floors.json)\" >> \"$GITHUB_OUTPUT\""
+    "run": "<judged elsewhere>"
    }
   ],
   "suites": [
@@ -378,11 +356,11 @@ JUDGED = json.loads(r'''{
     "run": "./bin/install-scanner.sh grype"
    },
    {
-    "name": "the suite, held to its floor",
+    "name": "<judged elsewhere>",
     "env": {
      "SUITE": "${{ matrix.suite }}"
     },
-    "run": "path=$(git ls-files -- \"bin/$SUITE\" \".github/agent/tests/$SUITE\")\npython3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json \"$SUITE\" \"$path\""
+    "run": "<judged elsewhere>"
    }
   ],
   "allowlist-chain": [
@@ -398,13 +376,11 @@ JUDGED = json.loads(r'''{
  "shape": {
   "allowlist": {
    "name": "allowlist",
-   "runs-on": "ubuntu-latest",
-   "if": "github.event_name == 'push'"
+   "runs-on": "ubuntu-latest"
   },
   "suite-list": {
    "name": "suite-list",
    "runs-on": "ubuntu-latest",
-   "if": "github.event_name == 'push'",
    "outputs": {
     "suites": "${{ steps.list.outputs.suites }}"
    }
@@ -413,7 +389,6 @@ JUDGED = json.loads(r'''{
    "name": "suites (${{ matrix.suite }})",
    "needs": "suite-list",
    "runs-on": "ubuntu-latest",
-   "if": "github.event_name == 'push'",
    "strategy": {
     "fail-fast": "false",
     "matrix": {
@@ -427,7 +402,7 @@ JUDGED = json.loads(r'''{
    "needs": [
     "suites"
    ],
-   "if": "always() && github.event_name == 'push'"
+   "if": "${{ always() }}"
   }
  }
 }''')
@@ -437,15 +412,12 @@ for jid, want_steps in JUDGED_STEPS.items():
     if not isinstance(sj, dict):
         bad.append(f"the job {jid} is missing")
         continue
-    got_shape = {k: v for k, v in sj.items() if k != "steps"}
-    if jid == "allowlist-chain" and got_shape.get("if") == "${{ always() && github.event_name == 'push' }}":
-        got_shape["if"] = "always() && github.event_name == 'push'"      # the same condition, in its expression form
-    if got_shape != JUDGED_SHAPE[jid]:
+    if {k: v for k, v in sj.items() if k != "steps"} != JUDGED_SHAPE[jid]:
         bad.append(f"the {jid} job is not exactly {JUDGED_SHAPE[jid]} apart from its steps (REQ-CI-001, REQ-CI-005: name, runs-on, needs, if, strategy and outputs as judged)")
     got = sj.get("steps", [])
     if [_by_shape(st) for st in got] != [_by_shape(st) for st in want_steps]:
-        have = [st.get("name") or st.get("uses") for st in got]
-        want_n = [st.get("name") or st.get("uses") for st in want_steps]
+        have = [_by_shape(st).get("name") or st.get("uses") for st in got]
+        want_n = [_by_shape(st).get("name") or st.get("uses") for st in want_steps]
         why = [f"missing {n}" for n in want_n if n not in have] + [f"unexpected {n}" for n in have if n not in want_n]
         if not why:      # the same names: say which step differs and in which keys
             for _i, (_g, _w) in enumerate(zip(got, want_steps)):
@@ -578,9 +550,8 @@ if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
   for wf in $(git ls-tree --name-only "${PIN_WIRING_JUDGE_GIT}" .github/workflows/ | sed 's|.*/||'); do   # every workflow of the commit, as git objects
     git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/$wf" > "$work/head-wf/$wf" || { echo "pin-wiring: cannot read workflow $wf" >&2; exit 1; }
   done
-  git show "${PIN_WIRING_JUDGE_GIT}:test-evidence/suite-floors.json" > "$work/head-floors.json" 2> /dev/null || echo '{}' > "$work/head-floors.json"     # REQ-CI-005: the floors file of the judged commit, as the policy file is
   git show "${PIN_WIRING_JUDGE_GIT}:tools/govulncheck/go.mod" > "$work/head-gomod" || { echo "pin-wiring: no tools/govulncheck/go.mod at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
-  PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" PIN_WIRING_POLICY_FILE="$work/head-policy.json" PIN_WIRING_FLOORS_FILE="$work/head-floors.json" judge "$work/head-ci.yml" || exit 1
+  PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" PIN_WIRING_POLICY_FILE="$work/head-policy.json" judge "$work/head-ci.yml" || exit 1
   gvgate_judge "$work/head-ci.yml" "$work/head-gomod" || { echo "pin-wiring: the govulncheck job of the head's ci.yml is not the Check-equivalent form (REQ-REL-004-AC1)" >&2; exit 1; }
   exit 0
 fi
@@ -619,34 +590,28 @@ PY
 }
 
 steps='d["jobs"]["allowlist"]["steps"]'
-CF="python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json"
-# a counting step of ci.yml, by the suite it counts (its run line is the counting form; the plain `bash PATH` line is the form it is read back to)
-cnt() { echo "[s for j in d['jobs'].values() for s in (j.get('steps') or []) if (s.get('run') or '').strip().startswith('$CF $1 ')][0]"; }
+# a counting step of ci.yml, by the file name of the suite it runs (its run is `bash PATH`)
+cnt() { echo "[s for j in d['jobs'].values() for s in (j.get('steps') or []) if (s.get('run') or '').strip().startswith('bash ') and (s.get('run') or '').strip().endswith('/$1')][0]"; }
 pick=$(cnt check-action-pins-test.sh)
 CW=$(cnt check-file-allowlist-test.sh)
 case_ the-real-hygiene      ok  ""
-# REQ-CI-005: a floored suite's step calls the counting runner; exactly that form is read back to the plain line the judged list holds, anything else is judged as unknown text
-case_ count-step-wrapped-ok         ok  "w = $CW; w['run'] = '$CF check-file-allowlist-test.sh bin/check-file-allowlist-test.sh'"
-case_ count-step-devnull-added      bad "w = $CW; w['run'] = '$CF check-file-allowlist-test.sh bin/check-file-allowlist-test.sh </dev/null'"
-case_ count-step-name-not-path      bad "w = $CW; w['run'] = '$CF check-customer-words-test.sh bin/check-file-allowlist-test.sh'"
-case_ count-step-other-path         bad "w = $CW; w['run'] = '$CF check-customer-words-test.sh bin/check-customer-words-test.sh'"
-case_ count-step-unfloored-name     bad "w = $CW; w['run'] = '$CF zz-not-floored-test.sh bin/zz-not-floored-test.sh'"
-case_ count-step-other-floors       bad "w = $CW; w['run'] = 'python3 -I bin/suite-guard-run.py run /tmp/floors.json check-file-allowlist-test.sh bin/check-file-allowlist-test.sh'"
-case_ count-step-count-only         bad "w = $CW; w['run'] = 'python3 -I bin/suite-guard-run.py run --count-only test-evidence/suite-floors.json check-file-allowlist-test.sh bin/check-file-allowlist-test.sh'"
-case_ count-step-or-true            bad "w = $CW; w['run'] = '$CF check-file-allowlist-test.sh bin/check-file-allowlist-test.sh || true'"
-case_ count-step-no-isolation       bad "w = $CW; w['run'] = 'python3 bin/suite-guard-run.py run test-evidence/suite-floors.json check-file-allowlist-test.sh bin/check-file-allowlist-test.sh'"
-case_ count-step-twice              bad "w = $CW; w['run'] = '$CF check-file-allowlist-test.sh bin/check-file-allowlist-test.sh\n$CF check-file-allowlist-test.sh bin/check-file-allowlist-test.sh'"
+# REQ-CI-005: a counting step is exactly `bash PATH`; any other form of the line is refused
+case_ count-step-plain-ok           ok  "w = $CW; w['run'] = 'bash bin/check-file-allowlist-test.sh'"
+case_ count-step-devnull-added      bad "w = $CW; w['run'] = 'bash bin/check-file-allowlist-test.sh </dev/null'"
+case_ count-step-other-path         bad "w = $CW; w['run'] = 'bash bin/check-customer-words-test.sh'"
+case_ count-step-or-true            bad "w = $CW; w['run'] = 'bash bin/check-file-allowlist-test.sh || true'"
+case_ count-step-wrapper            bad "w = $CW; w['run'] = 'timeout 60 bash bin/check-file-allowlist-test.sh'"
+case_ count-step-twice              bad "w = $CW; w['run'] = 'bash bin/check-file-allowlist-test.sh\nbash bin/check-file-allowlist-test.sh'"
 case_ count-step-if-false           bad "w = $CW; w['if'] = 'false'"
-case_ count-step-env-injected       bad "w = $CW; w['run'] = 'BASH_ENV=/tmp/x $CF check-file-allowlist-test.sh bin/check-file-allowlist-test.sh'"
+case_ count-step-continue           bad "w = $CW; w['continue-on-error'] = 'true'"
+case_ count-step-env-injected       bad "w = $CW; w['run'] = 'BASH_ENV=/tmp/x bash bin/check-file-allowlist-test.sh'"
 case_ count-step-copied-to-test-job bad "d['jobs']['test']['steps'].append(dict($CW))"
-case_ count-step-two-suites-one-step bad "w = $CW; w['run'] = w['run'] + '\n$CF check-customer-words-test.sh bin/check-customer-words-test.sh'"
+case_ count-step-two-suites-one-step bad "w = $CW; w['run'] = w['run'] + '\nbash bin/check-customer-words-test.sh'"
 case_ step-removed          bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() != $pick['run']]"
 case_ step-if-false         bad "$pick['if'] = 'false'"
 case_ step-continue         bad "$pick['continue-on-error'] = 'true'"
 case_ step-weakened         bad "$pick['run'] = $pick['run'] + ' || true'"
 case_ job-if-false          bad "d['jobs']['allowlist']['if'] = 'false'"
-case_ job-if-gone           bad "d['jobs']['allowlist'].pop('if', None)"
-case_ job-if-always         bad "d['jobs']['allowlist']['if'] = 'always()'"
 case_ no-pull-request       bad "d['on'].pop('pull_request')"
 case_ push-not-main         bad "d['on']['push']['branches'] = ['release']"
 case_ pr-paths-filter       bad "d['on']['pull_request'] = {'paths': ['README.md']}"
@@ -668,9 +633,9 @@ case_ github-env-write      bad "$steps.insert(1, {'run': 'echo BASH_ENV=/tmp/x.
 case_ github-path-write     bad "$steps.insert(1, {'run': 'echo /tmp/fake >> \"\$GITHUB_PATH\"'})"
 case_ github-env-write-test-job bad "d['jobs']['test']['steps'].insert(1, {'run': 'echo BASH_ENV=/tmp/x.sh >> \"\$GITHUB_ENV\"'})"
 case_ checkout-other-ref    bad "$steps[0]['with'] = {'ref': 'main'}"
-case_ cases-step-env        bad "[s.__setitem__('env', {'PINS_DRY': '1'}) for s in $steps if (s.get('run') or '').strip().startswith('$CF check-action-pins-test.sh ')]"
-case_ cases-step-env-self   bad "[s.__setitem__('env', {'PINS_SELF': '/bin/true'}) for s in $steps if (s.get('run') or '').strip().startswith('$CF check-action-pins-test.sh ')]"
-case_ cases-step-removed    bad "$steps[:] = [s for s in $steps if not (s.get('run') or '').strip().startswith('$CF check-action-pins-test.sh ')]"
+case_ cases-step-env        bad "$pick['env'] = {'PINS_DRY': '1'}"
+case_ cases-step-env-self   bad "$pick['env'] = {'PINS_SELF': '/bin/true'}"
+case_ cases-step-removed    bad "$steps[:] = [s for s in $steps if s is not $pick]"
 
 # the counting steps of the allowlist job (REQ-CI-005): each is one step with exactly its name and its counting line and nothing else, so a pull request cannot remove, skip, rename, weaken, wrap or move it
 for sfx in check-file-allowlist check-customer-words branch-sweep govulncheck-fixtures check-action-pins pip-pin docs-snippets auditor-matrix auditor-labels; do
@@ -743,8 +708,8 @@ case_ ps4-ifs-prompt            bad "d['jobs']['allowlist']['env'] = {'IFS': 'x'
 case_ ld-preload-step           bad "$steps[4]['env'] = {'LD_PRELOAD': '/tmp/x.so'}"
 case_ ld-preload-other-job      bad "d['jobs']['govulncheck']['steps'][-1]['env'] = {'LD_PRELOAD': '/tmp/x.so'}"
 
-# the two suite-floor steps of the allowlist job (an `if` or an `env` on purpose, or the guard's own regressions): every key and value is judged
-for g in "floors-vs-base" "suite-guard.sh files"; do
+# the suite guard step of the allowlist job (an `if` or an `env` on purpose, or the guard's own regressions): every key and value is judged
+for g in "suite-guard.sh files"; do
   gs="[s for s in $steps if '$g' in (s.get('run') or '')][0]"; gn=${g// /-}
   case_ "guard-$gn-removed"  bad "$steps[:] = [s for s in $steps if '$g' not in (s.get('run') or '')]"
   case_ "guard-$gn-if"       bad "$gs['if'] = 'false'"
@@ -755,27 +720,18 @@ for g in "floors-vs-base" "suite-guard.sh files"; do
   case_ "guard-$gn-continue" bad "$gs['continue-on-error'] = 'true'"
   case_ "guard-$gn-moved"    bad "x = $gs; $steps.remove(x); d['jobs']['test']['steps'].append(x)"
 done
-FB="[s for s in $steps if 'floors-vs-base' in (s.get('run') or '')][0]"
-case_ floors-body-in-run       bad "$FB['run'] = 'bash bin/suite-guard.sh floors-vs-base --allow-from-body \"\${{ github.event.pull_request.body }}\" x y'"
-case_ floors-body-env-gone     bad "$FB['env'].pop('PR_BODY')"
-case_ floors-body-other-env    bad "$FB['env']['PR_BODY'] = '\${{ github.event.pull_request.title }}'"
-case_ floors-base-env-changed  bad "$FB['env']['BASE'] = 'main'"
-case_ floors-condition-dropped bad "$FB.pop('if')"
 
-# the suites matrix (REQ-CI-005-AC2): the list job reads the floors file and the counting steps; each suite is one leg through the suite runner; the legs fail the job
+# the suites matrix (REQ-CI-005-AC2): the structure of the list job and of the legs (the run text of the list step and of the leg is judged by ci-suites-matrix-test.sh)
 SL='d["jobs"]["suite-list"]'; SU='d["jobs"]["suites"]'
 LS="[s for s in $SL['steps'] if s.get('id') == 'list'][0]"
-LEG="[s for s in $SU['steps'] if s.get('name') == 'the suite, held to its floor'][0]"
+LEG="[s for s in $SU['steps'] if (s.get('env') or {}).get('SUITE')][0]"
 GR="[s for s in $SU['steps'] if 'install-scanner.sh grype' in (s.get('run') or '')][0]"
 case_ suites-job-missing          bad "d['jobs'].pop('suites')"
 case_ suite-list-missing          bad "d['jobs'].pop('suite-list')"
-case_ suite-list-run-or-true      bad "$LS['run'] = $LS['run'].rstrip() + ' || true'"
-case_ suite-list-other-file       bad "$LS['run'] = $LS['run'].replace('test-evidence/suite-floors.json', 'test-evidence/other.json')"
 case_ suite-list-id-changed       bad "$LS['id'] = 'other'"
 case_ suite-list-output-gone      bad "$SL.pop('outputs')"
 case_ suite-list-output-other     bad "$SL['outputs']['suites'] = '\${{ steps.other.outputs.suites }}'"
 case_ suite-list-if               bad "$SL['if'] = 'false'"
-case_ suite-list-if-gone          bad "$SL.pop('if', None)"
 case_ suite-list-env              bad "$SL['env'] = {'X': '1'}"
 case_ suite-list-step-if          bad "$LS['if'] = 'false'"
 case_ suite-list-checkout-creds   bad "$SL['steps'][0]['with'].pop('persist-credentials')"
@@ -790,7 +746,6 @@ case_ suites-fail-fast            bad "$SU['strategy']['fail-fast'] = 'true'"
 case_ suites-max-parallel         bad "$SU['strategy']['max-parallel'] = '1'"
 case_ suites-strategy-gone        bad "$SU.pop('strategy')"
 case_ suites-job-if               bad "$SU['if'] = 'false'"
-case_ suites-job-if-gone          bad "$SU.pop('if', None)"
 case_ suites-job-continue         bad "$SU['continue-on-error'] = 'true'"
 case_ suites-job-timeout          bad "$SU['timeout-minutes'] = '1'"
 case_ suites-job-permissions      bad "$SU['permissions'] = {'contents': 'write'}"
@@ -800,12 +755,9 @@ case_ suites-job-runs-on          bad "$SU['runs-on'] = 'self-hosted'"
 case_ suites-job-renamed          bad "$SU['name'] = 'suites'"
 case_ suites-leg-if               bad "$LEG['if'] = 'false'"
 case_ suites-leg-continue         bad "$LEG['continue-on-error'] = 'true'"
-case_ suites-leg-or-true          bad "$LEG['run'] = $LEG['run'].rstrip() + ' || true'"
-case_ suites-leg-plain-bash       bad "$LEG['run'] = 'bash \"\$(git ls-files -- \"bin/\$SUITE\" \".github/agent/tests/\$SUITE\")\"'"
 case_ suites-leg-suite-env-literal bad "$LEG['env']['SUITE'] = 'x'"
 case_ suites-leg-suite-env-gone   bad "$LEG.pop('env')"
 case_ suites-leg-shell            bad "$LEG['shell'] = \"bash -c 'true' {0}\""
-case_ suites-leg-other-floors     bad "$LEG['run'] = $LEG['run'].replace('test-evidence/suite-floors.json', '/tmp/floors.json')"
 case_ suites-leg-removed          bad "$SU['steps'][:] = [s for s in $SU['steps'] if s is not $LEG]"
 case_ suites-grype-always         bad "$GR['if'] = 'true'"
 case_ suites-grype-condition-narrowed bad "$GR['if'] = \"\${{ matrix.suite == 'vex-scope-test.sh' }}\""
@@ -825,12 +777,6 @@ case_ gate-needs-other      bad "$GT['needs'] = ['lint']"
 case_ gate-needs-str        bad "$GT['needs'] = 'suites'"
 case_ gate-needs-suite-list bad "$GT['needs'] = ['suite-list']"
 case_ gate-no-always        bad "$GT.pop('if')"
-case_ gate-if-always-only   bad "$GT['if'] = '\${{ always() }}'"
-case_ gate-if-push-only     bad "$GT['if'] = \"github.event_name == 'push'\""
-case_ gate-if-or-push       bad "$GT['if'] = \"always() || github.event_name == 'push'\""
-case_ gate-if-pull-request  bad "$GT['if'] = \"always() && github.event_name == 'pull_request'\""
-case_ gate-if-plain-form    ok  "$GT['if'] = \"always() && github.event_name == 'push'\""
-case_ gate-if-wrapped-form  ok  "$GT['if'] = \"\${{ always() && github.event_name == 'push' }}\""
 case_ gate-if-false         bad "$GT['if'] = 'false'"
 case_ gate-success          bad "$GT['if'] = '\${{ success() }}'"
 case_ gate-checkout         bad "$GT['steps'].insert(0, $SU['steps'][0])"
@@ -867,13 +813,6 @@ gitcase() {  # gitcase <name> <expect ok|bad> <python edit or empty>
   mkdir -p "$r/.github/policy"; cp "$here/.github/policy/required-checks.json" "$r/.github/policy/required-checks.json"
   cp "$here"/.github/workflows/*.y*ml "$r/.github/workflows/" 2>/dev/null || true; cp "$here/.github/workflows/ci.yml" "$r/.github/workflows/ci.yml"
   mkdir -p "$r/tools/govulncheck"; cp "$here/tools/govulncheck/go.mod" "$r/tools/govulncheck/go.mod"      # the pin the govulncheck-gate judge reads at the judged commit
-  mkdir -p "$r/test-evidence"; cp "$here/test-evidence/suite-floors.json" "$r/test-evidence/suite-floors.json"     # REQ-CI-005: the judge reads the floors file of the judged commit
-  if [ -n "${GIT_FLOORS_EDIT:-}" ]; then python3 - "$r/test-evidence/suite-floors.json" "$GIT_FLOORS_EDIT" <<'PY'
-import sys, json
-p, edit = sys.argv[1], sys.argv[2]
-d = json.load(open(p)); exec(edit); json.dump(d, open(p, "w"))
-PY
-  fi
   if [ -n "$3" ]; then python3 - "$r/.github/workflows/ci.yml" "$3" <<'PY'
 import sys, yaml
 p, edit = sys.argv[1], sys.argv[2]
@@ -888,8 +827,7 @@ PY
   else failn=$((failn+1)); echo "FAIL git:$1 → $got, want $2 ($out)"; fi
 }
 gitcase the-real-ci-at-a-commit   ok  ""
-gitcase counting-step-at-a-commit ok  "w = $CW; w['run'] = '$CF check-file-allowlist-test.sh bin/check-file-allowlist-test.sh'"
-GIT_FLOORS_EDIT="d.pop('check-no-outbound-test.sh')" gitcase counting-step-unfloored-at-that-commit bad ""     # the floors file of the judged commit decides, not the checkout's
+gitcase counting-step-wrapped-at-a-commit bad "w = $CW; w['run'] = 'bash bin/check-file-allowlist-test.sh || true'"
 # the policy at the commit is read too: a missing entry is refused (and so is a missing file, above)
 
 # the govulncheck-gate judge runs in judge mode too, over the head's own ci.yml (the trusted gate path)
@@ -938,20 +876,20 @@ case_ uses-third-party-in-requirements bad "d['jobs']['requirements']['steps'].i
 case_ uses-local-action-in-marker-gate bad "d['jobs']['marker-gate']['steps'].insert(2, {'uses': './.github/actions/x'})"
 case_ uses-reusable-workflow-job bad "d['jobs']['extra'] = {'uses': 'o/r/.github/workflows/w.yml@abababababababababababababababababababab'}"
 # each job's actions are judged on their own, so one job cannot borrow another's
-case_ allowlist-uses-bumped-digest-ok ok "d['jobs']['allowlist']['steps'][8]['uses'] = 'actions/setup-python@abababababababababababababababababababab'"
-case_msg allowlist-uses-setup-python-tag "d['jobs']['allowlist']['steps'][8]['uses'] = 'actions/setup-python@v7'" "the allowlist step 9 (set up Python) is not a judged action step"
-case_msg allowlist-uses-setup-python-39-hex "d['jobs']['allowlist']['steps'][8]['uses'] = 'actions/setup-python@0123456789abcdef0123456789abcdef0123456'" "the allowlist step 9 (set up Python) is not a judged action step"
-case_msg allowlist-uses-setup-python-upper-hex "d['jobs']['allowlist']['steps'][8]['uses'] = 'actions/setup-python@0123456789ABCDEF0123456789ABCDEF01234567'" "the allowlist step 9 (set up Python) is not a judged action step"
-case_msg allowlist-uses-setup-python-other-owner "d['jobs']['allowlist']['steps'][8]['uses'] = 'evil/setup-python@0123456789abcdef0123456789abcdef01234567'" "the allowlist step 9 (set up Python) is not a judged action step"
-case_msg allowlist-uses-setup-python-commit-placeholder "d['jobs']['allowlist']['steps'][8]['uses'] = 'actions/setup-python@<commit>'" "the allowlist step 9 (set up Python) is not a judged action step"
+case_ allowlist-uses-bumped-digest-ok ok "d['jobs']['allowlist']['steps'][7]['uses'] = 'actions/setup-python@abababababababababababababababababababab'"
+case_msg allowlist-uses-setup-python-tag "d['jobs']['allowlist']['steps'][7]['uses'] = 'actions/setup-python@v7'" "the allowlist step 8 (set up Python) is not a judged action step"
+case_msg allowlist-uses-setup-python-39-hex "d['jobs']['allowlist']['steps'][7]['uses'] = 'actions/setup-python@0123456789abcdef0123456789abcdef0123456'" "the allowlist step 8 (set up Python) is not a judged action step"
+case_msg allowlist-uses-setup-python-upper-hex "d['jobs']['allowlist']['steps'][7]['uses'] = 'actions/setup-python@0123456789ABCDEF0123456789ABCDEF01234567'" "the allowlist step 8 (set up Python) is not a judged action step"
+case_msg allowlist-uses-setup-python-other-owner "d['jobs']['allowlist']['steps'][7]['uses'] = 'evil/setup-python@0123456789abcdef0123456789abcdef01234567'" "the allowlist step 8 (set up Python) is not a judged action step"
+case_msg allowlist-uses-setup-python-commit-placeholder "d['jobs']['allowlist']['steps'][7]['uses'] = 'actions/setup-python@<commit>'" "the allowlist step 8 (set up Python) is not a judged action step"
 case_msg allowlist-uses-extra-action-step "d['jobs']['allowlist']['steps'].insert(3, {'name': 'x', 'uses': 'actions/cache@0123456789abcdef0123456789abcdef01234567'})" "the allowlist step 4 (x) is not a judged action step"
 case_msg allowlist-uses-checkout-tag "s = d['jobs']['allowlist']['steps'][0]; s.pop('name', None); s['uses'] = 'actions/checkout@v4'" "the allowlist step 1 (actions/checkout@v4) is not a judged action step"
 case_msg suites-uses-tag-names-job "d['jobs']['suites']['steps'][0]['uses'] = 'actions/checkout@v4'" "the suites step 1 (actions/checkout@v4) uses an action that is not a pinned one of ci.yml"
-RUNX="d['jobs']['suites']['steps'][-1]['run'] += ' || true'"
-case_msg run-changed-names-step "$RUNX" "the suites step 6 ("
+RUNX="d['jobs']['suites']['steps'][2]['run'] += ' || true'"
+case_msg run-changed-names-step "$RUNX" "the suites step 3 ("
 case_msg run-changed-names-key  "$RUNX" "differs in: run"
 case_msg counting-step-key-names-the-step "w = $CW; w['if'] = 'false'" "has \`if\` (a counting step has no key but name and run)"
-case_msg counted-twice-names-the-suite "d['jobs']['test']['steps'].append(dict($CW))" "the suite check-file-allowlist-test.sh is counted by more than one step"
+case_msg counted-twice-names-the-suite "d['jobs']['test']['steps'].append(dict($CW))" "the suite bin/check-file-allowlist-test.sh is counted by more than one step"
 case_ impersonate-by-name     bad "d['jobs']['replacement'] = {'name': 'allowlist-chain', 'runs-on': 'ubuntu-latest', 'needs': 'allowlist-chain', 'if': '\${{ always() }}', 'steps': [{'run': 'true'}]}"
 case_ job-name-expression     bad "d['jobs']['lint']['name'] = '\${{ matrix.x }}'"
 case_ job-name-expr-spaced    ok  "d['jobs']['lint']['name'] = 'lint (\${{ matrix.x }})'"
@@ -1020,7 +958,7 @@ PY
   if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS $1 → $got ($out)"
   else failn=$((failn+1)); echo "FAIL $1 → $got, want $2 ($out)"; fi
 }
-textcase duplicate-run-in-counting-step bad "a = 'run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json check-file-allowlist-test.sh bin/check-file-allowlist-test.sh'; assert a in t; t = t.replace(a, a + '\\n        run: true', 1)"
+textcase duplicate-run-in-counting-step bad "a = 'run: bash bin/check-file-allowlist-test.sh'; assert a in t; t = t.replace(a, a + '\\n        run: true', 1)"
 textcase duplicate-name-allowlist-job  bad "t = t.replace('  allowlist:\\n    name: allowlist', '  allowlist:\\n    name: allowlist\\n    name: allowlist', 1)"
 textcase duplicate-name-gate-job       bad "t = t.replace('  allowlist-chain:\\n    name: allowlist-chain', '  allowlist-chain:\\n    name: allowlist-chain\\n    name: allowlist-chain', 1)"
 textcase duplicate-top-level-key       bad "t = t.replace('\\njobs:\\n', '\\npermissions:\\n  contents: read\\njobs:\\n', 1)"

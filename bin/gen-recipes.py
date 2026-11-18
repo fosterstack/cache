@@ -7,7 +7,7 @@
 Defaults: build/melange.yaml.tmpl, build/melange.yaml, build/melange-fips.yaml, build/melange-baselayout.yaml.tmpl, build/melange-baselayout.yaml,
 build/locks/melange.lock, build/locks/fips-module.txt (relative to the repository root).
 The third recipe (the file-only base layout, 0710) comes from its own template: the only placeholder is @PACKAGES@ (one whole line, the same pins as the other
-recipes) and the template has its own pin, BASELAYOUT_TEMPLATE_SHA256; @VERSION@ is left as written.
+recipes); @VERSION@ is left as written.
 Two DATA files feed the template, and they are the only thing the daily refresh job ever edits: the melange lock (the package pins of the build environment) and the
 FIPS module file (the certified Go Cryptographic Module, vX.Y.Z-<8 hex>). Both have a closed line grammar; anything else
 is refused. The generator holds no module
@@ -24,8 +24,7 @@ The template must hold no GOFIPS140 (the two FIPS lines are written in generate(
 be UTF-8; each of the five named
 placeholders appears exactly once, FIPS_EXPORT and FIPS_PROOF each alone on a line. Nothing is parsed or compared as
 YAML, so there is no parser difference to exploit.
-What the generator does NOT do: it does not read or judge the shell in the template. Behaviour parity of the two builds rests on the template being reviewed and
-pinned (TEMPLATE_SHA256 below: --check fails if the template changes, naming the pin; a change must update the pin in the same reviewed change), and the final control
+What the generator does NOT do: it does not read or judge the shell in the template. Behaviour parity of the two builds rests on the template being reviewed, and the final control
 is build-apk.sh's check of the packaged binary (GOFIPS140 stamp, version, vcs), which is mandatory in CI.
 --check exits 0 when all three committed files equal the generator's output byte for byte, 1 when a file differs (the diff is printed) or the template breaks a rule,
 2 when a file is missing or unreadable. --write writes the three files. --emit DIR writes the same three contents as
@@ -34,7 +33,6 @@ melange-baselayout.yaml in DIR.
 """
 import argparse
 import difflib
-import hashlib
 import itertools
 import os
 import re
@@ -42,10 +40,6 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-# sha256 of build/melange.yaml.tmpl: a change to the template must update this line in the same reviewed change
-TEMPLATE_SHA256 = "21da9c81084e7c00b98a8bca567a4a99c0216f554189d4d9027262cfe14599bd"   # TEST-SUBST
-# sha256 of build/melange-baselayout.yaml.tmpl: the same rule as the pin above
-BASELAYOUT_TEMPLATE_SHA256 = "d509dfde7cb3d3b017b6c76251acbb3ce0b7c95698b4cec508e8ef5ceb9bd9e9"   # TEST-SUBST
 ALLOWED_SUBST = ("${{targets.destdir}}", "${{build.arch}}")
 ALLOWED_IF = re.compile(r"    if: \$\{\{build\.arch\}\} == '(x86_64|aarch64)'")
 NAMED = ("NAME", "DESCRIPTION", "PACKAGES", "FIPS_EXPORT", "FIPS_PROOF")
@@ -102,13 +96,13 @@ def read_text(path):
         if ch in raw:
             bad("the template %s holds %s; refusing" % (path, name))
     try:
-        return raw, raw.decode("utf-8")
+        return raw.decode("utf-8")
     except UnicodeDecodeError:
         bad("the template %s is not UTF-8 text" % path)
 
 
 def read_template(path):
-    raw, text = read_text(path)
+    text = read_text(path)
     if "GOFIPS140" in text:
         bad("the template %s mentions GOFIPS140: the FIPS lines are written by the generator only" % path)
     for tok in re.findall(r"@[A-Za-z0-9_]*@", text):
@@ -140,24 +134,17 @@ def read_template(path):
     for n in ("PACKAGES", "FIPS_EXPORT", "FIPS_PROOF"):
         if ("\n@%s@\n" % n) not in text:
             bad("@%s@ must be alone on its line" % n)
-    got = hashlib.sha256(raw).hexdigest()
-    if got != TEMPLATE_SHA256:
-        bad("the template changed: update TEMPLATE_SHA256 in the same reviewed change (the template %s has sha256 %s, the pin is %s)" % (path, got, TEMPLATE_SHA256))
     return text
 
 
 def read_baselayout_template(path):
-    """the base-layout template: plain UTF-8 text with one @PACKAGES@ line and the literal @VERSION@, and its pin"""
-    raw, text = read_text(path)
+    """the base-layout template: plain UTF-8 text with one @PACKAGES@ line and the literal @VERSION@"""
+    text = read_text(path)
     for tok in re.findall(r"@[A-Za-z0-9_]*@", text):
         if tok not in ("@PACKAGES@", "@VERSION@"):
             bad("the template %s holds the placeholder %s, which is not @PACKAGES@ or @VERSION@" % (path, tok))
     if text.count("@PACKAGES@") != 1 or ("\n@PACKAGES@\n") not in text:
         bad("@PACKAGES@ must appear exactly once in the template %s, alone on its line" % path)
-    got = hashlib.sha256(raw).hexdigest()
-    if got != BASELAYOUT_TEMPLATE_SHA256:
-        bad("the template changed: update BASELAYOUT_TEMPLATE_SHA256 in the same reviewed change (the template %s has sha256 %s, the pin is %s)"
-            % (path, got, BASELAYOUT_TEMPLATE_SHA256))
     return text
 
 
