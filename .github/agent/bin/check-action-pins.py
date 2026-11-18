@@ -658,7 +658,21 @@ ALIASING = re.compile(r"(?<![\w.-])(alias|expand_aliases)(?![\w.-])")
 PARAM_WORD = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*])(:?)([-=+?])([^{}]*)\}")
 
 
+_BRACE_FRAME = re.compile(r"\$\{[^}]*[<>]\(")
+
+
+def _blank_brace_comments(text):
+    """`"${x:-<(cmd # } "` newline `)}"`: bash's parser opens a frame at the <( even in a word it prints, so the # comments out the
+    rest of its line and the `}` after it belongs to the frame. A text with such a word, whole and closed, is read with every
+    comment blanked; one left open is a syntax error and stays as written."""
+    if not _BRACE_FRAME.search(text):
+        return text
+    kinds, _, open_quote = _scan_shell(text, frames=True)
+    return text if open_quote else "".join(" " if k == "k" else c for c, k in zip(text, kinds))
+
+
 def _expand_defaults(text):
+    text = _blank_brace_comments(text)
     while True:   # each pass removes at least one ${...}: it ends
         new = PARAM_WORD.sub(lambda m: m.group(4), text)
         if new == text:
@@ -669,6 +683,7 @@ def _expand_defaults(text):
 def _mark_defaults(text):
     """${x:-word} as `${x}word`: still named by a variable, for the variable-program rule — bash runs $x when it is set,
     and the default word is only one of the programs it can run (Codex #164 r3, N03)."""
+    text = _blank_brace_comments(text)
     while True:
         new = PARAM_WORD.sub(lambda m: "${%s}%s" % (m.group(1), m.group(4)), text)
         if new == text:
@@ -1932,7 +1947,7 @@ def _command_start(text, kinds, i):
         i = m.start()
 
 
-def _scan_shell(text):
+def _scan_shell(text, frames=False):
     """(kinds, nl_in_quote, open_quote): `kinds` has one letter per character of `text`: `c` code, `d` a quote mark, `q`
     quoted content, `e` a backslash and the character it escapes, `k` a comment, `w` a `#`, `(`, `)`, `<` or `>` of `${ }` word text (no comment, no group; an unquoted `<(` or `>(` is a frame).
     Quote state nests inside `$( )`, `${ }`, backticks and `<( )` / `>( )`, so a quote inside one never changes the quote
@@ -1993,8 +2008,8 @@ def _scan_shell(text):
         elif c in "'\"":
             kinds[i], q = "d", c
         elif stack and stack[-1][0] == "{" and c in "#()<>" and not (
-                c in "<>" and text[i + 1:i + 2] == "(" and not (
-                    _in_quoted_brace(stack) and _PLAIN_BRACE_WORD.search(text[max(0, i - 64):i]))):
+                c in "<>" and text[i + 1:i + 2] == "(" and (frames or not (
+                    _in_quoted_brace(stack) and _PLAIN_BRACE_WORD.search(text[max(0, i - 64):i])))):
             kinds[i], prev = "w", c     # inside ${ }: word text, no comment and no group (a <( or >( bash runs is a frame)
         elif c in "<>" and text[i + 1:i + 2] == "(":
             stack.append(("(", None))
