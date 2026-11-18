@@ -2268,8 +2268,8 @@ requirements:
     title: The long suites and the acceptance tests run before a release-candidate tag and nightly
     statement: >
       Every tracked test suite that no step of ci.yml runs, and both acceptance suites, never run on a pull request. They run
-      in full-suite.yml before a release-candidate tag and nightly on main (docs/ratify/2026-11-10-full-suite-at-promotion.md
-      rule 2). A failed nightly run opens a fix item and never blocks a merge (rule 3).
+      in full-suite.yml before a release-candidate tag and nightly on main. A failed nightly run opens a fix item and never
+      blocks a merge.
     source: [.github/workflows/full-suite.yml, .github/workflows/ci.yml, .github/workflows/acceptance.yml, .github/workflows/scan.yml, .github/workflows/codeql.yml, .github/policy/required-checks.json, bin/build-admit.py]
     tier: community
     introduced: v0.3.0
@@ -2277,7 +2277,7 @@ requirements:
     confidence: implementation-only
     notes: >
       The six checks of a pull request are REQ-REL-014's. Admission's side of the full suite, the table that binds each
-      promotion or release-only context to its producing file, is REQ-CHAIN-004-AC20.
+      promotion or release-only context to its producing file, is REQ-CHAIN-004-AC21.
     acceptance_criteria:
       - id: REQ-CI-007-AC1
         given: "every workflow file"
@@ -3877,6 +3877,12 @@ requirements:
         then: "a hard link is accepted only when its target is a regular file that the SAME package has already unpacked inside the new directory, the target passing the same inside-the-directory checks as a symlink target; its bytes are then copied into a separate regular file and no link is made, and a hard link to an absolute path, to a path that leaves the directory, to a path another package owns, to a link, a directory or a file not yet unpacked is refused with nothing written; a device, a fifo or any other kind of entry is still refused; a symlink whose target stays inside the directory may stand where another package places files below it (lib64 beside lib) only when no file path is owned by two packages, and a symlink that points outside, however the other links are chained, a directory entry over a link, or a link over a directory are refused with nothing written"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-CHAIN-004-AC20
+        given: "every release script and check that reads a release tag: the release-*, marker-pr-gate, admission-tag-signer, chain-release-shape and install-scanner scripts and the main-candidate-rescan workflow"
+        when: "each decides whether a tag is a release tag"
+        then: "it uses the one tag grammar of bin/build-admit.py (TAG_PATTERN: vX.Y.Z or vX.Y.Z-rcN, no leading zeros, an rc number of at least 1), a Python script by loading that pattern and a shell script or workflow step by calling `bin/build-admit.py tag-ok [--final] TAG` or reading `bin/build-admit.py tag-pattern`, never by a pattern of its own; a final-only step passes --final and refuses a release candidate; v01.2.3, v1.2.3-rc0 and v1.2.3-rc.1 are refused by every one of them; nothing that holds a secret loads bin/build-admit.py, directly or through a script it runs: release-sign.sh, release-publish.sh and release-assets.sh judge no tag, and neither do bin/chain-verify.py and its helper bin/chain_items.py (which release-sign.sh runs) or bin/release-gate.py (the coverage gate of the release assets, which release-assets.sh and release-stage.sh run), so they work with bin/build-admit.py absent; the tag is judged before them, in release-verify.sh and in Build's admission"
+        verification: { method: unit, release_blocking: true }
+        status: approved
       # Source: docs/ratify/2026-11-13-one-build-path-kvm-postponed.md:7 and /srv/handoffs/briefs/kvm-postponed-one-build-path.md F3.
       - id: REQ-CHAIN-004-AC19
         given: "the Build jobs of release.yml"
@@ -3884,7 +3890,7 @@ requirements:
         then: "the hostile Build step runs in every build, on a release candidate, a final or patch tag, the pull-request proof build and the nightly build alike (the same jobs, the same steps and the same condition-free step order, never a step that only a release-candidate tag runs); it is a build step run inside the sandbox of the build, holding no token, and its outcome is judged by the verifier as in REQ-CHAIN-001-AC5"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
-      - id: REQ-CHAIN-004-AC20
+      - id: REQ-CHAIN-004-AC21
         given: "main's required-checks.json (a required_checks list and a promotion_checks list), main's release-only-checks.json (a required_checks list), and the table in bin/build-admit.py (BOUND_CONTEXTS) that binds each promotion or release-only context to its one producing workflow file: analyze (go) to codeql.yml, reproducibility and scan to scan.yml, and allowlist-chain and every context that starts with `acceptance / ` to full-suite.yml"
         when: "bin/build-admit.py runs its required-checks check for a tag"
         then: "it refuses at required-checks, naming the file, when required-checks.json has no non-empty required_checks list or no non-empty promotion_checks list, or release-only-checks.json has no non-empty required_checks list; it requires every context of required_checks and of release-only-checks.json on every tag, and the promotion_checks as well on a release candidate tag (-rcN) only; a context of the release-only list or of promotion_checks that the table does not bind is refused naming that it has no producing workflow file, and a context of required_checks is never bound; a bound context counts only from a check run of its name and pinned app whose workflow run, read from the runs API by the run id in the check run's details_url, has the path .github/workflows/<its file>, the event schedule or workflow_dispatch, and the tagged commit as its head_sha; every run of that name is read (filter=all), newest id first, a run that does not qualify (another file, another event, another commit, a details_url that names no run) is skipped, and the newest qualifying run alone decides: success passes, a null conclusion refuses saying the run is pending, any other conclusion refuses saying the check is not green; no qualifying run refuses saying a schedule or dispatch run of that file is missing; a run that cannot be read (the API call fails or its answer is not a path, an event and a head_sha) refuses with its own message naming the run id and the context, never a skipped run; a push run of the same name that is green never satisfies a bound context; an unbound context keeps the one-green-run rule of AC4"
@@ -4465,9 +4471,9 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-CHAIN-007-AC14
-        given: "a tag that matches exactly ^v[0-9]+\\.[0-9]+\\.[0-9]+-rc[0-9]+$ (case-sensitive, anchored; leading zeros accepted as for vX.Y.Z)"
+        given: "a tag that matches exactly ^v[0-9]+\\.[0-9]+\\.[0-9]+-rc[0-9]+$ (case-sensitive, anchored; the one tag grammar of REQ-CHAIN-004-AC20, so no leading zeros and an rc number of at least 1)"
         when: "release.yml runs on it"
-        then: "Build, Sign, Rebuild, Check, the hostile jobs and Release's release-verify run exactly as for a final tag, and then the release job ends: every step of the release job after release-verify carries `if: ${{ !contains(github.ref_name, '-') }}` and is skipped, so no step reads the apk signing key or a registry credential, nothing is pushed to any registry, no GitHub release is created, no floating tag moves and no patch automation runs; every script after release-verify also refuses a tag that is not vX.Y.Z; a tag that contains rc but does not match (-RC1, -rc, -rc1x, -rc.1, rc in the middle, a missing hyphen) is not a release candidate and release-verify's tag rule refuses it before any record is read; a record made for a release candidate is refused for the final tag with the same digests and the reverse (the policy and the identities carry the tag)"
+        then: "Build, Sign, Rebuild, Check, the hostile jobs and Release's release-verify run exactly as for a final tag, and then the release job ends: the release job of release.yml, which needs the verify job (release-verify), carries the condition `!contains(github.ref_name, '-')` in its `if` and is skipped, so no step reads the apk signing key or a registry credential, nothing is pushed to any registry, no GitHub release is created, no floating tag moves and no patch automation runs; release-verify, which holds no secret, judges the tag once (bin/build-admit.py tag-ok) and refuses a tag that is not vX.Y.Z or vX.Y.Z-rcN, and no later step runs without it: the steps that hold a credential (release-sign, release-publish, release-assets) judge no tag themselves and load nothing of bin/build-admit.py; a tag that contains rc but does not match (-RC1, -rc, -rc1x, -rc.1, rc in the middle, a missing hyphen) is not a release candidate and release-verify's tag rule refuses it before any record is read; a record made for a release candidate is refused for the final tag with the same digests and the reverse (the policy and the identities carry the tag)"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-007-AC15

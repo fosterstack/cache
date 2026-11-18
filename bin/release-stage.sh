@@ -5,7 +5,7 @@
 # of the two images, have the same file names, so each is staged under its architecture's or variant's name.
 set -euo pipefail
 shopt -s nullglob
-[[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "release-stage: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never reaches this step)" >&2; exit 1; }
+python3 -I -B bin/build-admit.py tag-ok --final "${GITHUB_REF_NAME:-}" || { echo "release-stage: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never reaches this step)" >&2; exit 1; }
 rel="$GITHUB_REF_NAME"
 # Everything is staged under its release name in release-upload/. The apks of the two architectures, and the SBOMs and lock files of the two images,
 # have the same file names, so each is staged under its architecture's or variant's name.
@@ -81,6 +81,6 @@ for c in "${runners[@]}"; do
     for f in "$n-collection.json" "$n-collection.rekor.json"; do stage "witness-check/$c/witness-$n/$f" "$c-$f"; done
   done
 done
-python3 -I -B bin/release-metadata.py gate --dir release-upload
+python3 -I -B bin/release-gate.py --dir release-upload
 rm -rf release-published
 cp -r release-upload release-published

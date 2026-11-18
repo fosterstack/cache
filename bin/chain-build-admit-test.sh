@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-004-AC4, REQ-CHAIN-004-AC5, REQ-CHAIN-004-AC7, REQ-CHAIN-001-AC6, REQ-REL-012-AC7, REQ-REL-009-AC6, REQ-REL-013-AC1, REQ-CHAIN-004-AC20
+# proves: REQ-CHAIN-004-AC4, REQ-CHAIN-004-AC5, REQ-CHAIN-004-AC7, REQ-CHAIN-001-AC6, REQ-REL-012-AC7, REQ-REL-009-AC6, REQ-REL-013-AC1, REQ-CHAIN-004-AC21
 #
 # Build's first action: bin/build-admit.py keeps every check the old stage-admission.yml made, none dropped.
 # Needs: bash, git >= 2.34, ssh-keygen, gpg, jq, openssl, python3 + PyYAML. Offline: the git repos, the
@@ -298,7 +298,7 @@ mkbase() { # base fixture in $W/base: origin.git + repo with main, a signed tagg
       '{"required_checks":[{"context":"ci","integration_id":15368,"scope":"push"},{"context":"review","integration_id":15368,"scope":"pull_request"}],"promotion_checks":[{"context":"scan","integration_id":15368,"scope":"push"},{"context":"analyze (go)","integration_id":15368,"scope":"push"}]}\n' \
       > .github/policy/required-checks.json
   printf '{"required_checks":[{"context":"allowlist-chain","integration_id":15368,"scope":"push"}]}\n' > .github/policy/release-only-checks.json
-  cp "$root/bin/admission-tag-signer.py" bin/; printf '#!/bin/sh\nexit 0\n' > bin/install-scanner.sh
+  cp "$root/bin/admission-tag-signer.py" "$root/bin/build-admit.py" bin/; printf '#!/bin/sh\nexit 0\n' > bin/install-scanner.sh
   # gate 7: main's judge, its helper and the writers policy (build-admit.py reads them from origin/main, never from the tagged commit)
   cp "$root/bin/audit-record.py" "$root/bin/audit-record-judge.sh" bin/; cp "$root/.github/policy/audit-writers.json" .github/policy/
   # commit A: the chain files (release.yml, the listed script bin/chain-bytes-sha.py, the policy files) and the release candidate tag on it
@@ -1165,7 +1165,7 @@ G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.1 v0.3.1; gh_fixtures "$W/c/
 mkfreeze
 run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
 expect_refuse "AC6 a PATCH tag whose chain files are not the bytes the marker names is refused, naming the bytes" rc-proof bytes
-# ---- REQ-CHAIN-004-AC20: promotion and release-only contexts count only from a schedule or dispatch run of their one workflow file --------
+# ---- REQ-CHAIN-004-AC21: promotion and release-only contexts count only from a schedule or dispatch run of their one workflow file --------
 # runs CONTEXT FILE SPEC...: replace the check runs of CONTEXT on the tagged commit by the runs the SPECs (JSON objects) describe, and write the workflow
 # run behind each. SPEC keys: id (check-run id; its workflow run is 9000+id), conclusion (success; null = pending), event (schedule), file (FILE),
 # head (the tagged sha), url (the job url), app (15368), api (fail: the runs call fails; bad: not JSON; nostr: path is not a string)
