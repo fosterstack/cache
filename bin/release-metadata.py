@@ -18,8 +18,6 @@
         every file of the release assets directory is covered; see GATE below
   release-metadata.py baseline --admission F --tag TAG --commit SHA
         prints the requirements baseline version of Build's admission-baseline.json for this tag and commit
-  release-metadata.py tag-notes --tag TAG --object F
-        the notes a generated patch tag carries (F holds the tag object's text), else exit 1 with nothing on stdout
   release-metadata.py bind-archives --version V --digests D --dist DIR
         DIR holds exactly the four Linux archives Build recorded, each with its digest; writes nothing
   release-metadata.py checksums --version V --digests D --dist DIR --out F
@@ -438,35 +436,6 @@ def cmd_checksums(a):
     write_atomic(a.out, "".join("%s  %s\n" % (bound[n], n) for n in sorted(bound, key=lambda n: n.encode())))
 
 
-RELEASE_TAGGER = "fosterstack release <release@users.noreply.github.com>"     # decide's tagger identity (release.yml): the one tagger of a generated patch tag
-PATCH_HEAD = re.compile(r"^## (v[0-9]+\.[0-9]+\.[0-9]+) \u2014 patch release$")
-
-
-def cmd_tag_notes(a):
-    """TAG-NOTES (REQ-REL-009-AC8; round 1 F5): --object is a file holding the release tag's object text; stdout is the notes a generated patch tag carries, else exit 1
-    with nothing on stdout (the release then keeps the fixed evidence text). Only the release workflow's own patch tag counts: its tagger, an SSH
-    signature as the message's one and last signature block, and a first line `## <this tag> \u2014 patch release`. The notes were already cleaned of vendor
-    and model names when decide made the tag (the decide step applies the same rule when it reads the tag), and the signature block is dropped."""
-    try:
-        with open(a.object) as f:
-            raw = f.read()
-    except OSError:
-        sys.exit(1)
-    head, _, body = raw.partition("\n\n")
-    tag = next((ln[4:] for ln in head.splitlines() if ln.startswith("tag ")), None)
-    tagger = next((ln[7:] for ln in head.splitlines() if ln.startswith("tagger ")), "")
-    if body.count("-----BEGIN ") == 1:
-        body, _, sig = body.partition("-----BEGIN ")
-    else:
-        sig = ""
-    if not tagger.startswith(RELEASE_TAGGER + " ") or not sig.startswith("SSH SIGNATURE-----"):
-        sys.exit(1)
-    m = PATCH_HEAD.match(body.split("\n", 1)[0])
-    if not m or m.group(1) != tag or m.group(1) != a.tag:
-        sys.exit(1)
-    sys.stdout.write(body.strip() + "\n")
-
-
 def main(argv):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -478,11 +447,10 @@ def main(argv):
     b = sub.add_parser("baseline"); b.add_argument("--admission", required=True); b.add_argument("--tag", required=True); b.add_argument("--commit", required=True)
     l = sub.add_parser("list"); l.add_argument("--version", required=True); l.add_argument("--dir", required=True); l.add_argument("--out", required=True)
     g = sub.add_parser("gate"); g.add_argument("--dir", required=True); g.add_argument("--same-as")
-    n = sub.add_parser("tag-notes"); n.add_argument("--tag", required=True); n.add_argument("--object", required=True)
     b = sub.add_parser("bind-archives"); b.add_argument("--version", required=True); b.add_argument("--digests", required=True); b.add_argument("--dist", required=True)
     c = sub.add_parser("checksums"); c.add_argument("--version", required=True); c.add_argument("--digests", required=True); c.add_argument("--dist", required=True); c.add_argument("--out", required=True)
     a = p.parse_args(argv)
-    {"images": cmd_images, "baseline": cmd_baseline, "manifest": cmd_manifest, "list": cmd_list, "gate": cmd_gate, "tag-notes": cmd_tag_notes, "bind-archives": cmd_bind_archives, "checksums": cmd_checksums}[a.cmd](a)
+    {"images": cmd_images, "baseline": cmd_baseline, "manifest": cmd_manifest, "list": cmd_list, "gate": cmd_gate, "bind-archives": cmd_bind_archives, "checksums": cmd_checksums}[a.cmd](a)
 
 
 if __name__ == "__main__":

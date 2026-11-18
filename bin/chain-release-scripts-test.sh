@@ -98,7 +98,8 @@ echo "gh $*" >> "$LOG"
 [ -z "${GH_FAIL_ON:-}" ] || case "$*" in *"$GH_FAIL_ON"*) echo "gh failed" >&2; exit 1;; esac
 [ -z "${GH_VIEW_ERR:-}" ] || [ "$1 $2" != "release view" ] || { echo "$GH_VIEW_ERR" >&2; exit 1; }
 if [ "$1 $2" = "release create" ]; then a=("$@"); for i in "${!a[@]}"; do
-  [ "${a[$i]}" = --notes ] && printf %s "${a[$((i+1))]}" > "$LOG.notes"; done; fi
+  [ "${a[$i]}" = --notes ] && printf %s "${a[$((i+1))]}" > "$LOG.notes"
+  [ "${a[$i]}" = --notes-file ] && cp "${a[$((i+1))]}" "$LOG.notes"; done; fi
 pub="$LOG.published"
 if [ "$1 $2" = "release upload" ]; then shift 3; mkdir -p "$pub"; clobber=0; ex=
   for f in "$@"; do [ "$f" = --clobber ] && clobber=1; done
@@ -319,7 +320,7 @@ def tree():
     for s in ("release-verify", "release-apks", "release-publish", "release-sign", "release-signatures", "release-stage", "release-assets", "release-postverify"):
         src = os.path.join(BIN, s + ".sh")
         if os.path.exists(src): shutil.copy(src, os.path.join(t, "bin", s + ".sh"))
-    for extra in ("release-postverify.py", "release-metadata.py", "release-layout.py", "chain_common.py", "guide_plan_judge.py"):
+    for extra in ("release-postverify.py", "release-metadata.py", "patch-decide.py", "release-layout.py", "chain_common.py", "guide_plan_judge.py"):
         if os.path.exists(os.path.join(BIN, extra)): shutil.copy(os.path.join(BIN, extra), os.path.join(t, "bin", extra))
     os.makedirs(os.path.join(t, "build/keys")); open(os.path.join(t, "build/keys/release.rsa.pub"), "w").write("-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----\n")
     os.makedirs(os.path.join(t, ".vex")); open(os.path.join(t, ".vex/fosterstack-cache.openvex.json"), "w").write("{}")
@@ -1134,6 +1135,8 @@ def full_assets():
 def staged_assets(t, env=None, tag="v0.3.0"):
     """the Release stage's order: release-postverify.sh runs release-stage.sh (no credential), then release-assets.sh runs with the token; a refusal of the stage is the result"""
     rc, so, se = run(t, "release-stage", env=env, tag=tag)
+    if "TAG_OBJECT" not in (env or {}):      # the tag object release-assets reads: an owner's tag (no generated notes) unless a case names its own
+        open(os.path.join(t, "tagobj-owner"), "w").write("object 0123\ntype commit\ntag %s\ntagger Owner <o@example.com> 1 +0000\n\n%s\n" % (tag, tag)); env = dict(env or {}, TAG_OBJECT=os.path.join(t, "tagobj-owner"))
     return (rc, so, se) if rc != 0 else run(t, "release-assets", creds=["GH_TOKEN"], env=env, tag=tag)
 t = full_assets(); rc, so, se = staged_assets(t); L = " ".join(log(t))
 check(rc == 0, "AC9 a good run attaches the assets", se)
@@ -1166,29 +1169,44 @@ for n in ("release-key-manifest.json", "release-key-manifest.sig"):
 t2 = full_assets(); rc2, so2, se2 = staged_assets(t2, env={"GH_VIEW_ERR": "release not found"})
 check(rc2 == 0 and [l for l in log(t2) if l.startswith("gh release create")] and all(" --verify-tag" in l and "--draft" not in l for l in log(t2) if l.startswith("gh release create")), "AC9 a missing release is created, public, only with --verify-tag", se2)
 check(not [l for l in log(t2) if "--draft" in l or "release edit" in l or "--notes-from-tag" in l], "AC9 no undraft and no gh-generated notes")
-# the notes are the FIXED evidence text ALWAYS; the generated patch-tag notes path, tag-notes and `gh release edit` are gone
+# a created release carries the fixed evidence text, except for a generated patch tag: its notes are `git cat-file tag` read by `python3 bin/patch-decide.py tag-notes` (REQ-REL-009-AC8), given with --notes-file; `gh release edit` is gone
 FIXED = "Evidence: see docs/verify-release.md for the verification commands of this release."
 def notes_of(t): p = os.path.join(t, "calls.log.notes"); return open(p).read() if os.path.exists(p) else None
-check(notes_of(t2) == FIXED, "AC9 rule 3 a missing release is created with the fixed evidence text", repr(notes_of(t2)))
+check(notes_of(t2) == FIXED, "AC9 rule 3 a missing release (an owner's tag) is created with the fixed evidence text", repr(notes_of(t2)))
 GEN = ("object 0123\ntype commit\ntag v0.3.0\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n"
        "## v0.3.0 \u2014 patch release\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n"
-       "-----BEGIN SIGNED MESSAGE-----\nMIIabc\n-----END SIGNED MESSAGE-----\n")
-# an existing release is only uploaded to: no edit, no creation, whatever the tag object holds (example: GEN names a generated patch-tag message)
-for what, obj in (("a tag with a generated patch message", GEN), ("a tag with no readable message", None)):
+       "-----BEGIN SSH SIGNATURE-----\nU1NIU0lH\n-----END SSH SIGNATURE-----\n")
+GEN_NOTES = "## v0.3.0 \u2014 patch release\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n"
+pdr = subprocess.run(["python3", os.path.join(BIN, "patch-decide.py"), "tag-notes"], input=GEN, capture_output=True, text=True)
+check(pdr.returncode == 0 and pdr.stdout.strip() == GEN_NOTES.strip(), "AC9 rule 3 (fixture) patch-decide tag-notes reads the generated tag's notes", "rc=%s %r" % (pdr.returncode, pdr.stdout[:80]))
+# an existing release is only uploaded to: no edit, no creation, whatever the tag object holds
+for what, obj in (("a generated patch tag", GEN), ("a tag with a generated-looking message under x509", GEN.replace("SSH SIGNATURE-----", "SIGNED MESSAGE-----")), ("a tag with no readable message", None)):
     t6 = full_assets()
     if obj: open(os.path.join(t6, "tagobj"), "w").write(obj)
     rc6, so6, se6 = staged_assets(t6, env={"TAG_OBJECT": os.path.join(t6, "tagobj")} if obj else None)
     L6 = log(t6)
     check(rc6 == 0 and not [l for l in L6 if l.startswith("gh release edit") or l.startswith("gh release create")] and [l for l in L6 if l.startswith("gh release upload")] and notes_of(t6) is None,
           "AC9 rule 3 an existing release (%s) is just uploaded to: no gh release edit, no creation" % what, "rc=%s %s" % (rc6, first(se6)))
-# a created release carries the fixed text even when the tag object holds generated notes or another tagger's message
-for what, obj in (("generated patch-tag notes", GEN), ("another tagger's message", GEN.replace("tagger fosterstack release <release@users.noreply.github.com>", "tagger Someone Else <x@example.com>"))):
-    t3 = full_assets(); open(os.path.join(t3, "tagobj"), "w").write(obj)
-    rc3, so3, se3 = staged_assets(t3, env={"GH_VIEW_ERR": "release not found", "TAG_OBJECT": os.path.join(t3, "tagobj")})
-    check(rc3 == 0 and notes_of(t3) == FIXED and not [l for l in log(t3) if l.startswith("gh release edit")] and not [l for l in log(t3) if "tag-notes" in l],
-          "AC9 rule 3 a tag object with %s does not change the notes: always the fixed text, no edit" % what, "rc=%s %r %s" % (rc3, notes_of(t3), first(se3)))
-src3 = open(os.path.join(BIN, "release-assets.sh")).read()      # the removed path is gone from the source (example: no "release edit", no "tag-notes")
-check("release edit" not in src3 and "tag-notes" not in src3, "AC9 rule 3 release-assets.sh holds no gh release edit and no tag-notes")
+# a created release for a generated patch tag gets patch-decide's notes through --notes-file, the tag object read with git cat-file tag
+t3 = full_assets(); open(os.path.join(t3, "tagobj"), "w").write(GEN)
+rc3, so3, se3 = staged_assets(t3, env={"GH_VIEW_ERR": "release not found", "TAG_OBJECT": os.path.join(t3, "tagobj")})
+C3 = [l for l in log(t3) if l.startswith("gh release create")]
+check(rc3 == 0 and len(C3) == 1 and " --notes-file " in C3[0] and " --notes " not in C3[0] and " --verify-tag" in C3[0] and notes_of(t3) is not None and notes_of(t3).strip() == GEN_NOTES.strip() and "git cat-file tag v0.3.0" in log(t3) and not [l for l in log(t3) if l.startswith("gh release edit")],
+      "AC9 rule 3 a created release for a generated patch tag carries patch-decide's notes through --notes-file", "rc=%s %r %s %s" % (rc3, notes_of(t3), C3, first(se3)))
+# another tagger's message, or an owner's tag: tag-notes exits 1, the fixed text stays
+for what, obj in (("another tagger's message", GEN.replace("fosterstack release <release@users.noreply.github.com>", "Someone Else <x@example.com>")), ("a tag with a generated heading and no signature block", GEN.split("-----BEGIN")[0])):
+    t3b = full_assets(); open(os.path.join(t3b, "tagobj"), "w").write(obj)
+    rc3b, so3b, se3b = staged_assets(t3b, env={"GH_VIEW_ERR": "release not found", "TAG_OBJECT": os.path.join(t3b, "tagobj")})
+    C3b = [l for l in log(t3b) if l.startswith("gh release create")]
+    check(rc3b == 0 and len(C3b) == 1 and " --notes-file " not in C3b[0] and notes_of(t3b) == FIXED and not [l for l in log(t3b) if l.startswith("gh release edit")],
+          "AC9 rule 3 a tag object with %s keeps the fixed text" % what, "rc=%s %r %s" % (rc3b, notes_of(t3b), first(se3b)))
+# a generated tag whose notes hold a refused form (a signature-shaped line, REQ-REL-009-AC14): tag-notes exits 2, the step fails, nothing is created or uploaded
+t3c = full_assets(); open(os.path.join(t3c, "tagobj"), "w").write(GEN.replace("### VEX", "-----BEGIN SIGNED MESSAGE-----\n### VEX"))
+rc3c, so3c, se3c = staged_assets(t3c, env={"GH_VIEW_ERR": "release not found", "TAG_OBJECT": os.path.join(t3c, "tagobj")})
+check(rc3c != 0 and not [l for l in log(t3c) if l.startswith("gh release create") or l.startswith("gh release upload") or l.startswith("gh release edit")] and notes_of(t3c) is None,
+      "AC9 rule 3 a generated tag whose notes patch-decide refuses fails the step: no release is created, nothing uploaded", "rc=%s %s" % (rc3c, first(se3c)))
+src3 = open(os.path.join(BIN, "release-assets.sh")).read()
+check("release edit" not in src3 and "patch-decide.py tag-notes" in src3 and "python3 -I -B bin/patch-decide.py tag-notes" in src3, "AC9 rule 3 release-assets.sh reads the notes with python3 -I -B bin/patch-decide.py tag-notes and holds no gh release edit")
 # only a definite 'release not found' creates; any other failure of the view stops before creation and upload
 for err in ("HTTP 401: Bad credentials", "HTTP 502: Bad Gateway", "dial tcp: connection refused"):
     t4 = full_assets(); rc4, so4, se4 = staged_assets(t4, env={"GH_VIEW_ERR": err})
@@ -1981,7 +1999,7 @@ check(rc == 0 and os.path.isfile(os.path.join(t, "out/guide-results.json")),
       "AC7 check-guide.sh passes a passing guide command and writes guide-results.json",
       "rc=%s %s" % (rc, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "790"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "794"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

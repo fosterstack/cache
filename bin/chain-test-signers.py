@@ -598,7 +598,7 @@ SECRET_VALUE = {"GH_TOKEN": "${{ github.token }}",
 # literals, allowed only where a step signs through bin/chain-verify.py sign-record, sign or kms-sign (stage-sign.yml's three jobs; the Release job holds none), reaching only the scripts below,
 # and each must be exactly the value below; the key reference is the verifier's own RELEASE_KEY_REF, read from bin/chain-verify.py beside this file.
 _SS = ".github/workflows/stage-sign.yml"
-_FED_AT = {(_SS, "sign"): {"bin/witness-sign-staged.sh", "bin/with-aws-token.sh", "bin/release-signatures.sh"}, (_SS, "sign-rebuild"): {"bin/witness-sign-staged.sh"}, (_SS, "sign-check"): {"bin/witness-sign-staged.sh", "bin/release-signatures.sh"}}      # S2: Release holds no KMS role, no key reference and no AWS name; release-signatures.sh (Sign's release signing step) is the one release script that does
+_FED_AT = {(_SS, "sign-tag"): {"bin/tag-sign-kms.sh"}, (_SS, "sign"): {"bin/witness-sign-staged.sh", "bin/with-aws-token.sh", "bin/release-signatures.sh"}, (_SS, "sign-rebuild"): {"bin/witness-sign-staged.sh"}, (_SS, "sign-check"): {"bin/witness-sign-staged.sh", "bin/release-signatures.sh"}}      # S2: Release holds no KMS role, no key reference and no AWS name; release-signatures.sh (Sign's release signing step) is the one release script that does
 FED_ROWS = {"AWS_ROLE_ARN": _FED_AT, "AWS_REGION": _FED_AT, "RELEASE_KMS_KEY_REF": _FED_AT}
 
 
@@ -1222,9 +1222,8 @@ def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
         errs += _runner_errors(pre, j)
         if closed and (full, jn) in PLACE_PERMS and j.get("permissions") != PLACE_PERMS[(full, jn)]:
             errs.append("%s: job %s must hold exactly the permissions %s, found %s" % (full, jn, PLACE_PERMS[(full, jn)], j.get("permissions")))
-        if full == ".github/workflows/stage-sign.yml" and jn == "sign-tag":     # its steps are judged by the tag jobs judge, not by the steps below
+        if full == ".github/workflows/stage-sign.yml" and jn == "sign-tag":     # judged by the tag jobs judge as well as by the steps below
             errs += tag_job_errors(d["jobs"])
-            continue
         for s in (j.get("steps") or []):
             pin = pins.get((full, jn, s.get("id"))) if isinstance(s.get("id"), str) else None
             if pin is not None:

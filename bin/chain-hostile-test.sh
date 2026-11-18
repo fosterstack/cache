@@ -435,6 +435,9 @@ PIN = {
  "forge_provenance": r'python3 bin/chain-verify\.py verify --stage sign --record attempts/forge_provenance\.json --policy policy\.json',
 }
 TAGCONJ = "startsWith(github.ref, 'refs/tags/v')"
+TAG_JOB_IF = "${{ needs.decide.outputs.tag != '' }}"
+DECIDE_IF = "${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}"
+TAGJOBS = {"sign-tag": (["decide"], TAG_JOB_IF), "cut": (["decide", "sign-tag"], TAG_JOB_IF), "patch-notes": (["decide", "cut"], TAG_JOB_IF)}
 # the hostile proof runs on a PUSH of a release-candidate tag only (REQ-CHAIN-001-AC5): never on a final tag,
 # never on a branch
 RC_IF = "${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"
@@ -516,13 +519,13 @@ else:
     if "workflow_dispatch" not in (rl.get("on") or {}): bad.append("release.yml has no workflow_dispatch (the dry run)")
     # final batch R-d: among jobs named hostile* or sign* (any case) only sign, sign-rebuild (the Witness move: Sign's second call, for Rebuild's records), sign-check (the third call, for Check's records), hostile-verify and hostile-verdict may exist
     for _jn in jobs:
-        if str(_jn).lower().startswith(("hostile", "sign")) and _jn not in ("sign", "sign-rebuild", "sign-check", "hostile-verify", "hostile-verdict"):
-            bad.append("release.yml has a job %r: among hostile*/sign* jobs only sign, sign-rebuild, sign-check, hostile-verify and hostile-verdict are allowed" % _jn)
+        if str(_jn).lower().startswith(("hostile", "sign")) and _jn not in ("sign", "sign-rebuild", "sign-check", "sign-tag", "hostile-verify", "hostile-verdict"):
+            bad.append("release.yml has a job %r: among hostile*/sign* jobs only sign, sign-rebuild, sign-check, sign-tag (the patch tag's signature, judged with the tag jobs below), hostile-verify and hostile-verdict are allowed" % _jn)
     hv, hd = jobs.get("hostile-verify"), jobs.get("hostile-verdict")
     if not hv or not hd: bad.append("jobs hostile-verify and hostile-verdict are required")
     else:
         need = lambda j: [j.get("needs")] if isinstance(j.get("needs"), str) else (j.get("needs") or [])
-        sign_jobs = [n for n, j in jobs.items() if "stage-sign.yml" in str(j.get("uses", ""))]
+        sign_jobs = [n for n, j in jobs.items() if "stage-sign.yml" in str(j.get("uses", "")) and n != "sign-tag"]      # sign-tag is the tag chain's, not the release chain's Sign
         if not sign_jobs or not set(need(hv)) & set(sign_jobs): bad.append("hostile-verify must need the Sign job")
         if "hostile-verify" not in need(hd): bad.append("hostile-verdict must need hostile-verify")
         if hv.get("permissions") != {"contents": "read"}: bad.append("hostile-verify permissions must be exactly {contents: read} (no id-token, nothing to write): %s" % hv.get("permissions"))
@@ -619,6 +622,8 @@ else:
             grow = False
             for jn3, j3 in jobs.items():
                 if jn3 not in after_sign and (set(need(j3)) & (set(sign_jobs) | after_sign)): after_sign.add(jn3); grow = True
+        dj = jobs.get("decide") or {}
+        if any(t in jobs for t in TAGJOBS) and str(dj.get("if", "")).strip() != DECIDE_IF: bad.append("the job decide (which every tag job needs) must have `if: %s` exactly (main only, never a dispatch or a dry run): %r" % (DECIDE_IF, dj.get("if")))
         for jn, j in jobs.items():
             if jn in OPEN:
                 if not str(j.get("uses", "")).endswith("/" + OPEN[jn]): bad.append("the open job %s must call %s (a job named like a stage that calls anything else is not exempt from the dry-run gate): %r" % (jn, OPEN[jn], j.get("uses")))
@@ -627,6 +632,12 @@ else:
                 if str(j.get("if", "")).strip() != RC_IF: bad.append("the job %s is a hostile-* job and must have `if: the rc-tag push condition` exactly (only an rc-tag push makes the hostile attempts: on a final tag its hostile-attempts download fails and blocks every release): %r" % (jn, j.get("if")))
                 if j.get("uses"): bad.append("the job %s is a hostile-* job and may not call a workflow" % jn)
                 if j.get("permissions") != {"contents": "read"}: bad.append("the job %s must have permissions exactly {contents: read}" % jn)
+                continue
+            if jn in TAGJOBS:      # the three tag jobs, exactly as the workflow writes them: the patch tag is cut from main, so no v* ref conjunct; decide's if (checked below) is what keeps dispatch, dry runs and tag refs out, and each job needs it
+                want_needs, want_if = TAGJOBS[jn]
+                if need(j) != want_needs: bad.append("the tag job %s must need exactly %s: %r" % (jn, want_needs, need(j)))
+                if str(j.get("if", "")).strip() != TAG_JOB_IF: bad.append("the tag job %s must have `if: %s` exactly (it runs only when decide, which is skipped in a dry run, a dispatch and any ref but main, asked for a tag): %r" % (jn, TAG_JOB_IF, j.get("if")))
+                if jn == "sign-tag" and (not str(j.get("uses", "")).endswith("/stage-sign.yml") or (j.get("with") or {}).get("stage") != "tag"): bad.append("the tag job sign-tag must call stage-sign.yml with stage: tag: %r %r" % (j.get("uses"), j.get("with")))
                 continue
             cond = str(j.get("if", ""))
             cs = conj(cond)

@@ -606,6 +606,10 @@ sha=$(printf 'a%.0s' $(seq 40))
 printf '{"actions":["actions/checkout@%s","actions/download-artifact@%s","actions/upload-artifact@%s"]}\n' "$sha" "$sha" "$sha" > "$work/allowed.json"
 export CHAIN_ALLOWED="$work/allowed.json"
 good="$work/good.yml"
+# the sign-tag run: lines of the fixture are the tag jobs judge's own exact texts (bin/chain-tag-jobs-judge.py RUN_KINDS), as JSON strings (valid YAML)
+tj() { python3 -c 'import importlib.util, json, sys
+sp = importlib.util.spec_from_file_location("tj", sys.argv[1]); m = importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
+print(json.dumps(next(k for k, v in m.RUN_KINDS.items() if v == sys.argv[2])))' "$root/bin/chain-tag-jobs-judge.py" "$1"; }
 cat > "$good" <<EOF
 name: 'Stage: sign'
 on:
@@ -890,22 +894,17 @@ jobs:
           name: tag-request
           path: tag-request
       - name: install the pinned aws CLI
-        run: bash bin/install-scanner.sh aws-cli
+        run: $(tj aws)
       - name: make the tag object and the digest to sign
-        run: |
-          set -euo pipefail
-          mkdir tag-work
-          python3 bin/tag-sign.py prepare --tag "\$(cat tag-request/tag)" --commit "\$GITHUB_SHA" --notes tag-request/notes.md \
-            --tagger 'fosterstack release <release@users.noreply.github.com>' --time "\$(cat tag-request/time)" \
-            --object tag-work/tag.object --digest tag-work/tag.digest
+        run: $(tj prepare)
       - name: sign the digest with the release key
         env:
           AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
           AWS_REGION: us-east-1
           RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
-        run: bash bin/with-aws-token.sh kms-sign --aws "\$RUNNER_TEMP/aws-cli/aws" --key-ref "\$RELEASE_KMS_KEY_REF" --digest "\$(cat tag-work/tag.digest)" --signing-config .github/policy/cosign-signing-config.json --public-key build/keys/release.rsa.pub --out tag-work/tag.sig --bundle tag-work/tag.bundle
+        run: $(tj kms)
       - name: put the signature into the tag object
-        run: python3 bin/tag-sign.py assemble --object tag-work/tag.object --signature tag-work/tag.sig --signer-file .github/policy/release_tag_signer --out tag-work/tag.signed
+        run: $(tj assemble)
       - uses: actions/upload-artifact@$sha # v7.0.2
         with:
           name: signed-tag
@@ -1283,6 +1282,9 @@ cat > "$FXDIR/spec_good.json" <<'FXEOF'
  {"path":"bin/witness-sign-staged.sh","tools":[],"signs":"other","reason":"Sign's staged-record signer (REQ-CHAIN-005-AC4)","runs":[]},
  {"path":"bin/release-signatures.sh","tools":[],"signs":"other","reason":"Sign's release signer (cache#912): sign-check signs the release files from Build's verified outputs","runs":[]},
  {"path":"bin/with-aws-token.sh","tools":[],"signs":"other","reason":"Sign's token fetch for one signing call (the provenance signature; wording pending the owner's approval for REQ-CHAIN-001-AC2)","runs":[]},
+ {"path":"bin/tag-sign.py","tools":["git"],"signs":false,"runs":[]},
+ {"path":"bin/tag-sign-prepare.sh","tools":["bash"],"signs":false,"runs":["bin/tag-sign.py"]},
+ {"path":"bin/tag-sign-kms.sh","tools":["bash"],"signs":"other","reason":"sign-tag's one KMS call for the automatic patch tag","runs":["bin/with-aws-token.sh"],"reads_env":["AWS_ROLE_ARN","AWS_REGION","RELEASE_KMS_KEY_REF"]},
  {"path":"bin/build-apk.sh","tools":[],"signs":false,"runs":[]}]
 FXEOF
 SPEC_GOOD=$(cat "$FXDIR/spec_good.json")
@@ -1300,6 +1302,9 @@ mk() {
   printf '#!/usr/bin/env bash\nset -euo pipefail\necho staged\n' > "$d/bin/witness-sign-staged.sh"
   printf '#!/usr/bin/env bash\nset -euo pipefail\necho fetched\n' > "$d/bin/with-aws-token.sh"
   printf '#!/usr/bin/env bash\nset -euo pipefail\necho release-signed\n' > "$d/bin/release-signatures.sh"
+  printf '#!/usr/bin/env python3\nprint("tag-sign")\n' > "$d/bin/tag-sign.py"
+  printf '#!/usr/bin/env bash\nset -euo pipefail\necho prepared\n' > "$d/bin/tag-sign-prepare.sh"
+  printf '#!/usr/bin/env bash\nset -euo pipefail\necho "$AWS_ROLE_ARN $AWS_REGION $RELEASE_KMS_KEY_REF" > /dev/null\n' > "$d/bin/tag-sign-kms.sh"
   printf '{"signers":[{"file":"release.yml","tool":"gitsign","reason":"CI patch tag (REQ-REL-009-AC5)"}]}\n' > "$d/.github/policy/chain-signers.json"
   printf '{"jobs":[{"workflow":"stage-sign.yml","job":"sign","reason":"Sign, the one provenance signer"},{"workflow":"stage-sign.yml","job":"sign-rebuild","reason":"Sign, the signer of the Rebuild records"},{"workflow":"stage-sign.yml","job":"sign-check","reason":"Sign, the signer of the Check records"},{"workflow":"stage-sign.yml","job":"sign-tag","reason":"Sign, the signer of the automatic patch tag"}]}\n' > "$d/.github/policy/id-token-jobs.json"
   printf '%s\n' "$SPEC_GOOD" > "$d/.spec.json"
@@ -3689,7 +3694,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='e2ff52924a3066cdd2fa1eee3a32a6daca6142077027460c5891b5abcc41f7d7'
+FX_PIN='fd9fbab41e0ed77ce01b96c4619d252375ddbc38b3325eabaf97bb24532f1713'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do

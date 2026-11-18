@@ -32,6 +32,7 @@ def signed_data(obj):
 
 
 def write(path, data):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "wb") as fh:
         fh.write(data)
 

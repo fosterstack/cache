@@ -69,6 +69,8 @@ assert want in cands, (want, cands)
 PY
 cp "$W/obj" "$W/obj1"; cp "$W/digest" "$W/digest1"; prep > /dev/null 2>&1 || true
 cmp -s "$W/obj" "$W/obj1" && cmp -s "$W/digest" "$W/digest1" && ok "prepare is deterministic: the same inputs give the same object and digest" || bad "prepare differs between two runs"
+rc=0; prep v0.3.1 "$SHA" "$W/notes.md" "$TAGGER" 1700000000 "$W/nest/a/obj" "$W/nest/b/digest" > "$W/nest.out" 2>&1 || rc=$?
+{ [ "$rc" = 0 ] && cmp -s "$W/nest/a/obj" "$W/obj" && cmp -s "$W/nest/b/digest" "$W/digest"; } && ok "prepare creates the parent directory of --object and --digest when it does not exist (the workflow step runs no mkdir)" || bad "prepare into a not-yet-existing directory -> exit $rc: $(head -c 200 "$W/nest.out")"
 printf '%s' "${NOTES_TXT/no change/other}" > "$W/notes2.md"
 other=$(git -C "$W/repo" commit-tree -m x "$(git -C "$W/repo" rev-parse 'HEAD^{tree}')")
 for v in "tag:v0.3.2" "commit:$other" "notes:$W/notes2.md" "tagger:fosterstack release <x@users.noreply.github.com>" "time:1700000001"; do
@@ -131,18 +133,14 @@ for c in "signer-ed:sig" "signer:empty" "nosuch:sig" "signer:nosuch"; do
   python3 "$TS" assemble --object "$W/obj" --signature "$W/${c#*:}" --signer-file "$W/${c%%:*}" --out "$W/o4" > /dev/null 2>&1 || rc=$?
   [ "$rc" != 0 ] && [ ! -e "$W/o4" ] && ok "assemble refuses (signer file $(echo "${c%%:*}"), signature $(echo "${c#*:}")) and writes nothing" || bad "assemble accepted signer=${c%%:*} signature=${c#*:} (exit $rc)"
 done
-# ---- the notes are read back from the signed tag (REQ-REL-009-AC8; R4): patch-decide tag-notes and release-metadata tag-notes ----
+# ---- the notes are read back from the signed tag (REQ-REL-009-AC8; R4): patch-decide tag-notes ----
 verify "$W/signed" "$W/signer" > /dev/null 2>&1 || true
 git -C "$W/repo" cat-file tag v0.3.1 > "$W/raw"
 rc=0; python3 "$root/bin/patch-decide.py" tag-notes < "$W/raw" > "$W/n1.out" 2> "$W/n1.err" || rc=$?
 { [ "$rc" = 0 ] && [ "$(cat "$W/n1.out")" = "${NOTES_TXT%$'\n'}" ]; } && ok "patch-decide tag-notes reads the notes of the KMS-signed generated tag (heading, fixes, VEX), the signature dropped" || bad "patch-decide tag-notes -> exit $rc: $(head -c 200 "$W/n1.err") out: $(head -c 100 "$W/n1.out")"
-rc=0; python3 "$root/bin/release-metadata.py" tag-notes --tag v0.3.1 --object "$W/raw" > "$W/n2.out" 2> "$W/n2.err" || rc=$?
-{ [ "$rc" = 0 ] && [ "$(cat "$W/n2.out")" = "${NOTES_TXT%$'\n'}" ]; } && ok "release-metadata tag-notes reads the same notes from the same tag object" || bad "release-metadata tag-notes -> exit $rc: $(head -c 200 "$W/n2.err")"
 sed 's/^tagger .*/tagger Someone <s@example.com> 1700000000 +0000/' "$W/raw" > "$W/raw-other"
 rc=0; python3 "$root/bin/patch-decide.py" tag-notes < "$W/raw-other" > "$W/n3.out" 2> /dev/null || rc=$?
 { [ "$rc" = 1 ] && [ ! -s "$W/n3.out" ]; } && ok "patch-decide tag-notes: the same tag under another tagger carries no notes (exit 1)" || bad "patch-decide tag-notes with another tagger -> exit $rc"
-rc=0; python3 "$root/bin/release-metadata.py" tag-notes --tag v0.3.1 --object "$W/raw-other" > "$W/n4.out" 2> /dev/null || rc=$?
-{ [ "$rc" = 1 ] && [ ! -s "$W/n4.out" ]; } && ok "release-metadata tag-notes: another tagger carries no notes (exit 1)" || bad "release-metadata tag-notes with another tagger -> exit $rc"
 # a refused form in the notes is refused (exit 2, the line named) even though the tag is genuinely signed: the notes are checked when they are read
 printf '%s' "${NOTES_TXT/no change/-----BEGIN x}" > "$W/notes-bad.md"
 prep v0.3.1 "" "$W/notes-bad.md" "" "" "$W/obj-bad" "$W/digest-bad" > /dev/null 2>&1 || true

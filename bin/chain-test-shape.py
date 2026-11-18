@@ -854,7 +854,7 @@ NS_SHA = {
     "bin/archive-verify.py": "7897405722eb7910dab9bebd473f633d1abb1bf0976b4f2949f49c02a2c16d6b",
     "bin/audit-record-judge.sh": "f5e0359ceecc866f58ef7ee55f91b4a3fef084f29e9e6420949d1a34b6491a2b",
     "bin/audit-record.py": "275049741718951ca6bbaf27c1c6b1be80a6cc27ddc99baf1375732ea22adf46",
-    "bin/build-admit.py": "f5214a3a2c772a31fd31e230c34b5d2f22a8a88e7ce0c7640fe378dc9426a20d",
+    "bin/build-admit.py": "2c6858dd6eeb0a3e74afef9e4406ca77e805c6e43f384d210ae6f7cf1899405b",
     "bin/build-apk-helper.py": "64fc57cf73c8fcaba226255e59198def1fe69bbc345f52f73d4d4999ebf9a23b",
     "bin/build-archives.py": "532ec7371f299d3e29f70af776cca3e329156a4517aa328958b4150e635c034d",
     "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",

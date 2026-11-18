@@ -5,6 +5,15 @@ ROLE = "arn:aws:iam::821302803867:role/fosterstack-cache-release-signing"
 KEY_REF = "awskms:///alias/fosterstack-release-signing"
 TAGGER = "fosterstack release <release@users.noreply.github.com>"
 APP_TOKEN = re.compile(r"actions/create-github-app-token@%s( #.*)?" % SHA)
+KMS_RUN = "bash bin/tag-sign-kms.sh"
+# the run: lines of sign-tag, each exactly (the workflow is judged against these texts, so no other command can ride in a step)
+RUN_KINDS = {
+    "bash bin/install-scanner.sh aws-cli": "aws",
+    "bash bin/tag-sign-prepare.sh": "prepare",
+    KMS_RUN: "kms",
+    "python3 -I bin/tag-sign.py assemble --object tag-work/tag.object --signature tag-work/tag.sig "
+    "--signer-file .github/policy/release_tag_signer --out tag-work/tag.signed": "assemble",
+}
 STATUS_FN = re.compile(r"\b(always|failure|cancelled|success)\s*\(")
 # what no job that holds no key may name: a key, a role, a keyless signing tool
 KEY_WORDS = re.compile(r"AWS_ROLE_ARN|AWS_REGION|RELEASE_KMS_KEY_REF|kms-sign|with-aws-token|awskms|arn:aws|fulcio|gitsign|smimesign|keyless|identity-token|cosign (sign|attest)|ssh-keygen -Y sign|ACTIONS_ID_TOKEN", re.I)
@@ -74,41 +83,19 @@ def sign_tag_errors(sjobs):
     runs = [str(st.get("run", "")) for st in sst if "run" in st]
     kinds = []
     for st in sst:
-        r_ = str(st.get("run", ""))
+        r_ = st.get("run")
         if "uses" in st:
             kinds.append(str(st["uses"]).split("@")[0].split("/")[1])
-        elif re.fullmatch(r"\s*bash bin/install-scanner\.sh aws-cli\s*", r_):
-            kinds.append("aws")
-        elif "bin/tag-sign.py prepare" in r_:
-            kinds.append("prepare")
-        elif re.match(r"\s*bash bin/with-aws-token\.sh kms-sign\b", r_):
-            kinds.append("kms")
-        elif "bin/tag-sign.py assemble" in r_:
-            kinds.append("assemble")
         else:
-            kinds.append("other:" + r_[:40])
+            kinds.append(RUN_KINDS.get(r_, "other:" + str(r_)[:40]))
     if kinds != ["checkout", "download-artifact", "aws", "prepare", "kms", "assemble", "upload-artifact"]:
         bad.append("sign-tag's steps must be exactly: checkout, download of the tag request, install of the aws CLI (bash bin/install-scanner.sh aws-cli), tag-sign.py prepare, "
-                   "bash bin/with-aws-token.sh kms-sign, tag-sign.py assemble, one upload; found %s" % kinds)
+                   "bash bin/tag-sign-kms.sh, tag-sign.py assemble, one upload; found %s" % kinds)
     for st in sst:
-        r_ = str(st.get("run", ""))
-        if "bin/tag-sign.py prepare" in r_:
-            for a in ("--tag", "--commit", "--notes", "--tagger", "--time", "--object", "--digest"):
-                if a not in r_:
-                    bad.append("the prepare step passes no %s" % a)
-            if TAGGER not in r_:
-                bad.append("the prepare step's tagger must be the release tagger '%s' (the one bin/patch-decide.py tag-notes reads)" % TAGGER)
-        if "bin/tag-sign.py assemble" in r_:
-            for a in ("--object", "--signature", "--signer-file", "--out"):
-                if a not in r_:
-                    bad.append("the assemble step passes no %s" % a)
-        if re.match(r"\s*bash bin/with-aws-token\.sh kms-sign\b", r_):
-            if "--digest" not in r_:
-                bad.append("the kms-sign step signs no --digest (the sha256 of the sshsig signed-data blob)")
-            if st.get("env") != {"AWS_ROLE_ARN": ROLE, "AWS_REGION": "us-east-1", "RELEASE_KMS_KEY_REF": KEY_REF}:
-                bad.append("the kms-sign step's env must be exactly the release role, region and key reference as literals: %s" % st.get("env"))
-        if "${{" in r_ and "tag-sign" in r_:
-            bad.append("a tag-sign.py step puts an expression into its script (use env)")
+        if st.get("run") == KMS_RUN and st.get("env") != {"AWS_ROLE_ARN": ROLE, "AWS_REGION": "us-east-1", "RELEASE_KMS_KEY_REF": KEY_REF}:
+            bad.append("the kms-sign step's env must be exactly the release role, region and key reference as literals: %s" % st.get("env"))
+        if "${{" in str(st.get("run", "")):
+            bad.append("a sign-tag step puts an expression into its script (use env)")
     return bad
 
 

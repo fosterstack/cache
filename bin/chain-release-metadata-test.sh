@@ -2,7 +2,7 @@
 # proves: REQ-CHAIN-007-AC19, REQ-CHAIN-007-AC21
 # bin/release-metadata.py: the release metadata files and their signed list. It is offline and deterministic
 # (no clock, no network).
-# Tested subcommands: images, manifest, baseline, list, gate, tag-notes, bind-archives, checksums. Every refusal exits 1 with a message
+# Tested subcommands: images, manifest, baseline, list, gate, bind-archives, checksums. Every refusal exits 1 with a message
 # that names the file or the key.
 # Runs on ubuntu-24.04 or macOS with bash and python3.
 set -euo pipefail
@@ -245,39 +245,13 @@ for n in ("provenance.json", "provenance.rekor.json", "provenance.bundle.json"):
     gate("a release without Sign's %s is refused, naming it (Sign's provenance is part of every release)" % n, lambda a, n=n: os.remove(os.path.join(a, n)), n)
 gate("an SBOM whose bundle is gone is refused", lambda a: os.remove(a + "/production.sbom.json.bundle"), "production.sbom.json")
 gate("a symlink among the assets is refused", lambda a: os.symlink(a + "/checksums.txt", a + "/link.txt"), "link.txt")
-# ---- tag-notes: the release tag's generated notes (REQ-REL-009-AC8), the same decision as bin/patch-decide.py tag_notes ----------------------------
-import importlib.util
-spec = importlib.util.spec_from_file_location("patch_decide", os.path.join(BIN, "patch-decide.py")); PD = importlib.util.module_from_spec(spec); spec.loader.exec_module(PD)
-GEN = ("object 0123\ntype commit\ntag v0.3.1\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n"
-       "## v0.3.1 \u2014 patch release\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n"
-       "-----BEGIN SSH SIGNATURE-----\nU1NIU0lH\n-----END SSH SIGNATURE-----\n")
-cases = [("a generated patch tag", GEN, "v0.3.1"),
-         ("an owner's tag", "object 1\ntype commit\ntag v0.3.1\ntagger o <o@x> 1 +0000\n\nv0.3.1\n", "v0.3.1"),
-         ("another tagger", GEN.replace("fosterstack release <release@users.noreply.github.com>", "Someone <s@x>"), "v0.3.1"),
-         ("a heading for another version", GEN.replace("## v0.3.1 \u2014", "## v0.3.2 \u2014"), "v0.3.1"),
-         ("an x509 (keyless) signature, not the release key's SSH signature", GEN.replace("SSH SIGNATURE-----", "SIGNED MESSAGE-----"), "v0.3.1"),
-         ("a PGP signature", GEN.replace("SSH SIGNATURE-----", "PGP SIGNATURE-----"), "v0.3.1"),
-         ("two signature blocks", GEN + "-----BEGIN SSH SIGNATURE-----\nfake\n-----END SSH SIGNATURE-----\n", "v0.3.1"),
-         ("a signature-shaped block earlier in the notes", GEN.replace("### VEX", "-----BEGIN SIGNED MESSAGE-----\nfake\n-----END SIGNED MESSAGE-----\n### VEX"), "v0.3.1"),
-         ("no signature block", GEN.split("-----BEGIN")[0], "v0.3.1"),
-         ("the right tag object for another release tag", GEN, "v0.3.2")]
-for what, raw, tag in cases:
-    obj = os.path.join(tempfile.mkdtemp(), "tag.txt"); open(obj, "w").write(raw)
-    r = subprocess.run(["python3", os.path.join(BIN, "release-metadata.py"), "tag-notes", "--tag", tag, "--object", obj], capture_output=True, text=True)
-    try: pd = PD.tag_notes(raw) if tag == "v0.3.1" else None
-    except ValueError:
-        # patch-decide refuses a tag message with a refused form (two signature blocks):
-        # the release keeps its fixed text, as for "no notes"
-        pd = None
-    same = (r.returncode == 0 and pd is not None and r.stdout.strip() == pd.strip()) or (r.returncode == 1 and pd is None and r.stdout == "")
-    check(same, "tag-notes: %s gives what patch-decide's tag_notes gives (notes, or none)" % what, "rc=%s out=%r pd=%r" % (r.returncode, r.stdout[:60], (pd or "")[:60]))
-    # the decision itself, not only agreement: the release key's SSH signature on the release tagger's patch tag carries notes, every other case none (exit 1, nothing on stdout)
-    want_rc = 0 if what == "a generated patch tag" else 1
-    check(r.returncode == want_rc and (r.returncode != 0 or r.stdout.startswith("## v0.3.1 \u2014 patch release")) and (r.returncode == 0 or r.stdout == ""),
-          "tag-notes: %s exits %d" % (what, want_rc), "rc=%s out=%r" % (r.returncode, r.stdout[:60]))
+# ---- tag-notes: the one reader of a patch tag's notes is bin/patch-decide.py (REQ-REL-009-AC8, AC14); this script has no copy of it ------------------
+rc, so, se = run("tag-notes", "--tag", "v0.3.1", "--object", os.devnull)
+check(rc != 0 and "tag-notes" in se and "invalid choice" in se, "tag-notes: the subcommand is gone (an unknown subcommand is refused)", "rc=%s %s" % (rc, se[:200]))
+check("tag-notes" not in open(os.path.join(BIN, "release-metadata.py")).read(), "tag-notes: release-metadata.py holds no tag-notes code")
 # ---- usage: the docstring (the script's usage text) names every subcommand it has, and no other ----------------------------------------
 import ast
-SUBS = ("images", "manifest", "baseline", "list", "gate", "tag-notes", "bind-archives", "checksums")
+SUBS = ("images", "manifest", "baseline", "list", "gate", "bind-archives", "checksums")
 doc = ast.get_docstring(ast.parse(open(os.path.join(BIN, "release-metadata.py")).read())) or ""
 check(all("release-metadata.py %s " % n in doc for n in SUBS),
       "usage: the docstring has a usage line for every subcommand", doc[:300])
@@ -391,7 +365,7 @@ check(row["tools"] == ["bash", "git", "jq", "python3", "sha256sum", "trap"] and 
 check(row["sha256"] == hashlib.sha256(open(os.path.join(BIN, "release-signatures.sh"), "rb").read()).hexdigest(),
       "G2 the sha256 of that row is the script's own, after the policy make line was added")
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "155"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "137"))
 if EXPECT and passn + failn != EXPECT: print("FAIL case count %d != expected %d" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
 PY

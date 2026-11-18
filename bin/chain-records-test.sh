@@ -778,23 +778,23 @@ d=$(tracked_copy newattest); printf 'jobs:\n  a:\n    steps:\n      - uses: acti
 expect_named "a NEW actions/attest without a literal predicate-type in a non-frozen file fails closed" "$d" "scan-extra.yml: actions/attest with no literal predicate-type"
 # On the REAL release-signatures.sh (its pinned sha256 re-written in the copy, so the finding is the record type and not
 # the pin): drop its kms-sign --dsse-statement and --digest calls
-# realmut NAME SED-EXPR: a tracked copy whose bin/release-signatures.sh is edited by SED-EXPR and re-listed with its new
-# sha256
+# realmut NAME SED-EXPR [both]: a tracked copy whose bin/release-signatures.sh (and, with `both`, the tag stage's bin/tag-sign-kms.sh, the
+# second producer of urn:cosign:signature) is edited by SED-EXPR and re-listed with its new sha256
 realmut() {
-  local d; d=$(tracked_copy "$1"); sed -i "$2" "$d/bin/release-signatures.sh"
+  local d; d=$(tracked_copy "$1"); sed -i "$2" "$d/bin/release-signatures.sh"; [ "${3:-}" != both ] || sed -i "$2" "$d/bin/tag-sign-kms.sh"
   python3 - "$d" <<'PY'
 import hashlib, json, sys
 d = sys.argv[1]; f = d + "/.github/policy/chain-scripts.json"; j = json.load(open(f))
 for r in j["scripts"]:
-    if r["path"] == "bin/release-signatures.sh": r["sha256"] = hashlib.sha256(open(d + "/bin/release-signatures.sh", "rb").read()).hexdigest()
+    if r["path"] in ("bin/release-signatures.sh", "bin/tag-sign-kms.sh"): r["sha256"] = hashlib.sha256(open(d + "/" + r["path"], "rb").read()).hexdigest()
 json.dump(j, open(f, "w"), indent=1)
 PY
   echo "$d"
 }
 d=$(realmut realnoatt '/with-aws-token\.sh kms-sign.*--dsse-statement/d')
 expect_named "mutant on the real release-signatures.sh: the kms-sign --dsse-statement line dropped -> the release manifest row has no producer" "$d" "row for a type nothing produces: https://fosterstack.com/attestations/release-manifest/v1"
-d=$(realmut realnosig '/with-aws-token\.sh kms-sign.*--digest/d')
-expect_named "mutant on the real release-signatures.sh: the kms-sign --digest lines dropped -> the cosign signature row has no producer" "$d" "row for a type nothing produces: urn:cosign:signature"
+d=$(realmut realnosig '/with-aws-token\.sh kms-sign.*--digest/d' both)
+expect_named "mutant on the real release-signatures.sh and tag-sign-kms.sh (its two producers): the kms-sign --digest lines dropped -> the cosign signature row has no producer" "$d" "row for a type nothing produces: urn:cosign:signature"
 # r10 cases: ruling rows 1-3
 d=$(mk r10env); ka2 "$d" <<'EOF'; ka2rows "$d"
 #!/usr/bin/env bash

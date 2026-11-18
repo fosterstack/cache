@@ -32,6 +32,12 @@ on:
 permissions:
   contents: read
 
+# One run at a time on main, from the tag list decide reads to the tag cut pushes: a push and the daily run never decide the same
+# version twice (queued, never cancelled). Every other run has a group of its own.
+concurrency:
+  group: ${{ github.ref == 'refs/heads/main' && 'patch-release' || github.run_id }}
+  cancel-in-progress: false
+
 jobs:
   # ---------------------------------------------------------------------------------------------------------------
   # Automatic patch releases (REQ-REL-009).
@@ -43,10 +49,6 @@ jobs:
   # (the auditor App's token) pushes that signed tag and nothing else; an unsigned tag is never cut.
   decide:
     if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
-    # one decision at a time: a push and the daily run never both cut the same day (queued, never cancelled)
-    concurrency:
-      group: patch-decide
-      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       contents: read

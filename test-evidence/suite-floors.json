@@ -75,7 +75,7 @@
  "scout-root-cause-test.sh": 33,
  "suite-guard-test.sh": 127,
  "supply-chain-wiring-test.sh": 160,
- "tag-sign-test.sh": 38,
+ "tag-sign-test.sh": 37,
  "vendor-provenance-test.sh": 199,
  "vendoring-test.sh": 175,
  "verify-key-page-test.sh": 45,

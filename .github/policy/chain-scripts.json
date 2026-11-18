@@ -411,11 +411,38 @@
     },
     {
       "path": "bin/tag-sign.py",
-      "sha256": "9daac7c37d0b91d1bef130f0e4ec0faf9a5fc71f1079d6a7781f38c18b6aac27",
+      "sha256": "a55a066e90793f0fcd6edf98ffdf0435ff4307aa25a0fc09c3e5a52113081c01",
       "tools": ["git"],
       "runs": [],
       "signs": false,
       "reason": "the offline halves of signing an automatic patch release's tag (REQ-REL-009-AC5): prepare writes the unsigned tag object and the digest the release KMS key signs, assemble checks the returned RSA signature against the release key's public line and puts it into the object as one SSH SIGNATURE block; it holds no key, calls no tool and signs nothing itself (stage-sign.yml's sign-tag runs the KMS call between the two); `git` is only the namespace string of the SSH signature"
+    },
+    {
+      "path": "bin/tag-sign-prepare.sh",
+      "sha256": "2c19258bc5b5c1b263aa66c941577c5004d5fd4950444fcea78b129389a9547b",
+      "tools": ["bash"],
+      "runs": ["bin/tag-sign.py"],
+      "signs": false,
+      "reason": "sign-tag's first step (REQ-REL-009-AC5): tag-sign.py prepare writes the tag object decide asked for and the digest the release key signs",
+      "reads_env": []
+    },
+    {
+      "path": "bin/tag-sign-kms.sh",
+      "sha256": "01f9afbb1a17271cfeee0ee5eab624586ff0868d71b891b3628c69abdf0329fe",
+      "tools": ["bash"],
+      "runs": ["bin/with-aws-token.sh"],
+      "signs": "other",
+      "reason": "sign-tag's one signing call (REQ-REL-009-AC5): bin/with-aws-token.sh kms-sign has the release key sign the digest tag-sign.py prepare wrote, as the detached signature tag-sign.py assemble puts into the tag object",
+      "reads_env": []
+    },
+    {
+      "path": "bin/patch-decide.py",
+      "sha256": "0d4f62543b9e25c50adbff53e5b9e3edadfe1cfbd4f988d41b72c2f0f0346cb5",
+      "tools": ["git"],
+      "runs": [],
+      "signs": false,
+      "reason": "the one reader of a generated patch tag's notes (REQ-REL-009-AC8, AC14): its tag-notes subcommand prints the notes the tag carries, else exits 1, and refuses a notes text with a signature block; release-assets.sh posts that output on the GitHub release",
+      "reads_env": []
     },
     {
       "path": "bin/rebuild-records-digests.sh",
@@ -507,7 +534,7 @@
       ],
       "signs": "other",
       "reason": "verifies (never makes) the owner's SSH signature of a release tag and calls gh for GET-only reads",
-      "sha256": "f5214a3a2c772a31fd31e230c34b5d2f22a8a88e7ce0c7640fe378dc9426a20d",
+      "sha256": "2c6858dd6eeb0a3e74afef9e4406ca77e805c6e43f384d210ae6f7cf1899405b",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -535,6 +562,16 @@
         {
           "name": "PYTHON3",
           "text": "run([PYTHON3, \"-I\", script_path, \"check-marker\"",
+          "why": "the fixed python3 path constant, read as a Python name; no environment variable is read or set"
+        },
+        {
+          "name": "PYTHON3",
+          "text": "run([PYTHON3, \"-I\", signer, \"owner-baselines\"",
+          "why": "the fixed python3 path constant, read as a Python name; no environment variable is read or set"
+        },
+        {
+          "name": "PYTHON3",
+          "text": "run([PYTHON3, \"-I\", signer, \"baseline\"",
           "why": "the fixed python3 path constant, read as a Python name; no environment variable is read or set"
         }
       ],
@@ -1860,14 +1897,16 @@
       "path": "bin/release-assets.sh",
       "tools": [
         "gh",
+        "git",
         "python3"
       ],
       "runs": [
+        "bin/patch-decide.py",
         "bin/release-metadata.py"
       ],
       "signs": false,
       "reason": "Release, step release-assets: creates the GitHub release after release-postverify has passed, only with --verify-tag, and attaches release-upload/ (REQ-CHAIN-007-AC9)",
-      "sha256": "449263f748389232fa43a396dea0c9ea1188b6130cfe8367646f53002a3a7c73",
+      "sha256": "65dad1c3036b9ff54663a8f6e5a55cfeb58601adeaa4074d012e832bf5c376ce",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -1937,7 +1976,7 @@
       "runs": [],
       "signs": false,
       "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files and the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
-      "sha256": "4c69e2921c3a02cd0e060f31235c8b07cb334ad785f5de5e7cf1c116a8f3165e"
+      "sha256": "f480866ccf3c82c080ef3b848d149167ab1f88b7a127f08120263e6848c34a0e"
     },
     {
       "path": "bin/vex-forms.py",

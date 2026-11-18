@@ -479,17 +479,45 @@ def check_freeze(ctx, base):
     print("freeze-ok %s %s" % (ctx.sha, base))
 
 
+def inherited_baseline(ctx):
+    """A CI patch uses its line's latest owner-approved baseline, chosen as decide chooses it (REQ-REL-009-AC13).
+    Returns the version and that baseline's bytes from the owner's signed tag."""
+    signer = os.path.join(ctx.policy, os.path.basename(SIGNER))
+    signed = os.path.join(ctx.tmp, "owner-baselines")
+    rc, _, err = run([PYTHON3, "-I", signer, "owner-baselines", "--tag", ctx.tag,
+        "--allowed-signers", ctx.allowed, "--out", signed])
+    if rc != 0:
+        raise Refusal("baseline", "the owner-signed baselines cannot be read: %s" % one_line(text(err)))
+    requirements = git_show("%s:requirements/requirements.yaml" % ctx.sha)
+    if requirements is None:
+        raise Refusal("baseline", "requirements/requirements.yaml does not exist at the tagged commit")
+    requirements_file = os.path.join(ctx.tmp, "requirements.yaml")
+    with open(requirements_file, "wb") as fh:
+        fh.write(requirements)
+    rc, out, err = run([PYTHON3, "-I", signer, "baseline", "--tag", ctx.tag, "--owner-baselines", signed,
+        "--requirements", requirements_file])
+    answer = text(out).split()
+    if rc != 0 or answer[:1] != ["use"]:
+        raise Refusal("baseline", "no owner-approved baseline for %s: %s" % (ctx.tag, one_line(text(out + err), 200)))
+    with open(os.path.join(signed, answer[1] + ".yaml"), "rb") as fh:
+        return answer[1], fh.read()
+
+
 def check_baseline(ctx):
     try:
         import yaml
     except ImportError:
         raise EnvError("PyYAML is required")
-    base = ctx.tag
+    base, signed = ctx.tag, None
+    if ctx.method == KMS_RELEASE:
+        base, signed = inherited_baseline(ctx)
     ctx.base = base
     path = "requirements/releases/%s.yaml" % base
     tagged = git_show("%s:%s" % (ctx.sha, path))
     if tagged is None:
         raise Refusal("baseline", "%s does not exist at the tagged commit: freeze the release baseline first" % path)
+    if signed is not None and tagged != signed:
+        raise Refusal("baseline", "%s differs from the owner-signed %s" % (path, base))
     # The freeze job ran the requirements tool: exact requirements hash and complete blocking set (R07). Approval is
     # checked below.
     check_freeze(ctx, base)

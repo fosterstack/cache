@@ -1148,15 +1148,42 @@ refused_policy_or_sig() { # refused at tag-signature, or at policy-from-main whe
 kms_patch kms; run_kms
 expect_ok "AC6 a patch tag v0.3.1 signed by the release KMS key (release_tag_signer on main), with the marker, its baseline and green checks, is admitted"
 jq -e '.tag=="v0.3.1" and .tag_signature.method=="kms-release" and (.tag_signature.principal|length>0)
-       and (.tag_signature.key_fingerprint|startswith("SHA256:")) and .commit_signature=="owner-ssh" and .baseline_version=="v0.3.1"' \
+       and (.tag_signature.key_fingerprint|startswith("SHA256:")) and .commit_signature=="owner-ssh" and .baseline_version=="v0.3.0" and .baseline=="requirements/releases/v0.3.0.yaml"' \
   "$W/c/repo/admission.json" > /dev/null \
-  && ok "AC6 admission.json records method kms-release (distinct from owner-ssh), the signer principal and the key's SHA256 fingerprint" \
+  && ok "AC6 admission.json records method kms-release (distinct from owner-ssh), the signer principal, the key's SHA256 fingerprint and the line's owner-approved baseline v0.3.0 (REQ-REL-009-AC13), not the patch tag's own" \
   || bad "AC6 kms admission.json content: $(head -c 300 "$W/c/repo/admission.json" 2> /dev/null)"
 kms_patch kms v0.3.2; run_kms v0.3.2
 expect_ok "AC6 the release key admits a later patch too (v0.3.2, Z >= 1)"
 kms_patch owner; run_kms
 jq -e '.tag_signature.method=="owner-ssh"' "$W/c/repo/admission.json" > /dev/null 2>&1 \
   && ok "AC6 the owner's SSH signature on a patch tag is still admitted as owner-ssh" || bad "AC6 owner patch tag method"
+# ---- a CI patch uses its line's latest owner-approved baseline (REQ-REL-009-AC13): admission picks it as decide does (bin/admission-tag-signer.py owner-baselines, then baseline, against main's allowed signers and
+# the tagged commit's requirements.yaml), needs the tagged commit's copy to equal the owner-signed tag's, a freeze-ok line for that base, and records it. Owner-signed tags keep requirements/releases/<tag>.yaml.
+kms_nobase() { # kms_nobase KEY [VERSION] [EDIT-CMD] : like kms_patch, but main gets NO baseline file for VERSION (the line's owner-signed v0.3.0 is the baseline)
+  local v=${2:-v0.3.1}
+  fresh; G checkout -q main
+  (cd "$W/c/repo" && eval "${3:-true}")
+  G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S --allow-empty -m "patch, no baseline file"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
+  G -c user.signingkey="$W/keys/$1" tag -s -m "$v" "$v"; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; mkfreeze; }
+kms_nobase kms; run_kms
+expect_ok "AC13 a patch tag v0.3.1 signed by the release KMS key, with no requirements/releases/v0.3.1.yaml, is admitted on the line's owner-signed baseline v0.3.0"
+jq -e '.tag=="v0.3.1" and .tag_signature.method=="kms-release" and .baseline_version=="v0.3.0" and .baseline=="requirements/releases/v0.3.0.yaml"' "$W/c/repo/admission.json" > /dev/null 2>&1 \
+  && ok "AC13 admission.json records the baseline v0.3.0 the patch used" || bad "AC13 admission.json of a KMS patch without its own baseline: $(head -c 300 "$W/c/repo/admission.json" 2> /dev/null)"
+grep -q 'baseline v0.3.0' "$W/c/out" && grep -qx "freeze-ok $(headsha) v0.3.0" "$W/c/out" \
+  && ok "AC13 admission prints the baseline v0.3.0 and the freeze-ok line for it" || bad "AC13 admission printed: $(tr '\n' '|' < "$W/c/out" | head -c 300)"
+# the owner's tag of the baseline is not the owner's: an unsigned or other-key v0.3.0 supplies no baseline, whatever file the patch tag's own commit holds
+for what in none attacker; do
+  kms_patch kms; G tag -d v0.3.0 > /dev/null
+  case "$what" in none) G tag -a -m v0.3.0 v0.3.0 "$(G rev-parse "v0.3.1^{commit}")" ;; attacker) G -c user.signingkey="$W/keys/attacker" tag -s -m v0.3.0 v0.3.0 "$(G rev-parse "v0.3.1^{commit}")" ;; esac
+  run_kms
+  expect_refuse "AC13 a KMS patch whose line has no owner-approved baseline (v0.3.0 tag: $what) is refused at baseline, though its own v0.3.1.yaml exists" baseline
+done
+kms_patch kms v0.3.1 "sed -i 's/2026-10-09/2026-10-10/' requirements/releases/v0.3.0.yaml"; run_kms
+expect_refuse "AC13 a KMS patch whose tagged commit's copy of the baseline differs from the owner-signed v0.3.0's is refused at baseline" baseline v0.3.0
+kms_patch kms; mkfreeze "freeze-ok $(headsha) v0.3.1"; run_kms
+expect_refuse "AC13 a KMS patch with no freeze-ok line for the baseline it uses (v0.3.0) is refused at baseline" baseline freeze
+kms_nobase owner; run_kms
+expect_refuse "AC13 an owner-signed patch tag with no requirements/releases/v0.3.1.yaml is still refused at baseline (owner tags keep their own baseline file)" baseline v0.3.1.yaml
 # the release key on anything but a patch tag
 fresh; retag kms; run_admit
 expect_refuse "AC6 the release KMS key on the final tag v0.3.0 is refused at tag-signature (the owner signs vX.Y.0)" tag-signature
@@ -1201,6 +1228,6 @@ wf_fprs=$(gpg --batch --show-keys --with-colons "$root/.github/policy/github-web
 TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # a skipped or added case fails the suite
-EXPECT_TOTAL=222
+EXPECT_TOTAL=230
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

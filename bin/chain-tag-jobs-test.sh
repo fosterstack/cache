@@ -14,7 +14,7 @@
 #                      object sign-tag uploaded, checks that it is signed (git verify-tag, or its SSH SIGNATURE block) before it pushes the tag ref, and never runs `git tag`.
 #     patch-notes      the changelog PR after the tag exists: needs decide and cut; its own App token for pull requests; bin/patch-decide.py tag-notes then changelog.
 #   stage-sign.yml     the job sign-tag (if: inputs.stage == 'tag'), permissions exactly contents read and id-token write, no secret and no push, with these steps: checkout, one download of the
-#                      artifact decide uploaded, the aws CLI install, `bin/tag-sign.py prepare`, `bin/with-aws-token.sh kms-sign` with exactly the release role, region and key reference
+#                      artifact decide uploaded, the aws CLI install, `bin/tag-sign.py prepare`, `bash bin/tag-sign-kms.sh` (the one listed script that holds the kms-sign call) with exactly the release role, region and key reference
 #                      (awskms:///alias/fosterstack-release-signing) as step env, `bin/tag-sign.py assemble`, one upload (the signed tag object cut downloads).
 #   policy             id-token-jobs.json lists release.yml:sign-tag and stage-sign.yml:sign-tag (and no tag job else); chain-scripts.json lists bin/tag-sign.py with its sha256.
 # Needs: bash, python3 + PyYAML.
@@ -25,7 +25,7 @@ python3 -c 'import yaml' 2> /dev/null || { echo "FAIL PyYAML is required (apt: p
 # the judge is bin/chain-tag-jobs-judge.py, also called by chain-test-signers.py stage_grammar for this job (one job, one judge)
 cp "$root/bin/chain-tag-jobs-judge.py" "$work/judge.py"
 # ---- a known-good fixture tree ----------------------------------------------------------------------------------------------------
-python3 - "$work" <<'PY'
+TJ_JUDGE="$root/bin/chain-tag-jobs-judge.py" python3 - "$work" <<'PY'
 import hashlib, json, os, sys
 w = sys.argv[1] + "/good"
 for d in (".github/workflows", ".github/policy", "bin"):
@@ -35,6 +35,11 @@ CHK = "actions/checkout@%s # v7.0.1" % H
 UP = "actions/upload-artifact@%s # v7.0.2" % H
 DN = "actions/download-artifact@%s # v8.0.2" % H
 APP = "actions/create-github-app-token@%s # v3.3.0" % H
+# the sign-tag run: texts are the judge's own exact ones (bin/chain-tag-jobs-judge.py RUN_KINDS), as JSON strings (valid YAML)
+import importlib.util
+_sp = importlib.util.spec_from_file_location("tj", os.environ["TJ_JUDGE"]); _tj = importlib.util.module_from_spec(_sp); _sp.loader.exec_module(_tj)
+_k = {v: k for k, v in _tj.RUN_KINDS.items()}
+RUNS = {"AWS": json.dumps(_k["aws"]), "PREP": json.dumps(_k["prepare"]), "KMS": json.dumps(_k["kms"]), "ASM": json.dumps(_k["assemble"])}
 open(w + "/.github/workflows/release.yml", "w").write("""name: Release
 on:
   push:
@@ -180,22 +185,22 @@ jobs:
           name: tag-request
           path: tag-request
       - name: install the aws CLI (pinned by checksum)
-        run: bash bin/install-scanner.sh aws-cli
+        run: %(AWS)s
       - name: the tag object and the digest the key signs
-        run: python3 -I -B bin/tag-sign.py prepare --tag "$(cat tag-request/tag)" --commit "$GITHUB_SHA" --notes tag-request/notes.md --tagger 'fosterstack release <release@users.noreply.github.com>' --time "$(date +%%s)" --object tag.obj --digest tag.digest
+        run: %(PREP)s
       - name: sign the digest with the release key
         env:
           AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
           AWS_REGION: us-east-1
           RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
-        run: bash bin/with-aws-token.sh kms-sign --key-ref "$RELEASE_KMS_KEY_REF" --digest "$(cat tag.digest)" --out tag.sig --bundle tag.bundle
+        run: %(KMS)s
       - name: assemble the signed tag object
-        run: python3 -I -B bin/tag-sign.py assemble --object tag.obj --signature tag.sig --signer-file .github/policy/release_tag_signer --out signed-tag/tag.signed
+        run: %(ASM)s
       - uses: %(UP)s
         with:
           name: signed-tag
           path: signed-tag
-""" % dict(CHK=CHK, UP=UP, DN=DN))
+""" % dict(CHK=CHK, UP=UP, DN=DN, **RUNS))
 open(w + "/bin/tag-sign.py", "w").write("#!/usr/bin/env python3\n# fixture\n")
 sha = hashlib.sha256(open(w + "/bin/tag-sign.py", "rb").read()).hexdigest()
 json.dump({"scripts": [{"path": "bin/tag-sign.py", "sha256": sha}]}, open(w + "/.github/policy/chain-scripts.json", "w"))
@@ -286,10 +291,10 @@ mut "stage-sign sign-tag names a second key"      $S '(          name: signed-ta
 mut "stage-sign sign-tag has another key reference" $S 'awskms:///alias/fosterstack-release-signing'            'awskms:///alias/other-key'                 'release key'
 mut "stage-sign sign-tag has another role"        $S 'role/fosterstack-cache-release-signing'                   'role/other-role'                           'release role, region and key reference'
 mut "stage-sign sign-tag pushes"                  $S '(      - name: assemble the signed tag object\n)'         '      - run: git push origin HEAD\n\1'      'push'
-mut "stage-sign sign-tag skips the kms call"      $S '      - name: sign the digest with the release key\n.*?(      - name: assemble)' '\1'                      'kms-sign'
+mut "stage-sign sign-tag skips the kms call"      $S '      - name: sign the digest with the release key\n.*?(      - name: assemble)' '\1'                      'steps must be exactly'
 mut "stage-sign sign-tag skips the aws CLI"       $S '      - name: install the aws CLI[^\n]*\n        run: [^\n]*\n' ''                                      'steps must be exactly'
 mut "stage-sign sign-tag assembles before it signs" $S '(      - name: sign the digest with the release key\n.*?)(      - name: assemble the signed tag object\n        run: [^\n]*\n)' '\2\1' 'steps must be exactly'
-mut "stage-sign sign-tag signs another tagger's tag" $S "fosterstack release <release@users.noreply.github.com>" 'Someone <s@example.com>'                 'release tagger'
+mut "stage-sign sign-tag prepare runs another command (the tagger lives in the listed script, the step text is exact)" $S "(      - name: [^\n]*digest the key signs\n        run: )[^\n]*" '\1"python3 bin/tag-sign.py prepare --tagger Someone"' 'steps must be exactly'
 mut "stage-sign sign-tag uploads nothing"         $S '      - uses: actions/upload-artifact@[^\n]*\n        with:\n          name: signed-tag\n          path: signed-tag\n' '' 'steps must be exactly'
 mut "stage-sign sign-tag downloads another artifact than decide uploads" $S '(          name: )tag-request\n          path: tag-request\n' '\1other\n          path: tag-request\n' 'must download the one artifact decide uploads'
 mut "stage-sign sign-tag checkout keeps credentials" $S '          persist-credentials: false'                      '          persist-credentials: true'            'persist-credentials: false'
@@ -300,6 +305,77 @@ mut "id-token-jobs.json lacks release.yml sign-tag" .github/policy/id-token-jobs
 mut "id-token-jobs.json lacks stage-sign.yml sign-tag" .github/policy/id-token-jobs.json ', \{"workflow": "stage-sign.yml", "job": "sign-tag"\}' '' 'stage-sign.yml:sign-tag'
 mut "id-token-jobs.json lists cut"                .github/policy/id-token-jobs.json '\{"workflow": "release.yml", "job": "sign"\}' '{"workflow": "release.yml", "job": "cut"}' 'release.yml:cut'
 mut "chain-scripts.json holds another sha256 for tag-sign.py" .github/policy/chain-scripts.json '"sha256": "[0-9a-f]{8}' '"sha256": "00000000' 'chain-scripts.json'
+# ---- sign-tag is the one job that holds the KMS identity: the shared stage checks (chain-test-signers.py stage_grammar) and the tag jobs judge BOTH apply to its steps ---
+cat > "$work/shared.py" <<'PY'
+import copy, importlib.util, os, sys, yaml
+root = sys.argv[1]
+spec = importlib.util.spec_from_file_location("cts", root + "/bin/chain-test-signers.py"); cts = importlib.util.module_from_spec(spec); spec.loader.exec_module(cts)
+rows, errs, names = cts.load_scripts(root)
+SS = ".github/workflows/stage-sign.yml"
+base = yaml.load(open(os.path.join(root, SS)).read(), Loader=yaml.BaseLoader)
+def refused(d):
+    e, _ = cts.stage_grammar("stage-sign.yml", d, rows, names, SS)
+    return [x for x in e if "sign-tag" in x]
+BASE = refused(base)
+def steps(d): return d["jobs"]["sign-tag"]["steps"]
+def kms(d): return next(s for s in steps(d) if "tag-sign-kms.sh" in str(s.get("run", "")))
+def assemble(d): return next(s for s in steps(d) if "tag-sign.py assemble" in str(s.get("run", "")))
+def checkout(d): return next(s for s in steps(d) if "actions/checkout" in str(s.get("uses", "")))
+def m_ref(d): checkout(d).setdefault("with", {})["ref"] = "refs/heads/other"
+def m_py(d): assemble(d)["run"] = assemble(d)["run"].rstrip("\n") + "\npython3 -I -B bin/unlisted-tool.py"
+def m_py_c(d): steps(d).insert(-1, {"name": "extra", "run": "python3 -c 'import os; os.system(\"id\")'"})
+def m_bash_env(d): kms(d).setdefault("env", {})["BASH_ENV"] = "/tmp/x"
+def m_bash_env_assemble(d): assemble(d).setdefault("env", {})["BASH_ENV"] = "/tmp/x"
+def m_name_env(d): kms(d).setdefault("env", {})["UNLISTED_NAME"] = "x"
+print("OK the real stage-sign.yml is judged by the shared checks (the unmutated file has no sign-tag error)" if not BASE else "FAIL the real stage-sign.yml has sign-tag errors: %s" % BASE[:1])
+for label, mut in (("a checkout of another ref (with: ref)", m_ref), ("an unlisted python command in a run: line", m_py), ("an unlisted python3 -c step", m_py_c),
+                   ("BASH_ENV set in the kms step's env", m_bash_env), ("BASH_ENV set in the assemble step's env", m_bash_env_assemble), ("an env name outside the closed list", m_name_env)):
+    d = copy.deepcopy(base); mut(d); new = [x for x in refused(d) if x not in BASE]
+    print(("OK sign-tag with %s is refused by the shared step checks and the tag jobs judge (%s)" % (label, new[0][:80])) if new else "FAIL sign-tag with %s passes every judge" % label)
+PY
+while IFS= read -r l; do case "$l" in OK\ *) ok "${l#OK }";; *) bad "${l#FAIL }";; esac; done < <(python3 "$work/shared.py" "$root" 2>&1)
+# ---- one concurrency group covers decide, sign-tag and cut, for main runs only (a second run must not decide the version the first has not pushed) ----------------
+cat > "$work/group.py" <<'PY'
+import re, sys, yaml
+def errors(text):
+    d = yaml.safe_load(text); jobs = d.get("jobs") or {}; e = []
+    top = d.get("concurrency")
+    if not isinstance(top, dict): e.append("the workflow has no concurrency group of its own: decide, sign-tag and cut must run under ONE group (a group on decide alone lets a second run decide the version before the first has pushed it)")
+    else:
+        g = str(top.get("group", ""))
+        if "refs/heads/main" not in g or "github.run_id" not in g: e.append("the group must be one name for main runs and a name unique to the run for every other ref (refs/heads/main and github.run_id in the expression): %r" % g)
+        if top.get("cancel-in-progress") is not False: e.append("cancel-in-progress must be false (a decided version is never cancelled): %r" % top.get("cancel-in-progress"))
+    for jn in ("decide", "sign-tag", "cut"):
+        if "concurrency" in (jobs.get(jn) or {}): e.append("the job %s has a concurrency group of its own, which splits the one group" % jn)
+    reads = [jn for jn, j in jobs.items() for st in (j.get("steps") or []) if re.search(r"git for-each-ref [^\n]*refs/tags/v\*|git tag (-l|--list)\b|ls-remote [^\n]*--tags", str(st.get("run", "")))]
+    if "decide" not in reads: e.append("decide does not read the tag list")
+    if [r for r in reads if r not in ("decide", "sign-tag", "cut")]: e.append("the tag list is read outside the group: %s" % sorted(set(reads)))
+    return e
+real = open(sys.argv[1]).read()
+e = errors(real)
+print("OK the real release.yml runs decide, sign-tag and cut under one main-only group, the tags read inside it" if not e else "FAIL the real release.yml: %s" % "; ".join(x[:110] for x in e))
+# the judge is proven on a good file made from the real one, then on mutants of it (a judge that cannot fail shows nothing)
+good = real
+m = re.search(r"^concurrency:\n  group: [^\n]*\n  cancel-in-progress: false\n", good, re.M)
+if not m:      # no workflow-level block yet: the good file is the real one with a main-only block made from it (a judge is proven on a good file first)
+    good = re.sub(r"\n    concurrency:\n      group: patch-decide\n      cancel-in-progress: false\n", "\n", real)
+    good = good.replace("\njobs:\n", "\nconcurrency:\n  group: ${{ github.ref == 'refs/heads/main' && 'patch-release' || github.run_id }}\n  cancel-in-progress: false\njobs:\n", 1)
+    m = re.search(r"^concurrency:\n  group: [^\n]*\n  cancel-in-progress: false\n", good, re.M)
+GRP = m.group(0)
+ge = errors(good)
+print("OK the group judge accepts a main-only workflow-level group" if not ge else "FAIL the group judge refuses a good file: %s" % ge[:2])
+muts = (("a group shared by every ref", lambda t: t.replace(GRP, "concurrency:\n  group: patch-release\n  cancel-in-progress: false\n")),
+        ("a group that cancels", lambda t: t.replace(GRP, GRP.replace("cancel-in-progress: false", "cancel-in-progress: true"))),
+        ("no group at all", lambda t: t.replace(GRP, "")),
+        ("decide with a group of its own", lambda t: t.replace("  decide:\n", "  decide:\n    concurrency:\n      group: patch-decide\n", 1)),
+        ("sign-tag with a group of its own", lambda t: t.replace("  sign-tag:\n", "  sign-tag:\n    concurrency:\n      group: other\n", 1)),
+        ("cut with a group of its own", lambda t: t.replace("  cut:\n", "  cut:\n    concurrency:\n      group: other\n", 1)),
+        ("the tag list read in another job", lambda t: t.replace("  patch-notes:\n", "  patch-notes:\n    env:\n      X: y\n", 1).replace("          git fetch --no-tags origin \"+refs/tags/${VERSION}:refs/tags/${VERSION}\"", "          git tag -l\n          git fetch --no-tags origin \"+refs/tags/${VERSION}:refs/tags/${VERSION}\"", 1)))
+for label, f in muts:
+    t = f(good); me = errors(t)
+    print(("OK %s is refused (%s)" % (label, me[0][:70])) if t != good and me else "FAIL %s passes the group judge (or did not apply)" % label)
+PY
+while IFS= read -r l; do case "$l" in OK\ *) ok "${l#OK }";; *) bad "${l#FAIL }";; esac; done < <(python3 "$work/group.py" "$root/.github/workflows/release.yml" 2>&1)
 # ---- the real repository ------------------------------------------------------------------------------------------------------------
 out=$(python3 "$work/judge.py" "$root" 2>&1) && ok "the real release.yml, stage-sign.yml and policy lists carry the tag jobs as the rules say" || {
   n=0; while IFS= read -r l; do n=$((n + 1)); bad "real repository: $l"; done < <(tr ';' '\n' <<< "$out" | sed 's/^ //'); [ "$n" -gt 0 ] || bad "real repository: $out"; }
