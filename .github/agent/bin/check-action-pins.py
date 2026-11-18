@@ -1897,12 +1897,13 @@ def _reads():
 
 def _scan_shell(text):
     """(kinds, nl_in_quote, open_quote): `kinds` has one letter per character of `text`: `c` code, `d` a quote mark, `q`
-    quoted content, `e` a backslash and the character it escapes, `k` a comment. Quote state nests inside `$( )`, `${ }`,
-    backticks and `<( )` / `>( )`, so a quote inside one never changes the quote around it. A `#` opens a comment only at
+    quoted content, `e` a backslash and the character it escapes, `k` a comment, `w` a `#`, `(`, `)`, `<` or `>` of `${ }` word text (no comment, no group).
+    Quote state nests inside `$( )`, `${ }`, backticks and `<( )` / `>( )`, so a quote inside one never changes the quote
+    around it. A backtick substitution ends at the next unescaped backtick, scanned on its own. A `#` opens a comment only at
     the start of a word: after a blank, newline, `;`, `&`, `|`, `(`, `)`, `<` or `>`, never after an escaped character, a
     closed quote or a closed expansion (`\\;#x`, `$(x)#y`), and a backslash-newline is no word break. open_quote is True
-    when a quote or an expansion is still open at the end."""
-    n, q, i, prev, nl = len(text), None, 0, None, False
+    when a quote or an expansion is still open at the end (a script like that grants no trust)."""
+    n, q, i, prev, nl, unread = len(text), None, 0, None, False, False
     kinds, stack = ["c"] * n, []
     while i < n:
         c = text[i]
@@ -1917,11 +1918,12 @@ def _scan_shell(text):
             prev = prev if text[i + 1] == "\n" else "W"
             i += 1
         elif c == "`":
-            if stack and stack[-1][0] == "`":
-                q, prev = stack.pop()[1], "W"
-            else:
-                stack.append(("`", q))
-                q = None
+            j = i + 1
+            while j < n and text[j] != "`":
+                j += 2 if text[j] == "\\" else 1
+            inner, inner_nl, inner_open = _scan_shell(text[i + 1:j])
+            kinds[i + 1:j] = inner
+            nl, unread, prev, i = nl or inner_nl, unread or inner_open or j >= n, "W", j
         elif c == "$" and text[i + 1:i + 2] in ("(", "{"):
             stack.append((text[i + 1], q))
             q, prev = None, text[i + 1]
@@ -1932,6 +1934,8 @@ def _scan_shell(text):
                 q, prev = None, c
         elif c in "'\"":
             kinds[i], q = "d", c
+        elif stack and stack[-1][0] == "{" and c in "#()<>":
+            kinds[i], prev = "w", c     # inside ${ }: word text, no comment and no group
         elif c in "<>" and text[i + 1:i + 2] == "(":
             stack.append(("(", None))
             prev = "("
@@ -1953,7 +1957,7 @@ def _scan_shell(text):
         else:
             prev = c
         i += 1
-    return kinds, nl, q is not None or any(k != "p" for k, _ in stack)
+    return kinds, nl, unread or q is not None or bool(stack)
 
 
 def _join_outside_comments(text):
@@ -1989,7 +1993,7 @@ def _mask_shell(text, info=None):
     if nl and info is not None:
         info["nl_in_quote"] = True
     nc = [" " if k == "k" else c for c, k in zip(text, kinds)]
-    bl = [" " if k in "kqe" and c != "\n" else c for c, k in zip(text, kinds)]
+    bl = ["_" if k == "w" else " " if k in "kqe" and c != "\n" else c for c, k in zip(text, kinds)]
     return "".join(nc), "".join(bl), open_quote
 
 
@@ -2068,8 +2072,10 @@ def _setter_values(name, script):
     pat = re.compile(r"(?<![^\s;&|(])" + name + r"=(?:\"((?:\\.|[^\"\\])*)\"|'([^']*)'|((?:\\.|[^\s\"';)&|\\])*))"
                      r"|(?<![^\s;&|(])#[^\n]*|\"(?:\\.|[^\"\\])*\"|'[^']*'|(?:\\.|\$\{[^}]*\}|[^\s;&|()\"'\\])+")
     _, masked, open_quote = _mask_shell(script)
+    if open_quote:
+        return []                           # a script that cannot be read grants no setter (never a trust)
     return [m.group(m.lastindex) for m in pat.finditer(script)
-            if m.lastindex and (open_quote or not _subshell_setter(masked, m))]
+            if m.lastindex and not _subshell_setter(masked, m)]
 
 
 _SH_WORD = r"(?:\"[^\"]*\"|'[^']*'|[^\s;&|()<>\"'])+"         # a word of masked text: no pattern splits it two ways
