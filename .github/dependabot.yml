@@ -61,8 +61,8 @@ updates:
           - "patch"
 
   # The pinned Go source scanner of the release chain's Check stage (advisor Oct 12, ruling G): tools/govulncheck is its own module (go.mod and go.sum are the pin), so a
-  # new version reaches it through this reviewed path. Dependabot moves go.mod and go.sum; ci.yml's `go install
-  # golang.org/x/vuln/cmd/govulncheck@vX` is by hand, and bin/chain-install-witness-test.sh is red until the two agree (so a bump cannot merge half done).
+  # new version reaches it through this reviewed path. Dependabot moves go.mod and go.sum; ci.yml, auditor.yml and release.yml all build it
+  # with `bash bin/install-scanner.sh govulncheck`, which reads that pin, so no workflow names a version by hand.
   - package-ecosystem: "gomod"
     directory: "/tools/govulncheck"
     schedule:
