@@ -12,7 +12,9 @@
     "scope: 'push' means the check runs on main commits and release",
     "admission requires it green on the exact tagged SHA; 'pull_request'",
     "means it only ever runs on PRs, so admission requires it green on",
-    "the head of the merged PR that produced the tagged commit (F02)."
+    "the head of the merged PR that produced the tagged commit (F02).",
+    "promotion_checks are the full suite (REQ-CI-007-AC2): admission requires each green on the exact tagged commit for a",
+    "release-candidate tag only, as a schedule or dispatch run of the one workflow file bin/build-admit.py binds it to."
   ],
   "required_checks": [
     {
@@ -47,6 +49,23 @@
     },
     {
       "context": "requirements",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "reproducibility",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "scan",
+      "integration_id": 15368,
+      "scope": "push"
+    }
+  ],
+  "promotion_checks": [
+    {
+      "context": "analyze (go)",
       "integration_id": 15368,
       "scope": "push"
     },

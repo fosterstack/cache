@@ -61,11 +61,7 @@ BOUND_CONTEXTS = (
     ("analyze (go)", "codeql.yml"),
     ("reproducibility", "scan.yml"),
     ("scan", "scan.yml"),
-    ("allowlist-persona", "full-suite.yml"),
     ("allowlist-chain", "full-suite.yml"),
-    ("allowlist-pins-auditor", "full-suite.yml"),
-    ("coverage", "full-suite.yml"),
-    ("fips140-only", "full-suite.yml"),
     ("acceptance / *", "full-suite.yml"),
 )
 BOUND_EVENTS = ("schedule", "workflow_dispatch")

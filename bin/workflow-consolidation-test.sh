@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-008-AC1, REQ-REL-008-AC2, REQ-REL-008-AC3, REQ-REL-014-AC1
+# proves: REQ-REL-008-AC1, REQ-REL-008-AC2, REQ-REL-008-AC3, REQ-REL-014-AC1, REQ-CI-007-AC1
 # The ratified workflow consolidation (owner, Oct 2): go-freshness.yml keeps the freshness check on its daily schedule (and on a
 # dispatch) and nothing else: the weekly persona-uat cron moved to persona-uat.yml (REQ-UAT-001-AC6, owner rule workflow-grouped-by-purpose,
 # Nov 13). The real workflow must pass; each mutated copy must be caught.
@@ -98,24 +98,39 @@ if not os.path.exists(os.path.join(root, ".github/workflows/dependabot-auto-merg
 # every required or release-only check is produced by a top-level job of some workflow, on its scope's event
 names = {}
 for wf in glob.glob(os.path.join(root, ".github/workflows/*.yml")):
-    w = d if os.path.basename(wf) == "ci.yml" else yaml.load(open(wf), Loader=yaml.BaseLoader)
+    base = os.path.basename(wf)
+    w = d if base == "ci.yml" else yaml.load(open(os.environ.get("FULL_SUITE", wf) if base == "full-suite.yml" else wf), Loader=yaml.BaseLoader)
     on = w.get("on") or {}
     events = set(on) if isinstance(on, dict) else {on}
+    if base == "full-suite.yml" and events != {"schedule", "workflow_dispatch"}:
+        bad.append("full-suite.yml's events are not schedule and workflow_dispatch alone (REQ-CI-007-AC1): %s" % sorted(events))
     for jid, j in (w.get("jobs") or {}).items():
-        if "uses" in j:
-            continue
-        name = j.get("name") or jid
-        axes = ((j.get("strategy") or {}).get("matrix") or {}).values()
-        values = next(iter(axes), [])   # a matrix job is named per value of its first axis
-        for rendered in [f"{name} ({v})" for v in values] or [name]:
-            names.setdefault(rendered, set()).update(events)
-for policy_file in ("required-checks.json", "release-only-checks.json"):
-    for rc in json.load(open(os.path.join(root, ".github/policy", policy_file)))["required_checks"]:
-        ev = "push" if rc["scope"] == "push" else "pull_request"
+        called = j.get("uses", "")
+        if called:   # a called workflow's jobs report as "<calling job> / <job>"
+            inner = yaml.load(open(os.path.join(root, called)), Loader=yaml.BaseLoader) if called.startswith("./") else {}
+            jobs_here = [(j.get("name") or jid, i) for i in (inner.get("jobs") or {}).values()]
+        else:
+            jobs_here = [("", j)]
+        for prefix, k in jobs_here:
+            name = (prefix + " / " if prefix else "") + (k.get("name") or jid)
+            axes = ((k.get("strategy") or {}).get("matrix") or {}).values()
+            values = next(iter(axes), [])   # a matrix job is named per value of its first axis
+            for rendered in [f"{name} ({v})" for v in values] or [name]:
+                names.setdefault(rendered, set()).update(events)
+pol = json.load(open(os.path.join(root, ".github/policy/required-checks.json")))
+for rc in pol["required_checks"]:
+    ev = "push" if rc["scope"] == "push" else "pull_request"
+    if ev not in names.get(rc["context"], set()):
+        bad.append("required check %r is no longer produced on %s" % (rc["context"], ev))
+# a promotion or release-only check is made on main, nightly or by dispatch (the full suite), never only by a pull request
+lists = [("promotion_checks", pol["promotion_checks"]),
+         ("release-only-checks.json", json.load(open(os.path.join(root, ".github/policy/release-only-checks.json")))["required_checks"])]
+for where, entries in lists:
+    for rc in entries:
         if rc["integration_id"] != 15368:
             continue                                # the review gate's App check, published by the App, not a job
-        if ev not in names.get(rc["context"], set()):
-            bad.append("required check %r is no longer produced on %s" % (rc["context"], ev))
+        if not {"push", "schedule", "workflow_dispatch"} & names.get(rc["context"], set()):
+            bad.append("%s %r is no longer produced on main, nightly or by dispatch" % (where, rc["context"]))
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -147,7 +162,27 @@ case_ci concurrency-other-job    bad "d['jobs']['allowlist']['concurrency'] = {'
 case_ci merge-group-back         bad "d['on']['merge_group'] = ''"
 case_ci events-changed           bad "d['on'].pop('pull_request')"
 case_ci required-check-gone      bad "d['jobs']['lint']['name'] = 'lint-go'"
-case_ci release-only-check-gone  bad "d['jobs']['allowlist-chain']['name'] = 'chain'"
+# the release-only checks are made by full-suite.yml: the same judge over a copy edited by python (FULL_SUITE)
+case_full() {
+  local f="$work/full-$1.yml"
+  cp "$root/.github/workflows/full-suite.yml" "$f"
+  python3 - "$f" "$3" <<'PY' || :
+import sys, yaml
+p, edit = sys.argv[1], sys.argv[2]
+d = yaml.load(open(p), Loader=yaml.BaseLoader)
+exec(edit)
+yaml.safe_dump(d, open(p, "w"), sort_keys=False)
+PY
+  if out=$(FULL_SUITE="$f" judge_ci "$root/.github/workflows/ci.yml"); then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS full:$1 → $got ($out)"
+  else failn=$((failn+1)); echo "FAIL full:$1 → $got, want $2 ($out)"; fi
+}
+case_full real                      ok  "pass"
+case_full release-only-check-gone   bad "d['jobs']['allowlist-chain']['name'] = 'chain'"
+case_full acceptance-call-gone      bad "d['jobs'].pop('acceptance')"
+case_full acceptance-call-renamed   bad "d['jobs']['acceptance']['name'] = 'accept'"
+case_full push-added                bad "d['on']['push'] = {'branches': ['main']}"
+case_full pull-request-added        bad "d['on']['pull_request'] = ''"
 
 # ---------------------------------------------------------------------------------------------------------------------
 # PR 3 of 4: main-candidate-rescan.yml absorbs daily-rescan.yml under its ONE schedule (the auditor finds its run by this
@@ -176,7 +211,7 @@ for gone in ("daily-rescan.yml", "rescan-v010.yml"):
 # REQ-CHAIN-004-AC14 / REQ-CHAIN-003-AC5: the one build path. Its job build calls release.yml with exactly `with: mode: snapshot` (no other input, secrets, if or needs),
 # under the called file's permission set as a static ceiling; no job calls a stage-*.yml file
 b = jobs.get("build") or {}
-CEILING = {"contents": "write", "packages": "write", "id-token": "write", "issues": "write", "checks": "read", "statuses": "read", "pull-requests": "read"}
+CEILING = {"contents": "write", "packages": "write", "id-token": "write", "issues": "write", "actions": "read", "checks": "read", "statuses": "read", "pull-requests": "read"}
 if b.get("uses") != "./.github/workflows/release.yml" or b.get("with") != {"mode": "snapshot"}:
     bad.append("the build job is not a snapshot call of release.yml: %s" % {k: b.get(k) for k in ("uses", "with")})
 if b.get("permissions") != CEILING:
@@ -254,15 +289,15 @@ case_rescan digest-interpolated   bad "s=[x for x in d['jobs']['rescan']['steps'
 # ---------------------------------------------------------------------------------------------------------------------
 # PR 4 of 4: acceptance-gradle.yml + acceptance-maven.yml -> acceptance.yml (REQ-REL-008-AC2), later one job `acceptance` that runs
 # the Gradle suite, then the Maven suite once per extension version (1.2.0, 1.2.3); maven's scenario environment sits on the step that
-# runs it. The workflow is not callable (release.yml does not call it, see REQ-CHAIN-006-AC10 below) and has no outputs.
+# runs it. The workflow is called only, by full-suite.yml (release.yml does not call it, see REQ-CHAIN-006-AC10 below), and has no outputs.
 judge_acc() { python3 - "$1" "$root" <<'PY'
 import os, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
 on = d.get("on") or {}
-if on.get("push") != {"branches": ["main"]} or "pull_request" in on or "workflow_call" in on:
-    bad.append("acceptance.yml's events changed: %s" % list(on))
+if list(on) != ["workflow_call"]:
+    bad.append("acceptance.yml's events are not workflow_call alone (REQ-CI-007-AC1): %s" % list(on))
 jobs = d.get("jobs") or {}
 a = jobs.get("acceptance") or {}
 if list(jobs) != ["acceptance"] or a.get("name") != "acceptance" or a.get("permissions") != {"contents": "read"} or "strategy" in a or "outputs" in a:
@@ -306,10 +341,12 @@ case_acc real                  ok  ""
 case_acc renamed               bad "d['jobs']['acceptance']['name'] = 'gradle'"
 case_acc maven-version-cut     bad "[s.__setitem__('run', s['run'].replace('1.2.0 1.2.3', '1.2.3')) for s in d['jobs']['acceptance']['steps'] if 'bin/acceptance-maven.sh' in (s.get('run') or '')]"
 case_acc env-at-top            bad "d['env'] = {'COLD_LOOKUPS': '2'}"
-case_acc workflow-call-back    bad "d['on']['workflow_call'] = ''"
+case_acc push-trigger-back     bad "d['on']['push'] = {'branches': ['main']}"
+case_acc workflow-call-lost    bad "d['on'].pop('workflow_call')"
 case_acc results-id-back       bad "d['jobs']['acceptance']['steps'][-2]['id'] = 'results'"
 case_acc job-split-again       bad "d['jobs']['acceptance-gradle'] = d['jobs']['acceptance']"
 case_acc pr-trigger-back       bad "d['on']['pull_request'] = ''"
+case_acc dispatch-added        bad "d['on']['workflow_dispatch'] = ''"
 
 # ---------------------------------------------------------------------------------------------------------------------
 # PR 5: release-chain-pr.yml -> scan.yml (REQ-REL-008-AC2; advisor read-back 0062). One build feeds both: scan's own
@@ -324,9 +361,11 @@ bad = []
 def nopr(x):   # the ratified job condition of REQ-REL-014: the job does not run on a pull request
     return re.sub(r"\$\{\{|\}\}|\s", "", str(x)) == "github.event_name!='pull_request'"
 on = d.get("on") or {}
-# exactly: an unfiltered pull_request (no types, branches, paths filter), pushes to main and v* tags (Codex #162 pin, R78-B1)
-if on != {"pull_request": "", "push": {"branches": ["main"], "tags": ["v*"]}}:
-    bad.append("scan.yml's events changed (pull requests, pushes to main and v* tags): %s" % on)
+# exactly: an unfiltered pull_request (no types, branches, paths filter), pushes to main and v* tags (Codex #162 pin, R78-B1), one nightly
+# schedule and workflow_dispatch (REQ-CI-007-AC1: a release-candidate commit's scan is a schedule or dispatch run)
+if sorted(on) != ["pull_request", "push", "schedule", "workflow_dispatch"] or on["pull_request"] != "" or on["push"] != {"branches": ["main"], "tags": ["v*"]} \
+        or on["workflow_dispatch"] != "" or len(on["schedule"]) != 1 or not str(on["schedule"][0].get("cron", "")).strip():
+    bad.append("scan.yml's events changed (pull requests, pushes to main and v* tags, one schedule, workflow_dispatch): %s" % on)
 jobs = d.get("jobs") or {}
 builds = [j for j, v in jobs.items() if v.get("uses") == "./.github/workflows/release.yml"]
 if builds != ["build"]:
@@ -344,7 +383,7 @@ if (jobs.get("build") or {}).get("with") != {"mode": "snapshot"}:
 if "rebuild" in jobs:
     bad.append("scan.yml still has a rebuild job: release.yml's Rebuild jobs run in the one snapshot call")
 # the call's permissions are the STATIC CEILING of the called file's set, in both directions (REQ-CHAIN-004-AC14)
-CEILING = {"contents": "write", "packages": "write", "id-token": "write", "issues": "write", "checks": "read", "statuses": "read", "pull-requests": "read"}
+CEILING = {"contents": "write", "packages": "write", "id-token": "write", "issues": "write", "actions": "read", "checks": "read", "statuses": "read", "pull-requests": "read"}
 if (jobs.get("build") or {}).get("permissions") != CEILING:
     bad.append("the build call's permissions are not exactly the called file's set (the ceiling): %s" % (jobs.get("build") or {}).get("permissions"))
 r = jobs.get("reproducibility") or {}
@@ -453,24 +492,24 @@ case_scan workflow-env-path      bad "d['env'] = {'PATH': '/tmp/evil:/usr/bin:/b
 case_scan repro-self-hosted      bad "d['jobs']['reproducibility']['runs-on'] = 'self-hosted'"
 
 # ---------------------------------------------------------------------------------------------------------------------
-# REQ-REL-008-AC1 (owner RATIFIED Oct 2; amended by the owner rule workflow-grouped-by-purpose, Nov 13): the workflow directory holds exactly the 16 ratified files and
+# REQ-REL-008-AC1 (owner RATIFIED Oct 2; amended by the owner rule workflow-grouped-by-purpose, Nov 13): the workflow directory holds exactly the 17 ratified files and
 # nothing else, so no workflow sprawls. The release is the one file release.yml: no stage-*.yml file exists. persona-uat.yml holds the persona UAT jobs (one purpose);
 # codeql.yml stays (owner rule ci-trim-keeps-codeql). evidence-letter.yml is not in the set.
 ratified="acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml customer-words-edited.yml dependabot-auto-merge.yml
-dependabot-reviewer.yml go-freshness.yml main-candidate-rescan.yml persona-uat.yml release.yml reserved-branch-guard.yml scan.yml
+dependabot-reviewer.yml full-suite.yml go-freshness.yml main-candidate-rescan.yml persona-uat.yml release.yml reserved-branch-guard.yml scan.yml
 scorecard.yml supply-chain.yml"
 judge_set() {  # $1: the directory's entries as a JSON list (every entry, not only *.yml)
   python3 - "$1" "$ratified" <<'PY'
 import json, sys
 got, want = json.loads(sys.argv[1]), sys.argv[2].split()
-if len(want) != 16:
-    print("the ratified list is not 16 files (owner rule workflow-grouped-by-purpose, Nov 13)")
+if len(want) != 17:
+    print("the ratified list is not 17 files (owner rule workflow-grouped-by-purpose, Nov 13)")
     sys.exit(1)
 odd = [n for n in got if "\n" in n or "/" in n]
 extra, missing = sorted(set(got) - set(want)), sorted(set(want) - set(got))
 stage = sorted(n for n in got if n.startswith("stage-"))
 if odd or extra or missing or stage or len(got) != len(set(got)):
-    print("extra: %s missing: %s odd names: %s stage files: %s (the list is REQ-REL-008-AC1: 16 files, no stage-*.yml, "
+    print("extra: %s missing: %s odd names: %s stage files: %s (the list is REQ-REL-008-AC1: 17 files, no stage-*.yml, "
           "owner rule workflow-grouped-by-purpose of Nov 13)" % (extra, missing, odd, stage)); sys.exit(1)
 print("ok")
 PY
@@ -499,6 +538,7 @@ case_set one-missing   bad "$(edit_set 's.remove("go-freshness.yml")')"
 case_set newline-name  bad "$(edit_set 's.remove("go-freshness.yml"); s.remove("scorecard.yml"); s.append("go-freshness.yml\nscorecard.yml")')"
 case_set codeql-missing bad "$(edit_set 's.remove("codeql.yml")')"
 case_set persona-uat-missing bad "$(edit_set 's.remove("persona-uat.yml")')"
+case_set full-suite-missing bad "$(edit_set 's.remove("full-suite.yml")')"
 case_set back-to-old   bad "$(edit_set 's.remove("acceptance.yml"); s.append("acceptance-gradle.yml")')"
 for stage in stage-build.yml stage-sign.yml stage-verify.yml stage-promote.yml stage-reproducibility.yml; do
   case_set "$stage-back" bad "$(edit_set "s.append('$stage')")"

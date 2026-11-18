@@ -297,7 +297,7 @@ mkbase() { # base fixture in $W/base: origin.git + repo with main, a signed tagg
   printf \
       '{"required_checks":[{"context":"ci","integration_id":15368,"scope":"push"},{"context":"review","integration_id":15368,"scope":"pull_request"}],"promotion_checks":[{"context":"scan","integration_id":15368,"scope":"push"},{"context":"analyze (go)","integration_id":15368,"scope":"push"}]}\n' \
       > .github/policy/required-checks.json
-  printf '{"required_checks":[{"context":"allowlist-persona","integration_id":15368,"scope":"push"}]}\n' > .github/policy/release-only-checks.json
+  printf '{"required_checks":[{"context":"allowlist-chain","integration_id":15368,"scope":"push"}]}\n' > .github/policy/release-only-checks.json
   cp "$root/bin/admission-tag-signer.py" bin/; printf '#!/bin/sh\nexit 0\n' > bin/install-scanner.sh
   # gate 7: main's judge, its helper and the writers policy (build-admit.py reads them from origin/main, never from the tagged commit)
   cp "$root/bin/audit-record.py" "$root/bin/audit-record-judge.sh" bin/; cp "$root/.github/policy/audit-writers.json" .github/policy/
@@ -344,7 +344,7 @@ def url(rid): return "https://github.com/fosterstack/cache/actions/runs/%d/job/1
 def w(path, obj): open(d + "/" + path.replace("/", "_") + ".json", "w").write(json.dumps(obj))
 w("repos/fosterstack/cache/commits/%s/check-runs" % sha,
   {"check_runs": [{"name": "ci", "conclusion": "success", "app": {"id": 15368}, "id": 11, "head_sha": sha},
-                  {"name": "allowlist-persona", "conclusion": "success", "app": {"id": 15368}, "id": 15, "head_sha": sha, "details_url": url(9015)},
+                  {"name": "allowlist-chain", "conclusion": "success", "app": {"id": 15368}, "id": 15, "head_sha": sha, "details_url": url(9015)},
                   {"name": "scan", "conclusion": "success", "app": {"id": 15368}, "id": 16, "head_sha": sha, "details_url": url(9016)},
                   {"name": "analyze (go)", "conclusion": "success", "app": {"id": 15368}, "id": 17, "head_sha": sha, "details_url": url(9017)}]})
 for rid, wf in ((9015, "full-suite.yml"), (9016, "scan.yml"), (9017, "codeql.yml")):  # the workflow runs behind the bound checks
@@ -534,10 +534,10 @@ if [ -f "$W/c/repo/admission.json" ]; then
          and (.required_checks|length==3) and (.informational_statuses|length==1) and .baseline_version=="v0.3.0"
          and (.baseline=="requirements/releases/v0.3.0.yaml") and (.run.id==1) and (.run.attempt==1)' "$A" > /dev/null \
     && ok \
-        "AC4 admission.json records the tag, sha, signer evidence, the three verified checks (ci, review and the release-only allowlist-persona) with their sources, the informational statuses, the baseline and the run" \
+        "AC4 admission.json records the tag, sha, signer evidence, the three verified checks (ci, review and the release-only allowlist-chain) with their sources, the informational statuses, the baseline and the run" \
         || bad "AC4 admission.json content: $(head -c 300 "$A")"
   jq -e '[.required_checks[].source]|sort==["check-run-on-merged-pr-head","check-run-on-tagged-sha","check-run-on-tagged-sha"]' "$A" > /dev/null && ok \
-      "AC4 the three checks are recorded with their evidence source: ci and allowlist-persona on the tagged sha, review on the merged PR head" || bad "AC4 required_checks sources"
+      "AC4 the three checks are recorded with their evidence source: ci and allowlist-chain on the tagged sha, review on the merged PR head" || bad "AC4 required_checks sources"
   ! grep -rq SENTINEL-GH-TOKEN "$A" "$W/c/out" "$W/c/err" && ok "AC4 the GitHub token appears in no output or evidence" || bad \
       "AC4 the token leaked into output"
   cp "$A" "$W/c/first.json";
@@ -891,21 +891,21 @@ import json, sys
 d = json.load(open(sys.argv[1])); assert d["informational_statuses"] and all(c["conclusion"] == "success" for c in d["required_checks"])
 PY
 # ---- release-only-checks.json: admission requires its contexts green too (REQ-REL-013-AC1) ---------------------------------------------
-ro_edit() { # ro_edit red|missing|wrong-app : change the allowlist-persona check-run of the tagged commit; ci stays green
+ro_edit() { # ro_edit red|missing|wrong-app : change the allowlist-chain check-run of the tagged commit; ci stays green
   python3 - "$W/c/gh/repos_fosterstack_cache_commits_${SHAC}_check-runs.json" "$1" <<'PY'
 import json, sys
 f, mode = sys.argv[1:3]; j = json.load(open(f))
-if mode == "missing": j["check_runs"] = [c for c in j["check_runs"] if c["name"] != "allowlist-persona"]
+if mode == "missing": j["check_runs"] = [c for c in j["check_runs"] if c["name"] != "allowlist-chain"]
 for c in j["check_runs"]:
-    if c["name"] == "allowlist-persona" and mode == "red": c["conclusion"] = "failure"
-    if c["name"] == "allowlist-persona" and mode == "wrong-app": c["app"]["id"] = 99
+    if c["name"] == "allowlist-chain" and mode == "red": c["conclusion"] = "failure"
+    if c["name"] == "allowlist-chain" and mode == "wrong-app": c["app"]["id"] = 99
 json.dump(j, open(f, "w"))
 PY
 }
 fresh; run_admit; expect_ok "AC1 release-only: every context of required-checks.json and of release-only-checks.json green, admission succeeds"
 for m in "red|a red release-only check" "missing|a release-only check that did not run" "wrong-app|a release-only check from another app than the pinned integration"; do
   IFS='|' read -r mode label <<< "$m"; fresh; ro_edit "$mode"; run_admit
-  expect_refuse "AC1 release-only: $label is refused at required-checks and names the check" required-checks allowlist-persona
+  expect_refuse "AC1 release-only: $label is refused at required-checks and names the check" required-checks allowlist-chain
 done
 fresh; edit_gh failed; run_admit; expect_refuse "AC1 release-only: a red context of required-checks.json still refuses while the release-only one is green" required-checks ci
 fresh; G checkout -q main; G rm -q .github/policy/release-only-checks.json
@@ -1207,7 +1207,7 @@ rcfresh() { # rcfresh [FILE PYCODE] : the release candidate tag v0.3.0-rc2 (no m
   G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "rc2 baseline"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
   G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.0-rc2 -m "$APPROVAL" v0.3.0-rc2; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; mkfreeze; }
 rc_admit() { run_admit GITHUB_REF=refs/tags/v0.3.0-rc2 GITHUB_REF_NAME=v0.3.0-rc2; }
-PS=allowlist-persona; FS=full-suite.yml; MISSING="schedule or dispatch run of $FS"
+PS=allowlist-chain; FS=full-suite.yml; MISSING="schedule or dispatch run of $FS"
 # 1. the three lists must be non-empty (policy edits run on a release candidate tag: a final tag's chain bytes cover the policy files)
 rcfresh $RC_F 'del d["promotion_checks"]'; rc_admit
 expect_refuse "AC19 required-checks.json with no promotion_checks list is refused at required-checks, naming the file" required-checks required-checks.json

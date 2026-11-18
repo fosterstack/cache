@@ -1,12 +1,12 @@
 name: Acceptance
 
-# The client acceptance suites: Gradle, then Maven once per extension version (1.2.0, 1.2.3), in the one required job `acceptance`.
-# Push to main runs them from source. The release chain does not call this file (REQ-CHAIN-006-AC10): Check runs
-# the suites through bin/check-acceptance.sh, and this file starts no container image (REQ-SUP-001-AC29).
+# The client acceptance suites: Gradle, then Maven once per extension version (1.2.0, 1.2.3), in the one job `acceptance`.
+# It is called only, by full-suite.yml, which runs it from source before a release-candidate tag and nightly. The release chain
+# does not call this file (REQ-CHAIN-006-AC10): Check runs the suites through bin/check-acceptance.sh, and this file starts no
+# container image (REQ-SUP-001-AC29).
 
 on:
-  push:
-    branches: [main]
+  workflow_call:
 
 # A pull request's FIRST run attempt of this workflow shares a group with the pull request's other first attempts, so a newer push cancels its older run. Every other run (whatever
 # its event, and any re-run of any head) gets a group of its own per run and attempt: it is never cancelled, never replaced as a pending run, and a re-run of an old head cancels

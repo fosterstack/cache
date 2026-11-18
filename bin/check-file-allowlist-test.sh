@@ -59,7 +59,7 @@ case "$anch" in *UNANCHORED*) gf "every pattern is anchored with ^ and \$" "$anc
 # (A) every pattern line is exactly  two-space-indent, single-quoted, one pattern, optional trailing comment; the
 #     number of such lines equals ${#ALLOW_PATTERNS[@]}+${#SUPPRESSION_PATTERNS[@]} as bash loads them; no
 #     pattern has a top-level '|'; the only ALLOW_PATTERNS+= is the known suppression append.
-# (B) the v0.3.0 region admits an EXACT, declared set of 86 paths: only literals, \. , (a|b) groups and (x)?
+# (B) the v0.3.0 region admits an EXACT, declared set of 90 paths: only literals, \. , (a|b) groups and (x)?
 #     groups; no * + [ ] { } or bare '.'; the union of every pattern's finite expansion equals the declared list.
 struct_check() {
   local f="$1" loaded
@@ -113,12 +113,12 @@ bin/archive-push.sh bin/archive-pull.sh bin/archive-verify.py
 .github/release-identity.json
 docs/verify-release.md docs/verify-release.cannot-run.json bin/verify-release-guide-test.sh bin/verify-key-page-test.sh
 bin/build-apk-helper.py build/sealed-env.json
-bin/layout-archive.sh bin/layout-archive-test.sh
+bin/layout-archive.sh bin/layout-archive-test.sh bin/full-suite-wiring-test.sh
 bin/chain-sandbox-probe.sh bin/build-sandbox-hostile-test.sh
 build/probe/control.yaml.tmpl build/probe/read-record.yaml.tmpl build/probe/write-record.yaml.tmpl
 build/probe/read-keydir.yaml.tmpl build/probe/read-token.yaml.tmpl build/probe/network.yaml.tmpl
 """.split())
-if len(DECLARED) != 89: errs.append("declared list is not 89 paths: %d" % len(DECLARED))
+if len(DECLARED) != 90: errs.append("declared list is not 90 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -813,6 +813,8 @@ run pass "feature/x" "REQ-GUIDE-001: the cannot-run list" "docs/verify-release.c
 runeach fail "feature/x" "REQ-GUIDE-001: verify-release.cannot-run.json near-miss refused" "docs/verify-release.cannot-run.json.bak" "docs/verify-release.cannot-run.jsonx" "docs/verify-release.cannot-run.yaml" "docs/x/verify-release.cannot-run.json" "./docs/verify-release.cannot-run.json" "verify-release.cannot-run.json" "docs/verify-release.cannot-runXjson" "docs/verify-release.cannot-run.json/" "x/docs/verify-release.cannot-run.json" "docs/../verify-release.cannot-run.json" "docs/verify-release.cannot-run.json "
 passfam "feature/x" "REQ-GUIDE-001: the guide page checker" "bin/verify-release-guide-test.sh"
 runeach fail "feature/x" "REQ-GUIDE-001: verify-release-guide-test near-miss refused" "bin/verify-release-guide-test.sh.bak" "bin/verify-release-guide-test.shx" "bin/Verify-Release-Guide-Test.sh" "bin/VERIFY-RELEASE-GUIDE-TEST.SH" "bin/sub/verify-release-guide-test.sh" "./bin/verify-release-guide-test.sh" "bin/verify-release-guide-test.py" "bin/verify-release-guide.sh" "verify-release-guide-test.sh" "bin/../verify-release-guide-test.sh" "bin/verify-release-guide-test.sh "
+passfam "feature/x" "REQ-CI-001: the suite that judges the full suite's wiring" "bin/full-suite-wiring-test.sh"
+runeach fail "feature/x" "REQ-CI-001: near-miss siblings of the full-suite wiring suite refused" "bin/full-suite-wiring-test.sh.bak" "bin/full-suite-wiring-test.py" "bin/full-suite-wiring.sh" "bin/Full-Suite-Wiring-Test.sh"
 passfam "feature/x" "REQ-CHAIN-008: the key page checker" "bin/verify-key-page-test.sh"
 runeach fail "feature/x" "REQ-CHAIN-008: verify-key-page-test near-miss refused" "bin/verify-key-page-test.sh.bak" "bin/verify-key-page-test.shx" "bin/Verify-Key-Page-Test.sh" "bin/VERIFY-KEY-PAGE-TEST.SH" "bin/sub/verify-key-page-test.sh" "./bin/verify-key-page-test.sh" "bin/verify-key-page-test.py" "bin/verify-key-page.sh" "verify-key-page-test.sh" "bin/../verify-key-page-test.sh" "bin/verify-key-page-test.sh "
 

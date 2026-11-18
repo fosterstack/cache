@@ -12,7 +12,7 @@
       "scope": "push"
     },
     {
-      "context": "acceptance",
+      "context": "acceptance / acceptance",
       "integration_id": 15368,
       "scope": "push"
     },

@@ -35,6 +35,7 @@ jobs:
       packages: write
       id-token: write
       issues: write
+      actions: read
       checks: read
       statuses: read
       pull-requests: read
