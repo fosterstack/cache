@@ -162,7 +162,7 @@ jobs:
       - name: install the pinned Go (pinned by checksum)
         run: bash bin/install-scanner.sh go
       - name: install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+        run: bash bin/install-scanner.sh govulncheck
       - name: govulncheck (the same judgment as Check)
         run: python3 -I -B bin/check-govulncheck.py --scanners .github/policy/scanners.json --out "$RUNNER_TEMP/gv"
 
