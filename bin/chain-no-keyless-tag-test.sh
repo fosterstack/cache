@@ -9,11 +9,12 @@
 # signature on every tag, accepts the owner's SSH signature on every tag and the one release KMS key's SSH signature on a
 # patch tag only (bin/admission-tag-signer-test.sh, bin/chain-build-admit-test.sh). Who creates, signs and pushes a tag is the
 # release judges' job (bin/chain-release-shape.py, bin/chain-tag-jobs-test.sh); here: the deciding job names no signing tool,
-# and the one job that signs a tag names no keyless one.
+# and the one job that signs a tag (sign-tag, a job of release.yml: there is no stage-sign.yml) names no keyless one.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 python3 -I - "$root" <<'PY'
 import json
+import os
 import re
 import subprocess
 import sys
@@ -81,23 +82,54 @@ check(not hits, "no tracked code, workflow or policy file names a keyless tag si
       % ("" if not hits else ": " + ", ".join("%s (%d)" % kv for kv in sorted(hits.items()))))
 inst = open(root + "/bin/install-scanner.sh").read()
 check(not re.search(r"GITSIGN|sigstore/gitsign", inst, re.I), "bin/install-scanner.sh installs no gitsign")
-rel = open(root + "/.github/workflows/release.yml").read()
-check(not re.search(r"tag -s|keylessly|ssh-keygen -Y sign", rel), "release.yml signs no tag itself: no `tag -s`, no ssh-keygen signing, no keyless signing (the one KMS key signs, in stage-sign.yml)")
 import yaml
 KEYLESS = re.compile(r"cosign|fulcio|sigstore|keyless|gitsign|smimesign|identity-token|oidc", re.I)
-rjobs = (yaml.safe_load(rel) or {}).get("jobs") or {}
-decide = json.dumps(rjobs.get("decide", {}))
-check("decide" in rjobs, "release.yml has the deciding job `decide`")
-check("decide" in rjobs and not KEYLESS.search(decide) and not re.search(r"kms|AWS_|id-token|create-github-app-token|AUDITOR_APP", decide, re.I),
-      "the decide job names no keyless signing tool, no KMS key or role, no id-token and no App token")
-check("decide" in rjobs and not re.search(r"git\s+(tag|push)\b|tag -s|git/(refs|tags)|verify-tag", decide),
-      "the decide job creates, signs, verifies and pushes no tag")
-sjobs = (yaml.safe_load(open(root + "/.github/workflows/stage-sign.yml").read()) or {}).get("jobs") or {}
-st = json.dumps(sjobs.get("sign-tag", {}))
-check("sign-tag" in sjobs, "stage-sign.yml has the job sign-tag (the one job that signs a tag)")
-check("sign-tag" in sjobs and not re.search(r"fulcio|sigstore|keyless|gitsign|smimesign|identity-token|cosign (sign|attest)|gpg\.format|gpg\.x509", st, re.I),
-      "the sign-tag job names no keyless signing tool and no x509 setting")
-check("sign-tag" in sjobs and len(re.findall(r"alias/", st)) <= 1, "the sign-tag job names at most one KMS key (no second key)")
+SIGN_TAG_KEYLESS = re.compile(r"fulcio|sigstore|keyless|gitsign|smimesign|identity-token|cosign (sign|attest)|gpg\.format|gpg\.x509", re.I)
+
+
+def tag_job_faults(rel):
+    """the faults of the tag jobs of release.yml (its text): decide names no signing tool, key, role, id-token or App token and makes no tag; the one job that signs a tag, sign-tag
+    (a job of release.yml: there is no stage-sign.yml), names no keyless tool and at most one KMS key; the text itself signs no tag"""
+    bad = []
+    if re.search(r"tag -s|keylessly|ssh-keygen -Y sign", rel):
+        bad.append("release.yml signs a tag itself: `tag -s`, an ssh-keygen signing or a keyless signing")
+    jobs = (yaml.safe_load(rel) or {}).get("jobs") or {}
+    decide = json.dumps(jobs.get("decide", {}))
+    if "decide" not in jobs: bad.append("release.yml has no job `decide`")
+    elif KEYLESS.search(decide) or re.search(r"kms|AWS_|id-token|create-github-app-token|AUDITOR_APP", decide, re.I):
+        bad.append("the decide job names a keyless signing tool, a KMS key or role, an id-token or an App token")
+    if "decide" in jobs and re.search(r"git\s+(tag|push)\b|tag -s|git/(refs|tags)|verify-tag", decide):
+        bad.append("the decide job creates, signs, verifies or pushes a tag")
+    st = json.dumps(jobs.get("sign-tag", {}))
+    if "sign-tag" not in jobs: bad.append("release.yml has no job `sign-tag` (the one job that signs a tag)")
+    else:
+        if SIGN_TAG_KEYLESS.search(st): bad.append("the sign-tag job names a keyless signing tool or an x509 setting")
+        if len(re.findall(r"alias/", st)) > 1: bad.append("the sign-tag job names more than one KMS key")
+    for n in ("cut", "patch-notes"):
+        if n in jobs and SIGN_TAG_KEYLESS.search(json.dumps(jobs[n])): bad.append("the %s job names a keyless signing tool or an x509 setting" % n)
+    return bad
+
+
+rel = open(root + "/.github/workflows/release.yml").read()
+f = tag_job_faults(rel)
+check(not f, "release.yml: decide names no keyless tool, key, role, id-token or App token and makes no tag; sign-tag (the one KMS key signs in release.yml, no stage-sign.yml) names no keyless tool and at most one key; "
+      "no tag is signed outside it%s" % ("" if not f else ": " + "; ".join(f)))
+check(os.path.exists(root + "/.github/workflows/release.yml") and not os.path.exists(root + "/.github/workflows/stage-sign.yml"), "there is no stage-sign.yml: the signing jobs are jobs of release.yml")
+# a check that cannot fail shows nothing: the same checks refuse a mutated copy of the real file
+def after(text, anchor, add): return text.replace(anchor, anchor + add, 1)
+MUT = (("decide names gitsign", after(rel, "  decide:\n", "    env:\n      X: gitsign\n")),
+       ("decide names the release role", after(rel, "  decide:\n", "    env:\n      AWS_ROLE_ARN: x\n")),
+       ("decide pushes a tag", rel.replace("      - name: decide (bin/patch-decide.py)\n", "      - run: git push origin refs/tags/v9.9.9\n      - name: decide (bin/patch-decide.py)\n", 1)),
+       ("decide mints the App token", after(rel, "  decide:\n", "    env:\n      X: create-github-app-token\n")),
+       ("sign-tag names cosign sign", rel.replace("      - name: put the signature into the tag object\n", "      - run: cosign sign --identity-token x y\n      - name: put the signature into the tag object\n", 1)),
+       ("sign-tag sets gpg.format x509", rel.replace("      - name: put the signature into the tag object\n", "      - run: git config gpg.format x509\n      - name: put the signature into the tag object\n", 1)),
+       ("sign-tag names a second key", rel.replace("          name: signed-tag\n          path: tag-work/tag.signed\n", "          name: signed-tag\n          path: tag-work/tag.signed\n          x: alias/other-key\n", 1)),
+       ("cut names smimesign", after(rel, "\n  cut:\n", "    env:\n      X: smimesign\n")),
+       ("a step signs the tag with tag -s", rel.replace("      - name: decide (bin/patch-decide.py)\n", "      - run: git tag -s v9.9.9 -m x\n      - name: decide (bin/patch-decide.py)\n", 1)),
+       ("a step signs with ssh-keygen -Y sign", rel.replace("      - name: decide (bin/patch-decide.py)\n", "      - run: ssh-keygen -Y sign -f k x\n      - name: decide (bin/patch-decide.py)\n", 1)))
+for label, text in MUT:
+    f = tag_job_faults(text) if text != rel else []
+    check(f, "the tag job checks refuse a copy of release.yml where %s (%s)" % (label, f[0][:70] if f else "NOT REFUSED, or the mutation did not apply"))
 print("pass=%d fail=%d" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

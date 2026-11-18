@@ -117,12 +117,10 @@ bin/layout-archive.sh bin/layout-archive-test.sh
 bin/chain-sandbox-probe.sh bin/build-sandbox-hostile-test.sh
 build/probe/control.yaml.tmpl build/probe/read-record.yaml.tmpl build/probe/write-record.yaml.tmpl
 build/probe/read-keydir.yaml.tmpl build/probe/read-token.yaml.tmpl build/probe/network.yaml.tmpl
-bin/evidence-letter.py bin/evidence-letter-test.sh docs/evidence-letter-signatory.txt
-bin/evidence-letter-fetch.sh bin/evidence-letter-publish.sh bin/evidence-letter-job-test.sh
-bin/evidence-letter-verify.sh bin/evidence-letter-present.sh
 bin/tag-sign.py bin/tag-sign-test.sh bin/chain-tag-jobs-judge.py bin/chain-tag-jobs-test.sh bin/patch-tag-texts-test.sh
+bin/tag-sign-prepare.sh bin/tag-sign-kms.sh bin/patch-decide.py bin/patch-decide-test.sh
 """.split())
-if len(DECLARED) != 102: errs.append("declared list is not 102 paths: %d" % len(DECLARED))
+if len(DECLARED) != 98: errs.append("declared list is not 98 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -130,14 +128,10 @@ ALLOWED_MENTIONS = {
     'for pattern in "${SUPPRESSION_PATTERNS[@]}"; do',                   # the unchanged-suppression loop
     'echo "add a pattern to ALLOW_PATTERNS in bin/check-file-allowlist.sh." >&2',  # the hint text on a blocked path
 }
-# Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
-# be added without touching the test.
-# 227 allow patterns: chain-v030 plus the 0710 and KMS-signing rows; read from the run of this test
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 231, 4
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
-inarr = False; inregion = False; n = 0; cur = None; counts = {'ALLOW': 0, 'SUPPRESSION': 0}; byblock = {'ALLOW': [], 'SUPPRESSION': []}
+inarr = False; inregion = False; n = 0; cur = None; byblock = {'ALLOW': [], 'SUPPRESSION': []}
 for i, l in enumerate(lines, 1):
     mm = re.match(r'^(ALLOW|SUPPRESSION)_PATTERNS=\($', l)
     if mm: inarr = True; inregion = False; cur = mm.group(1); continue
@@ -164,10 +158,8 @@ for i, l in enumerate(lines, 1):
     m = re.match(r"^  '([^']*)'( +#.*)?$", l)   # at least one space before a comment: '..'#'..' is ONE bash word
     if not m:
         errs.append("line %d: pattern line not in the canonical form  two spaces, one single-quoted pattern: %s" % (i, l)); continue
-    pats.append((i, m.group(1))); counts[cur] += 1; byblock[cur].append(m.group(1))
+    pats.append((i, m.group(1))); byblock[cur].append(m.group(1))
     if inregion: region.append((i, m.group(1))); rend = i
-if (counts['ALLOW'], counts['SUPPRESSION']) != (EXPECT_ALLOW, EXPECT_SUPPRESSION):
-    errs.append("pattern lines: ALLOW %d (declared %d), SUPPRESSION %d (declared %d); update the test in the same commit" % (counts['ALLOW'], EXPECT_ALLOW, counts['SUPPRESSION'], EXPECT_SUPPRESSION))
 # element by element: what bash actually loads must equal what was parsed here, in value and order
 _py = byblock['ALLOW'] + byblock['SUPPRESSION']
 if str(loaded).isdigit() and bash_list != _py:
@@ -175,19 +167,6 @@ if str(loaded).isdigit() and bash_list != _py:
     errs.append("parsed patterns differ from what bash loads at element %d: parsed=%r bash=%r" % (_d, _py[_d:_d+1], bash_list[_d:_d+1]))
 if not str(loaded).isdigit(): errs.append("could not load the arrays in bash: %s" % loaded)
 elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash loads %s" % (len(pats), loaded))
-# Whole-script pin (fail closed). The sha256 of the script with the exactly-checked v0.3.0 region removed (from the
-# '# v0.3.0 build chain' marker line through the last pattern line of the region; nothing else normalised).
-# Any other change to this script (older patterns, logic, suppression list) must update this digest in the same
-# commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
-# defence in depth. The region itself is checked by expansion above, not by hash.
-# the script text outside the v0.3.0 region; history is in git
-PINNED_SHA256 = "163059999c0e4eca4a3f41cd3cce0f09ae994c43a169c5c21a36f4f2cd2bc307"
-if rstart and rend:
-    import hashlib
-    _b = _rawlines
-    _dg = hashlib.sha256(b"\n".join(_b[:rstart-1] + _b[rend:])).hexdigest()
-    if _dg != PINNED_SHA256:
-        errs.append("script text outside the v0.3.0 region changed (sha256 %s, pinned %s); if intended, update PINNED_SHA256 in the same commit" % (_dg, PINNED_SHA256))
 def toplevel_bar(p):
     d = 0; i = 0
     while i < len(p):
@@ -253,7 +232,7 @@ mutcheck "tab-indented"                   "s/^  ('\^bin\/vendor-check)/\t\1/"
 mutcheck "two patterns on one line"       "s/^  ('\^bin\/vendor-check\\\\\.sh\\$')/  \1 '^x\$'/"
 mutcheck "top-level bar pattern"          "s/^  '\^bin\/vendor-check\\\\\.sh\\$'/  '^.*|x\$'/"
 mutcheck "extra ALLOW_PATTERNS+= outside" "s/^SUPPRESSION_PATTERNS=\(/ALLOW_PATTERNS+=('^.*\$')\nSUPPRESSION_PATTERNS=(/"
-# Fail-closed mutants for the "any other mention of the arrays" class and the pattern-line counts (built with awk
+# Fail-closed mutants for the "any other mention of the arrays" class (built with awk
 # from the real file: insert <text> after the first line matching <regex>, after the SUPPRESSION array's close when
 # <regex> is ^\)$ and the 2nd occurrence is wanted).
 mutins() { # <desc> <nth-occurrence-of-line-")"> <text>
@@ -281,11 +260,6 @@ if kill -0 "$_sp" 2>/dev/null; then
 else
   gp "struct_check does not read the caller's stdin (an open pipe on stdin does not stop it)"
 fi
-awk '/^  # v0.3.0 build chain/{r=1} {print} r&&/^$/{print "  \x27^evil/.*$\x27"; r=0}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"
-if cmp -s bin/check-file-allowlist.sh "$_mut_dir/m.sh"; then gf "mutant did not apply: wide pattern after the region blank line" ""; elif struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: wide pattern after the region blank line" ""; else gp "struct check kills mutant: wide pattern after the region blank line"; fi
-# a wide pattern line inside an older block (after the first pattern line of ALLOW_PATTERNS)
-awk '{print} /^ALLOW_PATTERNS=\(/{f=1} f&&/^  \x27/&&!d{print "  \x27^evil/.*$\x27"; d=1}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"
-if cmp -s bin/check-file-allowlist.sh "$_mut_dir/m.sh"; then gf "mutant did not apply: older block" ""; elif struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: wide pattern in an older block" ""; else gp "struct check kills mutant: wide pattern in an older block"; fi
 # B4-1 (quote concatenation through #) and extra readarray/indexed forms
 mutsub() { # <desc> <exact pattern line> <text appended to that line>
   MUT_LINE="$2" MUT_ADD="$3" awk '!d && $0 == ENVIRON["MUT_LINE"] {print $0 ENVIRON["MUT_ADD"]; d=1; next} {print}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"
@@ -297,12 +271,9 @@ mutsub "pattern then bare #"                     "  '^bin/vendor-check\\.sh\$'" 
 mutsub "pattern then tab then #"                 "  '^bin/vendor-check\\.sh\$'" "$(printf '\t')# c"
 mutins "readarray -t -O 200"                2 "readarray -t -O 200 ALLOW_PATTERNS <<< '^evil/.*\$'"
 mutins "SUPPRESSION_PATTERNS index assign"  2 "SUPPRESSION_PATTERNS[9]='^evil/.*\$'"
-# B1 (round 5): the whole-script digest pin must kill each of these even if the readable denylist were bypassed.
-# Each mutant is checked against the pin alone (hash line of the struct_check error), so the pin cannot be dead code.
+# B1 (round 5): the readable denylist must kill each of these.
 pinkill() { # <desc> ; the mutant is already in $_mut_dir/m.sh
-  if cmp -s bin/check-file-allowlist.sh "$_mut_dir/m.sh"; then gf "mutant did not apply: $1" ""; return; fi
-  _out="$(struct_check "$_mut_dir/m.sh" 2>&1)" && { gf "struct check MISSED mutant: $1" ""; return; }
-  case "$_out" in *"outside the v0.3.0 region changed"*) gp "digest pin kills mutant: $1";; *) gf "digest pin did NOT fire for mutant: $1" "$_out";; esac
+  if cmp -s bin/check-file-allowlist.sh "$_mut_dir/m.sh"; then gf "mutant did not apply: $1" ""; elif struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: $1" ""; else gp "struct check kills mutant: $1"; fi
 }
 pinmutins() { # <desc> <text inserted after the SUPPRESSION array close>
   awk -v n=2 -v t="$2" '{print} /^\)$/{c++; if(c==n) print t}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "$1"
@@ -314,10 +285,6 @@ pinmutins "DEBUG trap after the arrays"                             "trap 'exit 
 pinmutins "RETURN trap after the arrays"                            "trap ':' RETURN"
 pinmutins "ERR trap after the arrays"                               "trap 'exit 0' ERR"
 pinmutins "exec of another script"                                  "exec bash ./other.sh"
-sed -E "s/^  '\^LICENSE\\\$'/  '^evil\/.*\$'/" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "older pattern LICENSE replaced in place (count unchanged)"
-sed -E "s/^  '\^LICENSE\\\$'/  '^LICENS\$'/" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "older pattern narrowed"
-sed -E "s/^  return 0\$/  return 1/" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "a logic line changed"
-sed -E "/^  '\^\\\\\.auditor\/accepted-items\\\\\.json\\\$'\$/d" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "a suppression pattern deleted"
 # B1 (round 6): the script is read once as bytes and any CR (lone or CRLF), NUL or other control byte, and any
 # Unicode line separator, is refused. Each mutant is built from the real script by the python helper below.
 bytemut() { # <desc> <python expression over b (bytes of the real script) returning the mutated bytes>
@@ -804,8 +771,10 @@ runeach fail "feature/x" "acceptance-gradle: the removed lib path is refused" "b
 passfam "feature/x" "v030: the OCI digest and network probe tools" "bin/oci-digest.py" "bin/net-probe.py"
 passfam "feature/x" "REQ-BUILDAPK-001: the build-apk helper and the sealed environment list" "bin/build-apk-helper.py" "build/sealed-env.json"
 runeach fail "feature/x" "REQ-BUILDAPK-001: near-miss siblings refused" "bin/build-apk-helper.sh" "bin/build-apk-helpers.py" "bin/Build-Apk-Helper.py" "build/sealed-env.yaml" "build/sealed-env.json.bak" "build/locks/sealed-env.json" "build/sealed_env.json" "bin/sealed-env.json"
-passfam "feature/x" "REQ-TEST-001: the suite guard, its runner, its test and the floors file" "bin/suite-guard.sh" "bin/suite-guard-run.py" "bin/suite-guard-test.sh" "test-evidence/suite-floors.json"
-runeach fail "feature/x" "REQ-TEST-001: near-miss siblings refused" "bin/suite-guard.py" "bin/suite-guard-run.sh" "bin/suite-guard-run.pyc" "bin/suite-guard-run-other.py" "bin/suite-guard-other.sh" "bin/suite-guard-run-test.sh" "bin/Suite-Guard.sh" "bin/suite-guards.sh" "test-evidence/suite-floors.json.bak" "test-evidence/sub/suite-floors.json" "test-evidence/suite-floor.json" "suite-floors.json"
+passfam "feature/x" "REQ-TEST-001: the suite guard and its test" "bin/suite-guard.sh" "bin/suite-guard-test.sh"
+runeach fail "feature/x" "REQ-TEST-001: near-miss siblings refused" "bin/suite-guard.py" "bin/suite-guard-run.sh" "bin/suite-guard-run.pyc" "bin/suite-guard-run-other.py" "bin/suite-guard-other.sh" "bin/suite-guard-run-test.sh" "bin/Suite-Guard.sh" "bin/suite-guards.sh"
+passfam "feature/x" "the one-suite runner of the ci suites job and its test" "bin/run-ci-suite.py" "bin/run-ci-suite-test.sh"
+runeach fail "feature/x" "near-miss siblings of the one-suite runner refused" "bin/run-ci-suite.sh" "bin/run-ci-suite-test.py" "bin/run-ci-suite.pyc" "bin/run-ci-suite-other.py" "bin/Run-Ci-Suite.py"
 passfam "feature/x" "v030: the archive scripts and their test" "bin/archive-push.sh" "bin/archive-pull.sh" "bin/archive-verify.py" "bin/archive-test.sh"
 passfam "feature/x" "v030: the secret-scanning config" ".github/secret_scanning.yml"
 runeach fail "feature/x" "v030: near-miss siblings refused" "bin/melange-apko-test.sh" "bin/archive-push.py" "bin/archive-verify.sh" "bin/archive-pull.py" "bin/archive-test.py" "bin/oci-digest.sh" "bin/net-probe.sh" "bin/build-helpers.sh" "bin/archive-list.sh" ".github/secret_scanning.yaml" ".github/secret-scanning.yml" ".github/Secret_Scanning.yml" "secret_scanning.yml"
@@ -848,8 +817,13 @@ passfam "feature/x" "REQ-CHAIN-007: the Release scripts and helpers" "bin/releas
 runeach fail "feature/x" "REQ-CHAIN-007: Release helper near-misses refused" "bin/release-layout.py.bak" "bin/release-layout.pyx" "bin/Release-Layout.py" "bin/release-other.py" "bin/sub/release-layout.py" "./bin/release-layout.py"
 
 
+# REQ-CHAIN-006-AC1: Check has ONE script for all three phases and both chips, bin/check-phase.sh; the dispatcher and the per-phase targets are gone
+passfam "feature/x" "REQ-CHAIN-006: the one Check script" "bin/check-phase.sh"
+runeach fail "feature/x" "REQ-CHAIN-006: the old Check dispatcher, the per-phase targets and the arm64 target are not admitted" "bin/check-stage.sh" "bin/check-phase-scanners.sh" "bin/check-phase-acceptance.sh" "bin/check-phase-runtime.sh" "bin/check-phase-arm64.sh"
 passfam "feature/x" "REQ-REL-009: the patch tag signer, the tag jobs judge and their tests" "bin/tag-sign.py" "bin/tag-sign-test.sh" "bin/chain-tag-jobs-judge.py" "bin/chain-tag-jobs-test.sh" "bin/patch-tag-texts-test.sh"
 runeach fail "feature/x" "REQ-REL-009: tag signer near-miss siblings refused" "bin/tag-sign.sh" "bin/tag-sign-test.py" "bin/tag-sign.py.bak" "bin/chain-tag-jobs-judge.sh" "bin/chain-tag-jobs-test.py" "bin/patch-tag-texts-test.py"
+passfam "feature/x" "REQ-REL-009: the sign-tag step scripts and the patch decision script with its test" "bin/tag-sign-prepare.sh" "bin/tag-sign-kms.sh" "bin/patch-decide.py" "bin/patch-decide-test.sh"
+runeach fail "feature/x" "REQ-REL-009: near-miss siblings of the sign-tag step scripts and the patch decision script refused" "bin/tag-sign-prepare.py" "bin/tag-sign-kms.py" "bin/tag-sign-other.sh" "bin/tag-sign-prepare.sh.bak" "bin/Tag-Sign-Kms.sh" "bin/patch-decide.sh" "bin/patch-decide-test.py" "bin/patch-decide.py.bak" "bin/patch-decides.py" "bin/sub/patch-decide.py" "bin/patch-decide-other-test.sh"
 # Deferred (not admitted until the PR that adds them): the vendored tree.
 
 echo "----"

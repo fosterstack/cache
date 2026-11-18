@@ -58,10 +58,12 @@ ALLOW_PATTERNS=(
   '^requirements/releases/[A-Za-z0-9._-]+\.yaml$'
   '^test-evidence/[A-Za-z0-9._-]+\.yaml$'
   '^test-evidence/vex-scope/[A-Za-z0-9._-]+\.json$'
-  # The suite guard (REQ-TEST-001): the guard, the runner that measures the suites (a committed Python file run with -I), its test, and the committed floors.
+  # The suite guard (REQ-TEST-001): the guard and its test.
   '^bin/suite-guard(-test)?\.sh$'
-  '^bin/suite-guard-run\.py$'
-  '^test-evidence/suite-floors\.json$'
+
+  # The runner of one suite of the suites matrix (ci.yml, job suites) and its test.
+  '^bin/run-ci-suite(\.py|-test\.sh)$'
+  '^bin/(chain-signing-trust|ci-suites-matrix|persona-uat-file|release-workflow-wiring)-test\.sh$'
   '^test-evidence/dependabot-reviewer/[A-Za-z0-9._-]+\.json$'
   '^docs/quality/[A-Za-z0-9._-]+\.md$'
   '^docs/quality/releases/[A-Za-z0-9._-]+\.md$'
@@ -107,8 +109,6 @@ ALLOW_PATTERNS=(
   '^bin/dependency-lanes-test\.sh$'
   '^bin/panel\.py$'
   '^bin/scout-selfcheck\.py$'
-  '^bin/patch-decide\.py$'
-  '^bin/patch-decide-test\.sh$'
   '^bin/acceptance-maven-413-test\.sh$'
   '^bin/acceptance-gradle-test\.sh$'
   '^bin/acceptance-k8s-manifests-test\.sh$'
@@ -123,7 +123,6 @@ ALLOW_PATTERNS=(
   '^bin/persona-uat-tools\.json$'
   '^bin/persona-uat-requirements\.txt$'
   '^\.github/agent/supply-chain/pin-(inventory|age-check|audit)\.py$'
-  '^\.github/agent/supply-chain/tag_observer\.py$'
   '^\.github/supply-chain-exceptions\.json$'
   '^bin/workflow-consolidation-test\.sh$'
   '^bin/go-freshness-wiring-test\.sh$'
@@ -174,8 +173,7 @@ ALLOW_PATTERNS=(
   # suite), and the Check suites with their shape judge
   '^bin/loopback-get\.sh$'
   '^bin/loopback-get-test\.sh$'
-  '^bin/check-(stage|scan|fips|artifacts|acceptance|guide)\.sh$'
-  '^bin/check-phase-(scanners|acceptance|runtime|arm64)\.sh$'
+  '^bin/check-(scan|fips|artifacts|acceptance|guide|phase)\.sh$'
   '^bin/(un)?pack-govulncheck\.sh$'
   '^bin/check-records-digests\.sh$'
   '^bin/check-(guide-plan|osv-db|image-platforms|bind|osv-vex)\.py$'
@@ -347,14 +345,11 @@ ALLOW_PATTERNS=(
   # The release key page (docs/verify-key.md) is judged by bin/verify-key-page-test.sh, REQ-CHAIN-008.
   '^bin/verify-key-page-test\.sh$'
   '^bin/layout-archive(-test)?\.sh$'
-  # The monthly evidence letter (REQ-REL-013): the letter script, the fetch, publish, verify and presence scripts, the
-  # two tests and the signatory text.
-  '^bin/evidence-letter\.py$'
-  '^bin/evidence-letter(-fetch|-publish|-verify|-present|-test|-job-test)\.sh$'
-  '^docs/evidence-letter-signatory\.txt$'
   # REQ-REL-009: CI cuts a patch tag and the one release KMS key signs it: the tag signer, the tag jobs judge and their tests
   '^bin/tag-sign\.py$'
-  '^bin/tag-sign-test\.sh$'
+  '^bin/tag-sign-(prepare|kms|test)\.sh$'
+  '^bin/patch-decide\.py$'
+  '^bin/patch-decide-test\.sh$'
   '^bin/chain-tag-jobs-(judge\.py|test\.sh)$'
   '^bin/patch-tag-texts-test\.sh$'
 

@@ -40,7 +40,7 @@ _BASE_INPUTS = {}
 
 def load_base_inputs(path=None):
     """The listed base-input paths, fail closed: a file that is missing, not JSON, without a non-empty `base_inputs` list of unique plain relative paths
-    (no leading / or ./, no .. or empty segment, no glob, backslash or trailing /) is a ValueError, never an empty list."""
+    (no leading / or ./, no . or .. or empty segment, no glob, backslash or trailing /) is a ValueError, never an empty list."""
     path = path or BASE_INPUTS_FILE
     try:
         with open(path) as fh:
@@ -52,7 +52,7 @@ def load_base_inputs(path=None):
         raise ValueError("the base-input list %s has no non-empty base_inputs list" % path)
     seen = set()
     for it in items:
-        if not isinstance(it, str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]*(/[A-Za-z0-9_][A-Za-z0-9._-]*)*", it):
+        if not isinstance(it, str) or not re.fullmatch(r"\.?[A-Za-z0-9_][A-Za-z0-9._-]*(/\.?[A-Za-z0-9_][A-Za-z0-9._-]*)*", it):
             raise ValueError("the base-input list %s names %r, which is not a plain relative file path" % (path, it))
         if it in seen:
             raise ValueError("the base-input list %s names %s twice" % (path, it))
@@ -199,7 +199,7 @@ def _reviewed_workflow(f):
     return f.count("/") == 2 and f.split("/")[-1] in NEUTRAL_WORKFLOWS
 
 
-# "#!/bin/sh" on any line matches; "echo #!" does not
+# a shebang line on any line matches; "echo #!" does not
 SHEBANG_LINE = re.compile(r"(?m)^#!")
 
 

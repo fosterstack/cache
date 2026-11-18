@@ -19,7 +19,7 @@ if ! view_err=$(gh release view "$rel" 2>&1 > /dev/null); then
   notes=$(mktemp)
   tag_object=$(git cat-file tag "$rel" 2>/dev/null) || tag_object=
   status=0
-  python3 -I -B bin/patch-decide.py tag-notes <<< "$tag_object" > "$notes" || status=$?
+  printf '%s\n' "$tag_object" | python3 -I -B bin/patch-decide.py tag-notes > "$notes" || status=$?
   case $status in
     0) gh release create "$rel" --title "fscache $rel" --notes-file "$notes" --verify-tag ;;
     1) gh release create "$rel" --title "fscache $rel" --notes "Evidence: see docs/verify-release.md for the verification commands of this release." --verify-tag ;;

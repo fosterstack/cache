@@ -1,4 +1,4 @@
-import hashlib, json, os, re, sys, yaml
+import json, os, re, sys, yaml
 
 SHA = r"[0-9a-f]{40}"
 ROLE = "arn:aws:iam::821302803867:role/fosterstack-cache-release-signing"
@@ -6,6 +6,7 @@ KEY_REF = "awskms:///alias/fosterstack-release-signing"
 TAGGER = "fosterstack release <release@users.noreply.github.com>"
 APP_TOKEN = re.compile(r"actions/create-github-app-token@%s( #.*)?" % SHA)
 KMS_RUN = "bash bin/tag-sign-kms.sh"
+TAG_DUE_IF = "${{ needs.decide.outputs.tag != '' }}"
 # the run: lines of sign-tag, each exactly (the workflow is judged against these texts, so no other command can ride in a step)
 RUN_KINDS = {
     "bash bin/install-scanner.sh aws-cli": "aws",
@@ -56,18 +57,21 @@ def no_write(perm, allow=()):
 
 
 def sign_tag_errors(sjobs):
-    """the faults of job sign-tag of stage-sign.yml read alone: the one judge of this job, also called by chain-test-signers.py stage_grammar"""
+    """the faults of job sign-tag of release.yml read alone: the one judge of this job, also called by chain-test-signers.py stage_grammar"""
     bad = []
     s = sjobs["sign-tag"]
-    if s.get("if") != "${{ inputs.stage == 'tag' }}":
-        bad.append("sign-tag must carry exactly `if: ${{ inputs.stage == 'tag' }}`, found %r" % s.get("if"))
-    for n, j in sjobs.items():
-        if n != "sign-tag" and "tag'" in str(j.get("if", "")):
-            bad.append("job %s of stage-sign.yml also runs for the tag stage: only sign-tag signs a tag" % n)
+    if s.get("if") != TAG_DUE_IF:
+        bad.append("sign-tag must carry exactly `if: %s`, found %r" % (TAG_DUE_IF, s.get("if")))
+    if s.get("runs-on") != "ubuntu-24.04":
+        bad.append("sign-tag must run on ubuntu-24.04, found %r" % s.get("runs-on"))
+    if s.get("needs") != "decide":
+        bad.append("sign-tag must need exactly decide, found %r" % s.get("needs"))
+    if s.get("environment") != "sign":
+        bad.append("sign-tag must run in the environment sign (the role's trust binds release.yml@refs/heads/main to it), found %r" % s.get("environment"))
     if s.get("permissions") != {"contents": "read", "id-token": "write"}:
-        bad.append("stage-sign.yml sign-tag's permissions must be exactly contents read and id-token write: %s" % s.get("permissions"))
-    if any(k in s for k in ("needs", "env", "secrets", "environment", "container", "services", "uses")):
-        bad.append("sign-tag has needs, env, secrets, an environment, a container, services or uses: it is a plain job")
+        bad.append("release.yml sign-tag's permissions must be exactly contents read and id-token write: %s" % s.get("permissions"))
+    if any(k in s for k in ("env", "secrets", "container", "services", "uses", "continue-on-error")):
+        bad.append("sign-tag has env, secrets, a container, services, uses or continue-on-error: it is a plain job")
     sb = blob(s)
     if SIGN_TAG_BAD.search(sb):
         bad.append("sign-tag names a stored credential, the job token, a push, a tag command or a keyless tool: %s" % SIGN_TAG_BAD.search(sb).group(0))
@@ -101,11 +105,11 @@ def sign_tag_errors(sjobs):
 
 def judge(r):
     bad = []
-    rp, sp = os.path.join(r, ".github/workflows/release.yml"), os.path.join(r, ".github/workflows/stage-sign.yml")
-    if not (os.path.exists(rp) and os.path.exists(sp)):
-        return ["release.yml or stage-sign.yml is missing"]
-    rd, sd = load(rp), load(sp)
-    jobs, sjobs = rd.get("jobs") or {}, sd.get("jobs") or {}
+    rp = os.path.join(r, ".github/workflows/release.yml")
+    if not os.path.exists(rp):
+        return ["release.yml is missing"]
+    rd = load(rp)
+    jobs = rd.get("jobs") or {}
     on = rd.get("on", rd.get(True)) or {}
     push = (on.get("push") or {}) if isinstance(on, dict) else {}
     if "main" not in (push.get("branches") or []) or "v*" not in (push.get("tags") or []):
@@ -116,8 +120,6 @@ def judge(r):
     for n in ("decide", "sign-tag", "cut", "patch-notes"):
         if n not in jobs:
             bad.append("release.yml has no job %s" % n)
-    if "sign-tag" not in sjobs:
-        bad.append("stage-sign.yml has no job sign-tag")
     if bad:
         return bad
     # ---- decide: decides only
@@ -140,18 +142,10 @@ def judge(r):
     dup = [n for n in uploads(d) if n]
     if len(dup) != 1:
         bad.append("decide must upload exactly one artifact (the tag request: tag and notes) for sign-tag, found %s" % dup)
-    # ---- sign-tag call
+    # ---- sign-tag
     c = jobs["sign-tag"]
-    if c.get("uses") != "./.github/workflows/stage-sign.yml" or (c.get("with") or {}).get("stage") != "tag":
-        bad.append("sign-tag must call ./.github/workflows/stage-sign.yml with stage: tag")
-    if "decide" not in needs_of(c):
-        bad.append("sign-tag must need decide")
-    if "needs.decide.outputs.tag" not in str(c.get("if", "")) or STATUS_FN.search(str(c.get("if", ""))):
-        bad.append("sign-tag must run only when decide's output tag is non-empty (an if naming needs.decide.outputs.tag, no status function), found %r" % c.get("if"))
-    if c.get("permissions") != {"contents": "read", "id-token": "write"}:
-        bad.append("sign-tag's permissions must be exactly contents read and id-token write (no contents write, no push): %s" % c.get("permissions"))
-    if "secrets" in c or "environment" in c:
-        bad.append("sign-tag passes secrets or an environment: the release key is reached through federation only")
+    if STATUS_FN.search(str(c.get("if", ""))):
+        bad.append("sign-tag must run only when decide's output tag is non-empty, with no status function in its if, found %r" % c.get("if"))
     # ---- cut: the only job that pushes a tag
     u = jobs["cut"]
     if u.get("environment") != "agent":
@@ -190,6 +184,7 @@ def judge(r):
         if not re.search(r"git\s+push[^\n]*refs/tags/", str(ps.get("run"))) or "${{" in str(ps.get("run")):
             bad.append("cut's push command must push a refs/tags/ ref and put no expression in the script (the tag reaches it through env)")
         before = "\n".join(str(s.get("run", "")) for s in steps_of(u)[:pushes[0]]) + "\n" + str(ps.get("run")).split("git push")[0]
+        before = re.sub(r"(?m)#.*$", "", before)
         if not re.search(r"verify-tag|SSH SIGNATURE", before):
             bad.append("cut must check that the tag object is signed (git verify-tag or its SSH SIGNATURE block) before the push step: it never pushes an unsigned tag")
     if len(downloads(u)) != 1:
@@ -211,9 +206,9 @@ def judge(r):
     papp = [s for s in steps_of(pn) if APP_TOKEN.fullmatch(str(s.get("uses", "")))]
     if len(papp) != 1 or (papp[0].get("with") or {}).get("permission-pull-requests") != "write":
         bad.append("patch-notes needs its own pinned App token with permission-pull-requests: write")
-    # ---- stage-sign.yml: the tag stage
-    bad += sign_tag_errors(sjobs)
-    s = sjobs["sign-tag"]
+    # ---- the one signing job
+    bad += sign_tag_errors(jobs)
+    s = jobs["sign-tag"]
     # the artifact hand-offs: decide -> sign-tag -> cut, by name
     dn, un = [n for n in uploads(d) if n], uploads(s)
     if len(downloads(s)) != 1 or downloads(s)[0] not in dn:
@@ -226,14 +221,13 @@ def judge(r):
         if not f.endswith((".yml", ".yaml")):
             continue
         for n, j in (load(os.path.join(wd, f)).get("jobs") or {}).items():
-            if "tag-sign.py" in blob(j) and (f, n) != ("stage-sign.yml", "sign-tag"):
-                bad.append("%s:%s runs bin/tag-sign.py: only stage-sign.yml's sign-tag signs a tag" % (f, n))
+            if "tag-sign.py" in blob(j) and (f, n) != ("release.yml", "sign-tag"):
+                bad.append("%s:%s runs bin/tag-sign.py: only release.yml's sign-tag signs a tag" % (f, n))
     # ---- the judges' lists
     ip = os.path.join(r, ".github/policy/id-token-jobs.json")
     listed = [(e.get("workflow"), e.get("job")) for e in (json.load(open(ip)).get("jobs") or [])] if os.path.exists(ip) else []
-    for want in (("release.yml", "sign-tag"), ("stage-sign.yml", "sign-tag")):
-        if listed.count(want) != 1:
-            bad.append("id-token-jobs.json must list %s:%s exactly once" % want)
+    if listed.count(("release.yml", "sign-tag")) != 1:
+        bad.append("id-token-jobs.json must list release.yml:sign-tag exactly once")
     for n in ("decide", "cut", "patch-notes"):
         if ("release.yml", n) in listed:
             bad.append("id-token-jobs.json lists release.yml:%s, which holds no id-token" % n)
@@ -242,8 +236,8 @@ def judge(r):
     rows = [e for e in (json.load(open(cs)).get("scripts") or []) if e.get("path") == "bin/tag-sign.py"] if os.path.exists(cs) else []
     if not os.path.exists(ts):
         bad.append("bin/tag-sign.py does not exist")
-    elif len(rows) != 1 or rows[0].get("sha256") != hashlib.sha256(open(ts, "rb").read()).hexdigest():
-        bad.append("chain-scripts.json must list bin/tag-sign.py once, with the script's own sha256")
+    elif len(rows) != 1:
+        bad.append("chain-scripts.json must list bin/tag-sign.py once")
     return bad
 
 

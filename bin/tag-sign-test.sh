@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # proves: REQ-REL-009-AC5, REQ-REL-009-AC6, REQ-REL-009-AC8
-# bin/tag-sign.py: the two offline halves of signing a patch tag with the one release KMS key (the sign-tag job of stage-sign.yml runs
-# `prepare`, then the KMS call (bin/with-aws-token.sh kms-sign) on the digest, then `assemble`). No AWS, no network: the KMS call is stood in
+# bin/tag-sign.py: the two offline halves of signing a patch tag with the one release KMS key (the sign-tag job of release.yml runs
+# `prepare` (bin/tag-sign-prepare.sh), then the KMS call (bin/tag-sign-kms.sh, which has bin/with-aws-token.sh kms-sign sign the digest), then `assemble`). No AWS, no network: the KMS call is stood in
 # for here by `openssl pkeyutl` with a fixture RSA key made at test time (RSASSA-PKCS1-v1_5 over the 32-byte sha256 digest, as KMS signs a
 # DIGEST with RSASSA_PKCS1_V1_5_SHA_256). The oracle is git itself: the assembled tag is verified with `git verify-tag` against a one-line
 # allowed-signers file, the same check source admission makes (bin/build-admit.py).
@@ -45,7 +45,7 @@ verify() { # verify OBJFILE SIGNERFILE : put the tag object into the repo and ru
   git -C "$W/repo" update-ref refs/tags/v0.3.1 "$id"
   VOUT=$(LC_ALL=C git -C "$W/repo" -c gpg.ssh.allowedSignersFile="$2" verify-tag v0.3.1 2>&1) || return 1; }
 if [ -f "$TS" ]; then ok "bin/tag-sign.py exists"
-else bad "bin/tag-sign.py does not exist (the sign-tag job's offline half): none of the 38 cases below can run"; echo "pass=$pass fail=$failn"; exit 1; fi
+else bad "bin/tag-sign.py does not exist (the sign-tag job's offline half): none of the cases below can run"; echo "pass=$pass fail=$failn"; exit 1; fi
 # ---- prepare ----
 rm -f "$W/obj" "$W/digest"; rc=0; prep > "$W/prep.out" 2>&1 || rc=$?
 if [ "$rc" = 0 ] && [ -s "$W/obj" ] && [ -s "$W/digest" ]; then ok "prepare writes the tag object and the digest"; else bad "prepare exit $rc: $(head -c 200 "$W/prep.out" 2> /dev/null)"; fi
@@ -155,5 +155,25 @@ else bad "prepare wrote no object for the notes holding a BEGIN line (the notes 
 # ---- source admission's router sees an SSH signature (kind ssh), as for the owner ----
 rc=0; python3 "$root/bin/admission-tag-signer.py" route --tag-object "$W/raw" > "$W/route.out" 2>&1 || rc=$?
 [ "$rc" = 0 ] && [ "$(cut -d' ' -f1 "$W/route.out")" = ssh ] && ok "bin/admission-tag-signer.py routes the assembled tag to the ssh verifier" || bad "router -> exit $rc: $(cat "$W/route.out")"
+# ---- the two scripts the sign-tag job runs around it (bin/tag-sign-prepare.sh, bin/tag-sign-kms.sh), in a scratch tree laid out as the job lays it out ----
+S="$W/job"; mkdir -p "$S/bin" "$S/tag-request"
+cp "$TS" "$S/bin/tag-sign.py"; cp "$root/bin/tag-sign-prepare.sh" "$root/bin/tag-sign-kms.sh" "$S/bin/"
+printf 'v0.3.1' > "$S/tag-request/tag"; printf '1700000000\n' > "$S/tag-request/time"; cp "$W/notes.md" "$S/tag-request/notes.md"
+rc=0; (cd "$S" && GITHUB_SHA="$SHA" bash bin/tag-sign-prepare.sh) > "$W/job-prep.out" 2>&1 || rc=$?
+prep v0.3.1 "$SHA" "$W/notes.md" "$TAGGER" 1700000000 "$W/ref.obj" "$W/ref.digest" > /dev/null 2>&1 || true
+{ [ "$rc" = 0 ] && cmp -s "$S/tag-work/tag.object" "$W/ref.obj" && cmp -s "$S/tag-work/tag.digest" "$W/ref.digest"; } && ok "bin/tag-sign-prepare.sh makes tag-work/tag.object and tag-work/tag.digest from the tag request, the commit of the run and the fixed release tagger" || bad "tag-sign-prepare.sh -> exit $rc: $(head -c 200 "$W/job-prep.out")"
+mkdir -p "$S/stub"; cat > "$S/bin/with-aws-token.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > stub-args.txt
+STUB
+rc=0; (cd "$S" && RUNNER_TEMP="$S/rt" RELEASE_KMS_KEY_REF='awskms:///alias/fosterstack-release-signing' bash bin/tag-sign-kms.sh) > "$W/job-kms.out" 2>&1 || rc=$?
+python3 -I - "$S/stub-args.txt" "$(cat "$S/tag-work/tag.digest")" "$rc" <<'PY' && ok "bin/tag-sign-kms.sh makes exactly one call, bin/with-aws-token.sh kms-sign, with the release key reference, the digest of tag-work/tag.digest and tag-work/tag.sig as the output" || bad "tag-sign-kms.sh did not call the signer as the job needs it (exit $rc): $(head -c 300 "$W/job-kms.out")"
+import sys
+a = open(sys.argv[1]).read().split("\n")[:-1]
+assert sys.argv[3] == "0", sys.argv[3]
+assert a[0] == "kms-sign", a
+opt = {a[i]: a[i + 1] for i in range(1, len(a) - 1, 2)}
+assert opt["--key-ref"] == "awskms:///alias/fosterstack-release-signing" and opt["--digest"] == sys.argv[2] and opt["--out"] == "tag-work/tag.sig", opt
+PY
 echo "pass=$pass fail=$failn"
 [ "$failn" = 0 ]

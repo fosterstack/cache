@@ -26,7 +26,7 @@ BUMP = {"go.mod": " require (\n-\tgolang.org/x/sys v0.46.0\n+\tgolang.org/x/sys 
 NEWMOD = {"go.mod": "+\tgithub.com/evil/new v1.0.0\n"}
 LOCK = {"build/locks/apko.base.lock.json": '-    "version": "1.2.3-r0"\n+    "version": "1.2.4-r0"\n'}
 BASE_INPUTS = ["build/locks/apko.base.lock.json", "build/locks/apko-fips.base.lock.json", "build/locks/melange.lock", "build/locks/archive-keys.sha256",
-               "build/locks/archive-index.sha256", "build/locks/fips-module.txt"]
+               "build/locks/archive-index.sha256", "build/locks/fips-module.txt", ".github/policy/gradle-wrapper-jar-sha256.txt"]
 # --- AC1: classification by changed files
 for files, diff, want in [
     (["go.mod", "go.sum"], BUMP, "fix"),
@@ -275,7 +275,7 @@ raw = open(out).read()
 check("decision.json names no vendor or model (the issue body reads it)", "openai" not in raw.lower() and "<redacted>" in raw, raw)
 # --- rules 61 and 65: the base inputs are ONE committed list, read by the decide job and by this script (advisor Oct 12)
 real_list = os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), "..", ".github", "policy", "base-inputs.json")
-check("the committed list names exactly the base locks, the melange lock, the archive records and the fips module record (cache-ce's names)",
+check("the committed list names exactly the base locks, the melange lock, the archive records, the fips module record and the Gradle wrapper jar checksum (the list the repository commits)",
       sorted(P.load_base_inputs(real_list)) == sorted(BASE_INPUTS), P.load_base_inputs(real_list) if os.path.exists(real_list) else "no file")
 bi = tempfile.mkdtemp()
 def bil(obj, raw=None):
@@ -2274,7 +2274,7 @@ else: open(os.path.join(rp, "bin/chain-bytes-sha.py"), "w").write("x\n")
 open(os.path.join(rp, ".github/policy/chain-scripts.json"), "w").write('{"scripts":[{"path":"bin/chain-bytes-sha.py"}]}\n')
 rg("add", "-A"); rg("commit", "-q", "-m", "chain"); rg("tag", "v0.3.0-rc1"); rc_commit = rg("rev-parse", "HEAD")
 bs = subprocess.run([sys.executable, os.path.join(bindir, "chain-bytes-sha.py"), "sha", "--commit", rc_commit, "--repo", rp], capture_output=True, text=True).stdout.strip() or "0" * 64
-keys = ["build", "sign", "rekor", "rebuild", "scanners", "acceptance", "runtime", "arm64", "hostile_verdict"]
+keys = ["build", "sign", "rekor", "rebuild"] + ["%s-%s" % (n, r) for r in ("ubuntu-24.04", "ubuntu-24.04-arm") for n in ("scanners", "acceptance", "runtime")] + ["hostile_verdict"]   # the record set chain-bytes-sha.py check-marker requires
 good = {"rc_tag": "v0.3.0-rc1", "run_id": "1234567890", "chain_sha256": bs, "records": {k: "0" * 64 for k in keys}}
 marker = os.path.join(rp, ".github/policy/rc-proof.json")
 def put(m): open(marker, "w").write(m if isinstance(m, str) else json.dumps(m))
