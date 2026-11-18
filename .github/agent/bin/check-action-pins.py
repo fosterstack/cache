@@ -902,6 +902,13 @@ def _cut_substitutions(text, data=False):
                 elif d == "\\":
                     j += 2
                     continue
+                elif d == "$" and text[j + 1:j + 2] == "$":       # `$$` is one unit: its second `$` starts no `$'`
+                    j += 2
+                    continue
+                elif d == "$" and text[j + 1:j + 2] == "'":       # ANSI-C: a backslash escapes the next character
+                    j += 2
+                    while j < n and text[j] != "'":
+                        j += 2 if text[j] == "\\" else 1
                 elif d in "'\"":
                     iq = d
                 elif d == "#" and (j == i + 2 or text[j - 1] in " \t\n;("):
@@ -1905,6 +1912,26 @@ def _in_quoted_brace(stack):
     return False
 
 
+_PLAIN_BRACE_WORD = re.compile(r"\$\{\w*:?[-+=]$")     # `${x:-` `${x:+` `${x:=` `${x-` `${x+` `${x=`: bash prints the expansion's text, but its parser still reads a <( there as a frame
+_CASE_WORD = re.compile(r"(case(?=[ \t\n])|in(?=[ \t\n;&|()]|$)|esac(?=[ \t\n;&|()<>]|$))")
+_BEFORE_COMMAND = re.compile(r"(?:(?<![\w.$-])(?:if|then|elif|else|while|until|do|time)|(?<!\w)[!{])$")
+
+
+def _command_start(text, kinds, i):
+    """True when the word at `i` starts a command: only blanks between it and the start of the text or a `;`, `&`, `|`,
+    newline, `(` or `)` of code, or a reserved word that itself takes a command (`then case x in ...`)."""
+    while True:
+        j = i
+        while j > 0 and text[j - 1] in " \t":
+            j -= 1
+        if j == 0 or (text[j - 1] in "\n;&|()" and kinds[j - 1] == "c"):
+            return True
+        m = _BEFORE_COMMAND.search(text, max(0, j - 5), j)
+        if not m or set(kinds[m.start():j]) != {"c"}:
+            return False
+        i = m.start()
+
+
 def _scan_shell(text):
     """(kinds, nl_in_quote, open_quote): `kinds` has one letter per character of `text`: `c` code, `d` a quote mark, `q`
     quoted content, `e` a backslash and the character it escapes, `k` a comment, `w` a `#`, `(`, `)`, `<` or `>` of `${ }` word text (no comment, no group; an unquoted `<(` or `>(` is a frame).
@@ -1914,11 +1941,17 @@ def _scan_shell(text):
     closed quote or a closed expansion (`\\;#x`, `$(x)#y`), and a backslash-newline is no word break. open_quote is True
     when a quote or an expansion is still open at the end (a script like that grants no trust)."""
     n, q, i, prev, nl, unread = len(text), None, 0, None, False, False
-    kinds, stack = ["c"] * n, []
+    kinds, stack, cases = ["c"] * n, [], []     # cases: per frame, [open case count, 1 `case` seen and its word awaited, 2 its `in` awaited, a pattern awaited, `in` just read and only blanks and comments since]
     while i < n:
         c = text[i]
         if q is not None and c == "\n":
             nl = True
+        subject = False
+        empty = bool(cases) and cases[-1][3]     # only blanks and comments since the `in` of the case now open
+        if empty and c not in " \t\n#":
+            cases[-1][3] = False
+        if q is None and stack and stack[-1][0] in "(p" and cases[-1][1] == 1 and c not in " \t\n" and prev in (" ", "\t", "\n"):
+            cases[-1][1] = subject = 2       # the word after `case` is its subject, whatever it spells
         if q == "'":
             kinds[i] = "d" if c == "'" else "q"
             if c == "'":
@@ -1934,10 +1967,25 @@ def _scan_shell(text):
             inner, inner_nl, inner_open = _scan_shell(text[i + 1:j])
             kinds[i + 1:j] = inner
             nl, unread, prev, i = nl or inner_nl, unread or inner_open or j >= n, "W", j
+        elif c == "$" and text[i + 1:i + 2] == "$":      # `$$` is one unit: its second `$` opens no `(`, `{` or `'`
+            if q == '"':
+                kinds[i:i + 2] = "qq"
+            else:
+                prev = "W"
+            i += 1
         elif c == "$" and text[i + 1:i + 2] in ("(", "{"):
             stack.append((text[i + 1], q))
+            cases.append([0, 0, False, False])
             q, prev = None, text[i + 1]
             i += 1
+        elif c == "$" and text[i + 1:i + 2] == "'" and q is None:    # ANSI-C: a backslash escapes the next character
+            j = i + 2
+            while j < n and text[j] != "'":
+                j += 2 if text[j] == "\\" else 1
+            kinds[i + 1], kinds[i + 2:j] = "d", ["q"] * (min(j, n) - i - 2)
+            if j < n:
+                kinds[j] = "d"
+            nl, unread, prev, i = nl or "\n" in text[i:j], unread or j >= n, "W", j
         elif q == '"':
             kinds[i] = "d" if c == '"' else "q"
             if c == '"':
@@ -1945,20 +1993,42 @@ def _scan_shell(text):
         elif c in "'\"":
             kinds[i], q = "d", c
         elif stack and stack[-1][0] == "{" and c in "#()<>" and not (
-                c in "<>" and text[i + 1:i + 2] == "(" and not _in_quoted_brace(stack)):
-            kinds[i], prev = "w", c     # inside ${ }: word text, no comment and no group (an unquoted <( or >( runs: a frame)
+                c in "<>" and text[i + 1:i + 2] == "(" and not (
+                    _in_quoted_brace(stack) and _PLAIN_BRACE_WORD.search(text[max(0, i - 64):i]))):
+            kinds[i], prev = "w", c     # inside ${ }: word text, no comment and no group (a <( or >( bash runs is a frame)
         elif c in "<>" and text[i + 1:i + 2] == "(":
             stack.append(("(", None))
+            cases.append([0, 0, False, False])
             prev = "("
             i += 1
         elif c == "(":
-            stack.append(("p", None))
+            stack.append(("a" if text[i - 1:i] == "=" and kinds[i - 1] == "c" else "p", None))   # `a=(`, `a+=(`: an array, no case word counts in it
+            cases.append([0, 0, False, False])
             prev = c
-        elif c == ")" and stack and stack[-1][0] in "(p":
+        elif c == ")" and stack and stack[-1][0] in "(p" and cases[-1][2]:
+            cases[-1][2], prev = False, ")"      # a case pattern's `)` closes no frame
+        elif c == ")" and stack and stack[-1][0] in "(pa":
             kind, q = stack.pop()
+            cases.pop()
             prev = ")" if kind == "p" else "W"
+        elif stack and stack[-1][0] in "(p" and prev in (" ", "\t", "\n", ";", "&", "|", "(", ")") and (
+                m := _CASE_WORD.match(text, i)) and not subject and (
+                    m.group(1) == "in" or _command_start(text, kinds, i) or (m.group(1) == "esac" and empty)):
+            state, word = cases[-1], m.group(1)
+            if word == "case":
+                state[0] += 1
+                state[1] = 1
+            elif word == "in" and state[1] == 2:
+                state[1], state[2], state[3] = 0, True, True
+            elif word == "esac" and state[0]:
+                state[0] -= 1
+                state[2] = False
+            i, prev = m.end() - 1, "W"
+        elif c == ";" and text[i + 1:i + 2] in (";", "&") and stack and stack[-1][0] in "(p" and cases[-1][0]:
+            cases[-1][2], prev, i = True, ";", i + 1
         elif c == "}" and stack and stack[-1][0] == "{":
             q, prev = stack.pop()[1], "W"
+            cases.pop()
         elif c == "#" and (prev is None or prev in " \t\n;&|()<>"):
             j = text.find("\n", i)
             j = n if j < 0 else j
@@ -3104,6 +3174,10 @@ def _check_runs(where_job, scripts, bad, tree, mores):
             # this check reads POSIX shell only, and pwsh / python / node ship on ubuntu runners too: a step in any
             # other shell is refused outright, whatever it contains (Sonnet #164 r10, NEW-12; advisor 0080)
             bad.append(f"{where}: a `{shell}` step; this check reads POSIX shell only and refuses any other shell")
+            continue
+        if shell and shell.startswith("sh") and ("$'" in raw or "$'" in text):
+            bad.append(f"{where}: `$'` in a `{shell}` step; dash reads it as a `$` and a quote, this check as ANSI-C, so the "
+                       f"step cannot be read with confidence; refused")
             continue
         for ev in script_images(read(more)) + script_images(own) if more else \
                 script_images(own):
