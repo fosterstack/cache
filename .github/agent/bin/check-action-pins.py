@@ -1986,6 +1986,14 @@ def _touches(script, name, consumer):
 OUTSIDE = ("$RUNNER_TEMP", "${RUNNER_TEMP}", "/", "$(mktemp")   # outside the checkout: never the file's directory
 
 
+def _setter_values(name, script):
+    """The value of every `name=value` setter the shell reads in `script`: a value ends at a blank, `;`, `)` or an
+    unquoted `&` / `|`; comments and quoted text hold no setter."""
+    pat = re.compile(r"(?<![^\s;&|(])#[^\n]*|\"(?:\\.|[^\"\\])*\"|'[^']*'|(?<![^\s;&|(])" + name
+                     + r"=(?:\"([^\"]*)\"|'([^']*)'|([^\s\"';)&|]*))")
+    return [m.group(m.lastindex) for m in pat.finditer(script) if m.lastindex]
+
+
 def _outside(target, script, depth=0):
     """A destination that cannot be the checkout's directory: an absolute path outside the runner's workspace, a path
     under $RUNNER_TEMP or a fresh $(mktemp …), or a variable every assignment of which in the job is one of those —
@@ -1999,7 +2007,7 @@ def _outside(target, script, depth=0):
     m = re.match(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?(/.*)?$", target.strip("\"'"))
     if not m or depth > 4:
         return False
-    values = re.findall(r"(?:^|[\s;&|(])" + m.group(1) + r"=[\"']?([^\s\"';)]*)", script)
+    values = _setter_values(m.group(1), script)
     return bool(values) and all(_outside(v, script, depth + 1) for v in values)
 
 
