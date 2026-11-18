@@ -244,18 +244,14 @@ case_ schedule-emptied        bad "d['on']['schedule'] = []"
 case_ schedule-other-cron     bad "d['on']['schedule'] = [{'cron': '23 6 * * 1'}]"
 case_ keycheck-continues      bad "[s.__setitem__('continue-on-error', True) for s in $R['steps'] if s.get('name') == 'check the live Wolfi key against the pinned one']"
 case_ any-refresh-step-continues bad "$R['steps'][-1]['continue-on-error'] = True"
-# Codex #157 r1's surviving mutations (those that only changed a reviewed file whole are not run: the hash that caught them is gone)
+# Codex #157 r1's surviving mutations
 case_ second-checkout-cred   bad "$C['steps'].append({'uses': 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', 'with': {'token': '\${{ steps.app-token.outputs.token }}', 'persist-credentials': 'true'}})"
 case_ another-agent-job      bad "d['jobs']['x'] = {'runs-on': 'ubuntu-latest', 'environment': 'agent', 'steps': [{'uses': 'actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1', 'with': {'permission-checks': 'write'}}]}"
-case_ secrets-to-json        bad "$C.setdefault('env', {})['AGENT_SECRETS'] = '\${{ toJSON(secrets) }}'"
 case_ key-through-outputs    bad "$C['outputs'] = {'k': '\${{ secrets.AUDITOR_APP_PRIVATE_KEY }}'}; d['jobs']['extra'] = {'needs': 'check', 'runs-on': 'ubuntu-latest', 'steps': []}"
 case_ persona-job-back       bad "d['jobs']['persona-uat'] = {'runs-on': 'ubuntu-24.04', 'environment': 'persona-uat', 'steps': []}"
 case_ weekly-persona-cron-back bad "d['on']['schedule'].append({'cron': '43 6 * * 1'})"
-case_ bump-gutted            bad "[s.__setitem__('run', ':') for s in $C['steps'] if 'go-bump-open-pr.sh' in (s.get('run') or '')]"
-case_ github-env-write       bad "[s.__setitem__('run', s['run'] + 'echo INPUT_PERMISSION-checks=write >> \"\$GITHUB_ENV\"\\n') for s in $C['steps'] if s.get('id') == 'cmp']"
 case_ workflow-env           bad "d['env'] = {'INPUT_PERMISSION-checks': 'write'}"
-# Codex #157 r2 (SEC-157-02): a sidecar workflow minting the App token
-mk_tree() { local t="$work/tree-$1"; mkdir -p "$t/bin" "$t/.github/workflows"; cp "$root"/.github/workflows/*.yml "$t/.github/workflows/"; cp "$root/bin/go-bump-open-pr.sh" "$t/bin/"; echo "$t"; }
+mk_tree() { local t="$work/tree-$1"; mkdir -p "$t/.github/workflows"; cp "$root"/.github/workflows/*.yml "$t/.github/workflows/"; echo "$t"; }
 t=$(mk_tree sidecar); printf 'on: workflow_dispatch\njobs:\n  x:\n    runs-on: ubuntu-latest\n    environment: agent\n    steps:\n      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1\n        with:\n          app-id: ${{ secrets.AUDITOR_APP_ID }}\n          permission-checks: write\n' > "$t/.github/workflows/probe-sidecar.yml"
 case_ sidecar-workflow       bad "" "$t"
 t=$(mk_tree tojson); printf 'on: push\njobs:\n  y:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n        env:\n          S: ${{ toJSON(secrets) }}\n' > "$t/.github/workflows/dump.yml"

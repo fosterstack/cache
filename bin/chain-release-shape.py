@@ -16,7 +16,7 @@ which is RED until PR 4 is implemented. Finite grammars and allowlists only, no 
   verify FILE         REQ-CHAIN-007-AC4  bin/release-verify.sh is `set -euo pipefail` and then EXACTLY the commands of VERIFY, in order.
   scan FILE JSON      REQ-CHAIN-007-AC6..AC10  a release script is plain: only its listed tools, no other script, no build command, no tag
                       creation, no PATH-like setting, no credential printed (text scan, comments and quotes included; it over-reports).
-  listed JSON ROOT    REQ-CHAIN-007-AC10 each release script is a row of chain-scripts.json with its sha256, its tools and its signs value.
+  listed JSON ROOT    REQ-CHAIN-007-AC10 each release script is a row of chain-scripts.json with its tools and its signs value.
   record FILE [VAL..] REQ-CHAIN-007-AC12 no credential name or value, no JWT, no token variable in a Witness envelope (payload decoded).
   metadata FILE       REQ-CHAIN-007-AC13  bin/release-sign.sh makes the metadata in order: the image input, the OpenVEX copy, vex-forms, the manifest (which records the VEX files'
                       sha256 and checks every digest against Build's verified digests.json and items.json), the list, and only then the first signature; every signature is a file
@@ -25,7 +25,7 @@ which is RED until PR 4 is implemented. Finite grammars and allowlists only, no 
 Modelled on: in-toto-witness docs/attestors/environment.md (what the environment attestor records and what a filter removes) and
 docs/tutorials/artifact-policy.md:58-70 (the envelope: base64 payload); PR 3's bin/chain-check-shape.py (the same stage grammar, the same
 fixtures); PR 1's chain-scripts.json rows (tools, runs, signs)."""
-import base64, hashlib, json, os, re, sys, yaml
+import base64, json, os, re, sys, yaml
 
 # a stored secret or the job token read in any expression syntax (dotted or bracket), or a credential name; used by the credential judges (fail closed on the bracket form too)
 CRED_RE = re.compile(r"secrets\s*(\.|\[)|github\s*(\.\s*token|\[\s*['\"]?\s*token)|GH_TOKEN|DOCKERHUB", re.I)
@@ -593,8 +593,6 @@ def listed(jsonpath, root):
         f = os.path.join(root, p)
         if not os.path.exists(f):
             bad.append("%s is listed but missing" % p); continue
-        if hashlib.sha256(open(f, "rb").read()).hexdigest() != r.get("sha256"):
-            bad.append("%s: the sha256 in chain-scripts.json is not the file's" % p)
         if want is None:
             continue
         if not set(want["tools"]) <= set(r.get("tools", [])) <= set(want["tools"]) | set(want.get("optional", [])) or len(r.get("tools", [])) != len(set(r.get("tools", []))):

@@ -11,7 +11,7 @@ NONROOT="p['SPDXID']!='SPDXRef-fscache'"      # a module package of a go-module-
 gt="$fx/melange.yaml.tmpl"; ga="$fx/melange.yaml"; gb="$fx/melange-fips.yaml"
 gbt="$fx/melange-baselayout.yaml.tmpl"; gbl="$fx/melange-baselayout.yaml"
 GRD="--melange-lock $fx/melange.lock --fips-module $fx/fips-module.txt --baselayout-template $gbt --baselayout $gbl"   # the fixture data files and the third recipe
-GRX=""   # no fixture switch is needed: gen-recipes.py reads nothing from the environment
+GR_PROD="$GR"; GR="$fx/gen-recipes.py"; GRX=env   # the fixtures run a copy of the generator
 t "rule 21" "gen-recipes --check passes on a pair the generator wrote" $GRX python3 "$GR" $GRD --template "$gt" --regular "$ga" --fips "$gb" --check
 t "rule 21" "the pair differs ONLY in the name, the description and the FIPS lines (the whole diff, character for character)" bash -c "d=\$(diff '$ga' '$gb' | grep '^[<>]' | sed 's/^[<>] //' | sort); e=\$(printf '%s\n' '  name: fscache' '  name: fscache-fips' '  description: the cache server' '  description: the cache server, built with the Go FIPS 140-3 module' '      export GOFIPS140=v1.0.0' '      go version -m \${{targets.destdir}}/usr/bin/fscache > /tmp/fscache-gobuildinfo.txt' \"      grep -Eqx '.build.GOFIPS140=v1\.0\.0-c2097c7c' /tmp/fscache-gobuildinfo.txt\" | sort); test \"\$d\" = \"\$e\""
 t "rule 21" "the standard recipe holds no GOFIPS140 at all" bash -c "! grep -q GOFIPS140 '$ga'"
@@ -885,6 +885,7 @@ for name, pk in (("null", ["busybox=1.37.0-r5", None]), ("num", ["busybox=1.37.0
 P
 for n in null num; do fails "rule 15" "apk-tool inputs-manifest: a non-string package entry ($n) in the apk's environment is refused (exit 1)" 'plain string' python3 "$AT" inputs-manifest --apk "$work/nonstr-$n.apk" --melange-lock "$work/one.lock" --out "$work/nonstr-out.json"; done
 
+t "rule 21" "bin/gen-recipes.py carries no test hook: no FSCACHE_ name" bash -c "! grep -E 'FSCACHE_[A-Z_]+' '$GR_PROD'"
 
 # ruling of review round 9: melange writes only types '0' and '5': type NUL is refused, and a directory header carries no data
 python3 - "$work" <<'P'

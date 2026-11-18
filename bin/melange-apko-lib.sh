@@ -214,8 +214,9 @@ def fixtures(fx):
     open(fx + "/apko.yaml", "w").write(CFG % dict(fs="fscache")); open(fx + "/apko-fips.yaml", "w").write(CFG % dict(fs="fscache-fips"))
     open(fx + "/fips-module.txt", "w").write("v1.0.0-c2097c7c\n")
     open(fx + "/melange.yaml.tmpl", "w").write(recipe(fx, sums))
-    shutil.copy(os.environ["FSCACHE_ROOT"] + "/build/melange-baselayout.yaml.tmpl", fx + "/melange-baselayout.yaml.tmpl")
-    subprocess.run([sys.executable, os.path.join(os.environ["FSCACHE_ROOT"], "bin/gen-recipes.py"), "--template", fx + "/melange.yaml.tmpl", "--regular", fx + "/melange.yaml", "--fips", fx + "/melange-fips.yaml", "--baselayout-template", fx + "/melange-baselayout.yaml.tmpl", "--baselayout", fx + "/melange-baselayout.yaml", "--melange-lock", fx + "/melange.lock", "--fips-module", fx + "/fips-module.txt", "--write"], check=True)
+    shutil.copy(os.environ["FSCACHE_ROOT"] + "/build/melange-baselayout.yaml.tmpl", fx + "/melange-baselayout.yaml.tmpl")   # the real base-layout template
+    shutil.copy(os.path.join(os.environ["FSCACHE_ROOT"], "bin/gen-recipes.py"), fx + "/gen-recipes.py")
+    subprocess.run([sys.executable, fx + "/gen-recipes.py", "--template", fx + "/melange.yaml.tmpl", "--regular", fx + "/melange.yaml", "--fips", fx + "/melange-fips.yaml", "--baselayout-template", fx + "/melange-baselayout.yaml.tmpl", "--baselayout", fx + "/melange-baselayout.yaml", "--melange-lock", fx + "/melange.lock", "--fips-module", fx + "/fips-module.txt", "--write"], check=True)
     # a repo tree for the refresh job
     r = fx + "/repo"
     os.makedirs(r + "/build/locks", exist_ok=True)

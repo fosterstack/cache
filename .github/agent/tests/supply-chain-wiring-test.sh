@@ -19,7 +19,6 @@ CANON = {}   # job -> the exact normalised run text of its check step (filled be
 root = os.environ["SC_ROOT"]
 WF = os.path.join(root, ".github/workflows/supply-chain.yml")
 DB = os.path.join(root, ".github/dependabot.yml")
-FLOORS = os.path.join(root, "test-evidence/suite-floors.json")
 ADM = os.path.join(root, "bin/admission-tag-signer.py")
 PIN = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 ALLOWED_ACTIONS = ("actions/checkout",)
@@ -270,10 +269,6 @@ def judge_rest():
     m = re.search(r"PIPELINE_ONLY = frozenset\(\[(.*?)\]\)", src, re.S)
     if not m or "REQ-SUP-001" not in m.group(1):
         bad.append("REQ-SUP-001 is not in PIPELINE_ONLY (left off, it is product by default and freezes automatic patches)")
-    floors = json.load(open(FLOORS))
-    for t in ("pin-age-check-test.sh", "pin-audit-test.sh", "supply-chain-wiring-test.sh"):
-        if t not in floors:
-            bad.append(f"the suite floors file does not list .github/agent/tests/{t}, so CI does not run it")
     return bad
 
 real_wf, real_db = None, None

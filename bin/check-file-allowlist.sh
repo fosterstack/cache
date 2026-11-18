@@ -58,10 +58,12 @@ ALLOW_PATTERNS=(
   '^requirements/releases/[A-Za-z0-9._-]+\.yaml$'
   '^test-evidence/[A-Za-z0-9._-]+\.yaml$'
   '^test-evidence/vex-scope/[A-Za-z0-9._-]+\.json$'
-  # The suite guard (REQ-TEST-001): the guard, the runner that measures the suites (a committed Python file run with -I), its test, and the committed floors.
+  # The suite guard (REQ-TEST-001): the guard and its test.
   '^bin/suite-guard(-test)?\.sh$'
-  '^bin/suite-guard-run\.py$'
-  '^test-evidence/suite-floors\.json$'
+
+  # The runner of one suite of the suites matrix (ci.yml, job suites) and its test.
+  '^bin/run-ci-suite(\.py|-test\.sh)$'
+  '^bin/(chain-signing-trust|ci-suites-matrix|persona-uat-file|release-workflow-wiring)-test\.sh$'
   '^test-evidence/dependabot-reviewer/[A-Za-z0-9._-]+\.json$'
   '^docs/quality/[A-Za-z0-9._-]+\.md$'
   '^docs/quality/releases/[A-Za-z0-9._-]+\.md$'

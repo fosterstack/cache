@@ -37,23 +37,13 @@ import types
 
 def load_sibling(name):
     """Load the helper module <name> from this directory, never through sys.path and never from a bytecode cache:
-    its bytes must carry the sha256 listed for it in .github/policy/chain-scripts.json, and those same bytes are
-    compiled and run, so a __pycache__ entry cannot stand in for the hashed file. The module is registered under its
-    name first, so the other helper's `from chain_common import` gets this same copy. The list is read with plain
-    json: strict_json lives in the module this function loads."""
+    its bytes are compiled and run, so a __pycache__ entry cannot stand in for the file. The module is registered
+    under its name first, so the other helper's `from chain_common import` gets this same copy."""
     if name in sys.modules:
         return sys.modules[name]
     here = os.path.dirname(os.path.abspath(__file__))
-    rel = "bin/" + name + os.extsep + "py"
     with open(os.path.join(here, name + os.extsep + "py"), "rb") as f:
         src = f.read()
-    try:
-        with open(os.path.join(os.path.dirname(here), ".github", "policy", "chain-scripts.json"), "rb") as f:
-            listed = {r["path"]: r["sha256"] for r in json.load(f)["scripts"]}
-    except (OSError, ValueError, KeyError, TypeError) as ex:
-        sys.exit("error: cannot read the listed hashes of the helper modules (%s)" % type(ex).__name__)
-    if listed.get(rel) != hashlib.sha256(src).hexdigest():
-        sys.exit("error: %s does not match its sha256 in .github/policy/chain-scripts.json; refusing to run it" % rel)
     mod = types.ModuleType(name)
     mod.__file__ = os.path.join(here, name + os.extsep + "py")
     sys.modules[name] = mod

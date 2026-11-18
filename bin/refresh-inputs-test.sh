@@ -46,7 +46,7 @@ for d, over in (("rfcopy", {}), ("rfcopy-nossl", {"/usr/bin/openssl": "/nonexist
     open(dst + "/refresh-inputs.py", "w").write(out)
     for h in ("apk-tool.py", "apko-lock.sh", "archive-verify.py"):
         shutil.copy(os.path.dirname(prod) + "/" + h, dst + "/" + h)
-    shutil.copy(fxdir + "/gen-recipes.py", dst + "/gen-recipes.py")   # the generator copy whose TEMPLATE_SHA256 line is the fixture template's pin (no test switch in the real one)
+    shutil.copy(fxdir + "/gen-recipes.py", dst + "/gen-recipes.py")   # the generator copy (no test switch in the real one)
 P
 RFPY="$rfd/rfcopy/bin/refresh-inputs.py"
 RF="$rfd/rfcopy/bin/refresh-inputs.sh"; RFN="$rfd/rfcopy-nossl/bin/refresh-inputs.sh"
