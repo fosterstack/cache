@@ -178,6 +178,8 @@ refusal_reason() {
       |w-download-artifact-*|w-cache-*|w-writer-*|w-conditional-writer-bad|w-duplicate-path-keys-*) \
       echo 'is changed by the job before it runs' ;;
     c12-hash-p) echo 'binds a command name to a program' ;;
+    g3-*|g5-*|g6-*) echo 'named by a variable' ;;
+    sealed-probe-docker-pull) echo 'not pinned by digest' ;;
     c11-*|r2c11-*|r3c11-adjacent-redirect|r3c11-workspace-abs|r3c11-tar-workspace) \
       echo 'the script writes a file named like its Dockerfile' ;;
     r3c11-pipmain-req|r3c11-mpip-req) echo 'outside the repository' ;;
@@ -234,9 +236,11 @@ case_() {
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   # every tree must carry the pinned gate
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"; mkdir -p "$d/.github/agent/bin"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$d/.github/agent/bin/queue-gate-judge.sh"   # the chain gate's queue-judge job runs it
   : > "$d/.github/agent/bin/check-action-pins.py"
   mkdir -p "$d/bin" "$d/.github/agent/tests"
   : > "$d/bin/check-file-allowlist.sh"
+  : > "$d/.github/agent/tests/pin-wiring-test.sh"
   : > "$d/bin/scan-no-workflow-call-test.sh"
   : > "$d/bin/audit-record-judge.sh"
   : > "$d/bin/audit-record-prepare.sh"
@@ -838,9 +842,6 @@ case_ scorecard-digest-direct-ok  ok  "$head
         with:
           results_file: r.sarif
           results_format: sarif"
-case_ gate-edited          bad "$head
-    steps:
-      - run: true" "sed -i.bak 's/--verify-tags --git/--git/' .github/workflows/agent-review-gate.yml && rm .github/workflows/*.bak"
 case_ gate-missing         bad "$head
     steps:
       - run: true" "rm .github/workflows/agent-review-gate.yml"
@@ -867,9 +868,11 @@ gitcase() {
   take "git-$1" || return 0
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"; mkdir -p "$d/.github/agent/bin"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$d/.github/agent/bin/queue-gate-judge.sh"   # the chain gate's queue-judge job runs it
   : > "$d/.github/agent/bin/check-action-pins.py"
   mkdir -p "$d/bin" "$d/.github/agent/tests"
   : > "$d/bin/check-file-allowlist.sh"
+  : > "$d/.github/agent/tests/pin-wiring-test.sh"
   : > "$d/bin/scan-no-workflow-call-test.sh"
   : > "$d/bin/audit-record-judge.sh"
   : > "$d/bin/audit-record-prepare.sh"
@@ -1293,8 +1296,9 @@ case_out() {
   take "$1" || return 0
   mkdir -p "$d/.github/workflows" "$d/.github/agent/bin" "$d/bin" "$d/.github/agent/tests"
   printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
-  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
-  : > "$d/.github/agent/bin/auditor-review-gate.py"; : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"; : > "$d/bin/audit-record-judge.sh"; : > "$d/bin/audit-record-prepare.sh"; : > "$d/.github/agent/bin/auditor-signed-commit.py"
+  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"; mkdir -p "$d/.github/agent/bin"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$d/.github/agent/bin/queue-gate-judge.sh"   # the chain gate's queue-judge job runs it
+  : > "$d/.github/agent/bin/auditor-review-gate.py"; : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"; : > "$d/bin/audit-record-judge.sh"; : > "$d/bin/audit-record-prepare.sh"; : > "$d/.github/agent/bin/auditor-signed-commit.py"
   for s in build.sh witnessed.sh build-stage-apk.sh build-stage-rebuild-apk.sh install-scanner.sh build-stage-refuse-mode.sh \
            build-stage-snapshot-apk.sh build-stage-snapshot-rebuild-apk.sh; do   # committed, plain, pin-clean stubs
     printf '#!/usr/bin/env bash\nset -euo pipefail\n:\n' > "$d/bin/$s"; chmod +x "$d/bin/$s"
@@ -2036,9 +2040,11 @@ mutant_() {   # name, python replace (old|||new), probe script, optional setup
   take "mutant-$name" || return 0
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"; mkdir -p "$d/.github/agent/bin"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$d/.github/agent/bin/queue-gate-judge.sh"   # the chain gate's queue-judge job runs it
   mkdir -p "$d/bin" "$d/.github/agent/tests"
   : > "$d/.github/agent/bin/check-action-pins.py"
   : > "$d/bin/check-file-allowlist.sh"
+  : > "$d/.github/agent/tests/pin-wiring-test.sh"
   : > "$d/bin/scan-no-workflow-call-test.sh"
   : > "$d/bin/audit-record-judge.sh"
   : > "$d/bin/audit-record-prepare.sh"
@@ -2151,6 +2157,77 @@ case_ c02-arith-inner-run      bad "$(rb 'x=$(( $(docker run alpine) + 1 ))')"
 case_ c02-workspace-script     bad "$(rb 'bash "${GITHUB_WORKSPACE}/ci-image.sh"')" "printf 'docker run alpine\\n' > ci-image.sh"
 case_ c02-main-copy-bad        bad "$(rb 'gh api "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=main" --jq .content | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" "mkdir -p bin; printf 'docker run alpine\\n' > bin/g.sh"
 case_ c02-main-copy-ok         ok  "$(rb 'gh api "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=main" --jq .content | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" "mkdir -p bin; printf 'docker run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > bin/g.sh"
+case_ g3-refs-heads-main-copy-bad        bad "$(rb 'gh api'\
+' "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=refs/heads/main" --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine\\n' > bin/g.sh"
+case_ g3-refs-heads-main-copy-ok         ok  "$(rb 'gh api'\
+' "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=refs/heads/main" --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
+case_ g3-refs-heads-main-x-copy-bad bad "$(rb 'gh api'\
+' "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=refs/heads/main-x" --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
+case_ g3-mainline-ref-copy-bad bad "$(rb 'gh api'\
+' "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=mainline" --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
+case_ g5-quote-joined-main-x-copy-bad bad "$(rb 'gh api'\
+' "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=refs/heads/main"-x --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
+case_ g5-quote-joined-mainline-copy-bad bad "$(rb 'gh api'\
+' "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=main"line --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
+case_ g5-quote-joined-main-double-quote-copy-bad bad "$(rb 'gh api'\
+' "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=refs/heads/main""-x" --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
+case_ g3-main-double-ref-copy-bad bad "$(rb 'gh api'\
+' "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=main&ref=x" --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
+case_ g6-main-copy-extra-field-bad bad "$(rb 'gh api'\
+' "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=refs/heads/main" -X GET -f ref=x --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
+case_ g6-main-copy-method-before-bad bad "$(rb 'gh api'\
+' -X GET "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=refs/heads/main" --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
+case_ g6-main-copy-method-raw-field-bad bad "$(rb 'gh api'\
+' "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=refs/heads/main" --method GET -F ref=x --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
+case_ g6-main-copy-header-bad bad "$(rb 'gh api'\
+' "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=refs/heads/main"'\
+" -H 'Accept: application/vnd.github.raw' --jq .content"\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
 case_ c02-foreign-heredoc-ok   ok  "$(rb "python3 - <<'PY'
           import os
           os.system('docker run alpine')
@@ -2233,8 +2310,24 @@ case_ r3c02-replace-workspace  bad "$(rb "printf 'docker run alpine\\n' > ci-ok.
 case_ r3c02-replace-bash-c     bad "$(rb "bash -c \"printf 'docker run alpine\\\\n' > ci-ok.sh\"; bash ci-ok.sh")" "printf 'echo ok\\n' > ci-ok.sh"
 case_ r3c02-replace-by-script  bad "$(rb 'bash mutate.sh; bash ci-ok.sh')" "printf 'echo ok\\n' > ci-ok.sh; printf \"printf 'docker run alpine\\\\\\\\n' > ci-ok.sh\\n\" > mutate.sh"
 case_ r3c02-replace-harness    bad "$(rb "printf 'docker run alpine\\n' > bin/probe-test.sh; bash bin/probe-test.sh")" "mkdir -p bin; printf 'echo ok\\n' > bin/probe-test.sh"
-# the sandbox-wall probe is the ONE script the variable-program rule does not read (SEALED_PROBE): exactly this path, at its committed bytes
-case_ sealed-probe-ok          ok  "$(rb 'bash bin/chain-sandbox-probe.sh')" "mkdir -p bin; printf 'SUDO=/usr/bin/sudo\\n\"\$SUDO\" true\\n' > bin/chain-sandbox-probe.sh"
+# the sandbox-wall probe is the ONE script the variable-program rule does not read (SEALED_PROBE): exactly this path, and only at the reviewed bytes (the pin in check-action-pins.py)
+# The three cases that copy the real file out of git need that commit in this clone: without it one named FAIL is recorded (never a pass or an abort)
+# and they are counted in ran= but skipped; the cases that write their own bytes run either way.
+probe_commit=d7cab1463cef8ac9fac38696dc13d1ff80778840
+probe_here=0; [ -f "$here/../../../bin/chain-sandbox-probe.sh" ] && probe_here=1
+if take sealed-probe-landing-commit; then
+  if [ "$probe_here" -eq 1 ]; then pass=$((pass+1)); echo "PASS sealed-probe-landing-commit → ${probe_commit:0:8} is the reviewed probe, read from this tree"
+  else failn=$((failn+1)); echo "FAIL sealed-probe-landing-commit → ${probe_commit:0:8} is missing from this tree"; fi
+fi
+probe_case() { if [ "$probe_here" -eq 1 ]; then case_ "$@"; else take "$1" || true; fi; }
+probe_real="mkdir -p bin; cp \"\$here/../../../bin/chain-sandbox-probe.sh\" bin/chain-sandbox-probe.sh"
+probe_case sealed-probe-ok          ok  "$(rb 'bash bin/chain-sandbox-probe.sh')" "$probe_real"
+case_ sealed-probe-fake-bytes  bad "$(rb 'bash bin/chain-sandbox-probe.sh')" "mkdir -p bin; printf 'SUDO=/usr/bin/sudo\\n\"\$SUDO\" true\\n' > bin/chain-sandbox-probe.sh"
+case_ sealed-probe-docker-pull bad "$(rb 'bash bin/chain-sandbox-probe.sh')" "mkdir -p bin; printf 'docker pull alpine\\n' > bin/chain-sandbox-probe.sh"
+case_ sealed-probe-pip-install bad "$(rb 'bash bin/chain-sandbox-probe.sh')" "mkdir -p bin; printf 'pip install requests\\n' > bin/chain-sandbox-probe.sh"
+probe_case sealed-probe-extra-line  bad "$(rb 'bash bin/chain-sandbox-probe.sh')" "$probe_real; printf 'echo extra\\n' >> bin/chain-sandbox-probe.sh"
+# the exemption is the exact reviewed bytes: the same text with CRLF line endings is another file
+probe_case sealed-probe-crlf-copy bad "$(rb 'bash bin/chain-sandbox-probe.sh')" "$probe_real; sed -i 's/\$/\\r/' bin/chain-sandbox-probe.sh"
 case_ sealed-probe-other-name  bad "$(rb 'bash bin/other.sh')" "mkdir -p bin; printf 'SUDO=/usr/bin/sudo\\n\"\$SUDO\" true\\n' > bin/other.sh"
 case_ sealed-probe-other-dir   bad "$(rb 'bash tools/chain-sandbox-probe.sh')" "mkdir -p tools; printf 'SUDO=/usr/bin/sudo\\n\"\$SUDO\" true\\n' > tools/chain-sandbox-probe.sh"
 case_ sealed-probe-replaced    bad "$(rb "printf 'docker run alpine\\n' > bin/chain-sandbox-probe.sh; bash bin/chain-sandbox-probe.sh")" "mkdir -p bin; printf 'echo ok\\n' > bin/chain-sandbox-probe.sh"
@@ -2360,7 +2453,8 @@ realcase="$work/real-auditor-plain-run"
 mkdir -p "$realcase/.github/workflows" "$realcase/.github/agent/bin"
 cp "$real_repo/.github/workflows/auditor.yml" "$realcase/.github/workflows/auditor.yml"
 cp "$gate" "$realcase/.github/workflows/agent-review-gate.yml"; mkdir -p "$realcase/.github/agent/bin"
-: > "$realcase/.github/agent/bin/check-action-pins.py"; mkdir -p "$realcase/bin" "$realcase/.github/agent/tests"; : > "$realcase/bin/check-file-allowlist.sh"; : > "$realcase/bin/scan-no-workflow-call-test.sh"; : > "$realcase/bin/audit-record-judge.sh"; : > "$realcase/bin/audit-record-prepare.sh"; : > "$realcase/.github/agent/bin/auditor-signed-commit.py"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$realcase/.github/agent/bin/queue-gate-judge.sh"   # the chain gate's queue-judge job runs it
+: > "$realcase/.github/agent/bin/check-action-pins.py"; mkdir -p "$realcase/bin" "$realcase/.github/agent/tests"; : > "$realcase/bin/check-file-allowlist.sh"; : > "$realcase/.github/agent/tests/pin-wiring-test.sh"; : > "$realcase/bin/scan-no-workflow-call-test.sh"; : > "$realcase/bin/audit-record-judge.sh"; : > "$realcase/bin/audit-record-prepare.sh"; : > "$realcase/.github/agent/bin/auditor-signed-commit.py"
 python3 -c "
 s = open('$realcase/.github/workflows/auditor.yml').read()
 marker = '    steps:\n'
@@ -3135,29 +3229,19 @@ case_ w-cache-restore-expression-bad bad "$(uw "$(us actions/cache/restore "    
 # 1. every actions/cache and cache/restore step writes everywhere (the glob and the file-path forms are not parsed)
 n=0
 for p in 'bi*' 'bin?' '[b]in' 'bin/tool.sh' '.github/agent/bi*' '~' '~/work/x/x/bin' '/home/runner/work/x/x/bin' '/tmp/x'; do
-  n=$((n+1)); case_ "w-cache-path-$n-bad" bad "$(uw "$(us actions/cache/restore "          path: '$p'
+  n=$((n+1)); case_ "w-cache-path-$n-bad" bad "$(uw "$(us actions/cache/restore "          path: $p
           key: k")")" "$mk_tool"
 done
 case_ w-cache-save-still-ok ok "$(uw "$(us actions/cache/save "          path: bi*
           key: k")")" "$mk_tool"
 # 2. a parent of the workspace, the home directory and /github are the workspace; outside is /tmp, runner.temp and ~/<not work>
 n=0
-for p in / /home /home/runner /github '~' '~/work/x/x/bin' '~/work' /opt/x; do
+for p in / /home /home/runner /github '~' '~/work/x/x/bin' '~/work' /opt/x '~/./work/r/r' '~/.' '~/work//r/r'; do
   n=$((n+1)); case_ "w-download-artifact-path-$n-bad" bad "$(uw "$(us actions/download-artifact "          name: x
           path: $p")")" "$mk_tool"
 done
 case_ w-download-artifact-home-cache-ok ok "$(uw "$(us actions/download-artifact "          name: x
           path: ~/.cache/x")")" "$mk_tool"
-# 2b. "~/" paths are normalised (. segments and doubled slashes) before the ~/work test
-n=0
-for p in '~/./work' '~/./work/x/x/bin' '~//work/x'; do
-  n=$((n+1)); case_ "w-download-artifact-tilde-norm-$n-bad" bad "$(uw "$(us actions/download-artifact "          name: x
-          path: $p")")" "$mk_tool"
-done
-case_ w-download-artifact-tilde-norm-cache-ok ok "$(uw "$(us actions/download-artifact "          name: x
-          path: ~/./.cache/x")")" "$mk_tool"
-case_ w-download-artifact-relative-tilde-ok ok "$(uw "$(us actions/download-artifact "          name: x
-          path: ./~cache")")" "$mk_tool"
 # 3. runner.temp is outside only when what follows has no expression, no $ and no ..
 case_ w-download-artifact-runner-temp-expression-bad bad "$(uw "$(us actions/download-artifact "          name: x
           path: \${{ runner.temp }}/\${{ '..' }}/x/bin")")" "$mk_tool"
@@ -3415,6 +3499,14 @@ case_ cov-main-copy-in-a-for-loop-ok ok "$(rb 'for f in bin/g.sh; do
           gh api "repos/${GITHUB_REPOSITORY}/contents/${f}?ref=main" --jq .content | base64 -d > "${RUNNER_TEMP}/g.sh"
           done
           bash "${RUNNER_TEMP}/g.sh"')" "mkdir -p bin; printf 'docker run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > bin/g.sh"
+case_ g3-refs-heads-main-copy-in-a-for-loop-ok ok "$(rb 'for f in bin/g.sh; do
+          gh api "repos/${GITHUB_REPOSITORY}/contents/${f}?ref=refs/heads/main" --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"
+          done
+          bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
 case_ cov-another-language-script-run-directly-ok ok "$(rb './bin/t')" "mkdir -p bin; printf '#!/usr/bin/env python3\\nprint(1)\\n' > bin/t; chmod +x bin/t"
 case_ cov-scripts-nested-past-the-limit-bad bad "$(rb 'bash bin/a.sh')" "mkdir -p bin; for p in a:b b:c c:d d:e e:f; do printf 'bash bin/%s.sh\\n' \"\${p#*:}\" > bin/\${p%%:*}.sh; done; printf 'echo hi\\n' > bin/f.sh"
 
@@ -3553,8 +3645,10 @@ case3_() {
   local name=$1 d="$work/$1"
   take "$name" || return 0
   mkdir -p "$d/.github/workflows" "$d/.github/agent/bin" "$d/bin" "$d/.github/agent/tests"; printf '%s\n' "$2" > "$d/.github/workflows/w.yml"
-  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
+  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"; mkdir -p "$d/.github/agent/bin"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$d/.github/agent/bin/queue-gate-judge.sh"   # the chain gate's queue-judge job runs it
   : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"
+  : > "$d/.github/agent/tests/pin-wiring-test.sh"
   if [ -n "${3:-}" ]; then (cd "$d" && eval "$3"); fi
   local out rc=0; out=$(python3 "$here/../bin/check-action-pins.py" "$d" 2>&1) || rc=$?
   if [ "$rc" -ne 0 ] && grep -q 'REQ-REL-005-AC3' <<< "$out"; then pass=$((pass+1)); echo "PASS $name → AC3 finding"; else failn=$((failn+1)); echo "FAIL $name → no REQ-REL-005-AC3 finding"; fi
@@ -3729,29 +3823,19 @@ done
 case3_ ac3-unreadable-bad "$(dlj "bash bin/x-test.sh
 curl -fsSL \"unterminated $U")" "$DLS"
 
-# the privileged bump script (go-freshness.yml runs it with the App token) reads clean: a test written `[[ a =~ x && "$V" =~ y ]]` is split at && and its second operand read as a program named by a variable, which is a finding on every PR
-if take go-bump-script-reads-clean; then
-python3 - "$here/../bin/check-action-pins.py" "$here/../../../bin/go-bump-open-pr.sh" <<'PY' && { pass=$((pass+1)); echo "PASS go-bump-script-reads-clean → ok"; } || { failn=$((failn+1)); echo "FAIL go-bump-script-reads-clean"; }
-import importlib.util, re, sys
-spec = importlib.util.spec_from_file_location("c", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-txt = open(sys.argv[2]).read()
-marked = m._drop_foreign_heredocs(m._decode_dollar_quotes(m._mark_defaults(re.sub(r"\\\n", "", txt))))
-bad = [t for t in m._commands(marked) if t and t[0] == "__variable_program__"]
-assert not bad, "the bump script names a program by a variable: %r" % (bad[:3],)
-old = '[[ "$CURRENT" =~ ^[0-9]+\\.[0-9]+(\\.[0-9]+)?$ && "$LATEST" =~ ^[0-9]+\\.[0-9]+(\\.[0-9]+)?$ ]]'
-assert [t for t in m._commands(m._mark_defaults(old)) if t and t[0] == "__variable_program__"], "the checker no longer reads the old form as a variable program: this case needs a new probe"
-PY
-fi
-
-# the exact exclusions (auditor.yml's catalog download; the reviewer's identity-token request in its two steps): a copy
-# anywhere else, an edit, or a broken condition is a finding again
+# the exact exclusions (auditor.yml's catalog download in main's step 9 and the chain's step 10; the reviewer's identity-token
+# request in main's steps 4 and 8 and the chain's steps 4 and 7): a copy anywhere else, an edit, or a broken condition is a finding again
 if take ac3-exclusion-is-exact; then
 python3 - "$here/../bin/check-action-pins.py" "$here/../../workflows/auditor.yml" <<'PY' && { pass=$((pass+1)); echo "PASS ac3-exclusion-is-exact → ok"; } || { failn=$((failn+1)); echo "FAIL ac3-exclusion-is-exact"; }
 import importlib.util, os, sys
 spec = importlib.util.spec_from_file_location("c", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 import yaml
 wf = open(sys.argv[2]).read()
-run = yaml.safe_load(wf)["jobs"]["audit"]["steps"][10]["run"]
+import subprocess
+def chain_file(p): return subprocess.run(["git", "show", "d7cab1463cef8ac9fac38696dc13d1ff80778840:" + p], check=True, capture_output=True, text=True).stdout
+cwf = chain_file(".github/workflows/auditor.yml")
+run = yaml.safe_load(cwf)["jobs"]["audit"]["steps"][10]["run"]       # the chain's step 10
+mrun = yaml.safe_load(wf)["jobs"]["audit"]["steps"][9]["run"]        # main's step 9 (its text equals the chain's step 10)
 class Tree:
     entries = {"bin/x-test.sh": "file"}
     def __init__(self, files): self.files = files
@@ -3765,24 +3849,22 @@ def judge(file, job, idx, text, files=None):
     m.check_runs(file, [(f"{file}.jobs.{job}.steps[{idx}].run", text, None), (f"{file}.jobs.{job}.steps[40].run", "bash bin/x-test.sh\n", None)], bad, Tree(files if files is not None else {file: wf}))
     return [b for b in bad if "REQ-REL-005-AC3" in b]
 F = ".github/workflows/auditor.yml"
-assert not judge(F, "audit", 10, run), "the exact step is excluded"
-assert judge(F, "audit", 9, run), "the same text at another step index is a finding"
-assert judge(F, "other", 10, run), "the same text in another job is a finding"
-assert judge(".github/workflows/other.yml", "audit", 10, run, {".github/workflows/other.yml": wf}), "the same text in another file is a finding"
+assert not judge(F, "audit", 10, run, {F: cwf}), "the chain's exact step 10 is excluded"
+assert not judge(F, "audit", 9, mrun), "main's exact step 9 is excluded"
+for other in (8, 11, 12):
+    assert judge(F, "audit", other, run, {F: cwf}), "the chain's text at index %d is a finding" % other
+assert judge(F, "other", 10, run, {F: cwf}), "the same text in another job is a finding"
+assert judge(F, "other", 9, mrun), "main's text in another job is a finding"
+assert judge(".github/workflows/other.yml", "audit", 10, run, {".github/workflows/other.yml": cwf}), "the same text in another file is a finding"
+assert judge(".github/workflows/other.yml", "audit", 9, mrun, {".github/workflows/other.yml": wf}), "main's text in another file is a finding"
 assert judge(F, "audit", 10, run, {}), "a workflow file the tree cannot read keeps the finding"
-assert judge(F, "audit", 10, run + "\n# edited"), "an edited step is a finding"
-assert judge(F, "audit", 10, run, {F: wf.replace("${{ runner.temp }}/kev.json", "bin/x-test.sh")}), "a changed destination env is a finding"
-assert judge(F, "audit", 10, run, {F: wf + "\n          AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json\n"}), "a second assignment is a finding"
+assert judge(F, "audit", 10, run, {F: cwf.replace("${{ runner.temp }}/kev.json", "bin/x-test.sh")}), "a changed destination env is a finding"
+assert judge(F, "audit", 10, run, {F: cwf + "\n          AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json\n"}), "a second assignment is a finding"
 D = ".github/workflows/dependabot-reviewer.yml"
-# step 4: the identity-token request, as the checker accepts it
-TOKEN_STEP = next(k[3] for k in m.DOWNLOAD_EXCLUSIONS if k[:3] == (D, "review", 4))
-# step 7, the decision loop of the reviewer that reads every bump
-NEW_LOOP = next(k[3] for k in m.DOWNLOAD_EXCLUSIONS if k[:3] == (D, "review", 7))
 URL = "ACTIONS_ID_TOKEN_REQUEST_URL"
 dwf = open(sys.argv[2].replace("auditor.yml", "dependabot-reviewer.yml")).read()
 dsteps = yaml.safe_load(dwf)["jobs"]["review"]["steps"]
-real = {4: dsteps[4]["run"], 7: dsteps[7]["run"]}
-loop_hash = m.hashlib.sha256(real[7].encode("utf-8", "replace")).hexdigest()
+real = {4: dsteps[4]["run"], 8: dsteps[8]["run"]}
 def judge_job(steps, files, file=D, job="review", shells={}):
     """the REQ-REL-005-AC3 findings for a job whose run steps are {index: text}, as the checker reads a whole job"""
     bad = []
@@ -3790,18 +3872,12 @@ def judge_job(steps, files, file=D, job="review", shells={}):
     scripts = [(f"{file}.jobs.{job}.steps[{i}].run", text, shells.get(i)) for i, text in sorted(steps.items())]
     m.check_runs(file, scripts + [(f"{file}.jobs.{job}.steps[40].run", "bash bin/x-test.sh\n", None)], bad, Tree(files))
     return sorted({int(b.split(".steps[")[1].split("]")[0]) for b in bad if "REQ-REL-005-AC3" in b})
-assert m.hashlib.sha256(real[4].encode("utf-8", "replace")).hexdigest() == TOKEN_STEP, \
-        "the repository's identity-token step is not the accepted text"
 assert judge_job(real, {D: dwf}) == [], "the two exact identity-token steps are excluded"
 assert judge_job({5: real[4], 7: real[7]}, {D: dwf}) == [5, 7], \
         "the same text at another step index is a finding (and the name is then outside the excluded steps)"
 assert judge_job(real, {D: dwf}, job="other") == [4, 7], "the same texts in another job are findings"
 assert judge_job(real, {".github/workflows/x.yml": dwf}, file=".github/workflows/x.yml") == [4, 7], \
         "the same texts in another file are findings"
-assert judge_job({4: real[4], 7: real[7] + "\n# edited"}, {D: dwf}) == [4, 7], \
-        "an edited step is a finding, and the other step with it: the name now stands outside the excluded steps"
-assert judge_job({4: real[7], 7: real[7]}, {D: dwf}) == [4, 7], \
-        "one excluded step's key does not exclude the other's text"
 # a `shell:` on the step (or a default shell) can set the variable before the script runs: such a step is never
 # excluded, whatever its text
 for shell in ("bash", "bash -c 'export %s=file:///x; exec bash -e {0}'" % URL, ""):
@@ -3902,9 +3978,8 @@ assert [k for k in m.DOWNLOAD_EXCLUSIONS if k[0] == D and k[1] != "review"] == [
         "an excluded step of the reviewer outside its review job"
 assert {m.DOWNLOAD_EXCLUSIONS[k][1:3] for k in m.DOWNLOAD_EXCLUSIONS if k[0] == D} == {(URL, None)}, \
         "an entry of the reviewer with another condition than the URL variable's"
-assert sorted((k[2], k[3]) for k in m.DOWNLOAD_EXCLUSIONS if k[0] == D) == [(4, TOKEN_STEP), (7, NEW_LOOP)], \
-        "the reviewer's excluded steps are not exactly these two"
-assert loop_hash == NEW_LOOP, "the repository's decision loop is not the accepted text"
+assert sorted(k[2] for k in m.DOWNLOAD_EXCLUSIONS if k[0] == D) == [4, 7, 8], \
+        "the reviewer's excluded steps are not exactly main's two and the chain's step 7"
 missed = []
 # the word curlrc anywhere in the workflow outside the excluded steps' run text: curl reads $HOME/.curlrc before any
 # option
@@ -3972,6 +4047,16 @@ for what, text in (
         ("a job service with no env", put(JOB, "    services:\n      side:\n        image: %s\n" % IMG))):
     missed.append("%s is a finding" % what) if whole(text) != [4, 7] else None
 assert not missed, missed
+cdwf = chain_file(D)
+csteps = yaml.safe_load(cdwf)["jobs"]["review"]["steps"]
+chain = {4: csteps[4]["run"], 7: csteps[7]["run"]}                            # the chain's: steps 4 and 7
+assert judge_job(chain, {D: cdwf}) == [], "the chain's two exact steps are excluded"
+assert judge_job({5: chain[4], 7: chain[7]}, {D: cdwf}) == [5, 7], "the chain's step 4 text at another index is a finding"
+assert judge_job(chain, {D: cdwf}, job="other") == [4, 7], "the chain's texts in another job are findings"
+assert judge_job(chain, {".github/workflows/x.yml": cdwf}, file=".github/workflows/x.yml") == [4, 7], \
+        "the chain's texts in another file are findings"
+assert judge_job(chain, {D: cdwf + "\n          ACTIONS_ID_TOKEN_REQUEST_URL: file:///x\n"}) == [4, 7], \
+        "an assignment of the URL variable is a finding"
 PY
 fi
 

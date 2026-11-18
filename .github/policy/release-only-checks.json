@@ -2,7 +2,7 @@
   "comment": [
     "Checks that release admission requires green but the ruleset on main does not list",
     "(the owner trimmed them from the ruleset on 2026-11-12). Same shape and meaning as",
-    "required-checks.json. Admission appends these entries to",
+    "required-checks.json. Admission and the patch release's ready step append these entries to",
     "required-checks.json's. A context is in one file or the other, never both."
   ],
   "required_checks": [

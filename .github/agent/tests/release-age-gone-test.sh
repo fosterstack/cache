@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC1, REQ-SUP-001-AC2, REQ-SUP-001-AC30, REQ-SUP-001-AC32, REQ-SUP-001-AC33
-# The owner's ruling of Nov 11 2026 removed the release-age hold: a pull request never waits for a version to age, and the pin scan measures no time. Proved on the
-# tracked files, with nothing run: (a) pin-age-check.py and (b) pin-audit.py hold none of the words of the removed hold, (c) the tag observer is gone and no tracked
-# file refers to it, (d) Dependabot carries no cooldown and one entry per ecosystem and directory, the context and the job pin-age stay, the pin-age job runs no
-# re-run, no run listing and no publication-time lookup, and no workflow holds actions: write.
+# proves: REQ-SUP-001-AC41, REQ-SUP-001-AC30, REQ-SUP-001-AC32, REQ-SUP-001-AC33
+# The owner's ruling of Nov 11 2026 removed the release-age wait. Proved on the tracked files: no text of the old wait
+# is left, Dependabot carries no cooldown and one
+# entry per ecosystem root, no job of supply-chain.yml measures a version's age, no job holds actions:
+# write, and the tag observer is gone.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
@@ -70,7 +70,7 @@ dup = sorted(k for k, n in c.items() if n > 1)
 if dup: sys.exit("more than one entry for %r" % (dup,))
 PY
 
-# d (REQ-SUP-001-AC1): the github-actions, pip and tools/govulncheck gomod entries are there (the last weekly), the root gomod entry keeps its weekly schedule and its one minor-patch group, no docker entry
+# d (REQ-SUP-001-AC41): the github-actions, pip and tools/govulncheck gomod entries are there (the last weekly), the root gomod entry keeps its weekly schedule and its one minor-patch group, no docker entry
 py .github/dependabot.yml >"$work/ac1" 2>&1 <<'PY' && ok "dependabot.yml: github-actions, pip and govulncheck entries present, root gomod unchanged, no docker entry" || { bad "dependabot.yml: github-actions, pip and govulncheck entries present, root gomod unchanged, no docker entry"; sed 's/^/     /' "$work/ac1"; }
 import sys, yaml
 u = {(e["package-ecosystem"], e["directory"]): e for e in yaml.safe_load(open(sys.argv[1]))["updates"]}
@@ -82,26 +82,26 @@ if not r or r["schedule"] != {"interval": "weekly"} or r.get("groups") != {"gomo
 if any(k[0] == "docker" for k in u): sys.exit("a docker entry exists")
 PY
 
-# d: the context pin-age and the job pin-age stay
-py .github/policy/required-checks.json >"$work/rc" 2>&1 <<'PY' && ok "required-checks.json still names the context pin-age" || { bad "required-checks.json still names the context pin-age"; sed 's/^/     /' "$work/rc"; }
-import json, sys
-def ctx(o):
-    if isinstance(o, dict): return ([o["context"]] if isinstance(o.get("context"), str) else []) + [c for v in o.values() for c in ctx(v)]
-    if isinstance(o, list): return [c for v in o for c in ctx(v)]
-    return []
-if "pin-age" not in ctx(json.load(open(sys.argv[1]))): sys.exit("no context pin-age")
+# AC33: no actions: write anywhere
+py >"$work/aw" 2>&1 <<'PY' && ok "no workflow holds actions: write, at the top or in any job" || { bad "no workflow \
+holds actions: write, at the top or in any job"; sed 's/^/     /' "$work/aw"; }
+import glob, yaml, sys
+bad = []
+for p in sorted(glob.glob(".github/workflows/*.y*ml")):
+    d = yaml.safe_load(open(p)) or {}
+    def w(perm): return isinstance(perm, dict) and perm.get("actions") == "write" or perm == "write-all"
+    if w(d.get("permissions")): bad.append(p + " (workflow)")
+    for n, j in (d.get("jobs") or {}).items():
+        if isinstance(j, dict) and w(j.get("permissions")): bad.append("%s job %s" % (p, n))
+if bad: sys.exit("actions: write in " + ", ".join(bad))
 PY
-py .github/workflows/supply-chain.yml >"$work/sc" 2>&1 <<'PY' && ok "supply-chain.yml still has the job pin-age" || { bad "supply-chain.yml still has the job pin-age"; sed 's/^/     /' "$work/sc"; }
-import sys, yaml
-j = yaml.safe_load(open(sys.argv[1]))["jobs"]
-if "pin-age" not in j and not any(isinstance(v, dict) and v.get("name") == "pin-age" for v in j.values()): sys.exit("no job pin-age")
-PY
-py .github/workflows/supply-chain.yml >"$work/sc2" 2>&1 <<'PY' && ok "the pin-age job runs no re-run, no run listing and no publication-time lookup" || { bad "the pin-age job runs no re-run, no run listing and no publication-time lookup"; sed 's/^/     /' "$work/sc2"; }
-import re, sys, yaml
-j = yaml.safe_load(open(sys.argv[1]))["jobs"]
-job = j.get("pin-age") or next((v for v in j.values() if isinstance(v, dict) and v.get("name") == "pin-age"), None)
-if job is None: sys.exit("no job pin-age")
-m = re.search(r"gh run|/rerun|published_at|--now|first.seen|tag_observer", yaml.dump(job))
+# no job of supply-chain.yml runs a re-run of runs or a timing of versions
+py .github/workflows/supply-chain.yml >"$work/sc2" 2>&1 <<'PY' && ok "no job of supply-chain.yml runs a re-run, a run listing \
+or a publication-time lookup" || { bad "no job of supply-chain.yml runs a re-run, a run listing or a publication-time \
+lookup"; sed 's/^/     /' "$work/sc2"; }
+import sys, yaml, re
+t = yaml.dump(yaml.safe_load(open(sys.argv[1]))["jobs"])
+m = re.search(r"run rerun|gh run |/rerun|published_at|--now|first.seen|tag_observer", t)
 if m: sys.exit("found: " + m.group(0))
 PY
 

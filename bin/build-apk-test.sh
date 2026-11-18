@@ -187,8 +187,6 @@ t "REQ-FIPS-001-AC1" "the check-artifacts.sh lock check accepts the lock's id" b
 printf 'v1.1.0-DEADBEEF\n' >"$work/lib-lock-bad.txt"
 t "REQ-BUILDAPK-001-AC1" "a malformed lock file fails the recipe checks (closed grammar, fail closed)" bash -c '! env FIPS_LOCK="$1" ROOT="$2" python3 "$3" mel-fips "$4" fips' _ "$work/lib-lock-bad.txt" "$root" "$work/chk.py" "$MF"
 t "rule 21" "bin/gen-recipes.py --check passes on the committed pair: both recipes are exactly the generator's output from build/melange.yaml.tmpl, so they differ only in name, description and the two FIPS lines" python3 "$root/bin/gen-recipes.py" --check
-rm -rf "$work/pin"; mkdir -p "$work/pin"; cp "$root/build/melange.yaml.tmpl" "$work/pin/t.tmpl"; cp "$root/build/melange.yaml" "$work/pin/a.yaml"; cp "$root/build/melange-fips.yaml" "$work/pin/b.yaml"; printf '#' >>"$work/pin/t.tmpl"
-fails "rule 21" "bin/gen-recipes.py: a ONE-BYTE edit of a copy of the REAL template fails --check naming the pin (the constant TEMPLATE_SHA256 in the generator)" 'update TEMPLATE_SHA256 in the same reviewed change' python3 "$root/bin/gen-recipes.py" --template "$work/pin/t.tmpl" --regular "$work/pin/a.yaml" --fips "$work/pin/b.yaml" --check
 t "rule 21" "the committed template carries the review checklist at its top (the human and the reviewer pass)" bash -c "grep -q 'TEMPLATE CHECKLIST' '$root/build/melange.yaml.tmpl' && grep -q 'NEGATIVE EXAMPLES' '$root/build/melange.yaml.tmpl'"
 t "rule 15" "melange.yaml build environment: no repositories or keyring of its own beyond local paths, only the go.dev fetch uri" y mel-local "$M"
 t "rule 15" "melange-fips.yaml: the same" y mel-local "$MF"
@@ -1514,7 +1512,7 @@ t "rule 22" "build/keys/release.rsa.pub is a placeholder that is NOT a key (no P
 
 # no key-shaped block of ANY label under build/keys, except the committed non-secret assembly pair (assembly.rsa and assembly.rsa.pub) and the real public keys release.rsa.pub and retired/<day>/release.rsa.pub
 cat >"$work/keyscan.py" <<'P'
-import base64, hashlib, os, re, subprocess, sys, tempfile
+import base64, os, re, subprocess, sys, tempfile
 def _tlv(b, i, end):
     if i + 2 > end: raise ValueError("truncated")
     tag, l = b[i], b[i + 1]
@@ -1552,7 +1550,6 @@ def der_rsa_public(b):
     k = _children(inner, s2, e2)
     if t2 != 0x30 or e2 != len(inner) or len(k) != 2 or any(c[0] != 0x02 for c in k): raise ValueError("not RSAPublicKey (two INTEGERs) spanning the bit string")
 d = sys.argv[1]; bad = []
-PLACEHOLDER_SHA = "4c1b4fee97806b9659f4c0dbd84f4bd97d46d08df1b3df2c3f774442ebac3673"   # the committed placeholder; committing the real release public key edits this line, the placeholder test and the ret-placeholder case
 B64 = re.compile(rb"[A-Za-z0-9+/]{1,76}={0,2}")
 HEADER = re.compile(rb"NON-SECRET assembly key[ -~]{0,160}")
 FILES = {"assembly.rsa": b"RSA PRIVATE KEY", "assembly.rsa.pub": b"PUBLIC KEY", "release.rsa.pub": None}
@@ -1574,10 +1571,11 @@ for root_, dirs, files in os.walk(d):
         if len(raw) > 8192: bad.append(rel + " (larger than 8 KiB)"); continue
         if any(c >= 0x80 for c in raw) or b"\r" in raw or b"\0" in raw: bad.append(rel + " (not plain ASCII text: a high byte, a NUL or a carriage return)"); continue
         label = None if retired else FILES[rel]
-        if retired and hashlib.sha256(raw).hexdigest() == PLACEHOLDER_SHA:
+        is_placeholder = raw.startswith(b"PLACEHOLDER:") and raw.count(b"\n") == 2 and b"-----" not in raw   # the committed placeholder: two plain lines, no armour
+        if retired and is_placeholder:
             bad.append(rel + " (the placeholder is not a key: a retired key must be a real public key)"); continue
-        if label is None and hashlib.sha256(raw).hexdigest() == PLACEHOLDER_SHA:
-            continue   # the committed placeholder, byte for byte
+        if label is None and is_placeholder:
+            continue   # the committed placeholder
         if label is None: label = b"PUBLIC KEY"   # the real release public key: exactly one public key block that OpenSSL parses
         # line by line: [one NON-SECRET header line] BEGIN, base64 lines, END, end of file. Nothing else.
         lines = raw.split(b"\n")

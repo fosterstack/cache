@@ -121,10 +121,10 @@ class ScriptWrites(unittest.TestCase):
         self.split_refused("run: bash ./bin/setup.sh\n        env: {N: CURL_HOME}",
                            'echo "$N=x" >> "$GITHUB_ENV"')
 
-    def test_route_in_run_text_and_unrelated_name_in_script_is_accepted(self):
+    def test_route_in_run_text_and_unrelated_name_in_script_is_refused(self):
         code, out = self.split("run: OUT=\"$GITHUB_ENV\" bash ./bin/setup.sh", 'echo "REF=x" >> "$OUT"')
-        self.assertEqual(code, 0, out)
-        self.assertIn(" 0 finding(s)", out)
+        self.assertEqual(code, 1, out)
+        self.assertTrue(any("build" in ln and "step 1" in ln and "GITHUB_ENV" in ln for ln in out.splitlines()), out)
 
 
 if __name__ == "__main__":

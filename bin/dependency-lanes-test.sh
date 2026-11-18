@@ -509,10 +509,11 @@ def case(files, view_rc=0, head=HEAD, screened=HEAD):
     t = tempfile.mkdtemp()
     os.makedirs(t + "/bin")
     open(t + "/snap.json", "w").write(json.dumps({"files": [{"path": f} for f in files], "headRefOid": head}))
-    open(t + "/bin/gh", "w").write('#!/bin/sh\necho "gh $*" >> "$LOGF"\ncase "$1 $2" in\n  "pr view") [ "${VIEW_RC:-0}" = 0 ] || exit 1; cat "$SNAP" ;;\n  "pr merge") exit 0 ;;\n  api*) echo none ;;\n  *) exit 3 ;;\nesac\n')
+    open(t + "/bin/gh", "w").write('#!/bin/sh\necho "gh $*" >> "$LOGF"\ncase "$1 $2" in\n  "pr view") [ "${VIEW_RC:-0}" = 0 ] || exit 1; cat "$SNAP" ;;\n  "pr merge") exit 0 ;;\n  api*) case "$2" in repos/*/rules/branches/main) cat "$RULES" ;; *) echo none ;; esac ;;\n  *) exit 3 ;;\nesac\n')
+    open(t + "/rules.json", "w").write(json.dumps([{"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "c", "integration_id": 15368}]}}]))
     os.chmod(t + "/bin/gh", 0o755)
     open(t + "/step.sh", "w").write(run)
-    env = dict(os.environ, PATH=t + "/bin:" + os.environ["PATH"], LOGF=t + "/log", SNAP=t + "/snap.json", VIEW_RC=str(view_rc),
+    env = dict(os.environ, PATH=t + "/bin:" + os.environ["PATH"], LOGF=t + "/log", SNAP=t + "/snap.json", RULES=t + "/rules.json", VIEW_RC=str(view_rc),
                GITHUB_STEP_SUMMARY=t + "/summary", GH_TOKEN="x", HEAD_SHA=screened, GITHUB_REPOSITORY="o/r", **{"PR_URL": "https://github.com/o/r/pull/7"})
     r = subprocess.run(["bash", t + "/step.sh"], env=env, capture_output=True, text=True)
     log = open(t + "/log").read().splitlines() if os.path.exists(t + "/log") else []
@@ -583,15 +584,24 @@ def runs_of(verdict, total=None):
 LASTOUT = ""
 CWD = TMP = ""
 def go(run, verdict, armed="true", waits="true", lookup_fails=False, main=None, contents_fail=False, fail_paths=(),
-        view_fails=False, total=None, partial=False):
+        view_fails=False, total=None, partial=False, rules="one"):
     """total: the check runs' total_count; partial: a failed read prints half a file before it fails;
     main: {path: its content on main}, where it is not the checked-in one;
     fail_paths: paths whose read through the contents API fails;
-    view_fails: the one read of the pull request (head and arm state) fails.
+    view_fails: the one read of the pull request (head and arm state) fails;
+    rules: what gh api repos/o/r/rules/branches/main answers: one (a required_status_checks rule listing one check),
+    two, none (other rules only), empty (a required_status_checks rule with an empty list), fails (gh exits 1),
+    junk (exit 0, not JSON).
     The step runs in the empty folder CWD, with RUNNER_TEMP set to the empty folder TMP"""
     bd = os.path.join(work, "disarm-stub"); os.makedirs(bd, exist_ok=True)
     log = os.path.join(bd, "log"); open(log, "w").close()
     json.dump(runs_of(verdict, total), open(os.path.join(bd, "runs.json"), "w"))
+    RULE = lambda n: {"type": "required_status_checks", "parameters": {"strict_required_status_checks_policy": False,
+            "required_status_checks": [{"context": "check%d" % i, "integration_id": 15368} for i in range(n)]}}
+    json.dump({"one": [{"type": "deletion"}, RULE(1)], "two": [RULE(2)], "none": [{"type": "deletion"},
+            {"type": "non_fast_forward"}], "empty": [{"type": "deletion"}, RULE(0)], "fails": [], "junk": []}[rules],
+            open(os.path.join(bd, "rules.json"), "w"))
+    if rules == "junk": open(os.path.join(bd, "rules.json"), "w").write("<html>not json")
     json.dump({"files": [], "headRefOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "autoMergeRequest": {"mergeMethod": "SQUASH"} if armed == "true" else None},
             open(os.path.join(bd, "view.json"), "w"))
     for path, text in {**MAIN, **(main or {})}.items():
@@ -603,9 +613,10 @@ f=; a=("$@"); for ((i = 0; i < ${#a[@]}; i++)); do [ "${a[i]}" = --jq ] && f="${
 case "$1 $2" in
   "pr view") %(view)s jq -r "${f:-.}" %(bd)s/view.json ;;
   "api repos/o/r/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/check-runs?check_name=dependabot-reviewer"*) %(lookup)s jq -r "$f" %(bd)s/runs.json ;;
+  "api repos/o/r/rules/branches/main") %(rfail)s cat %(bd)s/rules.json ;;
   "api repos/o/r/contents/"*)
-    case "$2" in *"?ref=main") ;; *) exit 1 ;; esac
-    p=${2#*contents/}; p=${p%%%%"?ref=main"}
+    case "$2" in *"?ref=refs/heads/main") ;; *) exit 1 ;; esac
+    p=${2#*contents/}; p=${p%%%%"?ref=refs/heads/main"}
     %(cfail)s
     case " %(fails)s " in *" $p "*) %(half)s echo 'gh: HTTP 503' >&2; exit 1 ;; esac
     [ -f %(bd)s/main/"$p" ] || exit 1
@@ -614,6 +625,7 @@ esac
 """ % {"log": log, "bd": bd, "fails": " ".join(fail_paths),
        "view": "echo 'gh: HTTP 503' >&2; exit 1;" if view_fails else "",
        "lookup": "echo 'gh: HTTP 503' >&2; exit 1;" if lookup_fails else "",
+       "rfail": "echo 'gh: HTTP 503' >&2; exit 1;" if rules == "fails" else "",
        "half": "printf cGFydA;" if partial else "",
        "cfail": "echo 'gh: HTTP 503' >&2; exit 1" if contents_fail else ""})
     os.chmod(os.path.join(bd, "gh"), 0o755)
@@ -686,7 +698,7 @@ for what, runs in (("another version", [("success", OLDVER)]), ("no external_id"
 for what, runs in (("the current version", [("success", VER)]), ("another version replaced by a newer one of the "
         "current version", [("success", OLDVER), ("success", VER)])):
     rc, log = go(last, runs, waits="true")
-    if rc != 0 or "--disable-auto" in log or any("contents/%s?ref=main" % p not in log for p in PATHS):
+    if rc != 0 or "--disable-auto" in log or any("contents/%s?ref=refs/heads/main" % p not in log for p in PATHS):
         bad.append("a success with %s on a major's head, read against main's copies of the program, the prompt and "
                 "the workflow: auto-merge stands (rc %s)\n%s" % (what, rc, log))
 # a plain patch or minor needs no verdict: its step reads no version, and says it needs none
@@ -750,13 +762,15 @@ for path in PATHS:
         bad.append("a success of the version with main's changed %s: auto-merge stands (rc %s)\n%s" % (path, rc, log))
 # the script is fetched from main and run there: then the files it lists
 rc, log = go(last, [("success", VER)], waits="true")
-if rc != 0 or "--disable-auto" in log or "contents/%s?ref=main" % SCRIPT not in log or log.index("contents/%s?ref=main"
-        % SCRIPT) > log.index("contents/%s?ref=main" % PATHS[0]):
+if (rc != 0 or "--disable-auto" in log
+        or "contents/%s?ref=refs/heads/main" % SCRIPT not in log
+        or log.index("contents/%s?ref=refs/heads/main" % SCRIPT)
+        > log.index("contents/%s?ref=refs/heads/main" % PATHS[0])):
     bad.append("the script is read from main before the files it lists (rc %s)\n%s" % (rc, log))
 # the script is fetched by one literal gh api line into RUNNER_TEMP and run from there, with no cd
 # a command wrapped with a backslash-newline is one line, as the pin checker reads it
 code = [" ".join(l.split()) for l in last.replace("\\\n", " ").splitlines() if not l.strip().startswith("#")]
-fetches = [l for l in code if "contents/%s?ref=main" % SCRIPT in l]
+fetches = [l for l in code if "contents/%s?ref=refs/heads/main" % SCRIPT in l]
 FETCH_INTO = '--jq .content | base64 -d > "$RUNNER_TEMP/dependabot-reviewer-version.sh"'
 if len(fetches) != 1 or "gh api " not in fetches[0] or FETCH_INTO not in fetches[0]:
     bad.append("the script is fetched by ONE literal gh api line with %s; got %s" % (FETCH_INTO, fetches))
@@ -862,6 +876,25 @@ if rc != 0 or "pr merge" in log:
 rc, log = go(arm, "none", armed="false", lookup_fails=True)
 if rc == 0 or "pr merge" in log:
     bad.append("the arm step when the verdict cannot be read: it must fail and arm nothing (rc %s)\n%s" % (rc, log))
+# REQ-DEP-003-AC1: armed only when main's ruleset lists at least one required status check, read when arming
+for r in ("one", "two"):
+    rc, log = go(arm, "success", armed="false", rules=r)
+    if rc != 0 or "pr merge --auto --squash --match-head-commit " + "a" * 40 + " https://example.invalid/pr/1" not in log:
+        bad.append("ruleset-%s: main lists required status checks, so it must arm (rc %s)\n%s" % (r, rc, log))
+for r in ("none", "empty", "fails", "junk"):
+    rc, log = go(arm, "success", armed="false", rules=r)
+    if "pr merge --auto" in log:
+        bad.append("ruleset-%s: it must NOT arm\n%s" % (r, log))
+    if rc == 0:
+        bad.append("ruleset-%s: the step must fail (rc 0)\n%s" % (r, log))
+    if r in ("none", "empty") and ("::error::" not in LASTOUT or "required status check" not in LASTOUT):
+        bad.append("ruleset-%s: the step must print an ::error:: line saying main enforces no required status checks, "
+                "got %r" % (r, LASTOUT))
+    if "rules/branches/main" not in log:
+        bad.append("ruleset-%s: the step must read main's rules (gh api repos/o/r/rules/branches/main)\n%s" % (r, log))
+rc, log = go(arm, "failure", armed="false", rules="none")
+if "pr merge" in log:
+    bad.append("ruleset-none and a failed head: nothing may be armed\n%s" % log)
 print("lane arm and last step: " + ("ok" if not bad else "; ".join(bad)))
 sys.exit(1 if bad else 0)
 PY
@@ -1027,6 +1060,27 @@ sys.exit(1 if bad else 0)
 PY
 then pass=$((pass+1)); echo "PASS reviewer-version-script"
 else failn=$((failn+1)); echo "FAIL reviewer-version-script"; fi
+
+# g3: a tag named main must not answer a read of main, so every read of main's files names the branch ref
+am="$root/.github/workflows/dependabot-auto-merge.yml"
+reads_main_branch() { # file: its ?ref= words, to the end of the shell word, are exactly three copies of the one string
+  local want='?ref=refs/heads/main"'
+  [ "$(grep -o '?ref=[^[:space:]]*' "$1")" = "$(printf '%s\n%s\n%s' "$want" "$want" "$want")" ]
+}
+if reads_main_branch "$am"
+then pass=$((pass+1)); echo "PASS g3-auto-merge-reads-refs-heads-main"
+else failn=$((failn+1)); echo "FAIL g3-auto-merge-reads-refs-heads-main"; fi
+
+# bash joins text after the closing quote into the same word, so the ref would no longer end at main
+joins=$(mktemp -d -t cache5-tests.XXXXXX)
+sed '0,\|?ref=refs/heads/main"|s||?ref=refs/heads/main"${GITHUB_REF_NAME:+-x}|' "$am" > "$joins/quote-join-a.yml"
+sed '0,\|?ref=refs/heads/main"|s||?ref=refs/heads/main"-x|' "$am" > "$joins/quote-join-b.yml"
+for m in quote-join-a quote-join-b; do
+  if reads_main_branch "$joins/$m.yml"
+  then failn=$((failn+1)); echo "FAIL g3-auto-merge-refuses-$m"
+  else pass=$((pass+1)); echo "PASS g3-auto-merge-refuses-$m"; fi
+done
+[ -d "$joins" ] && rm -rf -- "$joins"
 
 echo "dependency-lanes: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

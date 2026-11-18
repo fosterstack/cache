@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-008-AC1, REQ-REL-008-AC2, REQ-REL-008-AC3
+# proves: REQ-REL-008-AC1, REQ-REL-008-AC2, REQ-REL-008-AC3, REQ-REL-014-AC1
 # The ratified workflow consolidation (owner, Oct 2): go-freshness.yml keeps the freshness check on its daily schedule (and on a
 # dispatch) and nothing else: the weekly persona-uat cron moved to persona-uat.yml (REQ-UAT-001-AC6, owner rule workflow-grouped-by-purpose,
 # Nov 13). The real workflow must pass; each mutated copy must be caught.
@@ -61,22 +61,27 @@ case_ no-dispatch             bad "d['on'].pop('workflow_dispatch')"
 # .github/policy/required-checks.json is still produced by a top-level job of a workflow on its scope's event.
 # dependabot-auto-merge.yml does NOT move: its events (pull_request only) differ from ci.yml's (advisor, 0051 check 3).
 judge_ci() { python3 - "$1" "$root" <<'PY'
-import glob, json, os, sys, yaml
+import glob, json, os, re, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
+def nopr(x):   # the ratified job condition of REQ-REL-014: the job does not run on a pull request
+    return re.sub(r"\$\{\{|\}\}|\s", "", str(x)) == "github.event_name!='pull_request'"
+ANY = object()
 MOVED = {   # job id -> (name, permissions, environment, needs, if) exactly as in the original file
-    "allowlist": ("allowlist", None, None, None, None),
-    "requirements": ("requirements", None, None, None, None),
+    "allowlist": ("allowlist", None, None, None, ANY),
+    "requirements": ("requirements", None, None, None, ANY),
 }
 jobs = d.get("jobs") or {}
 for jid, (name, perms, env, needs, cond) in MOVED.items():
     j = jobs.get(jid)
     if j is None:
         bad.append("job %s is not in ci.yml" % jid); continue
-    got = (j.get("name"), j.get("permissions"), j.get("environment"), j.get("needs"), j.get("if"))
-    if got != (name, perms, env, needs, cond):
+    got = (j.get("name"), j.get("permissions"), j.get("environment"), j.get("needs"))
+    if got != (name, j.get("permissions") if perms is ANY else perms, env, needs):
         bad.append("job %s changed: %s" % (jid, got))
+    if not nopr(j.get("if")):
+        bad.append("job %s is not kept off pull requests by `if: github.event_name != 'pull_request'`: %r" % (jid, j.get("if")))
     if "uses" in j:
         bad.append("job %s is reached through uses: (its check would be renamed)" % jid)
 if d.get("permissions") != {"contents": "read"}:
@@ -133,6 +138,8 @@ PY
 case_ci real                     ok  ""
 case_ci allowlist-renamed        bad "d['jobs']['allowlist']['name'] = 'file allowlist'"
 case_ci requirements-dropped     bad "d['jobs'].pop('requirements')"
+case_ci allowlist-on-pull-request bad "d['jobs']['allowlist'].pop('if', None)"
+case_ci requirements-on-pull-request bad "d['jobs']['requirements'].pop('if', None)"
 case_ci top-level-widened        bad "d['permissions']['contents'] = 'write'"
 case_ci top-level-pr-write       bad "d['permissions']['pull-requests'] = 'write'"
 case_ci allowlist-regains-block  bad "d['jobs']['allowlist']['permissions'] = {'contents': 'read'}"
@@ -254,7 +261,7 @@ d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
 on = d.get("on") or {}
-if on.get("push") != {"branches": ["main"]} or "pull_request" not in on or "workflow_call" in on:
+if on.get("push") != {"branches": ["main"]} or "pull_request" in on or "workflow_call" in on:
     bad.append("acceptance.yml's events changed: %s" % list(on))
 jobs = d.get("jobs") or {}
 a = jobs.get("acceptance") or {}
@@ -302,7 +309,7 @@ case_acc env-at-top            bad "d['env'] = {'COLD_LOOKUPS': '2'}"
 case_acc workflow-call-back    bad "d['on']['workflow_call'] = ''"
 case_acc results-id-back       bad "d['jobs']['acceptance']['steps'][-2]['id'] = 'results'"
 case_acc job-split-again       bad "d['jobs']['acceptance-gradle'] = d['jobs']['acceptance']"
-case_acc no-pr-trigger         bad "d['on'].pop('pull_request')"
+case_acc pr-trigger-back       bad "d['on']['pull_request'] = ''"
 
 # ---------------------------------------------------------------------------------------------------------------------
 # PR 5: release-chain-pr.yml -> scan.yml (REQ-REL-008-AC2; advisor read-back 0062). One build feeds both: scan's own
@@ -314,6 +321,8 @@ import os, subprocess, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
+def nopr(x):   # the ratified job condition of REQ-REL-014: the job does not run on a pull request
+    return re.sub(r"\$\{\{|\}\}|\s", "", str(x)) == "github.event_name!='pull_request'"
 on = d.get("on") or {}
 # exactly: an unfiltered pull_request (no types, branches, paths filter), pushes to main and v* tags (Codex #162 pin, R78-B1)
 if on != {"pull_request": "", "push": {"branches": ["main"], "tags": ["v*"]}}:

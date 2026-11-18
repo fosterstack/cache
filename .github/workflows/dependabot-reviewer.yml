@@ -281,7 +281,10 @@ jobs:
                   fi
                   case "$last_event" in
                     "auto_merge_disabled github-actions[bot]"|"auto_merge_disabled github-actions")
-                      if GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash --match-head-commit "$sha" "$n" >/dev/null; then
+                      if ! gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main" \
+                           | jq -e '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]] | length > 0' > /dev/null; then
+                        echo "::error::PR #$n ${sha:0:7}: main lists no required status check, or its ruleset could not be fetched — the approved arm stays off this hour"; lookup_failed=1
+                      elif GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash --match-head-commit "$sha" "$n" >/dev/null; then
                         echo "PR #$n ${sha:0:7}: the approved arm was turned off meanwhile — put back"
                       else echo "::error::PR #$n ${sha:0:7}: could not put the approved arm back — retried next hour"; lookup_failed=1; fi ;;
                   esac
@@ -457,6 +460,14 @@ jobs:
                 || echo "::error::PR #$1: could not supersede its earlier '$3' verdict"
             fi
           }
+          # --auto merges at once when main lists no required status check: then nothing is armed
+          if gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main" \
+                | jq -e '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]] | length > 0' > /dev/null; then checks_listed=1
+          else
+            checks_listed=0
+            echo "::error::main lists no required status check, or its ruleset could not be fetched: nothing is armed this hour" \
+                 "(every merge decision below becomes an error)"
+          fi
           while read -r n sha prior; do
             prior=${prior:-none}
             d="$W/pr-$n"; mkdir -p "$d"
@@ -489,6 +500,7 @@ jobs:
             fi
             decision=$(jq -r .decision "$d/decision.json") || decision=error
             names=$(jq -r '[.[]|"\(.name) \(.from)→\(.to)"]|join(", ")' "$W/updates-$n.json") || names="PR #$n"
+            if [ "$decision" = merge ] && [ "$checks_listed" != 1 ]; then decision=no-checks; fi
             # The verdict is for $sha, the commit whose diff the readers were given. If the PR's head is another
             # commit by now, nothing is published and nothing is done to the PR: the new head is a candidate
             # next hour.
@@ -540,6 +552,8 @@ jobs:
                   held=$((held+1))
                   echo "PR #$n: hold (issue open, check published)"
                 else unfinished "$n" "$sha" "$prior" "held, issue open, but the failure check could not be published"; fi ;;
+              no-checks)
+                unfinished "$n" "$sha" "$prior" "readers found nothing that breaks us, but main lists no required status check" ;;
               *)
                 unfinished "$n" "$sha" "$prior" "$(jq -r '.reason // "reader error"' "$d/decision.json" 2>/dev/null || echo "reader error")" ;;
             esac
@@ -621,7 +635,7 @@ jobs:
           MERGE_TOKEN: ${{ steps.app-merge.outputs.token }}
         run: |
           set +e -uo pipefail
-          W="$RUNNER_TEMP/work"; bad=0
+          W="$RUNNER_TEMP/work"; bad=0; checks=unknown
           version=$(bash bin/dependabot-reviewer-version.sh) && [ -n "$version" ] \
             || { echo "::error::cannot compute the reviewer's version — no arm is settled"; exit 1; }
           while read -r n sha _; do
@@ -653,6 +667,13 @@ jobs:
                 fi ;;
               "none false"|"neutral false")
                 grep -qx "$n $sha" "$W/lane-arms.txt" 2>/dev/null || continue
+                if [ "$checks" = unknown ]; then
+                  if gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main" \
+                       | jq -e '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]] | length > 0' > /dev/null; then checks=listed; else checks=none; fi
+                fi
+                if [ "$checks" != listed ]; then
+                  echo "::error::PR #$n ${sha:0:7}: main lists no required status check, or its ruleset could not be fetched — the arm stays off"; bad=1; continue
+                fi
                 if GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash --match-head-commit "$sha" "$n" >/dev/null; then
                   echo "PR #$n ${sha:0:7}: its review did not finish — armed again as it was before"
                 else echo "::error::PR #$n ${sha:0:7}: unfinished review; its arm could not be put back"; bad=1; fi ;;

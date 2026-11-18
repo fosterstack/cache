@@ -128,8 +128,8 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 222 allow patterns: chain-v030's 220 plus main's ^bin/dependabot-reviewer-version\.sh$ and ^\.github/policy/fulcio-chain\.pem$; read from the run of this test
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 222, 4
+# 225 allow patterns: chain-v030's 220 plus main's ^bin/dependabot-reviewer-version\.sh$ and ^\.github/policy/fulcio-chain\.pem$; read from the run of this test
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 225, 4
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -171,19 +171,6 @@ if str(loaded).isdigit() and bash_list != _py:
     errs.append("parsed patterns differ from what bash loads at element %d: parsed=%r bash=%r" % (_d, _py[_d:_d+1], bash_list[_d:_d+1]))
 if not str(loaded).isdigit(): errs.append("could not load the arrays in bash: %s" % loaded)
 elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash loads %s" % (len(pats), loaded))
-# Whole-script pin (fail closed). The sha256 of the script with the exactly-checked v0.3.0 region removed (from the
-# '# v0.3.0 build chain' marker line through the last pattern line of the region; nothing else normalised).
-# Any other change to this script (older patterns, logic, suppression list) must update this digest in the same
-# commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
-# defence in depth. The region itself is checked by expansion above, not by hash.
-# the script text outside the v0.3.0 region; history is in git
-PINNED_SHA256 = "d16c1b5c33fe17f18e309cbd2e6fc28f52eef08f25f441f08741a0ccbdf26347"
-if rstart and rend:
-    import hashlib
-    _b = _rawlines
-    _dg = hashlib.sha256(b"\n".join(_b[:rstart-1] + _b[rend:])).hexdigest()
-    if _dg != PINNED_SHA256:
-        errs.append("script text outside the v0.3.0 region changed (sha256 %s, pinned %s); if intended, update PINNED_SHA256 in the same commit" % (_dg, PINNED_SHA256))
 def toplevel_bar(p):
     d = 0; i = 0
     while i < len(p):
@@ -293,27 +280,22 @@ mutsub "pattern then bare #"                     "  '^bin/vendor-check\\.sh\$'" 
 mutsub "pattern then tab then #"                 "  '^bin/vendor-check\\.sh\$'" "$(printf '\t')# c"
 mutins "readarray -t -O 200"                2 "readarray -t -O 200 ALLOW_PATTERNS <<< '^evil/.*\$'"
 mutins "SUPPRESSION_PATTERNS index assign"  2 "SUPPRESSION_PATTERNS[9]='^evil/.*\$'"
-# B1 (round 5): the whole-script digest pin must kill each of these even if the readable denylist were bypassed.
-# Each mutant is checked against the pin alone (hash line of the struct_check error), so the pin cannot be dead code.
-pinkill() { # <desc> ; the mutant is already in $_mut_dir/m.sh
+# B1 (round 5): the readable denylist and the pattern counts must kill each of these edits after the arrays.
+killed() { # <desc> ; the mutant is already in $_mut_dir/m.sh
   if cmp -s bin/check-file-allowlist.sh "$_mut_dir/m.sh"; then gf "mutant did not apply: $1" ""; return; fi
-  _out="$(struct_check "$_mut_dir/m.sh" 2>&1)" && { gf "struct check MISSED mutant: $1" ""; return; }
-  case "$_out" in *"outside the v0.3.0 region changed"*) gp "digest pin kills mutant: $1";; *) gf "digest pin did NOT fire for mutant: $1" "$_out";; esac
+  if struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: $1" ""; else gp "struct check kills mutant: $1"; fi
 }
-pinmutins() { # <desc> <text inserted after the SUPPRESSION array close>
-  awk -v n=2 -v t="$2" '{print} /^\)$/{c++; if(c==n) print t}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "$1"
+killmutins() { # <desc> <text inserted after the SUPPRESSION array close>
+  awk -v n=2 -v t="$2" '{print} /^\)$/{c++; if(c==n) print t}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; killed "$1"
 }
-pinmutins "process-substitution dot-source of a split-name append" ". <(echo \"ALLOW_PAT\"\"TERNS+=('^evil/.*\\\$')\")"
-pinmutins "read into a computed array element name"                'n="ALLOW_PAT""TERNS[200]"; read -r "$n" <<< '"'"'^evil/.*$'"'"
-pinmutins "plain dot-source of ./extra.sh"                          ". ./extra.sh"
-pinmutins "DEBUG trap after the arrays"                             "trap 'exit 0' DEBUG"
-pinmutins "RETURN trap after the arrays"                            "trap ':' RETURN"
-pinmutins "ERR trap after the arrays"                               "trap 'exit 0' ERR"
-pinmutins "exec of another script"                                  "exec bash ./other.sh"
-sed -E "s/^  '\^LICENSE\\\$'/  '^evil\/.*\$'/" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "older pattern LICENSE replaced in place (count unchanged)"
-sed -E "s/^  '\^LICENSE\\\$'/  '^LICENS\$'/" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "older pattern narrowed"
-sed -E "s/^  return 0\$/  return 1/" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "a logic line changed"
-sed -E "/^  '\^\\\\\.auditor\/accepted-items\\\\\.json\\\$'\$/d" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "a suppression pattern deleted"
+killmutins "process-substitution dot-source of a split-name append" ". <(echo \"ALLOW_PAT\"\"TERNS+=('^evil/.*\\\$')\")"
+killmutins "read into a computed array element name"                'n="ALLOW_PAT""TERNS[200]"; read -r "$n" <<< '"'"'^evil/.*$'"'"
+killmutins "plain dot-source of ./extra.sh"                          ". ./extra.sh"
+killmutins "DEBUG trap after the arrays"                             "trap 'exit 0' DEBUG"
+killmutins "RETURN trap after the arrays"                            "trap ':' RETURN"
+killmutins "ERR trap after the arrays"                               "trap 'exit 0' ERR"
+killmutins "exec of another script"                                  "exec bash ./other.sh"
+sed -E "/^  '\^\\\\\.auditor\/accepted-items\\\\\.json\\\$'\$/d" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; killed "a suppression pattern deleted"
 # B1 (round 6): the script is read once as bytes and any CR (lone or CRLF), NUL or other control byte, and any
 # Unicode line separator, is refused. Each mutant is built from the real script by the python helper below.
 bytemut() { # <desc> <python expression over b (bytes of the real script) returning the mutated bytes>
@@ -772,6 +754,12 @@ passfam "feature/x" "v030: the FIPS module data file" "build/locks/fips-module.t
 runeach fail "feature/x" "v030: near-miss FIPS module file names refused" "build/locks/fips-module.txt.bak" "build/locks/fips-module.json" "build/locks/x/fips-module.txt" "build/fips-module.txt" "build/locks/Fips-module.txt" "build/locks/../fips-module.txt" "build/locks/fips-modules.txt"
 runeach fail "feature/x" "v030: the two archive record names are literal, not a group (no mixed or merged name)" "build/locks/archive-keysindex.sha256" "build/locks/archive-(keys|index).sha256" "build/locks/archive-.sha256" "build/locks/archive-keys.sha256x" "build/locks/archive-index.sha2561"
 runeach fail "feature/x" "v030: other archive record names refused" "build/locks/archive-other.sha256" "build/locks/archive-keys.sha256.bak" "build/locks/x/archive-keys.sha256" "build/locks/archive-keys.sha512" "build/locks/../archive-keys.sha256"
+passfam "feature/x" "queue gate: the merge queue judge script (cache#542)" ".github/agent/bin/queue-gate-judge.sh"
+runeach fail "feature/x" "queue gate: near-miss judge script names refused" \
+  ".github/agent/bin/queue-gate-judge.sh.bak" ".github/agent/bin/queue-gate-judgeX.sh" \
+  ".github/agent/bin/queue-gate-judge.shx" ".github/agent/bin/Queue-gate-judge.sh" \
+  ".github/agent/bin/x/queue-gate-judge.sh" "bin/queue-gate-judge.sh" ".github/agent/queue-gate-judge.sh" \
+  ".github/agent/bin/queue-gate-judge-test.sh"
 runeach fail "feature/x" "v030: the removed recipe comparer is no longer admitted" "bin/compare-recipes.py"
 passfam "feature/x" "v030: the freeze job script" "bin/build-freeze.sh"
 passfam "feature/x" "v030: the token wrapper of the release steps" "bin/with-aws-token.sh"

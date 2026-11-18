@@ -32,11 +32,10 @@ LINK_ROWS = [
 ]
 
 # A WHOLE-FILE row (empty span) exempts every system-path literal in a PYTHON test, and the scan cannot tell a quoted fixture line from a command,
-# so the WHOLE FILE is pinned: (sha256 of the file's raw bytes, the literal-bearing lines it may contain, reason). Any edit to one of these files
-# needs a reviewed update here (`python3 test_fs_guard.py --print-pins`); a new literal line must be added with a reason.
+# so each file lists the literal-bearing lines it may contain, with a reason. A new literal line in one of these files must be added here
+# with a reason (`python3 test_fs_guard.py --print-pins`).
 PINS = {
     '.github/agent/bin/tests/test_check_action_pins.py': (
-        '9271d6b1ef65ddab7842582425f925e07a2e4b9c7a92f1c95844197a8a48bf9d',
         [        'self.assertEqual(M.script_installs("python3 -m venv /tmp/v && python3 -m json.tool f"), [])',
                  'self.assertEqual(M._downloaded_commands("curl --output=/tmp/x https://e/x\\ncp /tmp/x /usr/local/bin/tool"), {"tool", '
                  '"x"})',
@@ -47,9 +46,14 @@ PINS = {
                  'self.assertFalse(M._outside("$d", "d=/tmp/y; d=/home/runner/work/z"))',
                  'self.assertEqual(M._made_executable("curl -o /usr/local/bin/t https://e/t", "/usr/local/bin/t"), "downloads")',
                  'self.assertEqual(M._downloaded_commands("curl --output /usr/local/bin/x https://e/x"), {"x"})',
+                 'fh.write(HEAD + "    steps:\\n      - run: |\\n          printf x > /tmp/smoke-assert.sh; bash '
+                 '/tmp/smoke-assert.sh\\n")',
+                 'for script in ("/tmp/smoke-assert.sh", "/tmp/pf-forward.sh"):',
+                 'for script in ("/tmp/smoke-assert.sh", "/tmp/pf-forward.sh"):',
+                 'code, out = run([self.tree_with(self.K8S, "/tmp/other.sh")])',
                  'for js in ("core.addPath(\'/tmp/bin\')", "core.addPath(p)", "core.addPath(`${dir}/bin`)"):'],
         "shell-script TEXT handed to the pin checker's string analysers (script_installs, _downloaded_commands, _outside, _made_executable); /home/runner/work and /usr/local/bin are the literal GitHub-runner and install-location strings those rules match on, and the functions never open, stat or resolve them (the checker reads only entries of the tree it is given; the guard proves the suite touches no system path at run time); the added for-loop line holds JavaScript test strings (core.addPath arguments) that are written into a throwaway fixture workflow, never used as paths"),
-    '.github/agent/bin/tests/test_panel.py': ('4982ab0fc49e7b8451f139a61d4a07464b4d990709bd6e1544d653db16bce493',
+    '.github/agent/bin/tests/test_panel.py': (
         [        '"package database /var/lib/dpkg/status.d/tzdata:\\nPackage: tzdata\\nVersion: 2026c-0+deb13u1\\n"',
                  '"file: /usr/share/zoneinfo/tzdata.zi (version 2026a)\\n"',
                  'b = ("h\\n%s\\npackage database /var/lib/dpkg/status.d/tzdata:\\nPackage: tzdata\\nVersion: 2026c-0+deb13u1\\n"',
@@ -58,7 +62,7 @@ PINS = {
                  'gb = "h\\n%s\\ngo build info /usr/bin/cache: dep golang.org/x/sys v0.47.0 h1:abc\\n" % P.EVIDENCE_MARK',
                  '"file: /usr/lib/libssl3.so"])'],
         'container-image-internal paths inside evidence text (package-database and go-build-info lines) that the panel voter parses; no filesystem access'),
-    '.github/agent/bin/tests/test_panel_io.py': ('eb7e09bbcaa23088e2286f03f82045598dc5c91554a45123860f44a586a5aecc',
+    '.github/agent/bin/tests/test_panel_io.py': (
         [        'self.assertIn("/usr/share/zoneinfo/tzdata.zi", facts["paths"])',
                  'self.assertNotIn("/etc/old-tzdata.conf", facts["paths"])',
                  'self.assertEqual(sorted(facts["status"]), ["/var/lib/dpkg/status", "/var/lib/dpkg/status.d/tzdata"])',

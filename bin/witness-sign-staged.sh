@@ -5,7 +5,7 @@
 # with the release KMS key (handoff 0713) by the one signing function (bin/chain-verify.py sign-record: the key named by RELEASE_KMS_KEY_REF, checked there, signs through the cloud key service (KMS Sign), the Rekor
 # entry kept beside the record, one try and six retries while Rekor does not answer). Each call runs through bin/with-aws-token.sh, Sign's one copy of the token fetch: a fresh identity token
 # (audience sts.amazonaws.com), fetched immediately before the record is signed, goes to a file of mode 0600 in a private directory under RUNNER_TEMP, outside the repository tree;
-# AWS_WEB_IDENTITY_TOKEN_FILE points the AWS SDK at it for that one call (AWS_ROLE_ARN and AWS_REGION come from the job's step environment), nothing goes to GITHUB_ENV, and the directory is
+# AWS_WEB_IDENTITY_TOKEN_FILE points the AWS SDK at it for that one call (AWS_ROLE_ARN and AWS_REGION come from the job's step environment), nothing goes to the runner's environment file, and the directory is
 # removed the moment the call ends, so no token is on disk while the signed record is checked or the next record is signed. The request variables stay with that script, never exported. Each signed record goes into SIGNED/<record-dir>/STEP-collection.json (its Rekor entries in STEP-collection.rekor.json) with the data files copied unchanged, and
 # the self-check `bin/chain-verify.py verify` then runs on every signed record (the release key, the policy made for GITHUB_REF), so a signing that
 # did not produce a record signed by the manifest key stops the job. It builds nothing and runs no stage script.

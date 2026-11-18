@@ -75,7 +75,7 @@ jobs:
   reproducibility:
     name: reproducibility
     needs: build
-    if: always()
+    if: github.event_name != 'pull_request' && always()
     runs-on: ubuntu-latest
     steps:
       - name: the snapshot Build and Rebuild must have run and passed

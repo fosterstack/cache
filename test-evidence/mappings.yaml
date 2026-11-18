@@ -385,19 +385,13 @@ mappings:
   # unit coverage of bin/check-artifacts.sh, not a run of the shipped artifact. The credit for that run
   # (Check's run of bin/check-artifacts.sh on the real images and archives)
   # is added when section 1 settles the Check job's name.
-  - ac: REQ-PLAT-002-AC1
+  - ac: REQ-PLAT-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
   - ac: REQ-PLAT-003-AC1
     evidence:
       - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
-  - ac: REQ-FIPS-001-AC1
-    evidence:
-      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
-  - ac: REQ-FIPS-001-AC2
-    evidence:
-      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
-  - ac: REQ-PLAT-001-AC1
+  - ac: REQ-PLAT-002-AC1
     evidence:
       - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
   - ac: REQ-FIPS-002-AC1
@@ -407,6 +401,12 @@ mappings:
   - ac: REQ-PRIV-001-AC1
     evidence:
       - { type: workflow-job, ref: ".github/workflows/stage-verify.yml: the runtime step runs bin/acceptance-egress.sh (bin/check-acceptance.sh egress), the old egress stage body unchanged" }
+  - ac: REQ-FIPS-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-FIPS-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
   - ac: REQ-REL-004-AC1
     evidence:
       - { type: shell-test, ref: "bin/vex-both-scanners-test.sh" }
@@ -465,6 +465,12 @@ mappings:
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/check-action-pins-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs the action-pin checker's fixture cases, including the ac3-* cases for downloads in a job that runs a committed script" }
+  - ac: REQ-REL-005-AC4
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_env_names.py" }
+  - ac: REQ-REL-005-AC5
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_env_names.py" }
   - ac: REQ-REL-011-AC1
     evidence:
       - { type: shell-test, ref: "bin/job-isolation-test.sh" }
@@ -615,10 +621,6 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
-  - ac: REQ-DEP-003-AC3
-    evidence:
-      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
-      - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
   - ac: REQ-DEP-001-AC9
     evidence:
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
@@ -646,6 +648,10 @@ mappings:
       - { type: shell-test, ref: "bin/audit-record-test.sh" }
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
   - ac: REQ-DEP-001-AC12
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
+      - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+  - ac: REQ-DEP-003-AC3
     evidence:
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
@@ -790,11 +796,25 @@ mappings:
   - ac: REQ-REL-008-AC1
     evidence:
       - { type: shell-test, ref: "bin/workflow-consolidation-test.sh" }
+  - ac: REQ-REL-014-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/pull-request-checks-test.sh" }
+      - { type: shell-test, ref: "bin/workflow-consolidation-test.sh" }
+  - ac: REQ-REL-014-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/pull-request-checks-test.sh" }
+  - ac: REQ-REL-014-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/pull-request-checks-test.sh" }
   - ac: REQ-SCAN-010-AC1
     evidence:
       - { type: shell-test, ref: "bin/vex-forms-test.sh" }
   - ac: REQ-SCAN-010-AC2
     evidence:
+      - { type: shell-test, ref: "bin/vex-forms-test.sh" }
+  - ac: REQ-SCAN-010-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/panel-test.sh" }
       - { type: shell-test, ref: "bin/vex-forms-test.sh" }
   - ac: REQ-SCAN-010-AC4
     evidence:
@@ -864,24 +884,9 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/persona-uat-file-test.sh" }
       - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
-  - ac: REQ-SUP-001-AC1
+  - ac: REQ-SUP-001-AC41
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/release-age-gone-test.sh" }
-  - ac: REQ-SUP-001-AC2
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
-      - { type: shell-test, ref: ".github/agent/tests/release-age-gone-test.sh" }
-      - { type: shell-test, ref: ".github/agent/tests/s2-p2-readers-test.sh" }
-      - { type: shell-test, ref: ".github/agent/tests/s2-p2-series-rule-test.sh" }
-  - ac: REQ-SUP-001-AC3
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
-      - { type: shell-test, ref: ".github/agent/tests/s2-p2-series-rule-test.sh" }
-      - { type: shell-test, ref: ".github/agent/tests/s2-p2-strict-lookups-test.sh" }
-      - { type: shell-test, ref: ".github/agent/tests/s2-p2-time-exceptions-test.sh" }
-  - ac: REQ-SUP-001-AC4
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
   - ac: REQ-SUP-001-AC5
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
@@ -912,40 +917,9 @@ mappings:
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-audit-go-major-test.sh" }
       - { type: shell-test, ref: ".github/agent/tests/s2-p2-time-exceptions-test.sh" }
-  - ac: REQ-SUP-001-AC16
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
-      - { type: shell-test, ref: ".github/agent/tests/s2-p2-readers-test.sh" }
   - ac: REQ-SUP-001-AC18
     evidence:
       - { type: shell-test, ref: "bin/build-helpers-test.sh" }
-      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
-  - ac: REQ-SUP-001-AC19
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
-  - ac: REQ-SUP-001-AC20
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
-  - ac: REQ-SUP-001-AC21
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
-  - ac: REQ-SUP-001-AC22
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
-  - ac: REQ-SUP-001-AC23
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
-  - ac: REQ-SUP-001-AC24
-    evidence:
-      - { type: shell-test, ref: "bin/loopback-get-test.sh" }
-  - ac: REQ-SUP-001-AC25
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
-  - ac: REQ-SUP-001-AC26
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
-  - ac: REQ-SUP-001-AC27
-    evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
   - ac: REQ-SUP-001-AC28
     evidence:
@@ -956,21 +930,19 @@ mappings:
   - ac: REQ-SUP-001-AC40
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_plain_forms.py" }
-  - ac: REQ-SUP-001-AC32
+  - ac: REQ-SUP-001-AC30
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/release-age-gone-test.sh" }
-  - ac: REQ-SUP-001-AC30
+  - ac: REQ-SUP-001-AC32
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/release-age-gone-test.sh" }
   - ac: REQ-SUP-001-AC33
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/release-age-gone-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
   - ac: REQ-SUP-001-AC34
     evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
-  - ac: REQ-SUP-001-AC35
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
   - ac: REQ-SUP-001-AC38
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_plain_forms.py" }
@@ -1951,3 +1923,6 @@ mappings:
   - ac: REQ-CI-006-AC1
     evidence:
       - { type: inspection, ref: "Rule only, not built (owner, Oct 24 2026): the persona suite is not sharded; ops/docs/ratify/2026-10-24-ci-suites-once-and-persona-shard.md item 2." }
+  - ac: REQ-DEP-004-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }

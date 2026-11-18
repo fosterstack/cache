@@ -25,12 +25,14 @@ TAGOBJ = "2222222222222222222222222222222222222222"
 HEAD = "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n"
 
 
+QJ_REL = ".github/agent/bin/queue-gate-judge.sh"   # the script the chain gate's queue-judge job runs
+QJ_STUB = "#!/usr/bin/env bash\nexit 0\n"
 GATE = os.path.join(BIN, "..", "..", "workflows", "agent-review-gate.yml")
 def repo(files, gate=True):
     """A throwaway tree; it carries the real, pinned gate workflow unless gate=False."""
     if gate:
         with open(GATE) as fh:
-            files = {".github/workflows/agent-review-gate.yml": fh.read(), **files}
+            files = {".github/workflows/agent-review-gate.yml": fh.read(), QJ_REL: QJ_STUB, **files}
     d = tempfile.mkdtemp()
     for rel, text in files.items():
         p = os.path.join(d, rel)
@@ -149,7 +151,7 @@ class Main(unittest.TestCase):
         d = repo({".github/workflows/w.yml": HEAD + f"    steps:\n      - uses: actions/checkout@{SHA} # v7.0.1\n",
                   "README.md": "not read\n", ".git/x.yml": "uses: [\n",
                   ".github/agent/bin/check-action-pins.py": "",
-                  "bin/check-file-allowlist.sh": "",
+                  "bin/check-file-allowlist.sh": "", ".github/agent/tests/pin-wiring-test.sh": "",
                   "bin/scan-no-workflow-call-test.sh": "", "bin/audit-record-judge.sh": "",
                   "bin/audit-record-prepare.sh": "", ".github/agent/bin/auditor-signed-commit.py": ""})
         table = {"/repos/actions/checkout/git/ref/tags/v7.0.1":
@@ -873,245 +875,71 @@ class LiteralRunnerMatrix(unittest.TestCase):
         self.assertNotIn("runs-on", out)
 
 
-# main's gate workflow (the passed-audit record judge, and the sweep that judges a green Dependabot head again)
-GATE_A = "30ab1b01d956e176e777c859b77b233ee1444abec869a8e1121473b98c001c89"
-# the change's gate workflow: no merge queue judge, one step per check, the record rule's Dependabot exemption
-GATE_B = "80b99ef7e085b32577408142e0da681eb31b40b8aa751181582d6e35aff0a20f"
-# the edits from main's gate workflow to the change's (old text, new text); the repository carries the change's copy,
-# so main's copy is made by undoing them
-GATE_HUNKS = (
-    (
-        (r'''
-# REQ-AUD-18 AC3: the verdict runs main's copies of three checks over the PR head, read as git objects, and
-# judges no review record. Register row 78: every action reference in the PR head must be a full commit digest
-# (.github/agent/bin/check-action-pins.py, main's copy). Here — not in a check of its own — because this check
-'''),
-        (r'''
-# REQ-AUD-18 AC3: the verdict runs main's copies of its checks over the PR head, read as git objects. Register
-# row 78: every action reference in the PR head must be a full commit digest
-# (.github/agent/bin/check-action-pins.py, main's copy). Here — not in a check of its own — because this check
-'''),
-    ),
-    (
-        (r'''#
-# The same verdict also runs main's copies of the allowlist guard (bin/check-file-allowlist.sh, over the head's
-# file list, with ALLOWLIST_HEAD_REV so the head is judged as a commit) and of the pin-wiring judge
-# (.github/agent/tests/pin-wiring-test.sh, PIN_WIRING_JUDGE_GIT, over the head's ci.yml), so a PR cannot
-# disable its own whole-tree guard by editing ci.yml.
-#
-'''),
-        (r'''#
-# The same verdict also runs main's copy of the allowlist guard (bin/check-file-allowlist.sh, over the head's
-# file list, with ALLOWLIST_HEAD_REV so the head is judged as a commit), so a PR cannot disable its own whole-tree
-# guard by editing ci.yml.
-#
-# A head whose every commit is authored by Dependabot or the reviewer's App needs no passed-audit record
-# (bin/audit-record-judge.sh); the checks above still run on it.
-#
-'''),
-    ),
-    (
-        (r'''
-      - name: run the default branch's review gate and pin check over the PR head
-        id: gate
-        env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          GH_TOKEN: ${{ github.token }}   # read-only: resolves each `# vX` tag to its commit; the judge reads check runs and pull requests with it
-          # the PR's identity, as the ci allowlist job sees it, for main's copy of the allowlist guard
-          GITHUB_HEAD_REF: ${{ github.event.pull_request.head.ref }}
-'''),
-        (r'''
-      # Each check is its own step, judged by the checked-out default branch's copies (HEAD), never the PR's; a failed one does not stop the others,
-      # and the last step turns the four outcomes into the verdict.
-      # row 78: every action reference in the head is a commit digest (git objects only)
-      - name: the pin check over the PR head
-        id: pins
-        continue-on-error: true
-        env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          GH_TOKEN: ${{ github.token }}   # read-only: resolves each `# vX` tag to its commit
-        run: python3 -I .github/agent/bin/check-action-pins.py --verify-tags --git "$HEAD_SHA"
-
-      # the PR cannot run its own copy of its guard: main's allowlist script judges the head's file list as git objects (nothing of the PR runs)
-      - name: the allowlist guard over the PR head's files
-        id: allowlist
-        continue-on-error: true
-        env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          # the PR's identity, for main's copy of the allowlist guard
-          GITHUB_HEAD_REF: ${{ github.event.pull_request.head.ref }}
-'''),
-    ),
-    (
-        (r'''        run: |
-          set -uo pipefail
-          # judged by the checked-out default branch's copies (HEAD), never the PR's
-          verdict=success
-          # row 78: every action reference in the head is a commit digest (git objects only)
-          python3 -I .github/agent/bin/check-action-pins.py --verify-tags --git "$HEAD_SHA" || verdict=failure
-          # the PR cannot run its own copy of its guard: main's allowlist script judges the head's file list
-          # and main's pin-wiring judge reads the head's ci.yml, both as git objects (nothing of the PR runs)
-          git ls-tree -r -z --name-only "$HEAD_SHA" | ALLOWLIST_NUL=1 ALLOWLIST_HEAD_REV="$HEAD_SHA" bash bin/check-file-allowlist.sh || verdict=failure
-          mkdir -p "$RUNNER_TEMP/yaml-shim" && ln -sfn "$PWD/.github/agent/fixtures/testlib/pyyaml" "$RUNNER_TEMP/yaml-shim/yaml"
-          PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$HEAD_SHA" bash .github/agent/tests/pin-wiring-test.sh || verdict=failure
-          # REQ-SCAN-015: main's scanner guard judges the head's workflows and composite actions as git objects, so a step
-          # of the PR's own CI that overwrites the guard on disk changes nothing
-          PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$HEAD_SHA" bash bin/scan-no-workflow-call-test.sh || verdict=failure
-          # REQ-REL-012 (release process rule 6): a pull request into main carries a passed-audit record for its exact head. Main's judge and main's writers policy read the record
-          # branch audit/<head sha> through the read-only token; the pull request supplies only its head sha and nothing else
-          bash bin/audit-record-judge.sh "$HEAD_SHA" "$GITHUB_BASE_REF" || verdict=failure
-          echo "verdict=${verdict}" >> "$GITHUB_OUTPUT"
-'''),
-        (r'''        run: |
-          set -o pipefail
-          git ls-tree -r -z --name-only "$HEAD_SHA" | ALLOWLIST_NUL=1 ALLOWLIST_HEAD_REV="$HEAD_SHA" bash bin/check-file-allowlist.sh
-
-      - name: the yaml reader the scanner guard below loads
-        run: mkdir -p "$RUNNER_TEMP/yaml-shim" && ln -sfn "$PWD/.github/agent/fixtures/testlib/pyyaml" "$RUNNER_TEMP/yaml-shim/yaml"
-
-      # REQ-SCAN-015: main's scanner guard judges the head's workflows and composite actions as git objects, so a step
-      # of the PR's own CI that overwrites the guard on disk changes nothing
-      - name: the scanner guard over the PR head's workflows
-        id: scan
-        continue-on-error: true
-        env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$HEAD_SHA" bash bin/scan-no-workflow-call-test.sh
-
-      # REQ-REL-012 (release process rule 6): a pull request into main carries a passed-audit record for its exact head. Main's judge and main's writers policy read the record
-      # branch audit/<head sha> through the read-only token; the pull request supplies only its head sha and nothing else
-      - name: the passed-audit record for the PR head
-        id: record
-        continue-on-error: true
-        env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          GITHUB_BASE_REF: ${{ github.event.pull_request.base.ref }}
-          GH_TOKEN: ${{ github.token }}   # read-only: the judge reads check runs and pull requests with it
-        run: bash bin/audit-record-judge.sh "$HEAD_SHA" "$GITHUB_BASE_REF"
-
-      - name: the verdict
-        id: gate
-        env:
-          OUTCOMES: ${{ steps.pins.outcome }} ${{ steps.allowlist.outcome }} ${{ steps.scan.outcome }} ${{ steps.record.outcome }}
-        run: |
-          verdict=failure
-          [ "$OUTCOMES" = "success success success success" ] && verdict=success
-          echo "verdict=${verdict}" >> "$GITHUB_OUTPUT"
-'''),
-    ),
-    (
-        (r'''          set -euo pipefail
-          if [ "$VERDICT" = "success" ]; then conclusion=success; summary="Every action reference is a commit digest, and the allowlist guard, the pin-wiring judge, the scanner guard and the passed-audit record for this head passed."
-          else conclusion=failure; summary="An action reference is not a commit digest, or the allowlist guard, the pin-wiring judge, the scanner guard or the passed-audit record failed (or the judge did not finish) — see the run log."; fi
-          gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate -f head_sha="$HEAD_SHA" \
-'''),
-        (r'''          set -euo pipefail
-          if [ "$VERDICT" = "success" ]; then conclusion=success; summary="Every action reference is a commit digest, and the allowlist guard, the scanner guard and the passed-audit record for this head passed."
-          else conclusion=failure; summary="An action reference is not a commit digest, or the allowlist guard, the scanner guard or the passed-audit record failed (or the judge did not finish) — see the run log."; fi
-          gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate -f head_sha="$HEAD_SHA" \
-'''),
-    ),
-    (
-        (r'''                    ALLOWLIST_HEAD_REV="$sha" bash bin/check-file-allowlist.sh \
-               && PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$sha" bash .github/agent/tests/pin-wiring-test.sh \
-               && PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$sha" bash bin/scan-no-workflow-call-test.sh \
-               && GH_TOKEN="$LIST_TOKEN" bash bin/audit-record-judge.sh "$sha" "$DEFAULT"; then
-              conclusion=success   # every action reference a digest (row 78), main's allowlist guard, pin-wiring judge, scanner guard and the passed-audit record (REQ-REL-012)
-            fi
-'''),
-        (r'''                    ALLOWLIST_HEAD_REV="$sha" bash bin/check-file-allowlist.sh \
-               && PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$sha" bash bin/scan-no-workflow-call-test.sh \
-               && GH_TOKEN="$LIST_TOKEN" bash bin/audit-record-judge.sh "$sha" "$DEFAULT"; then
-              conclusion=success   # every action reference a digest (row 78), main's allowlist guard, scanner guard and the passed-audit record (REQ-REL-012)
-            fi
-'''),
-    ),
-)
-
-
-def gate_variants():
-    """(main's gate workflow, the change's), from the repository's copy."""
+def gate_tree():
+    """A minimal tree the checker passes, carrying the repository's gate workflow."""
     with open(GATE) as fh:
-        cur = fh.read()
-    assert all(cur.count(new) == 1 for _, new in GATE_HUNKS), "the gate workflow is not the change's copy"
-    main_copy = cur
-    for old, new in GATE_HUNKS:
-        main_copy = main_copy.replace(new, old)
-    return main_copy, cur
-
-
-def gate_tree(gate_text):
-    """A minimal tree the checker passes, carrying `gate_text` as the gate workflow."""
+        gate_text = fh.read()
     return repo({".github/workflows/agent-review-gate.yml": gate_text,
                  ".github/workflows/w.yml": HEAD + f"    steps:\n      - uses: actions/checkout@{SHA} # v7.0.1\n",
                  ".github/agent/bin/auditor-review-gate.py": "", ".github/agent/bin/check-action-pins.py": "",
-                 "bin/check-file-allowlist.sh": "", ".github/agent/tests/pin-wiring-test.sh": "",   # main's gate runs it
+                 "bin/check-file-allowlist.sh": "", ".github/agent/tests/pin-wiring-test.sh": "",
                  "bin/scan-no-workflow-call-test.sh": "", "bin/audit-record-judge.sh": "",
-                 "bin/audit-record-prepare.sh": "", ".github/agent/bin/auditor-signed-commit.py": ""}, gate=False)
+                 "bin/audit-record-prepare.sh": "", ".github/agent/bin/auditor-signed-commit.py": "",
+                 QJ_REL: QJ_STUB}, gate=False)
 
 
-def bump_first_pin(text):
-    """A Dependabot-style bump: the first `@<40 hex> # v<ver>` pin moves to another commit and tag."""
-    out, n = re.subn(r"@[0-9a-f]{40} # v[0-9][0-9A-Za-z.+-]*", f"@{OTHER} # v99.0.0", text, count=1)
-    assert n == 1
-    return out
+class GateWorkflowPresence(unittest.TestCase):
+    """The gate workflow that runs this check must be in the tree."""
 
+    def test_a_tree_with_the_gate_workflow_passes(self):
+        code, out = run([gate_tree()])
+        self.assertEqual(code, 0, out)
 
-class GateWorkflowDigestSet(unittest.TestCase):
-    """While a change to the gate is in flight the pin checker accepts exactly two gate-workflow digests, main's
-    and the change's, both taken by gate_digest (pins masked); a later change removes main's old one."""
-
-    def test_the_constant_is_a_frozen_set_of_exactly_two_digests(self):
-        s = M.GATE_WORKFLOW_SHA256
-        self.assertIsInstance(s, frozenset)      # immutable: no code path can add a digest at run time
-        self.assertEqual(len(s), 2)              # not empty, not one, not three (a frozenset has no duplicates)
-        for d in s:
-            self.assertRegex(d, r"\A[0-9a-f]{64}\Z")
-        self.assertEqual(s, frozenset({GATE_A, GATE_B}))
-        self.assertNotIn("adcfd54fb68814da2b5b87baf0f56c2e32f85416f16800e810545cb1e2a1842d", s)   # the pre-#316 bootstrap digest stays gone (rc-5b B1)
-
-    def test_both_variants_are_taken_by_gate_digest(self):
-        a, b = gate_variants()
-        self.assertEqual(M.gate_digest(a), GATE_A)
-        self.assertEqual(M.gate_digest(b), GATE_B)
-
-    def test_a_tree_with_either_accepted_gate_workflow_passes(self):
-        for name, text in zip(("main", "change"), gate_variants()):
-            with self.subTest(gate=name):
-                code, out = run([gate_tree(text)])
-                self.assertEqual(code, 0, out)
-                self.assertIn(", 0 finding(s)", out)
-
-    def test_a_dependabot_pin_bump_in_either_still_matches(self):
-        for name, text in zip(("main", "change"), gate_variants()):
-            with self.subTest(gate=name):
-                bumped = bump_first_pin(text)
-                self.assertNotEqual(bumped, text)
-                self.assertIn(M.gate_digest(bumped), M.GATE_WORKFLOW_SHA256)
-                code, out = run([gate_tree(bumped)])
-                self.assertEqual(code, 0, out)
-
-    def test_a_third_digest_is_refused_and_the_message_names_the_accepted_set(self):
-        a, _ = gate_variants()
-        third = a.replace("--verify-tags --git", "--git", 1)
-        self.assertNotEqual(third, a)
-        d3 = M.gate_digest(third)
-        self.assertNotIn(d3, (GATE_A, GATE_B))
-        code, out = run([gate_tree(third)])
-        self.assertEqual(code, 1, out)
-        (line,) = [ln for ln in out.splitlines() if ln.startswith(".github/workflows/agent-review-gate.yml:")]
-        self.assertIn("changed — update GATE_WORKFLOW_SHA256 in this checker", line)
-        self.assertIn(d3, line)
-        self.assertIn(GATE_A, line)
-        self.assertIn(GATE_B, line)
-
-    def test_a_missing_gate_workflow_still_fails(self):
-        a, _ = gate_variants()
-        d = gate_tree(a)
+    def test_a_missing_gate_workflow_fails(self):
+        d = gate_tree()
         os.remove(os.path.join(d, ".github/workflows/agent-review-gate.yml"))
         code, out = run([d])
         self.assertEqual(code, 1, out)
         self.assertIn(".github/workflows/agent-review-gate.yml: missing", out)
+
+
+class MainKeepers(unittest.TestCase):
+    """What main's checker accepts beside the chain's forms: the two generated Kubernetes smoke scripts, in that one workflow only."""
+    K8S = ".github/workflows/stage-acceptance-k8s.yml"
+
+    def tree_with(self, rel, script):
+        d = gate_tree()
+        self.addCleanup(shutil.rmtree, d)
+        # the step writes the script from a python heredoc, as main's workflow does
+        run = "          python3 - <<'PY'\n          open(%r, 'w').write('x')\n          PY\n          bash %s\n" % (script, script)
+        with open(os.path.join(d, rel), "w") as fh:
+            fh.write(HEAD + "    steps:\n      - run: |\n" + run)
+        return d
+
+    def test_a_shell_writer_of_the_smoke_script_is_refused(self):
+        d = gate_tree()
+        self.addCleanup(shutil.rmtree, d)
+        with open(os.path.join(d, self.K8S), "w") as fh:
+            fh.write(HEAD + "    steps:\n      - run: |\n          printf x > /tmp/smoke-assert.sh; bash /tmp/smoke-assert.sh\n")
+        code, out = run([d])
+        self.assertEqual(code, 1, out)
+        self.assertIn("is fenced as written only by its python heredoc", out)
+
+    def test_the_generated_smoke_scripts_pass_in_the_k8s_workflow(self):
+        for script in ("/tmp/smoke-assert.sh", "/tmp/pf-forward.sh"):
+            with self.subTest(script=script):
+                code, out = run([self.tree_with(self.K8S, script)])
+                self.assertEqual(code, 0, out)
+
+    def test_the_same_script_names_in_another_workflow_are_refused(self):
+        for script in ("/tmp/smoke-assert.sh", "/tmp/pf-forward.sh"):
+            with self.subTest(script=script):
+                code, out = run([self.tree_with(".github/workflows/other.yml", script)])
+                self.assertEqual(code, 1, out)
+
+    def test_another_generated_script_in_the_k8s_workflow_is_refused(self):
+        code, out = run([self.tree_with(self.K8S, "/tmp/other.sh")])
+        self.assertEqual(code, 1, out)
 
 
 class UsesWriters(unittest.TestCase):
@@ -1122,7 +950,7 @@ class UsesWriters(unittest.TestCase):
 
     def job(self, steps, tool="bin/tool.sh", run="bash bin/tool.sh"):
         body = HEAD + "    steps:\n" + steps + f"      - run: {run}\n"
-        d = gate_tree(gate_variants()[1])           # the accepted gate and its stub scripts, then this workflow beside them
+        d = gate_tree()           # the accepted gate and its stub scripts, then this workflow beside them
         self.addCleanup(shutil.rmtree, d)
         for rel, text in ((".github/workflows/w.yml", body), (tool, self.TOOL)):
             os.makedirs(os.path.dirname(os.path.join(d, rel)), exist_ok=True)
@@ -1176,7 +1004,137 @@ class NonUtf8Names(unittest.TestCase):
     file is skipped. The trees are made with git plumbing (the index takes any bytes; a macOS file system would not)."""
 
     def commit_with(self, extra, content=b"x\n"):
-        d = gate_tree(gate_variants()[1])
+        d = gate_tree()
+        self.addCleanup(shutil.rmtree, d)
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+               "GIT_COMMITTER_EMAIL": "t@t"}
+        idx = {**env, "GIT_INDEX_FILE": os.path.join(d, ".git", "composed-index")}
+
+        def git(*a, inp=None, e=env):
+            return subprocess.run(["git", *a], cwd=d, env=e, input=inp, capture_output=True, check=True).stdout
+        git("init", "-q")
+        git("add", "-A")
+        info = _index_info(git("ls-files", "-z", "-s"))          # the whole valid tree, then the extra entries as raw bytes
+        blob = git("hash-object", "-w", "--stdin", inp=content).decode().strip().encode()
+        for name in extra:
+            info += b"100644 " + blob + b"\t" + name + b"\0"
+        git("update-index", "-z", "--add", "--index-info", inp=info, e=idx)
+        tree = git("write-tree", e=idx).decode().strip()
+        return d, git("commit-tree", tree, "-m", "t").decode().strip()
+
+    def test_a_tree_without_odd_names_passes(self):
+        d, c = self.commit_with([])
+        code, out = run(["--git", c], cwd=d)
+        self.assertEqual(code, 0, out)
+
+    def test_two_non_utf8_workflow_names_are_refused_and_both_named(self):
+        d, c = self.commit_with([b".github/workflows/\xff.yml", b".github/workflows/\xfe.yml"])
+        code, out = run(["--git", c], cwd=d)
+        self.assertEqual(code, 1, out)
+        lines = [ln for ln in out.splitlines() if "not valid UTF-8" in ln]
+        self.assertEqual(len(lines), 2, out)             # not collapsed into one entry
+        self.assertTrue(any("\\xff" in ln for ln in lines) and any("\\xfe" in ln for ln in lines), out)
+
+    def test_one_non_utf8_name_beside_a_valid_one_is_refused(self):
+        d, c = self.commit_with([b".github/workflows/\xff.yml"])
+        code, out = run(["--git", c], cwd=d)
+        self.assertEqual(code, 1, out)
+        self.assertIn("not valid UTF-8", out)
+
+    def test_a_non_utf8_directory_name_under_github_is_refused(self):
+        d, c = self.commit_with([b".github/\xff/x.yml"])
+        code, out = run(["--git", c], cwd=d)
+        self.assertEqual(code, 1, out)
+        self.assertIn("not valid UTF-8", out)
+
+    def test_a_finding_that_names_a_non_utf8_path_is_printed_escaped_not_a_traceback(self):
+        # rc-5b 618 fix: a name outside .github/ is read (action.yml), and a finding that holds it must print under a strict stdout
+        d, c = self.commit_with([b"x/\xff/action.yml"], b"runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n")
+        p = subprocess.run([sys.executable, SRC, "--git", c], cwd=d, capture_output=True,
+                           env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
+        self.assertNotIn(b"Traceback", p.stderr, p.stderr)
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        self.assertIn(b"\\xff", p.stdout)
+
+    def test_a_non_utf8_name_outside_github_is_not_this_checkers_business(self):
+        d, c = self.commit_with([b"docs/\xff.md"])
+        code, out = run(["--git", c], cwd=d)
+        self.assertEqual(code, 0, out)
+
+
+def _index_info(listing):
+    """`git ls-files -s -z` records ("mode sha stage\tpath\0") as `--index-info` input ("mode sha\tpath\0")."""
+    out = b""
+    for rec in filter(None, listing.split(b"\0")):
+        meta, path = rec.split(b"\t", 1)
+        mode, sha, _stage = meta.split()
+        out += mode + b" " + sha + b"\t" + path + b"\0"
+    return out
+
+
+class UsesWriters(unittest.TestCase):
+    """rc-5b item 2 in Python (the coverage gate counts these tests, not the shell ones): a committed script the job runs after a `uses:` step that writes
+    the tree is a finding, and the shapes the 618 fix round added to the lines nothing else reached."""
+    TOOL = "#!/usr/bin/env bash\necho hi\n"
+    BASE = "${{ github.event.pull_request.base.sha }}"
+
+    def job(self, steps, tool="bin/tool.sh", run="bash bin/tool.sh"):
+        body = HEAD + "    steps:\n" + steps + f"      - run: {run}\n"
+        d = gate_tree()           # the accepted gate and its stub scripts, then this workflow beside them
+        self.addCleanup(shutil.rmtree, d)
+        for rel, text in ((".github/workflows/w.yml", body), (tool, self.TOOL)):
+            os.makedirs(os.path.dirname(os.path.join(d, rel)), exist_ok=True)
+            with open(os.path.join(d, rel), "w") as fh:
+                fh.write(text)
+        return d
+
+    def uses(self, action, **with_):
+        w = "".join(f"          {k}: {v}\n" for k, v in with_.items())
+        return f"      - uses: {action}@{SHA} # v7.0.1\n" + (f"        with:\n{w}" if w else "")
+
+    def test_an_empty_path_writes_everywhere(self):
+        d = self.job(self.uses("actions/download-artifact", name="x", path='""'))
+        code, out = run([d])
+        self.assertEqual(code, 1, out)
+        self.assertIn("is changed by the job before it runs", out)
+
+    def test_a_download_into_the_scripts_directory_is_a_finding(self):
+        code, out = run([self.job(self.uses("actions/download-artifact", name="x", path="bin"))])
+        self.assertEqual(code, 1, out)
+        self.assertIn("is changed by the job before it runs", out)
+
+    def test_a_download_elsewhere_is_not(self):
+        code, out = run([self.job(self.uses("actions/download-artifact", name="x", path="out"))])
+        self.assertEqual(code, 0, out)
+
+    def test_a_later_writer_over_the_base_sha_fence_directory_drops_it(self):
+        # a writer whose path does not name the fence directory (here the whole workspace) is the case only the drop loop catches: with the loop the script is a plain
+        # path again ("not a committed file"); without it, it would still resolve as main's copy
+        steps = self.uses("actions/checkout", ref=self.BASE, path="trusted") + self.uses("actions/download-artifact", name="x", path=".")
+        d = self.job(steps, run="bash trusted/bin/tool.sh")
+        code, out = run([d])
+        self.assertEqual(code, 1, out)
+        self.assertIn("runs trusted/bin/tool.sh, which is not a committed file", out)
+        self.assertNotIn("bin/tool.sh is changed by the job before it runs", out)
+
+    def test_a_later_default_checkout_drops_the_fence_directory(self):
+        steps = self.uses("actions/checkout", ref=self.BASE, path="trusted") + self.uses("actions/checkout")   # a default checkout fills the workspace itself
+        code, out = run([self.job(steps, run="bash trusted/bin/tool.sh")])
+        self.assertEqual(code, 1, out)
+
+    def test_the_fence_alone_is_main_s_copy(self):
+        steps = self.uses("actions/checkout", ref=self.BASE, path="trusted")
+        code, out = run([self.job(steps, run="bash trusted/bin/tool.sh")])
+        self.assertEqual(code, 0, out)
+
+
+class NonUtf8Names(unittest.TestCase):
+    """rc-5b R10c: `git ls-tree` output was decoded with "replace", so two workflow names that are not valid UTF-8 became the
+    same entry and one workflow went unread. A name under .github/ that is not valid UTF-8 is refused, each one named, and no
+    file is skipped. The trees are made with git plumbing (the index takes any bytes; a macOS file system would not)."""
+
+    def commit_with(self, extra, content=b"x\n"):
+        d = gate_tree()
         self.addCleanup(shutil.rmtree, d)
         env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
                "GIT_COMMITTER_EMAIL": "t@t"}
@@ -1443,12 +1401,20 @@ class StartupHookWrites(unittest.TestCase):
                 self.refused(self.env_value(level, '"${{ github.env }}"', 'echo "BASH_ENV=x" >> "$N"'),
                              matched="github.env", says=self.LOADS)
 
-    def test_an_env_value_without_the_other_half_is_accepted(self):
+    def test_an_env_value_with_no_route_in_the_text_is_accepted(self):
         for level in ("workflow", "job", "step"):
             with self.subTest(level=level):
                 self.accepted(self.env_value(level, "BASH_ENV", 'echo "$N=x"'))
-                self.accepted(self.env_value(level, '"${{ github.env }}"', 'echo "REF=x" >> "$N"'))
-                self.accepted(self.env_value(level, "REF", 'echo "$N=x" >> "$GITHUB_ENV"'))
+
+    def test_a_route_put_in_an_env_value_is_refused_whatever_name_the_script_writes(self):
+        for level in ("workflow", "job", "step"):
+            with self.subTest(level=level):
+                self.refused(self.env_value(level, '"${{ github.env }}"', 'echo "REF=x" >> "$N"'), matched="github.env")
+
+    def test_a_name_from_a_variable_written_to_github_env_is_refused_even_when_the_value_is_harmless(self):
+        for level in ("workflow", "job", "step"):
+            with self.subTest(level=level):
+                self.refused(self.env_value(level, "REF", 'echo "$N=x" >> "$GITHUB_ENV"'), matched="GITHUB_ENV")
 
     # ---- the PATH routes need no name
     def test_each_path_route_is_refused_on_its_own(self):

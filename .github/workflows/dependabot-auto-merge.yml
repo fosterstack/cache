@@ -54,7 +54,7 @@ jobs:
         run: |
           set -euo pipefail
           for f in bin/dependabot-screen.sh bin/dependabot-reviewer.py; do
-            gh api "repos/${GITHUB_REPOSITORY}/contents/${f}?ref=main" --jq '.content' | base64 -d \
+            gh api "repos/${GITHUB_REPOSITORY}/contents/${f}?ref=refs/heads/main" --jq '.content' | base64 -d \
               > "${RUNNER_TEMP}/$(basename "$f")"
           done
 
@@ -140,6 +140,12 @@ jobs:
             echo "This PR touches tools/govulncheck/ (the pinned tool's version is also written in ci.yml) or lists 100 or more files (too many to judge): it is not armed here and is handled as a normal PR." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
+          # --auto merges at once when main lists no required status check: then nothing is armed
+          if ! gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main" \
+                | jq -e '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]] | length > 0' > /dev/null; then
+            echo "::error::main lists no required status check, or its ruleset could not be fetched: not armed"
+            exit 1
+          fi
           run_url="repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?check_name=dependabot-reviewer"
           verdict=$(gh api "$run_url&filter=all&per_page=100" \
               --jq 'if (.check_runs | length) >= 100 then error("the check runs are cut") else . end
@@ -194,10 +200,13 @@ jobs:
             fail() { disarm; echo "::error::$1: the reviewer's version is unknown"; exit 1; }
             fetch() { # <path>
               mkdir -p "$main/$(dirname "$1")"
-              gh api "repos/${GITHUB_REPOSITORY}/contents/$1?ref=main" --jq .content | base64 -d > "$main/$1" ||
+              gh api "repos/${GITHUB_REPOSITORY}/contents/$1?ref=refs/heads/main" --jq .content \
+                | base64 -d > "$main/$1" ||
                 fail "could not get $1 on main"
             }
-            gh api "repos/${GITHUB_REPOSITORY}/contents/bin/dependabot-reviewer-version.sh?ref=main" --jq .content \
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/contents/bin/dependabot-reviewer-version.sh?ref=refs/heads/main" \
+              --jq .content \
               | base64 -d > "$RUNNER_TEMP/dependabot-reviewer-version.sh" || fail "could not get the version script"
             files=$(bash "$RUNNER_TEMP/dependabot-reviewer-version.sh" --files) ||
               fail "could not list the reviewer's files"

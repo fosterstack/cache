@@ -38,7 +38,7 @@ ALLOW_PATTERNS=(
   '^\.github/dependabot\.yml$'
   '^\.github/PULL_REQUEST_TEMPLATE\.md$'
   # Policy lists: the single sources of truth for the required-check set
-  # and the scanner set, consumed by the auto-merge guard and the release
+  # and the scanner set, read by the release
   # workflows.
   '^\.github/policy/[A-Za-z0-9._-]+\.json$'
   '^\.github/policy/allowed_signers$'
@@ -125,6 +125,7 @@ ALLOW_PATTERNS=(
   '^\.github/supply-chain-exceptions\.json$'
   '^bin/workflow-consolidation-test\.sh$'
   '^bin/go-freshness-wiring-test\.sh$'
+  '^bin/pull-request-checks-test\.sh$'
   '^bin/dependabot-reviewer-gather-test\.sh$'
   '^bin/inspector-gate\.py$'
   '^bin/inspector-gate-test\.sh$'
@@ -199,6 +200,9 @@ ALLOW_PATTERNS=(
   # shared library, and their parser unit tests, plus the parser-test runner.
   '^\.github/agent/bin/auditor-[a-z0-9-]+\.py$'
   '^\.github/agent/bin/check-action-pins\.py$'
+  # The review gate in the merge queue (REQ-DEP-005-AC3): the judge of a queue's temporary branch
+  # (its test is under tests/).
+  '^\.github/agent/bin/queue-gate-judge\.sh$'
   '^\.github/agent/bin/auditorlib/[A-Za-z0-9._-]+\.py$'
   # the published OpenVEX schema the writer validates against (production data, beside its code)
   '^\.github/agent/bin/auditorlib/openvex-schema\.json$'
@@ -206,6 +210,8 @@ ALLOW_PATTERNS=(
   # REQ-AUD-18 AC1: the auditor's suites (matrix, mutants, parser runner, govulncheck fixture
   # materializer) and its requirements matrix live under .github/agent/ with the code.
   '^\.github/agent/tests/[A-Za-z0-9._-]+\.(sh|py)$'
+  # REQ-SUP-001: recorded publisher signatures (public Sigstore data: certificates, signatures, log entries) for the pin-age tests; JSON files in this one folder.
+  '^\.github/agent/tests/fixtures/image-publishers/[A-Za-z0-9._-]+\.json$'
   # REQ-AUD-18 AC2: the hash-pinned coverage tool and the reasoned exclusion ranges.
   '^\.github/agent/coverage-requirements\.txt$'
   # the report lint's hash-pinned, test-only renderer (GitHub's cmark-gfm)

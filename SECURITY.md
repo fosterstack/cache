@@ -102,8 +102,7 @@ dependency's — that commit's `fips140-only` check fails.
 
 Two limits of that claim, stated so it cannot be over-read: the check proves
 the paths the test suite executes, built in FIPS mode; and its status as a
-merge-blocking check is set by the repository ruleset, which is listed in
-[.github/policy/required-checks.json](.github/policy/required-checks.json).
+merge-blocking check is set by the repository ruleset.
 
 Separately, before anything is published, the release's Check stage binds each
 built candidate image to Build's recorded digest. On amd64 it starts the

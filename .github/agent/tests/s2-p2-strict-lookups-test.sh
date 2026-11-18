@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC3, REQ-SUP-001-AC5
+# proves: REQ-SUP-001-AC5
 # cache#359 round 5, section 2, group P2, rows 1-3: a lookup that cannot be answered is a FAILURE, never "no proof" or
 # "nothing there".
 #   (1) pin-audit's published-name query to PyPI is strict (an outage is a failure, not the pinned name alone).

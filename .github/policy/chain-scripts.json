@@ -402,7 +402,7 @@
       ],
       "signs": "other",
       "reason": "Sign's signing step for the building jobs' and the Check jobs' Witness records (REQ-CHAIN-005-AC4, REQ-REL-011-AC1; handoff 0713): for each payload that chain-verify.py sign-records has already checked and staged, signs the payload with the release KMS key through the one signing function (bin/chain-verify.py sign-record, which checks RELEASE_KMS_KEY_REF and keeps the Rekor entry beside the record), each call run by bin/with-aws-token.sh with a fresh identity token that is removed when the call ends, copies the data files unchanged, then verifies every signed record against the release key; builds nothing and runs no Witness",
-      "sha256": "24f3075c6f0244be2026f2003e4df2865af0c3d3e008f4503a0ec9932f0e061c",
+      "sha256": "14f2c67cee9d22ed9a5b4b5fa82ce37a789147b556728f1b3b90cd71479268c5",
       "reads_env": [
         "AWS_ROLE_ARN",
         "AWS_REGION",
@@ -816,7 +816,7 @@
       "runs": [],
       "signs": "other",
       "reason": "the tag-signature route and the owner baselines (policy read from origin/main by bin/build-admit.py); names git verify-tag, verifies and signs nothing",
-      "sha256": "45e54a9fc335893bd7c3378ed6a3196484a9dab1c362b38d3a28478024d9dad9"
+      "sha256": "4494cdc5450f60caacc5326d87cdde60ca237942f94ed7228372ee077191d6e5"
     },
     {
       "path": "bin/build-stage-refuse-mode.sh",
@@ -2721,7 +2721,7 @@
       ],
       "signs": "other",
       "reason": "Sign's token fetch for one signing call of its own (#822 round 2: the provenance signature and each staged record): fetches a fresh identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP, runs bin/chain-verify.py sign-record, sign or kms-sign (the signing functions, nothing else) with AWS_WEB_IDENTITY_TOKEN_FILE set for that call only, and removes the directory the moment the call ends",
-      "sha256": "e7290a77babcb598bf8223bce74b2d179aef003e4103a2f6f26d6b0a5a5be326",
+      "sha256": "f2c15e93ff45d5ebf4b1de0297ea3ef6e25bdd696ca673ac182c17fc479374ed",
       "reads_env": [
         "AWS_ROLE_ARN",
         "AWS_REGION",
