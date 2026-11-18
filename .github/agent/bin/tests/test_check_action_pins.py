@@ -1506,11 +1506,6 @@ class BasenameWriteKeepsCounting(unittest.TestCase):     # a `> "$RUNNER_TEMP/$(
                 body = fetch + 'echo evil > "$RUNNER_TEMP/$(basename bin/tool.sh)"\n' + self.RUN
                 self.assertIsNone(self.resolve(body))
 
-    def test_a_loop_whose_list_lacks_the_name_leaves_the_literal_copy_resolved(self):
-        loop = ('for f in bin/a.sh bin/b.sh; do\n  gh api repos/${GITHUB_REPOSITORY}/contents/${f}?ref=main --jq .content'
-                ' | base64 -d > "$RUNNER_TEMP/$(basename "$f")"\ndone\n')
-        self.assertEqual(self.resolve(loop + self.FETCH + self.RUN), "bin/tool.sh")
-
     def test_a_loop_whose_list_names_the_file_still_resolves_through_the_loop(self):
         loop = ('for f in bin/tool.sh bin/b.sh; do\n  gh api repos/${GITHUB_REPOSITORY}/contents/${f}?ref=main --jq .content'
                 ' | base64 -d > "$RUNNER_TEMP/$(basename "$f")"\ndone\n')

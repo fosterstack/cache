@@ -53,10 +53,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          for f in bin/dependabot-screen.sh bin/dependabot-reviewer.py; do
-            gh api "repos/${GITHUB_REPOSITORY}/contents/${f}?ref=refs/heads/main" --jq '.content' | base64 -d \
-              > "${RUNNER_TEMP}/$(basename "$f")"
-          done
+          gh api "repos/${GITHUB_REPOSITORY}/contents/bin/dependabot-screen.sh?ref=refs/heads/main" --jq '.content' | base64 -d \
+            > "${RUNNER_TEMP}/dependabot-screen.sh"
+          gh api "repos/${GITHUB_REPOSITORY}/contents/bin/dependabot-reviewer.py?ref=refs/heads/main" --jq '.content' | base64 -d \
+            > "${RUNNER_TEMP}/dependabot-reviewer.py"
 
       # The same rule as bin/dependabot-reviewer.py `is_flagged` (the reviewer's candidate step). The PR body arrives by env, never interpolated
       # into the script. No `continue-on-error`: if the screen cannot run, nothing below arms.

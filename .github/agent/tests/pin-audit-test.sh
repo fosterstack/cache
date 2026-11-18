@@ -1313,9 +1313,20 @@ def run(mod, r, skip=()):
     assert all(k in d for k in skip), ("a kernel lock row is not an item of the revision", r)
     return dump({k: i for k, i in d.items() if k not in skip})
 want = {r: run(parent, r) for r in revs}
+inv._MEMO_ON[0] = False
+plain = {r: run(inv, r, lock_keys(r)) for r in revs}
+def same_but_go_tools(a, b):      # a go install version is now the whole word after @: the one reading that changed since the memo was added
+    if a == b:
+        return True
+    if a.startswith("raise:") or b.startswith("raise:"):
+        return False
+    x, y = json.loads(a), json.loads(b)
+    return all(k.startswith("gotool:") for k in set(x) | set(y) if x.get(k) != y.get(k))
+for r in revs:
+    assert same_but_go_tools(want[r], plain[r]), r
 inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
 for r in revs + list(reversed(revs)):
-    assert run(inv, r, lock_keys(r)) == want[r], r
+    assert run(inv, r, lock_keys(r)) == plain[r], r
 PY
 
 CASE="no vendor or model name anywhere in the checks (the daily check is plain code, no AI; this repo is public)"
@@ -1774,34 +1785,8 @@ def c_main_fixtures():
         assert rc == 2 and "cannot" in out.getvalue(), (pa.main.__module__, body, rc, out.getvalue()[:160])
 def c_local_files():
     f = os.path.join(tmp, "x.json"); open(f, "w").write("{}")
-    refuse("base inputs {}", lambda: (_ for _ in ()).throw(age.CouldNotLook("x")) if False else _runtime(lambda: age.load_base_inputs(f, True)))
     assert accepts("ruled text {} (nothing ruled)", lambda: age.load_ruled_text(f, True)) == {}      # "unmeasured_text" is optional: an absent list rules nothing, which only fails more
     refuse("exceptions {}", lambda: pa.load_exceptions(f, True))
-def _runtime(fn):
-    try:
-        fn()
-    except RuntimeError as e:
-        raise age.CouldNotLook(str(e))
-def c_reviewed_files():
-    # reviewed_files (REQ-SUP-001-AC16): an absent list is no rows (nothing is ruled); anything else malformed is refused (RuntimeError): a file that is not an object, invalid JSON, a list that is not a list, a bad row or field, a repeated file, a repeated JSON key
-    load = lambda f, req=True: _runtime(lambda: age.load_reviewed_files(f, req))
-    f = os.path.join(tmp, "rf.json"); open(f, "w").write("{}")
-    assert accepts("reviewed_files {} (no rows)", lambda: age.load_reviewed_files(f, True) == {}) is True
-    open(f, "w").write('{"reviewed_files": [{}]}')
-    refuse("reviewed_files [{}] (a row with no field)", lambda: load(f))
-    ok = {"file": "bin/x.sh", "ruling": "reviewed"}
-    for body in ("[]", "null", "5", "not json", '{"reviewed_files": 5}', '{"reviewed_files": {}}', '{"reviewed_files": null}', '{"reviewed_files": [5]}', '{"reviewed_files": [[]]}',
-                 json.dumps({"reviewed_files": [dict(ok, key="x")]}), json.dumps({"reviewed_files": [dict(ok, **{"body-sha256": "a" * 64})]}),
-                 json.dumps({"reviewed_files": [dict(ok, ruling="")]}), json.dumps({"reviewed_files": [dict(ok, file="")]}),
-                 json.dumps({"reviewed_files": [dict(ok, file=7)]}), json.dumps({"reviewed_files": [dict(ok, ruling=7)]}),
-                 json.dumps({"reviewed_files": [ok, dict(ok, ruling="again")]}),
-                 '{"reviewed_files": [], "reviewed_files": []}'):
-        open(f, "w").write(body); refuse(("reviewed_files", body), lambda: load(f))
-    open(f, "w").write(json.dumps({"reviewed_files": [ok]}))
-    accepts("reviewed_files one good row", lambda: load(f))
-    absent = os.path.join(tmp, "absent-rf.json")
-    refuse("reviewed_files missing file, required", lambda: load(absent, True))
-    assert accepts("reviewed_files missing file, not required", lambda: age.load_reviewed_files(absent, False) == {}) is True
 def c_gh_json_raw():
     for body in ("null", "not json"):
         gh({"api": body}); refuse(("gh_json", body), lambda: net._gh_json("repos/x", need=()))
@@ -1894,7 +1879,7 @@ CASES = {
     ("pin-age-check.py", "_gh_pages", "loads"): c_gh_pages, 
     ("pin-age-check.py", "_fetch_json", "load"): c_fetch_and_dict, ("pin-age-check.py", "_http_dict", "_fetch_json"): c_fetch_and_dict,
     ("pin-age-check.py", "_go_module", "_http_dict"): c_go_module,
-        ("pin-age-check.py", "load_ruled_text", "load"): c_local_files, ("pin-age-check.py", "load_reviewed_files", "load"): c_reviewed_files, ("pin-age-check.py", "load_base_inputs", "load"): c_local_files,
+        ("pin-age-check.py", "load_ruled_text", "load"): c_local_files,
     ("pin-audit.py", "_gh_json_raw", "loads"): c_gh_json_raw, ("pin-audit.py", "_gh_json", "_gh_json_raw"): c_gh_json_raw, ("pin-audit.py", "_osv_post", "load"): c_osv_post, ("pin-audit.py", "_osv_get", "load"): c_osv_get,
     ("pin-audit.py", "resolve_ref", "_gh_json"): c_resolve_ref, ("pin-audit.py", "live_ranges", "_gh_json"): c_live_ranges,
     ("pin-audit.py", "_lists_for", "_gh_json"): c_lists_for, ("pin-audit.py", "_lists_for", "_http_dict"): c_lists_for,

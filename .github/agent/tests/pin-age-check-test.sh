@@ -55,16 +55,11 @@ CASE="inventory: a run line of 200 repeated expressions (a pattern-backtracking 
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys, time
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
-t = time.time()
+t = time.process_time()  # this process's CPU: in-process parsing only, so box load cannot fail it
 for body in ("curl https://github.com/a/b/releases/download/v" + "${{ x }}" * 200, "go install example.org/t@" + "${{ x }}" * 200, "pip install foo==" + "${{ x }}" * 200):
     inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: " + body + "\n"})
-try:
-    inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: " + "x" * 100000 + "\n"})
-except RuntimeError as e:
-    assert "refusing to read it partially" in str(e)
-else:
-    raise AssertionError("an over-long command line was read as its prefix")
-assert time.time() - t < 3, time.time() - t
+inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: " + "x" * 100000 + "\n"})   # a command line is read whole, whatever its length
+assert time.process_time() - t < 3, time.process_time() - t
 PY
 CASE="inventory: docker-scout-X.Y.Z versions in install-scanner.sh's case list are tool:scout items; releases/latest/download is an unprovable item; go run and go get x@v are go tools"
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
@@ -168,21 +163,15 @@ CASE="an unclosed run of expression openers in a huge script is read in linear t
 check python3 - "$here/../supply-chain/pin-inventory.py" "$work" <<'PY'
 import importlib.util, os, subprocess, sys, time
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
-t = time.time()
-for fn in (lambda: inv.inventory({"bin/x.sh": "echo ${{ " * 60000}), lambda: inv.unmeasured({"bin/x.sh": "curl " + "http://a " * 60000})):
-    try:
-        fn()
-    except RuntimeError as e:
-        assert "refusing to read it partially" in str(e)     # one enormous line is refused outright, quickly
-assert time.time() - t < 3, time.time() - t
-# a long ordinary pip install with a dependency appended after 4000 characters is REFUSED, never read as its prefix
-pkgs = " ".join("pkg%03d==1.0.%d" % (i, i) for i in range(400))
-try:
-    inv.inventory({"bin/x.sh": "pip install " + pkgs + " evilpkg==9.9.9\n"})
-except RuntimeError:
-    pass
-else:
-    raise AssertionError("an overlong pip install was accepted")
+t = time.process_time()  # this process's CPU: in-process parsing only, so box load cannot fail it
+for fn in (lambda: inv.inventory({"bin/x.sh": ("echo ${{ " * 440 + "\n") * 140}), lambda: inv.unmeasured({"bin/x.sh": ("curl " + "http://a " * 390 + "\n") * 150})):
+    fn()                                                     # many lines just under 4000 characters are read by pattern, quickly
+assert time.process_time() - t < 3, time.process_time() - t
+# a long ordinary pip install just under 4000 characters is read whole: the last dependency is found
+pkgs = " ".join("pkg%03d==1.0.%d" % (i, i) for i in range(200))
+got = inv.inventory({"bin/x.sh": "pip install " + pkgs + " evilpkg==9.9.9\n"})
+assert any(k.startswith("package:pypi/evilpkg@9.9.9") for k in got), sorted(got)[-3:]
+assert any(k.startswith("package:pypi/pkg199@1.0.199") for k in got), sorted(got)[-3:]
 repo = sys.argv[2] + "/bigfile"; os.makedirs(repo, exist_ok=True)
 subprocess.run(["git", "init", "-q", repo], check=True)
 open(repo + "/big.sh", "w").write("# x\n" * 300000)

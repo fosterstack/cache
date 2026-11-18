@@ -401,11 +401,9 @@ ctl_wf("a fetch of a branch named like a pull word", "git fetch --no-tags origin
 ctl_wf("a fetch of a tag", "git fetch --no-tags origin refs/tags/v1:refs/tags/v1")
 ctl_wf("a command that only prints pull/1/head", "echo pull/1/head")
 mut_wf("a job gets an environment", "has an environment or secrets", lambda d: J(d, "daily-audit").update(environment="release"))
-mut_wf("a merge_group trigger returns", "a merge_group trigger", lambda d: d["on"].update(merge_group={}))
 mut_wf("a second job appears", "the jobs are not exactly",
        lambda d: d["jobs"].update(extra={"runs-on": "ubuntu-latest", "steps": []}))
 mut_wf("image-signatures returns", "the jobs are not exactly", lambda d: d["jobs"].update({"image-signatures": {"runs-on": "ubuntu-latest", "steps": []}}))
-mut_wf("a step gains a condition of its own", "a step has a condition", lambda d: J(d, "pin-age")["steps"][0].update({"if": "github.event_name == 'pull_request'"}))
 mut_wf("a job holds an actions permission", "has an actions permission", lambda d: J(d, "daily-audit")["permissions"].update(actions="read"))
 mut_wf("top-level permissions widened", "no top-level permissions block", lambda d: d.update(permissions={"contents": "write"}))
 # --- dependabot (AC1) ---

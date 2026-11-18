@@ -281,10 +281,10 @@ elif kind == "automerge":
         if sr.strip() != 'bash "${RUNNER_TEMP}/dependabot-screen.sh" >> "$GITHUB_OUTPUT"':
             bad.append("the screen is not exactly the wrapper run with bash, its output going to GITHUB_OUTPUT")
         # the fetches before the screen (the last step reads main's version files on its own, after the arm)
-        fetch = [r for _, r in runs(job)[:scr[0]] if "ref=main" in r]
-        if len(fetch) != 1 or "for f in bin/dependabot-screen.sh bin/dependabot-reviewer.py; do" not in fetch[0]:
+        fetch = [r for _, r in runs(job)[:scr[0]] if "ref=refs/heads/main" in r]
+        if len(fetch) != 1 or "contents/bin/dependabot-screen.sh?ref=" not in fetch[0] or "contents/bin/dependabot-reviewer.py?ref=" not in fetch[0]:
             bad.append("one step must fetch the wrapper and the reviewer from main (the workflow checks out nothing)")
-        if len(scr) == 1 and fetch and not any("ref=main" in r for _, r in runs(job)[:scr[0]]):
+        if len(scr) == 1 and fetch and not any("ref=refs/heads/main" in r for _, r in runs(job)[:scr[0]]):
             bad.append("the screen runs before main's copies are fetched")
         if "${{" in sr:
             bad.append("the screen interpolates an expression into a script (pass it by env)")
@@ -406,7 +406,7 @@ case_ automerge $A automerge-real          ok  ""
 case_ automerge $A automerge-target        bad "d['on'] = 'pull_request_target'"
 case_ automerge $A automerge-any-author    bad "d['jobs']['auto-merge']['if'] = 'true'"
 case_ automerge $A automerge-majors-too    bad "[s.pop('if', None) for s in $as_ if 'gh pr merge --auto' in (s.get('run') or '')]"
-case_ automerge $A automerge-no-fetch      bad "$as_[:] = [s for s in $as_ if 'ref=main' not in (s.get('run') or '')]"
+case_ automerge $A automerge-no-fetch      bad "$as_[:] = [s for s in $as_ if 'ref=refs/heads/main' not in (s.get('run') or '')]"
 case_ automerge $A automerge-no-disarm     bad "$as_[:] = [s for s in $as_ if 'gh pr merge --disable-auto' not in (s.get('run') or '')]"
 case_ reviewer $R reviewer-arm-any-head    bad "[s.__setitem__('run', s['run'].replace('--match-head-commit \"\$sha\" ', '')) for s in $rs if s.get('id') == 'act']"
 case_ reviewer $R reviewer-majors-only     bad "[s.__setitem__('run', s['run'].replace('all(.[]; .kind == \
@@ -1063,9 +1063,9 @@ else failn=$((failn+1)); echo "FAIL reviewer-version-script"; fi
 
 # g3: a tag named main must not answer a read of main, so every read of main's files names the branch ref
 am="$root/.github/workflows/dependabot-auto-merge.yml"
-reads_main_branch() { # file: its ?ref= words, to the end of the shell word, are exactly three copies of the one string
+reads_main_branch() { # file: its ?ref= words, to the end of the shell word, are exactly four copies of the one string
   local want='?ref=refs/heads/main"'
-  [ "$(grep -o '?ref=[^[:space:]]*' "$1")" = "$(printf '%s\n%s\n%s' "$want" "$want" "$want")" ]
+  [ "$(grep -o '?ref=[^[:space:]]*' "$1")" = "$(printf '%s\n%s\n%s\n%s' "$want" "$want" "$want" "$want")" ]
 }
 if reads_main_branch "$am"
 then pass=$((pass+1)); echo "PASS g3-auto-merge-reads-refs-heads-main"
