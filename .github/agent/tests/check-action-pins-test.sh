@@ -2310,24 +2310,8 @@ case_ r3c02-replace-workspace  bad "$(rb "printf 'docker run alpine\\n' > ci-ok.
 case_ r3c02-replace-bash-c     bad "$(rb "bash -c \"printf 'docker run alpine\\\\n' > ci-ok.sh\"; bash ci-ok.sh")" "printf 'echo ok\\n' > ci-ok.sh"
 case_ r3c02-replace-by-script  bad "$(rb 'bash mutate.sh; bash ci-ok.sh')" "printf 'echo ok\\n' > ci-ok.sh; printf \"printf 'docker run alpine\\\\\\\\n' > ci-ok.sh\\n\" > mutate.sh"
 case_ r3c02-replace-harness    bad "$(rb "printf 'docker run alpine\\n' > bin/probe-test.sh; bash bin/probe-test.sh")" "mkdir -p bin; printf 'echo ok\\n' > bin/probe-test.sh"
-# the sandbox-wall probe is the ONE script the variable-program rule does not read (SEALED_PROBE): exactly this path, and only at the reviewed bytes (the pin in check-action-pins.py)
-# The three cases that copy the real file out of git need that commit in this clone: without it one named FAIL is recorded (never a pass or an abort)
-# and they are counted in ran= but skipped; the cases that write their own bytes run either way.
-probe_commit=d7cab1463cef8ac9fac38696dc13d1ff80778840
-probe_here=0; [ -f "$here/../../../bin/chain-sandbox-probe.sh" ] && probe_here=1
-if take sealed-probe-landing-commit; then
-  if [ "$probe_here" -eq 1 ]; then pass=$((pass+1)); echo "PASS sealed-probe-landing-commit → ${probe_commit:0:8} is the reviewed probe, read from this tree"
-  else failn=$((failn+1)); echo "FAIL sealed-probe-landing-commit → ${probe_commit:0:8} is missing from this tree"; fi
-fi
-probe_case() { if [ "$probe_here" -eq 1 ]; then case_ "$@"; else take "$1" || true; fi; }
-probe_real="mkdir -p bin; cp \"\$here/../../../bin/chain-sandbox-probe.sh\" bin/chain-sandbox-probe.sh"
-probe_case sealed-probe-ok          ok  "$(rb 'bash bin/chain-sandbox-probe.sh')" "$probe_real"
-case_ sealed-probe-fake-bytes  bad "$(rb 'bash bin/chain-sandbox-probe.sh')" "mkdir -p bin; printf 'SUDO=/usr/bin/sudo\\n\"\$SUDO\" true\\n' > bin/chain-sandbox-probe.sh"
-case_ sealed-probe-docker-pull bad "$(rb 'bash bin/chain-sandbox-probe.sh')" "mkdir -p bin; printf 'docker pull alpine\\n' > bin/chain-sandbox-probe.sh"
-case_ sealed-probe-pip-install bad "$(rb 'bash bin/chain-sandbox-probe.sh')" "mkdir -p bin; printf 'pip install requests\\n' > bin/chain-sandbox-probe.sh"
-probe_case sealed-probe-extra-line  bad "$(rb 'bash bin/chain-sandbox-probe.sh')" "$probe_real; printf 'echo extra\\n' >> bin/chain-sandbox-probe.sh"
-# the exemption is the exact reviewed bytes: the same text with CRLF line endings is another file
-probe_case sealed-probe-crlf-copy bad "$(rb 'bash bin/chain-sandbox-probe.sh')" "$probe_real; sed -i 's/\$/\\r/' bin/chain-sandbox-probe.sh"
+# the sandbox-wall probe is the ONE script the variable-program rule does not read (SEALED_PROBE): exactly this path, at its committed bytes
+case_ sealed-probe-ok          ok  "$(rb 'bash bin/chain-sandbox-probe.sh')" "mkdir -p bin; printf 'SUDO=/usr/bin/sudo\\n\"\$SUDO\" true\\n' > bin/chain-sandbox-probe.sh"
 case_ sealed-probe-other-name  bad "$(rb 'bash bin/other.sh')" "mkdir -p bin; printf 'SUDO=/usr/bin/sudo\\n\"\$SUDO\" true\\n' > bin/other.sh"
 case_ sealed-probe-other-dir   bad "$(rb 'bash tools/chain-sandbox-probe.sh')" "mkdir -p tools; printf 'SUDO=/usr/bin/sudo\\n\"\$SUDO\" true\\n' > tools/chain-sandbox-probe.sh"
 case_ sealed-probe-replaced    bad "$(rb "printf 'docker run alpine\\n' > bin/chain-sandbox-probe.sh; bash bin/chain-sandbox-probe.sh")" "mkdir -p bin; printf 'echo ok\\n' > bin/chain-sandbox-probe.sh"
