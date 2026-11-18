@@ -1762,12 +1762,12 @@ rm -f "$crd/witness-link"; mkdir -p "$crd/witness-sub/inner"; crd_run ubuntu-24.
 if [ "$rc" = 1 ] && grep -q "not a regular file" "$work/crderr"; then ok "REL-011-AC1 a folder holding a folder (not a regular file) fails"; else bad "REL-011-AC1 inner folder -> rc=$rc"; fi
 # ---- bin/check-records-digests.sh: the list of the records a Check job made (REQ-REL-011-AC1) ----------------------------------
 crd="$work/crd"; mkdir -p "$crd/witness-a" "$crd/witness-empty" "$crd/witness-link"; printf 'x\n' > "$crd/witness-a/a.json"; ln -s a.json "$crd/witness-link/l.json"
-crun() { rc=0; out=$( (cd "$crd" && bash "$root/bin/check-records-digests.sh" "$@") 2>&1) || rc=$?; }
+crun() { rc=0; rm -f "$crd/o.json"; msg=$( (cd "$crd" && bash "$root/bin/check-records-digests.sh" ubuntu-24.04 o.json "$@") 2>&1) || rc=$?; out=$(cat "$crd/o.json" 2> /dev/null || true); }
 crun witness-a; want=$(printf 'x\n' | sha256sum | cut -d' ' -f1)
-if [ "$rc" = 0 ] && [ "$out" = "{\"witness-a\":{\"a.json\":\"sha256:$want\"}}" ]; then ok "REL-011-AC1 a folder is listed by its name with the sha256 of each file"; else bad "REL-011-AC1 records list -> rc=$rc: ${out:0:140}"; fi
+if [ "$rc" = 0 ] && [ "$out" = "{\"ubuntu-24.04/witness-a\":{\"a.json\":\"sha256:$want\"}}" ]; then ok "REL-011-AC1 a folder is listed by its runner and name with the sha256 of each file"; else bad "REL-011-AC1 records list -> rc=$rc: ${out:0:140}"; fi
 for c in empty link missing; do
   crun witness-$c
-  if [ "$rc" = 1 ] && grep -Fq "witness-$c" <<< "$out"; then ok "REL-011-AC1 the list refuses a bad folder ($c), naming it"; else bad "REL-011-AC1 records list of a $c folder -> rc=$rc: ${out:0:140}"; fi
+  if [ "$rc" = 1 ] && grep -Fq "witness-$c" <<< "$msg"; then ok "REL-011-AC1 the list refuses a bad folder ($c), naming it"; else bad "REL-011-AC1 records list of a $c folder -> rc=$rc: ${msg:0:140}"; fi
 done
 # ---- bin/check-govulncheck.py, the source scan of the product module, whose output Release reads
 # from Check's record -----------------------
