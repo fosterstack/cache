@@ -1912,8 +1912,8 @@ def _in_quoted_brace(stack):
     return False
 
 
-_PLAIN_BRACE_WORD = re.compile(r"\$\{\w*:?[-+=]$")     # `${x:-` `${x:+` `${x:=` `${x-` `${x+` `${x=`: bash prints a quoted <( literally
-_CASE_WORD = re.compile(r"(case(?=[ \t\n])|in(?=[ \t\n;&|()]|$)|esac(?=[ \t\n;&|()]|$))")
+_PLAIN_BRACE_WORD = re.compile(r"\$\{\w*:?[-+=]$")     # `${x:-` `${x:+` `${x:=` `${x-` `${x+` `${x=`: bash prints the expansion's text, but its parser still reads a <( there as a frame
+_CASE_WORD = re.compile(r"(case(?=[ \t\n])|in(?=[ \t\n;&|()]|$)|esac(?=[ \t\n;&|()<>]|$))")
 _BEFORE_COMMAND = re.compile(r"(?:(?<![\w.$-])(?:if|then|elif|else|while|until|do|time)|(?<!\w)[!{])$")
 
 
@@ -1924,12 +1924,22 @@ def _command_start(text, kinds, i):
         j = i
         while j > 0 and text[j - 1] in " \t":
             j -= 1
+        if text[j - 2:j] == "=(" and kinds[j - 1] == "c":
+            return False         # the `(` of an array assignment (`a=(`, `a+=(`) starts no command
         if j == 0 or (text[j - 1] in "\n;&|()" and kinds[j - 1] == "c"):
             return True
         m = _BEFORE_COMMAND.search(text, max(0, j - 5), j)
         if not m or set(kinds[m.start():j]) != {"c"}:
             return False
         i = m.start()
+
+
+def _after_in(text, kinds, i):
+    """True when the word at `i` follows a code `in` (an empty case: `case x in esac`)."""
+    j = i
+    while j > 0 and text[j - 1] in " \t\n":
+        j -= 1
+    return text[j - 2:j] == "in" and j < i and kinds[j - 2:j] == ["c", "c"] and (j == 2 or text[j - 3] in " \t\n;&|()")
 
 
 def _scan_shell(text):
@@ -2009,7 +2019,8 @@ def _scan_shell(text):
             cases.pop()
             prev = ")" if kind == "p" else "W"
         elif stack and stack[-1][0] in "(p" and prev in (" ", "\t", "\n", ";", "&", "|", "(", ")") and (
-                m := _CASE_WORD.match(text, i)) and not subject and (m.group(1) == "in" or _command_start(text, kinds, i)):
+                m := _CASE_WORD.match(text, i)) and not subject and (
+                    m.group(1) == "in" or _command_start(text, kinds, i) or (m.group(1) == "esac" and _after_in(text, kinds, i))):
             state, word = cases[-1], m.group(1)
             if word == "case":
                 state[0] += 1
@@ -3171,7 +3182,7 @@ def _check_runs(where_job, scripts, bad, tree, mores):
             # other shell is refused outright, whatever it contains (Sonnet #164 r10, NEW-12; advisor 0080)
             bad.append(f"{where}: a `{shell}` step; this check reads POSIX shell only and refuses any other shell")
             continue
-        if shell and shell.startswith("sh") and "$'" in raw:
+        if shell and shell.startswith("sh") and ("$'" in raw or "$'" in text):
             bad.append(f"{where}: `$'` in a `{shell}` step; dash reads it as a `$` and a quote, this check as ANSI-C, so the "
                        f"step cannot be read with confidence; refused")
             continue
