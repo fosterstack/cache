@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # proves: REQ-SUP-001-AC1, REQ-SUP-001-AC36, REQ-REL-014-AC2
 # proves: REQ-REL-013-AC11
+# proves: REQ-SUP-001-AC38
 # Where the supply-chain checks run (owner ratified Oct 5, changed Nov 17 2026: no supply-chain check runs on a pull request): Dependabot carries no cooldown and one entry per
 # ecosystem root; supply-chain.yml has no pull_request trigger and two jobs, the daily audit (may write issues and nothing else) and the evidence letter's presence check (read-only),
 # both on schedule and dispatch only (REQ-REL-014-AC2); no job holds actions: write; REQ-SUP-001 is pipeline-only for automatic patches; CI runs the tests. Read from the PARSED files:
@@ -311,6 +312,17 @@ b = judge_db(real_db)
 result(not b, "the real dependabot.yml: no cooldown anywhere, every gomod entry weekly and nothing else, no docker entry; groups: every github-actions, gomod and pip entry has its minor-patch group (minor and patch only), codeql-action first and major-only, pydantic first on pip, no docker entry, no applies-to" + ("" if not b else ": " + "; ".join(b)))
 b = judge_rest()
 result(not b, "REQ-SUP-001 is pipeline-only and the CI suite list runs the three tests" + ("" if not b else ": " + "; ".join(b)))
+
+# the ci.yml job go-exact-pins (REQ-SUP-001-AC38) runs exactly the ratified command, read from the parsed file
+CI = os.path.join(root, ".github/workflows/ci.yml")
+GO_EXACT_RUN = "python3 .github/agent/supply-chain/pin-audit.py --go-exact-only"
+def go_exact_runs(d): return [str(st.get("run", "")).strip() for st in (((d.get("jobs") or {}).get("go-exact-pins") or {}).get("steps") or [])]
+real_ci = load(CI)
+result(any(r == GO_EXACT_RUN for r in go_exact_runs(real_ci)), "AC38: the ci.yml job go-exact-pins runs " + GO_EXACT_RUN)
+mut_ci = copy.deepcopy(real_ci)
+for st in mut_ci["jobs"]["go-exact-pins"]["steps"]:
+    if "run" in st: st["run"] = st["run"].replace(" --go-exact-only", "")
+result(not any(r == GO_EXACT_RUN for r in go_exact_runs(mut_ci)), "caught: the go-exact-pins command loses --go-exact-only (reason: no step runs " + GO_EXACT_RUN + ")")
 
 def mut_wf(name, expect, fn):
     if real_wf is None:

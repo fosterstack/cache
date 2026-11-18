@@ -3039,7 +3039,7 @@ requirements:
         status: approved
       - id: REQ-SUP-001-AC38
         given: "a push to main, and a release tag whose commit is admitted by the source admission of the Build stage"
-        when: "ci.yml runs its job go-exact-pins (python3 .github/agent/supply-chain/pin-audit.py --go-exact-only, which reads the tree with no network and no token and files no issue)"
+        when: "ci.yml runs its job go-exact-pins (pin-audit.py --go-exact-only, which reads the tree with no network and no token and files no issue)"
         then: "the job prints the line of AC37 for every go install that is not at an exact version and exits 1, or exits 0 when every one is exact; required-checks.json names go-exact-pins with scope push, so the source admission (bin/build-admit.py, the required-checks check) refuses a tag whose commit has no success of it; the job never runs on a pull request"
         verification: { method: unit, release_blocking: false }
         status: approved

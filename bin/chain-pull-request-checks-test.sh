@@ -166,8 +166,6 @@ gsteps = gj.get("steps") or []
 res(gj.get("name", "go-exact-pins") == "go-exact-pins", "AC3: the ci.yml job go-exact-pins has the check name go-exact-pins")
 res(any("actions/checkout" in str(st.get("uses")) and (st.get("with") or {}).get("persist-credentials") is False for st in gsteps),
     "AC3: go-exact-pins checks out the repo with persist-credentials: false")
-res(any(str(st.get("run", "")).strip() == "python3 .github/agent/supply-chain/pin-audit.py --go-exact-only" for st in gsteps),
-    "AC3: go-exact-pins runs python3 .github/agent/supply-chain/pin-audit.py --go-exact-only")
 on_push = jobs_on("push")
 produced = {}
 for key in on_push:
