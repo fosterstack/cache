@@ -447,24 +447,24 @@ case_scan workflow-env-path      bad "d['env'] = {'PATH': '/tmp/evil:/usr/bin:/b
 case_scan repro-self-hosted      bad "d['jobs']['reproducibility']['runs-on'] = 'self-hosted'"
 
 # ---------------------------------------------------------------------------------------------------------------------
-# REQ-REL-008-AC1 (owner RATIFIED Oct 2; amended by the owner rule workflow-grouped-by-purpose, Nov 13): the workflow directory holds exactly the 16 ratified files and
+# REQ-REL-008-AC1 (owner RATIFIED Oct 2; amended by the owner rule workflow-grouped-by-purpose, Nov 13): the workflow directory holds exactly the 17 ratified files and
 # nothing else, so no workflow sprawls. The release is the one file release.yml: no stage-*.yml file exists. persona-uat.yml holds the persona UAT jobs (one purpose);
-# codeql.yml stays (owner rule ci-trim-keeps-codeql). evidence-letter.yml is not in the set.
+# codeql.yml stays (owner rule ci-trim-keeps-codeql). evidence-letter.yml is the monthly evidence letter (REQ-REL-013): a monthly schedule, its own purpose.
 ratified="acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml customer-words-edited.yml dependabot-auto-merge.yml
-dependabot-reviewer.yml go-freshness.yml main-candidate-rescan.yml persona-uat.yml release.yml reserved-branch-guard.yml scan.yml
+dependabot-reviewer.yml evidence-letter.yml go-freshness.yml main-candidate-rescan.yml persona-uat.yml release.yml reserved-branch-guard.yml scan.yml
 scorecard.yml supply-chain.yml"
 judge_set() {  # $1: the directory's entries as a JSON list (every entry, not only *.yml)
   python3 - "$1" "$ratified" <<'PY'
 import json, sys
 got, want = json.loads(sys.argv[1]), sys.argv[2].split()
-if len(want) != 16:
-    print("the ratified list is not 16 files (owner rule workflow-grouped-by-purpose, Nov 13)")
+if len(want) != 17:
+    print("the ratified list is not 17 files (owner rule workflow-grouped-by-purpose, Nov 13)")
     sys.exit(1)
 odd = [n for n in got if "\n" in n or "/" in n]
 extra, missing = sorted(set(got) - set(want)), sorted(set(want) - set(got))
 stage = sorted(n for n in got if n.startswith("stage-"))
 if odd or extra or missing or stage or len(got) != len(set(got)):
-    print("extra: %s missing: %s odd names: %s stage files: %s (the list is REQ-REL-008-AC1: 16 files, no stage-*.yml, "
+    print("extra: %s missing: %s odd names: %s stage files: %s (the list is REQ-REL-008-AC1: 17 files, no stage-*.yml, "
           "owner rule workflow-grouped-by-purpose of Nov 13)" % (extra, missing, odd, stage)); sys.exit(1)
 print("ok")
 PY
@@ -485,9 +485,9 @@ edit_set() { python3 -c 'import json, sys; s = json.loads(sys.argv[1]); exec(sys
 case_set real          ok  "$real_set"
 case_set a-new-file    bad "$(edit_set 's.append("sprawl.yml")')"
 case_set a-third-new-file bad "$(edit_set 's.append("stage-extra.yml")')"
-case_set letter-back   bad "$(edit_set 's.append("evidence-letter.yml")')"
+case_set letter-missing bad "$(edit_set 's.remove("evidence-letter.yml")')"
 case_cites a-third-new-file "$(edit_set 's.append("stage-extra.yml")')"
-case_cites letter-back "$(edit_set 's.append("evidence-letter.yml")')"
+case_cites letter-missing "$(edit_set 's.remove("evidence-letter.yml")')"
 case_set a-non-yaml    bad "$(edit_set 's.append("README.txt")')"
 case_set one-missing   bad "$(edit_set 's.remove("go-freshness.yml")')"
 case_set newline-name  bad "$(edit_set 's.remove("go-freshness.yml"); s.remove("scorecard.yml"); s.append("go-freshness.yml\nscorecard.yml")')"

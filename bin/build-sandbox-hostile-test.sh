@@ -267,7 +267,8 @@ for hn in "${hostile_names[@]}"; do
   t "AC5" "...and melange never ran ([$hn])" bash -c "[ ! -s '$work/calls' ]"
   kr="$work/rtk $hn"; mkdir -p "$kr"; : > "$work/calls"
   exits "AC5" "a RUNNER_TEMP (key folder) path containing [$hn] is refused (exit 2)" 2 \
-    bash -c 'cd "$1" && TMPDIR="$2" RUNNER_TEMP="$3" bash "$4"' _ "$co" "$work/tmp" "$kr" "$work/probe.sh"
+    bash -c 'cd "$1" && TMPDIR="$2" RUNNER_TEMP="$3" bash "$4" "$5"' _ "$co" "$work/tmp" "$kr" "$work/probe.sh" \
+      apk-collection.local.json
   t "AC5" "...the message names the key folder path ([$hn])" grep -qF -e "$kr" "$work/o"
   t "AC5" "...and melange never ran for the key folder ([$hn])" bash -c "[ ! -s '$work/calls' ]"
 done
@@ -280,7 +281,8 @@ for hn in 'dol$lar' 'back`tick'; do
   t "AC5" "...and melange never ran ([$hn])" bash -c "[ ! -s '$work/calls' ]"
   kr="$work/rtk-$hn"; mkdir -p "$kr"; : > "$work/calls"
   exits "AC5" "a RUNNER_TEMP (key folder) path containing [$hn] is refused (exit 2)" 2 \
-    bash -c 'cd "$1" && TMPDIR="$2" RUNNER_TEMP="$3" bash "$4"' _ "$co" "$work/tmp" "$kr" "$work/probe.sh"
+    bash -c 'cd "$1" && TMPDIR="$2" RUNNER_TEMP="$3" bash "$4" "$5"' _ "$co" "$work/tmp" "$kr" "$work/probe.sh" \
+      apk-collection.local.json
   t "AC5" "...the message names the key folder path ([$hn])" grep -qF -e "$kr" "$work/o"
   t "AC5" "...and melange never ran for the key folder ([$hn])" bash -c "[ ! -s '$work/calls' ]"
 done
