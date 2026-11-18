@@ -215,7 +215,7 @@ gvins "govulncheck: no tools/govulncheck module at all is refused" "$gv/repo-nom
 gvins "govulncheck: a tools/govulncheck/vendor directory is refused (vendor mode does not check contents against go.sum), and nothing is installed" "$gv/repo-vendor" "$gv/dest" "vendor.*PIPELINE failure|PIPELINE failure.*vendor"
 gvins "govulncheck: a failing build is a pipeline failure and installs nothing" "$gv/repo" "$gv/dest" "build.*PIPELINE failure|PIPELINE failure.*build" GV_BUILD_RC=1
 gvins "govulncheck: a built binary that reports another version than the module pins is refused" "$gv/repo" "$gv/dest" "version.*PIPELINE failure|PIPELINE failure.*version" GV_REPORTS=v9.9.9
-# the pin is ONE version in two places that Dependabot moves separately (it bumps tools/govulncheck/go.mod and go.sum; the install line in ci.yml is by hand): the
+# the pin is ONE version in two places (tools/govulncheck/go.mod and go.sum, which Dependabot bumps; ci.yml builds the tool through bin/install-scanner.sh): the
 # equality is a test, so a bump of either one alone is red
 gvpin_ok() { # gvpin_ok GOMOD GOSUM: the module pins golang.org/x/vuln at a version, go.sum holds its h1, no replace/exclude
   local gm=$1 gs=$2 pin
