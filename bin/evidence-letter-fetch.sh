@@ -29,10 +29,30 @@ asset() { # asset RELEASE.JSON NAME FOLDER: downloads the release's asset of tha
 }
 
 verify_signed() { # verify_signed TAG DIR: the release's release-files.sha256 verifies, and lists the manifest in DIR; one line on any failure
-  local tag=$1 dir=$2 refusal
-  refusal=$(python3 -I bin/chain-verify.py policy make --template .github/policy/release-policy.template.json \
-    --tag "$tag" --out "$dir/policy.json" 2>&1 > /dev/null) ||
-    die "$tag: no release policy: $(head -n 1 <<< "$refusal")"
+  local tag=$1 dir=$2 refusal signed
+  asset "$dir/release.json" release-key-manifest.json "$dir"
+  asset "$dir/release.json" release-key-manifest.sig "$dir"
+  # the time the list was signed: only the inclusionPromise signs integratedTime, and the verification that follows covers it
+  jq -e '.verificationMaterial.tlogEntries | length == 1' "$dir/release-files.sha256.bundle" > /dev/null 2>&1 ||
+    die "$tag: the bundle does not hold exactly one Rekor entry: no one signed time"
+  jq -e '.verificationMaterial.tlogEntries[0].inclusionPromise | type == "object"' "$dir/release-files.sha256.bundle" > /dev/null 2>&1 ||
+    die "$tag: the bundle holds no inclusionPromise: its Rekor time is not signed"
+  signed=$(jq -r '.verificationMaterial.tlogEntries[0].integratedTime // empty' "$dir/release-files.sha256.bundle")
+  [[ "$signed" =~ ^[0-9]+$ ]] || die "$tag: the bundle holds no readable Rekor time: no signed date"
+  # the key this release was signed with, from its own manifest, root-checked and valid at that time: a rotation or an
+  # expiry since then must not stop an old release's letter
+  cat .github/policy/release-key-root.pub > "$dir/release-key-root.pub"
+  refusal=$(python3 -I bin/chain-verify.py manifest-at --dir "$dir" --at "$signed" 2>&1 > /dev/null) ||
+    die "$tag: the key manifest is refused: ${refusal#refused at manifest: }"
+  # a revocation committed since then, for the same key, still counts
+  if [ "$(jq -r .key_id .github/policy/release-key-manifest.json)" = "$(jq -r .key_id "$dir/release-key-manifest.json")" ]; then
+    refusal=$(python3 -I bin/chain-verify.py manifest-now --dir .github/policy 2>&1 > /dev/null) ||
+      die "$tag: the current key manifest is refused: ${refusal#refused at manifest: }"
+  fi
+  jq --arg t "$tag" --arg rekor "$(cat .github/policy/rekor.pub)" \
+    --slurpfile tpl .github/policy/release-policy.template.json --slurpfile key "$dir/release-key-manifest.json" -n \
+    '{tag: $t, ref: ("refs/tags/" + $t), repository: $tpl[0].repository, release_key: $key[0] | {key_id, public_key},
+      rekor_public_key: $rekor, stages: $tpl[0].stages}' > "$dir/policy.json"
   refusal=$(bash bin/evidence-letter-verify.sh "$dir/policy.json" "$dir/release-files.sha256" 2>&1) ||
     die "$tag: ${refusal#evidence-letter-verify: }"
   grep -qxF "$(sha256sum "$dir/release-manifest.json" | cut -d' ' -f1)  release-manifest.json" "$dir/release-files.sha256" ||
@@ -41,21 +61,20 @@ verify_signed() { # verify_signed TAG DIR: the release's release-files.sha256 ve
 
 # the release's date is the published_at of its release-manifest.json once that file is verified against the signed
 # release-files.sha256, never the API's unsigned one; a final release from v0.3.0 on with no verified manifest date
-# has no signed date, and the fetch refuses. A release below v0.3.0 has no signed files and is never selected: its
-# manifest must still name its own tag's version, so the tag alone (the API's word) does not place it
+# has no signed date, and the fetch refuses. A release below v0.3.0 has no signed files and is never selected or downloaded
 : > "$out/dates.jsonl"
 for tag in $(jq -r '.[] | select(.draft == false and .prerelease == false and (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")))
     | .tag_name' "$out/releases.json"); do
+  # a release below v0.3.0 has no signed files and no manifest: no download for it
+  if [ "$tag" != v0.3.0 ] && [ "$(printf '%s\n' v0.3.0 "$tag" | sort -V | head -n 1)" = "$tag" ]; then
+    continue
+  fi
   dir="$out/rel/$tag"
   mkdir -p "$dir"
   jq --arg t "$tag" '.[] | select(.tag_name == $t)' "$out/releases.json" > "$dir/release.json"
   asset "$dir/release.json" release-manifest.json "$dir"
-  jq -e --arg v "${tag#v}" '.version == $v' "$dir/release-manifest.json" > /dev/null 2>&1 ||
+  jq -e --arg v "$tag" '.version == $v' "$dir/release-manifest.json" > /dev/null 2>&1 ||
     die "$tag: release-manifest.json names another version"
-  if [ "$tag" != v0.3.0 ] && [ "$(printf '%s\n' v0.3.0 "$tag" | sort -V | head -n 1)" = "$tag" ]; then
-    rm -r "$dir"
-    continue
-  fi
   asset "$dir/release.json" release-files.sha256 "$dir"
   asset "$dir/release.json" release-files.sha256.bundle "$dir"
   verify_signed "$tag" "$dir"

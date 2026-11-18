@@ -51,7 +51,7 @@ def release(root, tag, published, body, statements=(), commit=None, records=RECO
     entry = {"file": "fosterstack-cache.openvex.json", "form": "openvex",
              "sha256": vex_hash or sha(d + "/fosterstack-cache.openvex.json")}
     # the signed release metadata (release-manifest.json) holds the date and the reason
-    json.dump({"version": version or tag[1:], "commit": commit or ("ab" * 20), "vex": [entry],
+    json.dump({"version": version or tag, "commit": commit or ("ab" * 20), "vex": [entry],
                "published_at": published, "reason": body}, open(d + "/release-manifest.json", "w"))
     return d
 
@@ -264,6 +264,23 @@ src = open(SCRIPT).read()
 check("offline: no network or process module is imported",
       not any(m in src for m in ("urllib", "socket", "http.client", "subprocess", "requests")))
 
+# ---- evidence-letter-back: the drafter's side of fixes 1 and 3
+pg, tg = letter(world([(("v0.3.5", "2026-11-08T12:00:00Z", "Fix: z."), {"version": "0.3.5"})]))
+check("r1 fix 1: the drafter refuses a manifest whose version is the tag without the v (0.3.5), in one line",
+      pg.returncode == 1 and tg == "" and len(pg.stderr.strip().splitlines()) == 1, pg.stderr)
+pg, tg = letter(world([(("v0.3.5", "2026-11-08T12:00:00Z", "Fix: z."), {"version": "v0.3.5"})]))
+check("r1 fix 1: the drafter accepts a manifest whose version is the full tag (v0.3.5)",
+      pg.returncode == 0 and "v0.3.5" in tg, pg.stderr)
+SAME_DAY = [(("v0.3.9", "2026-10-25T12:00:00Z", "Fix: nine."), {}), (("v0.3.10", "2026-10-25T18:00:00Z", "Fix: ten."), {})]
+pq, tq = letter(world(SAME_DAY))
+check("r1 fix 3: a month with no release, two releases on one earlier day (v0.3.9 signed 12:00, v0.3.10 signed 18:00): "
+      "the drafter takes v0.3.10, the one signed last",
+      pq.returncode == 0 and "Records of v0.3.10, the latest release" in tq and "v0.3.9" not in tq, (pq.stderr, tq))
+SWAP_DAY = [(("v0.3.9", "2026-10-25T18:00:00Z", "Fix: nine."), {}), (("v0.3.10", "2026-10-25T12:00:00Z", "Fix: ten."), {})]
+pq, tq = letter(world(SWAP_DAY))
+check("r1 fix 3: the same day with v0.3.9 signed 18:00 and v0.3.10 signed 12:00: the drafter takes v0.3.9 (time, not tag text)",
+      pq.returncode == 0 and "Records of v0.3.9, the latest release" in tq and "v0.3.10" not in tq, (pq.stderr, tq))
+
 # ---- the cases of the scripts the evidence letter's jobs run (bin/evidence-letter-fetch.sh, -verify.sh, -present.sh)
 # They run in a sandbox: a copy of bin/ and the policy folder with a root key and a release key made here, and
 # stand-ins (cosign, gh, date, the Check-record verifier) that record their arguments; nothing is signed or uploaded.
@@ -335,7 +352,7 @@ def throwaway_repo(tmp):
         openssl("pkey", "-in", keys + "/%s.key" % name, "-pubout", "-out", keys + "/%s.pub" % name)
     pub = open(keys + "/rel.pub").read()
     der = openssl("pkey", "-pubin", "-in", keys + "/rel.pub", "-outform", "DER")
-    when = "2026-11-01T00:00:00Z"  # fixed, before the fixed signing time of 3 December (SIGNED_DEC3), whatever today is
+    when = "2026-10-01T00:00:00Z"  # fixed, before every signing time of the fixtures (v0.3.0: 30 October), whatever today is
     body = json.dumps({"public_key": pub, "key_id": hashlib.sha256(der).hexdigest(), "valid_from": when},
                       sort_keys=True, indent=1).encode() + b"\n"
     pol = os.path.join(repo, ".github/policy")
@@ -366,22 +383,35 @@ def sandbox(tmp):
     return fix, env
 
 
-def put_releases(fix, releases, signed=None, manifests=None):
+def put_releases(fix, releases, signed=None, manifests=None, keys=None, bundles=None):
     """releases: [(tag, published, draft, prerelease, page)]; every one gets the assets the fetch needs,
     ids from 100, and a JSON release-manifest.json. signed: {tag: the published_at its signed manifest holds}
     (else the listed published date). manifests: {tag: the raw bytes of its manifest, or None for no manifest
-    asset at all}."""
+    asset at all}. keys: {tag: (key manifest, signature) of the key that signed it, else the committed one}.
+    bundles: {tag: the raw release-files.sha256.bundle, else one Rekor entry at the signed time}."""
     pages, next_id = {}, 100
+    pol = os.path.join(os.path.dirname(fix), "repo/.github/policy")
+    own = (open(pol + "/release-key-manifest.json", "rb").read(), open(pol + "/release-key-manifest.sig", "rb").read())
     for tag, published, draft, pre, page in releases:
         vex = ("vex of " + tag).encode()
-        manifest = json.dumps({"version": tag[1:], "published_at": (signed or {}).get(tag, published)}).encode()
+        when = (signed or {}).get(tag, published)
+        manifest = json.dumps({"version": tag, "published_at": when}).encode()
+        try:      # Release writes "version": "vX.Y.Z"; the bundle holds the one Rekor entry of the signing time
+            stamp = calendar.timegm(time.strptime(when, "%Y-%m-%dT%H:%M:%SZ"))
+        except (TypeError, ValueError):
+            stamp = calendar.timegm(time.strptime(published, "%Y-%m-%dT%H:%M:%SZ"))
+        entry = {"integratedTime": str(stamp), "inclusionPromise": {"signedEntryTimestamp": "c2V0"},
+                 "inclusionProof": {"logIndex": "1"}}
+        bundle = json.dumps({"verificationMaterial": {"tlogEntries": [entry]}}).encode()
         if manifests and tag in manifests:
             manifest = manifests[tag]
         files = {} if manifest is None else {"release-manifest.json": manifest}
         listing = "" if manifest is None else "%s  release-manifest.json\n" % sha_of(manifest)
         files.update({"fosterstack-cache.openvex.json": vex,
                  "release-files.sha256": (listing + "%s  fosterstack-cache.openvex.json\n" % sha_of(vex)).encode(),
-                 "release-files.sha256.bundle": b'{"verificationMaterial":{"tlogEntries":[{}]}}',
+                 "release-files.sha256.bundle": (bundles or {}).get(tag, bundle),
+                 "release-key-manifest.json": (keys or {}).get(tag, own)[0],
+                 "release-key-manifest.sig": (keys or {}).get(tag, own)[1],
                  "digests.json": json.dumps({"image-production": "sha256:" + "a" * 64}).encode()})
         for runner in ("ubuntu-24.04", "ubuntu-24.04-arm"):
             for step in ("scanners", "acceptance", "runtime"):
@@ -403,10 +433,13 @@ RELEASES = [("v0.4.0", "2026-11-20T12:00:00Z", False, False, 1), ("v0.6.0", "202
             ("v0.5.0-rc1", "2026-11-21T12:00:00Z", False, True, 2), ("v0.4.5", "2026-11-22T12:00:00Z", True, False, 2)]
 
 
-def fetch(month, edit=None, today=None, release_list=RELEASES, real_verifier=False, signed=None, manifests=None):
+def fetch(month, edit=None, today=None, release_list=RELEASES, real_verifier=False, signed=None, manifests=None,
+          keys=None, bundles=None, current=None):
     tmp = tempfile.mkdtemp()
     fix, env = sandbox(tmp)
-    put_releases(fix, release_list, signed, manifests)
+    put_releases(fix, release_list, signed, manifests, {t: f(tmp) for t, f in (keys or {}).items()}, bundles)
+    if current:      # current(tmp) installs the repository's committed key manifest after the releases were made
+        current(tmp)
     if today:
         open(os.path.join(fix, "today"), "w").write(today + "\n")
     if edit:
@@ -443,6 +476,7 @@ p3, got3, _l, _o, _f = fetch("2026-10")
 check("AC10: a month with a release does not fetch the release before it", got3 == ["v0.3.0"], got3)
 check("AC10: it writes release.json for each and the advisories as one list from every page",
       all(os.path.isfile(out + "/rel/%s/release.json" % g) for g in got)
+      and os.path.isfile(out + "/advisories.json")
       and json.load(open(out + "/advisories.json")) == [{"ghsa_id": "GHSA-a"}, {"ghsa_id": "GHSA-b"}])
 check("AC10: it only reads: no upload, no write call",
       not any(("upload" in l or "-X" in l or "--method" in l) for l in log))
@@ -474,10 +508,10 @@ ROOT_FLAG = "--trusted-root .github/policy/rekor-trusted-root.json"
 check("F1 1: each release's list is verified through the helper with the key and the pinned log, no identity",
       all(len(list_verifies(log, t)) == 1 and ROOT_FLAG in list_verifies(log, t)[0]
           and "--certificate" not in list_verifies(log, t)[0] for t in ("v0.3.1", "v0.4.0")), log)
-check("F1 5: each fetched release gets its own policy made for its tag, never for a branch",
-      sum("policy make" in l and "--tag v0.3.1" in l for l in log) == 1
-      and sum("policy make" in l and "--tag v0.4.0" in l for l in log) == 1
-      and not any("policy make" in l and "--ref" in l for l in log), log)
+check("F1 5: each fetched release gets its own policy for check-list, built from its own verified key manifest: no policy make",
+      not any("policy make" in l for l in log)
+      and all(sum("check-list --policy " in l and "/rel/%s/policy.json" % t in l for l in log) == 1
+              and os.path.isfile(out + "/rel/%s/policy.json" % t) for t in ("v0.3.1", "v0.4.0")), log)
 check("F1 9: the list is verified with the key of the policy that check-list then gets (the key the manifest holds)",
       log.count(key_of(log)) == 4 and log.count("key-file: -----BEGIN PUBLIC KEY-----") == 4
       and all(any("check-list --policy " in l and "/rel/%s/policy.json" % t in l for l in log)
@@ -492,11 +526,10 @@ def find(log, *needles):
 
 order_ok = True
 for t in ("v0.3.1", "v0.4.0"):
-    made = find(log, "policy make", "--tag " + t)
     listed = find(log, "cosign verify-blob", "/rel/%s/release-files.sha256.bundle" % t)
     checked = find(log, "check-list --policy", "/rel/%s/policy.json" % t)
-    order_ok = order_ok and made < listed < checked
-check("F1 7: per release the policy is made, then the list is verified, then check-list runs", order_ok, log)
+    order_ok = order_ok and listed < checked
+check("F1 7: per release the list is verified, then check-list runs", order_ok, log)
 
 
 def helper(edit=None, tag=None, bundle='{"verificationMaterial":{"tlogEntries":[{}]}}'):
@@ -538,8 +571,13 @@ check("R1 c: the pinned log root the helper names is a file in the tree",
 def list_without_rekor(fix):
     for name in os.listdir(os.path.join(fix, "assets")):
         path = os.path.join(fix, "assets", name)
-        if open(path).read() == '{"verificationMaterial":{"tlogEntries":[{}]}}':
-            open(path, "w").write('{"verificationMaterial":{"tlogEntries":[]}}')
+        try:
+            doc = json.load(open(path))
+        except ValueError:
+            continue
+        if isinstance(doc, dict) and "verificationMaterial" in doc:
+            doc["verificationMaterial"]["tlogEntries"] = []
+            json.dump(doc, open(path, "w"))
 
 
 pr_ = fetch("2026-11", list_without_rekor)
@@ -560,7 +598,7 @@ def other_manifest(fix):
     for name in os.listdir(os.path.join(fix, "assets")):
         path = os.path.join(fix, "assets", name)
         body = open(path, "rb").read()
-        if body.startswith(b'{"version": "0.3.1"'):
+        if body.startswith(b'{"version": "v0.3.1"'):
             open(path, "wb").write(body[:-1] + b', "replaced": true}')
 
 
@@ -802,8 +840,8 @@ check("R9 the fetch selects by the signed manifest's date: the release the API d
 # refuses the letter, in one line, and the API date is never a fallback
 one_rel = [("v0.4.0", "2026-11-20T12:00:00Z", False, False, 1)]
 for what, mf in (("has no release-manifest.json asset", None), ("is not JSON", b"not json at all\n"),
-                 ("holds no published_at", b'{"version": "0.4.0"}'),
-                 ("holds a published_at that is not a string", b'{"version": "0.4.0", "published_at": 20261120}')):
+                 ("holds no published_at", b'{"version": "v0.4.0"}'),
+                 ("holds a published_at that is not a string", b'{"version": "v0.4.0", "published_at": 20261120}')):
     pm, gotm, _l, _o, _f = fetch("2026-11", release_list=one_rel, manifests={"v0.4.0": mf})
     check("AC5 / R9 a final release whose manifest %s refuses the fetch in one line naming the tag and "
           "release-manifest.json, no fallback to the API date" % what,
@@ -854,7 +892,7 @@ def tamper(tag, old, new):
         for name in os.listdir(os.path.join(fix, "assets")):
             path = os.path.join(fix, "assets", name)
             body = open(path, "rb").read()
-            if body.startswith(b'{"version": "%s"' % tag[1:].encode()) and old in body:
+            if body.startswith(b'{"version": "%s"' % tag.encode()) and old in body:
                 open(path, "wb").write(body.replace(old, new))
     return edit
 
@@ -870,12 +908,11 @@ check("S2 row 4: v0.3.1 whose manifest date was moved to 4 December (not the sig
 
 # row 4b: below v0.3.0 the letter does not need a manifest date; v0.3.0 and later always do
 pre = [("v0.4.0", "2026-11-20T12:00:00Z", False, False, 1), ("v0.2.3", "2026-09-01T12:00:00Z", False, False, 1)]
-pd_, gotd, _l, _o, _f = fetch("2026-11", release_list=pre, manifests={"v0.2.3": b'{"version":"0.2.3"}'})
-check("S2 row 4b: a v0.2.3 release whose manifest is {\"version\":\"0.2.3\"} does not stop the letter",
+pd_, gotd, _l, _o, _f = fetch("2026-11", release_list=pre, manifests={"v0.2.3": b'{"version":"v0.2.3"}'})
+check("S2 row 4b: a v0.2.3 release whose manifest is {\"version\":\"v0.2.3\"} does not stop the letter",
       pd_.returncode == 0 and "v0.4.0" in gotd, (pd_.returncode, pd_.stderr, gotd))
-for tag, mf, what in (("v0.2.9", b'{"version":"0.3.1"}', "a tag named v0.2.9 whose verified manifest says version 0.3.1"),
-                      ("v0.3.0", b'{"version":"0.2.0"}', "a v0.3.0 tag whose manifest says version 0.2.0"),
-                      ("v0.3.0", b'{"version":"0.3.0"}', "a v0.3.0 release with no manifest date (the API date is never the fallback)")):
+for tag, mf, what in (("v0.3.0", b'{"version":"v0.2.0"}', "a v0.3.0 tag whose manifest says version v0.2.0"),
+                      ("v0.3.0", b'{"version":"v0.3.0"}', "a v0.3.0 release with no manifest date (the API date is never the fallback)")):
     pd_, gotd, _l, _o, _f = fetch("2026-11", release_list=[("v0.4.0", "2026-11-20T12:00:00Z", False, False, 1), (tag, "2026-11-05T12:00:00Z", False, False, 1)],
                                   manifests={tag: mf})
     check("S2 row 4b: %s is not pre-v0.3: the fetch refuses in one line naming the tag" % what,
@@ -961,8 +998,135 @@ pr, lr = present([[V4]], old_manifest=window_manifest("2026-11-01T00:00:00Z", "2
 check("F7 R5 b3: two entries, the first inside the key window and the second outside it: fails, not passed on entry 0",
       one_line(pr) and pr.returncode == 1 and verifies(lr) == 0, (pr.stderr, lr))
 
+# ---- evidence-letter-back: the audit's fixes 1 to 5 (REQ-REL-013); each label starts "r1 fix N:"
+def rel_manifest(name, valid_from, valid_to=None, root_signed=True):
+    """A function of the sandbox folder: the (manifest, signature) of a fresh release key called name, made once."""
+    def make(tmp):
+        keys = os.path.join(tmp, "keys")
+        mpath, spath = keys + "/%s-m.json" % name, keys + "/%s-m.sig" % name
+        if not os.path.isfile(spath):
+            openssl("genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:4096", "-out", keys + "/%s.key" % name)
+            openssl("pkey", "-in", keys + "/%s.key" % name, "-pubout", "-out", keys + "/%s.pub" % name)
+            pub = open(keys + "/%s.pub" % name).read()
+            der = openssl("pkey", "-pubin", "-in", keys + "/%s.pub" % name, "-outform", "DER")
+            m = {"public_key": pub, "key_id": hashlib.sha256(der).hexdigest(), "valid_from": valid_from}
+            if valid_to is not None:
+                m["valid_to"] = valid_to
+            open(mpath, "wb").write(json.dumps(m, sort_keys=True, indent=1).encode() + b"\n")
+            sig = openssl("dgst", "-sha256", "-sign", keys + ("/root.key" if root_signed else "/%s.key" % name), mpath)
+            open(spath, "wb").write(base64.b64encode(sig) + b"\n")
+        return open(mpath, "rb").read(), open(spath, "rb").read()
+    return make
+
+
+def key_line_of(body):
+    return json.loads(body)["public_key"].splitlines()[1]
+
+
+def committed(make):
+    """An edit for fetch(current=): the manifest make() builds becomes the repository's committed key manifest."""
+    def install(tmp):
+        body, sig = make(tmp)
+        pol = os.path.join(tmp, "repo/.github/policy")
+        open(pol + "/release-key-manifest.json", "wb").write(body)
+        open(pol + "/release-key-manifest.sig", "wb").write(sig)
+    return install
+
+
+def key_used(log, tag):
+    """The first base64 line of the key the cosign stand-in was handed for the tag's release-files list."""
+    i = next((i for i, l in enumerate(log) if l.startswith("cosign verify-blob")
+              and "/rel/%s/release-files.sha256.bundle" % tag in l), None)
+    return log[i + 2] if i is not None and i + 2 < len(log) else None
+
+
+def unix(stamp):
+    return calendar.timegm(time.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ"))
+
+
+def rekor(*times, promise=True):
+    """A release-files bundle holding one Rekor entry for each given unix time."""
+    return json.dumps({"verificationMaterial": {"tlogEntries": [
+        dict({"integratedTime": str(t), "inclusionProof": {"logIndex": "1"}},
+             **({"inclusionPromise": {"signedEntryTimestamp": "c2V0"}} if promise else {})) for t in times]}}).encode()
+
+
+def asset_ids(fix, tag):
+    return [a["id"] for page in json.load(open(os.path.join(fix, "pages.json"))) for r in page
+            if r["tag_name"] == tag for a in r["assets"]]
+
+
+def downloaded(log, ids):
+    return [l for l in log if any(t.endswith("/assets/%d" % i) for t in l.split() for i in ids)]
+
+
+NOV20 = "2026-11-20T12:00:00Z"
+ONE = [("v0.4.0", NOV20, False, False, 1)]
+# fix 1: the manifest's version is the full tag, vX.Y.Z
+pb_, gb_, _l, _o, _f = fetch("2026-11", release_list=ONE, manifests={
+    "v0.4.0": json.dumps({"version": "0.4.0", "published_at": NOV20}).encode()})
+check("r1 fix 1: the fetch refuses a manifest whose version is the tag without the v (0.4.0), in one line naming the tag",
+      one_line(pb_) and "v0.4.0" in pb_.stderr and gb_ == [], (pb_.returncode, pb_.stderr, gb_))
+pb_, gb_, _l, _o, _f = fetch("2026-11", release_list=ONE, manifests={
+    "v0.4.0": json.dumps({"version": "v0.4.0", "published_at": NOV20}).encode()})
+check("r1 fix 1: the fetch accepts a manifest whose version is the full tag (v0.4.0)",
+      pb_.returncode == 0 and gb_ == ["v0.4.0"], (pb_.returncode, pb_.stderr, gb_))
+# fix 2: no tag below v0.3.0 is read: a published v0.1.0 with no manifest does not end the fetch, no asset of it is fetched
+OLD_REL = ONE + [("v0.1.0", "2026-09-01T12:00:00Z", False, False, 1)]
+pb_, gb_, lb_, _o, fb_ = fetch("2026-11", release_list=OLD_REL, manifests={"v0.1.0": None})
+check("r1 fix 2: a published v0.1.0 with no release-manifest.json does not end the fetch, and none of its assets is downloaded",
+      pb_.returncode == 0 and gb_ == ["v0.4.0"] and not downloaded(lb_, asset_ids(fb_, "v0.1.0")),
+      (pb_.returncode, pb_.stderr, gb_, downloaded(lb_, asset_ids(fb_, "v0.1.0"))))
+pb_, gb_, lb_, _o, fb_ = fetch("2026-11", release_list=ONE + [("v0.2.9", "2026-09-01T12:00:00Z", False, False, 1)],
+                               manifests={"v0.2.9": b'{"version":"v0.3.1"}'})
+check("r1 fix 2: a tag v0.2.9 is skipped before any download whatever its manifest would say",
+      pb_.returncode == 0 and gb_ == ["v0.4.0"] and not downloaded(lb_, asset_ids(fb_, "v0.2.9")),
+      (pb_.returncode, pb_.stderr, gb_))
+# fix 3: the prior release is the one signed last, by the full timestamp (day and time), not by the tag text
+SAME = [("v0.3.9", "2026-10-05T12:00:00Z", False, False, 1), ("v0.3.10", "2026-10-05T18:00:00Z", False, False, 1)]
+pb_, gb_, _l, _o, _f = fetch("2026-11", release_list=SAME)
+check("r1 fix 3: two releases on one earlier day, v0.3.9 signed 12:00 and v0.3.10 signed 18:00: the fetch takes v0.3.10",
+      pb_.returncode == 0 and gb_ == ["v0.3.10"], (pb_.returncode, pb_.stderr, gb_))
+SWAP = [("v0.3.9", "2026-10-05T18:00:00Z", False, False, 1), ("v0.3.10", "2026-10-05T12:00:00Z", False, False, 1)]
+pb_, gb_, _l, _o, _f = fetch("2026-11", release_list=SWAP)
+check("r1 fix 3: the same day with v0.3.9 signed 18:00 and v0.3.10 signed 12:00: the fetch takes v0.3.9 (time, not tag text)",
+      pb_.returncode == 0 and gb_ == ["v0.3.9"], (pb_.returncode, pb_.stderr, gb_))
+# fix 4: each release is verified with its own root-signed key manifest, valid at its signed time
+KOLD = rel_manifest("oldk", "2026-10-01T00:00:00Z", "2026-11-15T00:00:00Z")
+KNEW = rel_manifest("newk", "2026-11-15T00:00:00Z")
+ROT = [("v0.4.0", NOV20, False, False, 1), ("v0.3.0", "2026-10-30T12:00:00Z", False, False, 1)]
+for month, took in (("2026-11", ["v0.4.0"]), ("2026-10", ["v0.3.0"])):
+    pb_, gb_, lb_, _o, fb_ = fetch(month, release_list=ROT, keys={"v0.3.0": KOLD, "v0.4.0": KNEW}, current=committed(KNEW))
+    tmp_ = os.path.dirname(fb_)
+    old_line, new_line = key_line_of(KOLD(tmp_)[0]), key_line_of(KNEW(tmp_)[0])
+    check("r1 fix 4: rotation, month %s: v0.3.0 (old key, ended 15 November) is verified with its own manifest's key, "
+          "v0.4.0 with the new one, although the committed manifest now lists only the new key" % month,
+          pb_.returncode == 0 and gb_ == took and key_used(lb_, "v0.3.0") == old_line
+          and key_used(lb_, "v0.4.0") == new_line, (pb_.returncode, pb_.stderr, gb_, key_used(lb_, "v0.3.0"), old_line))
+for label, mk in (("valid only from 1 November, after v0.3.0 was signed", rel_manifest("late", "2026-11-01T00:00:00Z")),
+                  ("ended on 20 October, before v0.3.0 was signed",
+                   rel_manifest("ended", "2026-10-01T00:00:00Z", "2026-10-20T00:00:00Z")),
+                  ("not signed by the root", rel_manifest("noroot", "2026-10-01T00:00:00Z", root_signed=False))):
+    pb_, gb_, lb_, _o, _f = fetch("2026-11", release_list=ROT, keys={"v0.3.0": mk})
+    check("r1 fix 4: a release whose own key manifest is %s ends the fetch in one line naming the tag" % label,
+          one_line(pb_) and "v0.3.0" in pb_.stderr and gb_ == [], (pb_.returncode, pb_.stderr, gb_))
+T20 = unix(NOV20)
+for label, raw, word in (("two Rekor entries", rekor(T20, T20), "Rekor"),
+                         ("no inclusionPromise", rekor(T20, promise=False), "inclusionPromise")):
+    pb_, gb_, lb_, _o, _f = fetch("2026-11", release_list=ONE, bundles={"v0.4.0": raw})
+    check("r1 fix 4: a release-files bundle with %s ends the fetch in one line, before the list is verified" % label,
+          one_line(pb_) and (word is None or word in pb_.stderr) and not list_verifies(lb_, "v0.4.0"),
+          (pb_.returncode, pb_.stderr, lb_))
+# fix 5: every release carrying the month's .md is a copy and must carry and verify its bundle
+for label, order in (("after", [("v0.4.0", False, pair("2026-11")), ("v0.4.1", False, ["evidence-letter-2026-11.md"])]),
+                     ("before", [("v0.4.1", False, ["evidence-letter-2026-11.md"]), ("v0.4.0", False, pair("2026-11"))])):
+    pr, lr = present([order])
+    check("r1 fix 5: a release with the month's .md and no .md.bundle (%s a good pair) fails in one line naming "
+          "the month and the tag" % label,
+          one_line(pr) and "2026-11" in pr.stderr and "v0.4.1" in pr.stderr, (pr.returncode, pr.stderr, lr))
+
 # the number of cases this file runs: a case that silently stops running must turn the file red
-EXPECT = 136
+EXPECT = 154
 print("%d passed, %d failed (expected %d)" % (passed, failed, EXPECT))
 sys.exit(1 if failed or passed != EXPECT else 0)
 PY

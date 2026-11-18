@@ -23,10 +23,9 @@ gh api --paginate --slurp "repos/$repo/releases?per_page=100" |
 letters='[.[].assets[].name | select(test("^evidence-letter-[0-9]{4}-[0-9]{2}\\.md$"))] | length > 0'
 jq -e "$letters" "$work/releases.json" > /dev/null || exit 0
 md="evidence-letter-$month.md"
-# the letter and its bundle on the same release; every such release is a copy to verify
-jq -c --arg md "$md" '.[] | select([.assets[].name] | (index($md) != null and index($md + ".bundle") != null))' \
-  "$work/releases.json" > "$work/copies.jsonl"
-[ -s "$work/copies.jsonl" ] || die "$md and its bundle are on no published release: no letter for $month"
+# every release that carries the letter is a copy to verify, and a copy without its bundle fails
+jq -c --arg md "$md" '.[] | select([.assets[].name] | index($md) != null)' "$work/releases.json" > "$work/copies.jsonl"
+[ -s "$work/copies.jsonl" ] || die "$md is on no published release: no letter for $month"
 # The policy of a copy that carries the root-signed key manifest: the key it lists for the letter's month, not
 # today's. Prints the policy path; else one line and exit 1.
 key_policy() {
@@ -63,6 +62,7 @@ while read -r release; do
   n=$((n + 1)); mkdir -p "$work/copy$n"
   for name in "$md" "$md.bundle"; do
     id=$(jq -r --arg n "$name" '.assets[] | select(.name == $n) | .id' <<< "$release")
+    [ -n "$id" ] || die "$month, $(jq -r .tag_name <<< "$release"): the copy has no $name"
     gh api "repos/$repo/releases/assets/$id" -H "Accept: application/octet-stream" > "$work/copy$n/$name"
   done
   tag=$(jq -r .tag_name <<< "$release")

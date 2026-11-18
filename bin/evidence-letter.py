@@ -106,7 +106,7 @@ def manifest_of(rel_dir, name):
 
 
 def release_dates(rel_dir):
-    """{tag: published day} of every release folder, from its signed release manifest."""
+    """{tag: published timestamp} of every release folder, from its signed release manifest."""
     try:
         names = sorted(os.listdir(rel_dir))
     except OSError:
@@ -114,7 +114,9 @@ def release_dates(rel_dir):
     dates = {}
     for name in names:
         if TAG.fullmatch(name):
-            dates[name] = day(manifest_of(rel_dir, name).get("published_at"), name)
+            stamp = manifest_of(rel_dir, name).get("published_at")
+            day(stamp, name)
+            dates[name] = stamp
     return dates
 
 
@@ -122,7 +124,7 @@ def release_of(rel_dir, name, date):
     path = os.path.join(rel_dir, name)
     manifest = manifest_of(rel_dir, name)
     # a commit is 40 lower-case hex characters: "9eedc51ba83aa198f006394c0a27bfd47a2ab696" matches; "9eedc51" and "9EEDC51..." do not
-    if manifest.get("version") != name[1:] or not re.fullmatch(r"[0-9a-f]{40}", str(manifest.get("commit"))):
+    if manifest.get("version") != name or not re.fullmatch(r"[0-9a-f]{40}", str(manifest.get("commit"))):
         raise Refuse("%s: the release manifest names another version or no commit" % name)
     return {"tag": name, "dir": path, "date": date, "manifest": manifest}
 
@@ -131,10 +133,11 @@ def releases_used(rel_dir, month):
     """(the releases published in the month, the newest release before it). Only those are read in full: a release
     that is neither needs no v0.3 manifest, so an older one in the folder does not stop the letter."""
     dates = release_dates(rel_dir)
-    in_month = sorted((d, t) for t, d in dates.items() if d.startswith(month))
-    before = sorted((d, t) for t, d in dates.items() if d < month + "-01")
-    releases = [release_of(rel_dir, t, d) for d, t in in_month]
-    prior = release_of(rel_dir, before[-1][1], before[-1][0]) if before and not releases else None
+    # by the full signed timestamp, as the fetch chooses: two releases on one day are told apart by the time
+    in_month = sorted((s, t) for t, s in dates.items() if s.startswith(month))
+    before = sorted((s, t) for t, s in dates.items() if s < month + "-01")
+    releases = [release_of(rel_dir, t, s[:10]) for s, t in in_month]
+    prior = release_of(rel_dir, before[-1][1], before[-1][0][:10]) if before and not releases else None
     return releases, prior
 
 
