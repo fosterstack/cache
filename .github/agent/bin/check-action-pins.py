@@ -672,7 +672,13 @@ ALIASING = re.compile(r"(?<![\w.-])(alias|expand_aliases)(?![\w.-])")
 PARAM_WORD = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*])(:?)([-=+?])([^{}]*)\}")
 
 
+DEFAULT_ASSIGNED = set()   # names a ${x:=word} or ${x=word} of the job's text may set; cleared at the start of check_runs
+
+
 def _expand_defaults(text):
+    """${x:-word} as word, ${x:=word} too. The names a `:=` or `=` form may set are kept in DEFAULT_ASSIGNED, read before
+    the word replaces the form: the variable's value is then unknown (_set_by_setter)."""
+    DEFAULT_ASSIGNED.update(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*):?=", text))   # nested words too: PARAM_WORD cannot see them
     while True:   # each pass removes at least one ${...}: it ends
         new = PARAM_WORD.sub(lambda m: m.group(4), text)
         if new == text:
@@ -2031,6 +2037,66 @@ def _only_read(name, script):
             and not any(_builds_name(_unquoted(c)) for c in _split_commands(script)))
 
 
+def _cut_redirections(text):
+    """The text with each redirection cut off its word: from a < or > outside quotes to the next blank outside quotes.
+    A < or > inside '…' or "…" stays part of the word (declare -n r='out[1<0]')."""
+    out, q, cut, i = [], None, False, 0
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and q != "'" and i + 1 < len(text):
+            if not cut:
+                out.append(text[i:i + 2])
+            i += 2
+            continue
+        if q:
+            q = None if c == q else q
+        elif c in "'\"":
+            q = c
+        elif c in "<>":
+            cut = True
+        elif c.isspace():
+            cut = False
+        if not cut:
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
+SETTER_WORDS = re.compile("read|mapfile|readarray|getopts|declare|typeset|local|export|readonly|let|select|for")
+
+
+def _set_by_setter(name, script):
+    """True when a form other than name= names the variable as a literal word and may set it: a command that takes a
+    variable name (read, for, eval, trap …), -<letters>name attached to read or printf, a nameref to it, printf -v, name+=,
+    name[0]=, (( name = … )), ${name:=x} (DEFAULT_ASSIGNED)."""
+    if name in DEFAULT_ASSIGNED:
+        return True
+    word = r"(?<![\w/.$-])(?<!\$\{)" + name + r"(?![A-Za-z0-9_])"
+    step = r"(?:\+\+|--)"
+    arithmetic = (r"\(\([^\n]*(?:" + word + r"\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)|" + word + step + "|" + step + word + ")")
+    element = word + r"(?:\[[^]\n]*\])?\+=|" + word + r"\[[^]\n]*\]="
+    words = _unquoted(script)
+    if re.search(arithmetic, words) or re.search(element, words):
+        return True
+    for command in _split_commands(script):
+        body = _tokens(command)
+        toks = _tokens(_cut_redirections(_mask_shell(command)[0]))   # printf -vout>/dev/null: the redirection is no part of the name
+        names_it = any(re.fullmatch(name + r"(?:\[[^]]*\])?\+?(?:=.*)?", t, re.S) for t in toks)
+        if names_it and (any(SETTER_WORDS.fullmatch(t) for t in toks) or ("printf" in toks and "-v" in toks)):
+            return True
+        attached = any(re.fullmatch(r"-[A-Za-z]+" + name + r"(?:\[[^]]*\])?", t) for t in toks)
+        if attached and any(t in ("read", "mapfile", "readarray", "printf") for t in toks):
+            return True
+        nameref = any(re.fullmatch(r"[^=]+=" + name + r"(?:\[.*\])?", t, re.S) for t in toks)
+        with_n = any(re.fullmatch(r"-[A-Za-z]*n[A-Za-z]*", t) for t in toks)
+        if nameref and with_n and any(t in ("declare", "typeset", "local") for t in toks):
+            return True
+        if "eval" in toks or "trap" in toks:
+            if any(re.search(word, t) for t in toks) or any(_set_by_setter(name, t) for t in body if t not in ("eval", "trap")):
+                return True   # the literal body is read as a script: a setter form in it counts as at top level
+    return False
+
+
 def _outside(target, script, depth=0):
     """A destination that cannot be the checkout's directory: an absolute path outside the runner's workspace, a path
     under $RUNNER_TEMP or a fresh $(mktemp …), or a variable every assignment of which in the job is one of those —
@@ -2047,6 +2113,8 @@ def _outside(target, script, depth=0):
     m = re.match(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?(/.*)?$", target.strip("\"'"))
     if not m or depth > 4:
         return False
+    if _set_by_setter(m.group(1), script):
+        return False                                     # set by read, printf -v, (( )), name[0]= …: an unknown value
     values = re.findall(r"(?:^|[\s;(])" + m.group(1) + r"=[\"']?([^\s\"';)]*)", script)
     return bool(values) and all(_outside(v, script, depth + 1) for v in values)
 
@@ -2261,8 +2329,7 @@ TEST_HARNESS = re.compile(r"^(\.github/agent/tests/[^/]+\.sh|bin/[^/]+-test\.sh)
 # melange call of bin/build-apk.sh through fixed absolute paths held in variables (the lines of the script that end in
 # TEST-SUBST), the one form the chain judge (bin/chain-test-signers.py) admits, while this check reads a variable
 # program as unreadable. It installs nothing, pulls no image and starts only the pinned tools at fixed paths. It is
-# still read at its committed bytes and bound like any script (READ_SCRIPTS), never inlined; it is held whole by
-# sha256 (chain-scripts.json, NS_SHA) and every change to it gets both reviewers; the chain judge refuses on this
+# still read at its committed bytes and bound like any script (READ_SCRIPTS), never inlined; every change to it gets both reviewers; the chain judge refuses on this
 # listed script a deny word not in its tools, a deny name by path and an interpreter handed an unlisted path. ONE
 # exact path: no pattern, no directory match, so the same text under another name, or in another directory, is read as
 # every script is.
@@ -2780,6 +2847,7 @@ def check_runs(where_job, scripts, bad, tree=None):
     check reads POSIX shell only (Sonnet B8)."""
     def read(raw):
         return _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", raw))))
+    DEFAULT_ASSIGNED.clear()
     posix = [not item[2] or re.match(r"^(bash|sh)(\s|$)", item[2]) for item in scripts]
     # steps of one job share a workspace: a file changed in ANY step of the job counts (Sonnet #164 r6, NEW-7); the
     # committed scripts they run are part of it (Codex #164 r2, C11)

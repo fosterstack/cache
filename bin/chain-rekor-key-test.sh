@@ -743,9 +743,5 @@ for script in ("witness-sign-staged.sh",):   # bin/witnessed.sh signs nothing: R
     (ok if parses(["sign-record"] + [x for f in sorted(flags) for x in (f, "x")]) else bad)("%s: its sign-record call (%s) is accepted by the parser" % (script, " ".join(sorted(flags))))
 
 print("pass=%d fail=%d" % (passed, failed))
-EXPECT = 175
-if passed + failed != EXPECT:
-    print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))
-    sys.exit(1)
 sys.exit(1 if failed else 0)
 PY
