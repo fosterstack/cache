@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-008-AC1, REQ-REL-008-AC2, REQ-REL-008-AC3
+# proves: REQ-REL-008-AC1, REQ-REL-008-AC2, REQ-REL-008-AC3, REQ-REL-014-AC1
 # The ratified workflow consolidation (owner, Oct 2): go-freshness.yml keeps the freshness check on its daily schedule (and on a
 # dispatch) and nothing else: the weekly persona-uat cron moved to persona-uat.yml (REQ-UAT-001-AC6, owner rule workflow-grouped-by-purpose,
 # Nov 13). The real workflow must pass; each mutated copy must be caught.
@@ -66,8 +66,8 @@ d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
 MOVED = {   # job id -> (name, permissions, environment, needs, if) exactly as in the original file
-    "allowlist": ("allowlist", None, None, None, None),
-    "requirements": ("requirements", None, None, None, None),
+    "allowlist": ("allowlist", None, None, None, "github.event_name == 'push'"),
+    "requirements": ("requirements", None, None, None, "github.event_name == 'push'"),
 }
 jobs = d.get("jobs") or {}
 for jid, (name, perms, env, needs, cond) in MOVED.items():
@@ -133,6 +133,9 @@ case_ci top-level-widened        bad "d['permissions']['contents'] = 'write'"
 case_ci top-level-pr-write       bad "d['permissions']['pull-requests'] = 'write'"
 case_ci allowlist-regains-block  bad "d['jobs']['allowlist']['permissions'] = {'contents': 'read'}"
 case_ci concurrency-other-job    bad "d['jobs']['allowlist']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'false'}"
+case_ci allowlist-runs-on-prs    bad "d['jobs']['allowlist'].pop('if', None)"
+case_ci requirements-runs-on-prs bad "d['jobs']['requirements'].pop('if', None)"
+case_ci allowlist-if-always      bad "d['jobs']['allowlist']['if'] = 'always()'"
 case_ci merge-group-back         bad "d['on']['merge_group'] = ''"
 case_ci events-changed           bad "d['on'].pop('pull_request')"
 case_ci required-check-gone      bad "d['jobs']['lint']['name'] = 'lint-go'"
@@ -250,8 +253,8 @@ d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
 on = d.get("on") or {}
-if on.get("push") != {"branches": ["main"]} or "pull_request" not in on or "workflow_call" in on:
-    bad.append("acceptance.yml's events changed: %s" % list(on))
+if set(on) != {"workflow_call"}:
+    bad.append("acceptance.yml's events are not workflow_call only (REQ-REL-014-AC1): %s" % list(on))
 jobs = d.get("jobs") or {}
 a = jobs.get("acceptance") or {}
 if list(jobs) != ["acceptance"] or a.get("name") != "acceptance" or a.get("permissions") != {"contents": "read"} or "strategy" in a or "outputs" in a:
@@ -295,10 +298,12 @@ case_acc real                  ok  ""
 case_acc renamed               bad "d['jobs']['acceptance']['name'] = 'gradle'"
 case_acc maven-version-cut     bad "[s.__setitem__('run', s['run'].replace('1.2.0 1.2.3', '1.2.3')) for s in d['jobs']['acceptance']['steps'] if 'bin/acceptance-maven.sh' in (s.get('run') or '')]"
 case_acc env-at-top            bad "d['env'] = {'COLD_LOOKUPS': '2'}"
-case_acc workflow-call-back    bad "d['on']['workflow_call'] = ''"
+case_acc no-workflow-call      bad "d['on'].pop('workflow_call', None)"
+case_acc push-trigger-back     bad "d['on']['push'] = {'branches': ['main']}"
+case_acc merge-group-back      bad "d['on']['merge_group'] = ''"
 case_acc results-id-back       bad "d['jobs']['acceptance']['steps'][-2]['id'] = 'results'"
 case_acc job-split-again       bad "d['jobs']['acceptance-gradle'] = d['jobs']['acceptance']"
-case_acc no-pr-trigger         bad "d['on'].pop('pull_request')"
+case_acc pr-trigger-back       bad "d['on']['pull_request'] = ''"
 
 # ---------------------------------------------------------------------------------------------------------------------
 # PR 5: release-chain-pr.yml -> scan.yml (REQ-REL-008-AC2; advisor read-back 0062). One build feeds both: scan's own
@@ -335,10 +340,10 @@ CEILING = {"contents": "write", "packages": "write", "id-token": "write", "issue
 if (jobs.get("build") or {}).get("permissions") != CEILING:
     bad.append("the build call's permissions are not exactly the called file's set (the ceiling): %s" % (jobs.get("build") or {}).get("permissions"))
 r = jobs.get("reproducibility") or {}
-# `if: always()` and nothing else: when `rebuild` FAILS, GitHub SKIPS a job that needs it, and branch protection counts a skipped required check as passing, so
+# `if: always() && github.event_name == 'push'` and nothing else: when `rebuild` FAILS, GitHub SKIPS a job that needs it, and branch protection counts a skipped required check as passing, so
 # the required check must run in every case and fail unless rebuild succeeded (the pattern of the `scan` aggregate below; step-8 B1, Opus)
-if r.get("name") != "reproducibility" or r.get("if") != "always()" or r.get("needs") != "build":
-    bad.append("reproducibility must be named reproducibility, need build (the one call that holds Build and Rebuild) and carry exactly `if: always()`: %s" % {k: r.get(k) for k in ("name", "if", "needs")})
+if r.get("name") != "reproducibility" or r.get("if") != "always() && github.event_name == 'push'" or r.get("needs") != "build":
+    bad.append("reproducibility must be named reproducibility, need build (the one call that holds Build and Rebuild) and carry exactly `if: always() && github.event_name == 'push'` (it runs on push to main only, REQ-REL-014-AC1): %s" % {k: r.get(k) for k in ("name", "if", "needs")})
 if r.get("permissions") not in (None, {"contents": "read"}):
     bad.append("reproducibility's token is wider than contents read: %s" % r.get("permissions"))
 # fail closed (continue-on-error also hides a failure): the jobs the check rests on carry exactly the keys reviewed here
@@ -415,6 +420,9 @@ case_scan build-ceiling-checks-write bad "d['jobs']['build']['permissions']['che
 case_scan build-has-if           bad "d['jobs']['build']['if'] = \"github.event_name == 'pull_request'\""
 case_scan build-has-secrets      bad "d['jobs']['build']['secrets'] = 'inherit'"
 case_scan build-has-needs        bad "d['jobs']['build']['needs'] = 'reproducibility'"
+case_scan repro-if-always-only   bad "d['jobs']['reproducibility']['if'] = 'always()'"
+case_scan repro-if-push-only     bad "d['jobs']['reproducibility']['if'] = \"github.event_name == 'push'\""
+case_scan repro-if-always-pr     bad "d['jobs']['reproducibility']['if'] = \"always() && github.event_name == 'pull_request'\""
 case_scan repro-if-removed       bad "d['jobs']['reproducibility'].pop('if')"
 case_scan repro-if-success       bad "d['jobs']['reproducibility']['if'] = \"\${{ success() }}\""
 case_scan repro-only-echoes      bad "d['jobs']['reproducibility']['steps'][0]['run'] = 'echo identical'"
