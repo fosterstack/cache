@@ -70,9 +70,6 @@ WITNESS_STAGES = ("build", "rebuild", "check", "release")
 ENV_ATTESTOR = "https://witness.dev/attestations/environment/v0.1"
 
 
-TAG_GRAMMAR = r"v[0-9]+\.[0-9]+\.[0-9]+(?:-rc[0-9]+)?"
-
-
 MANIFEST_FILES = ("release-key-root.pub", "release-key-manifest.json", "release-key-manifest.sig")
 MANIFEST_FIELDS = ("public_key", "key_id", "valid_from", "valid_to", "revoked_at")
 ONE_PUBLIC_KEY_PEM = re.compile(r"\s*-----BEGIN PUBLIC KEY-----[A-Za-z0-9+/=\s]*-----END PUBLIC KEY-----\s*")
@@ -239,18 +236,15 @@ def policy_make(a):
     if re.match(r"(refs/tags/)?v0\.0\.0($|-)", a.tag or a.ref or ""):
         refuse("policy", "snapshot version")      # no policy, hence no Sign or Release, can exist for a snapshot version (REQ-CHAIN-004-AC15)
     if a.tag:
-        if not re.fullmatch(TAG_GRAMMAR, a.tag):
-            refuse("policy", "tag %r is not vX.Y.Z or vX.Y.Z-rcN" % a.tag)
         ref, tag, dry = "refs/tags/" + a.tag, a.tag, False
     else:
         ref = a.ref or ""
-        m = re.fullmatch(r"refs/tags/(%s)" % TAG_GRAMMAR, ref)
-        if m:
-            tag, dry = m.group(1), False
+        if ref.startswith("refs/tags/") and len(ref) > len("refs/tags/"):
+            tag, dry = ref[len("refs/tags/"):], False
         elif ref.startswith("refs/heads/") and len(ref) > len("refs/heads/"):
             tag, dry = "", True
         else:
-            refuse("policy", "ref %r is neither refs/tags/vX.Y.Z[-rcN] nor a branch (tag)" % ref)
+            refuse("policy", "ref %r is neither a tag ref nor a branch (tag)" % ref)
     pol = {"tag": tag, "ref": ref, "repository": tpl["repository"], "release_key": key,
            "rekor_public_key": rekor_text, "stages": tpl["stages"]}
     if dry:
@@ -1245,12 +1239,12 @@ def cmd_rc_proof(a):
 def make_policy_from_template(a, tpl_path):
     ref = os.environ.get("GITHUB_REF", "")
     ev = os.environ.get("GITHUB_EVENT_NAME", "")
-    is_tag = re.fullmatch(r"refs/tags/%s" % TAG_GRAMMAR, ref)
+    is_tag = ref.startswith("refs/tags/") and len(ref) > len("refs/tags/")
     is_branch = ref.startswith("refs/heads/") and len(ref) > len("refs/heads/")
     if is_tag and ev == "workflow_dispatch":
         refuse("sign", "a workflow_dispatch on the tag %s is not a production run: production tags come from a push (tag)" % ref)
     if not (is_tag and ev == "push") and not (is_branch and ev == "workflow_dispatch"):
-        refuse("sign", "GITHUB_REF %r (event %r) is neither a pushed refs/tags/vX.Y.Z[-rcN] nor a workflow_dispatch on a branch (tag)" % (ref, ev))
+        refuse("sign", "GITHUB_REF %r (event %r) is neither a pushed tag ref nor a workflow_dispatch on a branch (tag)" % (ref, ev))
     out = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
     out.close()
     try:

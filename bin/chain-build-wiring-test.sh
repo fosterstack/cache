@@ -2559,7 +2559,7 @@ f1 caught "a download by artifact id outside the panel job is caught" "$root/.gi
 f1 caught "a panel download by artifact id with a name beside it is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's#path: /tmp/panel/panel-scout#name: images#'
 f1 caught "a panel download by artifact id with another key (run-id) in place of the path is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's#path: /tmp/panel/panel-scout#run-id: 123#'
 # Codex A r2 blocker 1 / B4: the release-candidate tag (vX.Y.Z-rcN, advisor 0383) runs the REAL `policy make` of bin/chain-verify.py in both assemble scripts (the
-# harness no longer fakes it for an rc tag): the stage completes and the policy carries the FULL tag; a near-miss tag stops at the policy, before any build
+# harness no longer fakes it for an rc tag): the stage completes and the policy carries the FULL tag; the policy takes a near-miss tag as given (the grammar is judged before), and assemble stops a tag that is not the admission's
 for kind in assemble rebuild-assemble; do
   rd="$work/rcp-$kind"; mk "$rd" "$kind" "$(script_of real "$kind")" real v0.3.0-rc1
   rc=$(run_stage "$rd" "$kind" real v0.3.0-rc1)
@@ -2571,7 +2571,11 @@ for kind in assemble rebuild-assemble; do
   for nm in v0.3.0-rc.1 v0.3.0-RC1 v0.3.0-rc1x; do
     rd="$work/rcn-$kind-$nm"; mk "$rd" "$kind" "$(script_of real "$kind")" real v0.3.0-rc1
     rc=$(REF_NAME=$nm run_stage "$rd" "$kind" real v0.3.0-rc1)
-    if [ "$rc" != 0 ] && [ "$(n_calls '^image ' "$rd")" = 0 ] && grep -q "refused at $([ "$kind" = assemble ] && echo 'build: tag' || echo policy)" "$rd/stage.err"; then ok "AC12/rc $kind: the near-miss tag $nm is refused at the real policy make, before any image is built"
+    if [ "$kind" = rebuild-assemble ]; then
+      # the policy takes the tag as given (REQ-CHAIN-004-AC20): the tag was judged before, in release-verify.sh and in Build's admission; the stage is not stopped at the policy
+      if ! grep -q "refused at policy" "$rd/stage.err" 2> /dev/null; then ok "AC12/rc $kind: the near-miss tag $nm is not refused at the real policy make (the grammar is judged before, not there)"
+      else bad "AC12/rc $kind: near-miss $nm was refused at the policy: $(head -c 120 "$rd/stage.err" | tr '\n' ' ')"; fi
+    elif [ "$rc" != 0 ] && [ "$(n_calls '^image ' "$rd")" = 0 ] && grep -q "refused at build: tag" "$rd/stage.err"; then ok "AC12/rc $kind: the near-miss tag $nm is refused at the admission's tag check (not the run's tag), before any image is built"
     else bad "AC12/rc $kind: near-miss $nm: rc=$rc images=$(n_calls '^image ' "$rd") $(head -c 120 "$rd/stage.err" 2> /dev/null | tr '\n' ' ')"; fi
   done
 done
@@ -3909,7 +3913,7 @@ if [ "$rc" = 0 ] \
 else bad "AC2 witness-sign-staged.sh: exit $rc, sign calls: $(cat "$wss/log" 2> /dev/null), ${out:0:100}"; fi
 # bin/release-publish.sh stops on the first pushed tag whose registry digest is not the attested one
 rp="$work/rp"; mkdir -p "$rp/bin" "$rp/witness-build" "$rp/fake"
-cp "$root/bin/release-publish.sh" "$rp/bin/"; : > "$rp/bin/release-layout.py"
+cp "$root/bin/release-publish.sh" "$root/bin/build-admit.py" "$rp/bin/"; : > "$rp/bin/release-layout.py"
 printf '{"image-production": "%s", "image-fips": "%s"}\n' "$DA" "$DB" > "$rp/witness-build/digests.json"
 for v in production fips; do
   mkdir -p "$rp/images/$v"; : > "$rp/images/$v/oci-layout"; : > "$rp/images/$v/index.json"

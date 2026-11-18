@@ -223,7 +223,7 @@ case "$TOOL" in
       [ "$key" != require ] || { key=$val; val=${rest%% *}; }
       [ "$key" != golang.org/x/vuln ] || { pin=$val; break; }
     done < tools/govulncheck/go.mod
-    [[ "$pin" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || pipeline_fail "tools/govulncheck/go.mod does not require golang.org/x/vuln at a version"
+    python3 -I bin/build-admit.py tag-ok --final "$pin" || pipeline_fail "tools/govulncheck/go.mod does not require golang.org/x/vuln at a version"
     mkdir -p "$tmp/home" "$tmp/gocache" "$tmp/gomod"
     # nothing Go-related from the caller's environment reaches the build: those names are unset, the pinned ones exported, in a subshell; GOFLAGS is among the unset names and none is defined: tools/govulncheck has no vendor/ directory, so Go's own default (read-only modules) applies
     ( unset GOFLAGS GOROOT GOPATH GOPRIVATE GONOPROXY GONOSUMDB GONOSUMCHECK GOSUMDB GOINSECURE GOVCS GOEXPERIMENT GODEBUG GOCACHEPROG GOAUTH GOTOOLDIR GOBIN GOTMPDIR GOMODCACHEPROG GOOS GOARCH GOAMD64 GOARM GO386 GOMIPS GOPPC64 GORISCV64 GOWASM CC CXX CGO_CFLAGS CGO_CPPFLAGS CGO_CXXFLAGS CGO_LDFLAGS

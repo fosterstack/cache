@@ -14,8 +14,6 @@
   release-metadata.py list     --version V --dir DIR --out F
         release-files.sha256: `<sha256>  <name>` for exactly release-manifest.json, the OpenVEX file, the CSAF file and the inspector-filters
         file of this version, in this order
-  release-metadata.py gate     --dir DIR [--same-as STAGED_DIR]
-        every file of the release assets directory is covered; see GATE below
   release-metadata.py baseline --admission F --tag TAG --commit SHA
         prints the requirements baseline version of Build's admission-baseline.json for this tag and commit
   release-metadata.py bind-archives --version V --digests D --dist DIR
@@ -24,7 +22,7 @@
         checksums.txt: `<sha256>  <name>` for the four archives, after the checks of bind-archives
 
 Every refusal exits 1 and names the file or the key; an output file is written only after every check passed. Offline."""
-import argparse, hashlib, json, os, re, sys
+import argparse, hashlib, importlib.util, json, os, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import chain_common  # noqa: E402  (the one strict JSON reader)
@@ -33,7 +31,14 @@ REPO_GHCR, REPO_HUB = "ghcr.io/fosterstack/cache", "docker.io/fosterstack/cache"
 VARIANTS = ("production", "fips")
 ARCHES = ("amd64", "arm64")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
-FINAL = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
+
+
+def is_final(tag):
+    """The one tag grammar (REQ-CHAIN-004-AC20), loaded from the file beside this one when a version is judged: `images`, which runs beside secrets, never loads it."""
+    spec = importlib.util.spec_from_file_location("build_admit", os.path.join(os.path.dirname(os.path.abspath(__file__)), "build-admit.py"))
+    admit = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(admit)
+    return bool(admit.TAG_SYNTAX.fullmatch(tag)) and "-rc" not in tag
 
 
 def refuse(msg):
@@ -203,16 +208,16 @@ def cmd_baseline(a):
     if d["sha"] != a.commit:
         refuse("%s is for commit %s, this run is %s" % (p, d["sha"], a.commit))
     v = d["baseline_version"]
-    if not FINAL.fullmatch(v) or d["baseline"] != "requirements/releases/%s.yaml" % v:
+    if not is_final(v) or d["baseline"] != "requirements/releases/%s.yaml" % v:
         refuse("baseline %r at %r is not a vX.Y.Z baseline at requirements/releases/<version>.yaml" % (v, d["baseline"]))
     num = lambda s: tuple(int(x) for x in s[1:].split("."))
-    if not FINAL.fullmatch(a.tag or "") or num(v) > num(a.tag):
+    if not is_final(a.tag or "") or num(v) > num(a.tag):
         refuse("baseline %s is not a version at or before the tag %s" % (v, a.tag))
     print(v)
 
 
 def cmd_manifest(a):
-    if not FINAL.fullmatch(a.version or ""):
+    if not is_final(a.version or ""):
         refuse("version %r is not vX.Y.Z (a release candidate has no release manifest)" % a.version)
     if not re.fullmatch(r"[0-9a-f]{40}", a.commit or ""):
         refuse("commit %r is not 40 lower-case hex" % a.commit)
@@ -225,7 +230,7 @@ def cmd_manifest(a):
     want = sorted("apk-%s-%s" % (v, ar) for v in ("standard", "fips") for ar in ARCHES)
     if apks != want:
         refuse("%s: the apk keys must be exactly %s (missing: %s)" % (a.digests, ", ".join(want), ", ".join(k for k in want if k not in d) or "none"))
-    if not FINAL.fullmatch(a.baseline_version or ""):
+    if not is_final(a.baseline_version or ""):
         refuse("baseline version %r is not vX.Y.Z" % a.baseline_version)
     base = {}
     for key, rel in (("requirements_baseline", "requirements/releases/%s.yaml" % a.baseline_version), ("test_evidence", "test-evidence/mappings.yaml")):
@@ -265,7 +270,7 @@ def meta_names(version):
 
 
 def cmd_list(a):
-    if not FINAL.fullmatch(a.version or ""):
+    if not is_final(a.version or ""):
         refuse("version %r is not vX.Y.Z (a release candidate has no list)" % a.version)
     lines = []
     for n in meta_names(a.version):
@@ -278,121 +283,6 @@ def cmd_list(a):
             refuse("%s is empty" % n)
         lines.append("%s  %s\n" % (sha256_file(p), n))
     write_atomic(a.out, "".join(lines))
-
-
-def parse_sums(path, what):
-    out = []
-    try:
-        text = open(path).read()
-    except OSError:
-        refuse("%s is missing" % what)
-    lines = text.split("\n")
-    if lines and lines[-1] == "":
-        lines.pop()                      # the one final newline; a second one is a blank line
-    for l in lines:
-        if not l:
-            refuse("%s: a blank line (the list is exactly one `<sha256>  <name>` line per file)" % what)
-        m = re.fullmatch(r"([0-9a-f]{64})  ([^/\s]+)", l)
-        if not m:
-            refuse("%s: a line that is not `<sha256>  <name>`: %r" % (what, l))
-        out.append((m.group(2), m.group(1)))
-    return out
-
-
-def bundle_of(name):
-    return "release-policy.bundle" if name == "policy.json" else name + ".bundle"
-
-
-def signed_by(bundle):
-    return "policy.json" if bundle == "release-policy.bundle" else bundle[:-len(".bundle")]
-
-
-def same_as(a):
-    """--same-as DIR: what the release stores equals what was staged, name for name and byte for byte."""
-    staged = sorted(os.listdir(a.same_as))
-    for n in staged:
-        if not os.path.isfile(os.path.join(a.dir, n)):
-            refuse("%s is staged but the release does not store it" % n)
-        if sha256_file(os.path.join(a.dir, n)) != sha256_file(os.path.join(a.same_as, n)):
-            refuse("%s as the release stores it differs from the staged file" % n)
-    for n in sorted(os.listdir(a.dir)):
-        if n not in staged:
-            refuse("%s is stored by the release but was not staged" % n)
-
-
-KEY_MANIFEST = ("release-key-manifest.json", "release-key-manifest.sig")   # signed by the offline root key, checked by Check after a publish (REQ-CHAIN-008)
-PROVENANCE = ("provenance.json", "provenance.rekor.json", "provenance.bundle.json")      # Sign's three files: the record the Sign stage signed; the bundle carries its signature (AC9, AC19)
-
-
-def cmd_gate(a):
-    """GATE (REQ-CHAIN-007-AC13): the directory holds checksums.txt with its bundle and release-files.sha256 with its bundle, and the four
-    metadata files; checksums.txt lists existing files with their hashes; release-files.sha256 lists exactly the four metadata files with theirs;
-    and every asset is covered: it is in checksums.txt or in release-files.sha256, or it is a bundle whose signed file is an asset, or it has its
-    own bundle, or it is an apk (signed by the release key inside the file), a Witness record (`*-collection.json`, a signed envelope the stages
-    verified, with exactly one `*-collection.rekor.json` entries file beside it and none without its record) or Build's digests.json, items.json or admission-baseline.json (products of Build's signed record) or Sign's provenance.json, provenance.rekor.json and
-    provenance.bundle.json (the record the Sign stage signed; all three are required) or the key manifest and its signature (signed by the root key). A symlink, a directory, or anything else is refused by name."""
-    names = sorted(os.listdir(a.dir))
-    for n in names:
-        p = os.path.join(a.dir, n)
-        if os.path.islink(p):
-            refuse("%s is a symlink" % n)
-        if not os.path.isfile(p):
-            refuse("%s is not a regular file" % n)
-    have = set(names)
-    for need in ("checksums.txt", "checksums.txt.bundle", "release-files.sha256", "release-files.sha256.bundle"):
-        if need not in have:
-            refuse("%s is missing (a release is not published without it)" % need)
-    for need in PROVENANCE:
-        if need not in have:
-            refuse("%s is missing (Sign's provenance is part of every release)" % need)
-    covered = set()
-    for n, h in parse_sums(os.path.join(a.dir, "checksums.txt"), "checksums.txt"):
-        if n not in have:
-            refuse("checksums.txt lists %s, which is not an asset" % n)
-        if sha256_file(os.path.join(a.dir, n)) != h:
-            refuse("%s does not match its hash in checksums.txt" % n)
-        covered.add(n)
-    lst = parse_sums(os.path.join(a.dir, "release-files.sha256"), "release-files.sha256")
-    if not lst:
-        refuse("release-files.sha256 is empty")
-    versions = {m.group(1) for n in have for m in [re.fullmatch(r"fosterstack-cache-(v[0-9.]+)\.csaf\.json", n)] if m}
-    if len(versions) != 1:
-        refuse("the CSAF file of exactly one version is required, found %s" % (sorted(versions) or "none"))
-    want = meta_names(versions.pop())
-    for n in want:
-        if n not in have:
-            refuse("%s is missing (the four metadata files are release-blocking)" % n)
-    if len(lst) > len(want):
-        refuse("release-files.sha256 has an extra line: %s  %s" % (lst[len(want)][1], lst[len(want)][0]))
-    if [n for n, _ in lst] != want:
-        refuse("release-files.sha256 must list exactly %s, in this order" % ", ".join(want))
-    for n, h in lst:
-        if sha256_file(os.path.join(a.dir, n)) != h:
-            refuse("%s does not match its hash in release-files.sha256" % n)
-        covered.add(n)
-    for n in names:
-        # a Witness record and its entries file belong together: exactly one <stem>.rekor.json beside each *-collection.json, and none without its record; this holds for every
-        # name, also one that checksums.txt or release-files.sha256 already covers (a hash does not pair an orphan)
-        if n.endswith("-collection.rekor.json"):
-            if n[:-len(".rekor.json")] + ".json" not in have:
-                refuse("%s is an entries file with no record beside it (%s)" % (n, n[:-len(".rekor.json")] + ".json"))
-            continue
-        if n.endswith("-collection.json") and n[:-len(".json")] + ".rekor.json" not in have:
-            refuse("%s has no entries file beside it (%s is missing)" % (n, n[:-len(".json")] + ".rekor.json"))
-    for n in names:
-        if n in covered:
-            continue
-        if n.endswith("-collection.rekor.json"):
-            continue
-        if n.endswith(".bundle"):
-            if signed_by(n) not in have:
-                refuse("%s signs %s, which is not an asset" % (n, signed_by(n)))
-            continue
-        if bundle_of(n) in have or n.endswith(".apk") or n.endswith("-collection.json") or n in ("digests.json", "items.json", "admission-baseline.json") + PROVENANCE + KEY_MANIFEST:
-            continue
-        refuse("%s is covered by nothing: not in checksums.txt, not in release-files.sha256, and no bundle signs it" % n)
-    if a.same_as:
-        same_as(a)
 
 
 def bound_archives(a):
@@ -430,7 +320,7 @@ def cmd_checksums(a):
     """CHECKSUMS (REQ-CHAIN-007-AC21, Astra R3): the one producer of checksums.txt. DIST must hold exactly the four Linux archives Build recorded, each with the digest of
     Build's digests.json (the checks of bind-archives, run here first); OUT then gets one `<sha256>  <name>` line per archive, in byte order of the names, ending in a
     newline, through a temporary file renamed into place. Any refusal exits 1 and writes nothing."""
-    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", a.version or ""):
+    if not is_final("v" + (a.version or "")):
         refuse("version %r is not X.Y.Z (a release candidate has no checksums file)" % a.version)
     bound = bound_archives(a)      # the names and hashes the check itself read: the lines come from these, nothing is listed or hashed a second time
     write_atomic(a.out, "".join("%s  %s\n" % (bound[n], n) for n in sorted(bound, key=lambda n: n.encode())))
@@ -446,11 +336,10 @@ def main(argv):
         m.add_argument("--" + k, required=True)
     b = sub.add_parser("baseline"); b.add_argument("--admission", required=True); b.add_argument("--tag", required=True); b.add_argument("--commit", required=True)
     l = sub.add_parser("list"); l.add_argument("--version", required=True); l.add_argument("--dir", required=True); l.add_argument("--out", required=True)
-    g = sub.add_parser("gate"); g.add_argument("--dir", required=True); g.add_argument("--same-as")
     b = sub.add_parser("bind-archives"); b.add_argument("--version", required=True); b.add_argument("--digests", required=True); b.add_argument("--dist", required=True)
     c = sub.add_parser("checksums"); c.add_argument("--version", required=True); c.add_argument("--digests", required=True); c.add_argument("--dist", required=True); c.add_argument("--out", required=True)
     a = p.parse_args(argv)
-    {"images": cmd_images, "baseline": cmd_baseline, "manifest": cmd_manifest, "list": cmd_list, "gate": cmd_gate, "bind-archives": cmd_bind_archives, "checksums": cmd_checksums}[a.cmd](a)
+    {"images": cmd_images, "baseline": cmd_baseline, "manifest": cmd_manifest, "list": cmd_list, "bind-archives": cmd_bind_archives, "checksums": cmd_checksums}[a.cmd](a)
 
 
 if __name__ == "__main__":

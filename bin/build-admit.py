@@ -3,6 +3,8 @@
 
     python3 bin/build-admit.py run [--out admission.json]   run from the root of the checkout of the tagged commit
     python3 bin/build-admit.py list-checks                  one check name per line, in the order they run
+    python3 bin/build-admit.py tag-ok [--final] TAG         exit 0 when TAG is a release tag (--final: and not a release candidate), else 1
+    python3 bin/build-admit.py tag-pattern                  print TAG_PATTERN, for a step that matches it itself (jq)
 
 The tag, ref and sha come ONLY from the runner environment (GITHUB_REF, GITHUB_REF_NAME, GITHUB_SHA, GITHUB_REPOSITORY, GITHUB_RUN_ID,
 GITHUB_RUN_ATTEMPT); an argument naming one is a usage error. They are never put in a shell: every command is an argument list.
@@ -62,7 +64,7 @@ SIGNER = "bin/admission-tag-signer.py"
 AUDIT_FILES = ("bin/audit-record-judge.sh", "bin/audit-record.py", ".github/policy/audit-writers.json")
 AUDIT_ITEMS = ".auditor/accepted-items.json"      # the judge also reads it when main has it: an open owner-decision item holds the tag
 POLICY_FILES = (".github/policy/allowed_signers", ".github/policy/github-web-flow.gpg", ".github/policy/required-checks.json",
-    ".github/policy/release-only-checks.json", SIGNER)
+    ".github/policy/release-only-checks.json", SIGNER, "bin/build-admit.py")   # the signer loads the tag grammar from the copy beside it
 
 
 class Refusal(Exception):
@@ -582,6 +584,10 @@ def main(argv):
     sub.add_parser("list-checks")
     r = sub.add_parser("run")
     r.add_argument("--out", default="admission.json")
+    t = sub.add_parser("tag-ok")
+    t.add_argument("--final", action="store_true")
+    t.add_argument("tag")
+    sub.add_parser("tag-pattern")
     args, extra = ap.parse_known_args(argv)
     if extra:
         print("usage error: the tag, ref and sha come only from the environment (GITHUB_REF, GITHUB_REF_NAME, GITHUB_SHA), not from "
@@ -590,6 +596,11 @@ def main(argv):
     if args.cmd == "list-checks":
         print("\n".join(CHECKS))
         return 0
+    if args.cmd == "tag-pattern":
+        print(TAG_PATTERN)
+        return 0
+    if args.cmd == "tag-ok":
+        return 0 if TAG_SYNTAX.fullmatch(args.tag) and not (args.final and "-rc" in args.tag) else 1
     try:
         admit(args.out)
     except Refusal as e:

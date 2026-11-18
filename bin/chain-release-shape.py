@@ -82,8 +82,8 @@ NEEDS_OF = {"build-apk": {"build-freeze"}, "build-assemble": {"build-apk"}, "sig
             "release": {"release-verify", "release-compare"}}
 CHAIN_JOBS = ["build-freeze", "check-govulncheck"] + list(NEEDS_OF)
 NEEDS_SKIPPED = re.compile(r"always\(\)|cancelled\(\)|failure\(\)|success\(\)")   # a status function in an if lets a job run after a failed predecessor
-# the tag rule (REQ-CHAIN-007-AC14, advisor 0383/0386): vX.Y.Z or a release candidate vX.Y.Z-rcN, exactly ^v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$ (the -rc.N form is gone)
-TAGLINE = (r'\[\[ "\$\{GITHUB_REF_NAME:-\}" =~ \^v\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\(-rc\[0-9\]\+\)\?\$ \]\] \|\| '
+# the tag rule (REQ-CHAIN-007-AC14, REQ-CHAIN-004-AC20): vX.Y.Z or a release candidate vX.Y.Z-rcN, decided by bin/build-admit.py tag-ok, the one tag grammar
+TAGLINE = (r'python3 -I -B bin/build-admit\.py tag-ok "\$\{GITHUB_REF_NAME:-\}" \|\| '
            r'\{ echo "refused at tag: \$\{GITHUB_REF_NAME:-\} is not vX\.Y\.Z or vX\.Y\.Z-rcN" >&2; exit 1; \}')
 # G1: the one line with which bin/release-signatures.sh makes policy.json (the same command as release-verify.sh's), so that the file it signs exists
 POLICY_MAKE = ('python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json '
@@ -108,18 +108,19 @@ VERIFY = [   # bin/release-verify.sh after `set -euo pipefail`: rule 69's order,
 ]
 # what each release script may use; `signs` says whether it signs anything; `runs` the other scripts it may start (the chain-scripts.json row)
 ROWS = {
-    "bin/release-verify.sh":  {"tools": ["python3"], "signs": False, "runs": ["bin/chain-verify.py"]},
-    "bin/release-apks.sh":    {"tools": ["bash", "jq", "python3"], "signs": False, "runs": ["bin/apk-tool.py", "bin/release-postverify.py", "bin/release-sign-apks.sh"]},   # S2: Release holds no key; the script it calls only checks Sign's signatures and attaches them
+    "bin/release-verify.sh":  {"tools": ["python3"], "signs": False, "runs": ["bin/build-admit.py", "bin/chain-verify.py"]},
+    "bin/release-apks.sh":    {"tools": ["bash", "jq", "python3"], "signs": False, "runs": ["bin/apk-tool.py", "bin/build-admit.py", "bin/release-postverify.py", "bin/release-sign-apks.sh"]},   # S2: Release holds no key; the script it calls only checks Sign's signatures and attaches them
     "bin/release-compare.sh": {"tools": ["python3"], "signs": False, "runs": ["bin/apk-tool.py", "bin/release-compare.py"]},   # the compare job's one plain step: a wrapper around the Python file
     "bin/release-compare.py": {"tools": ["make"], "signs": False, "runs": ["bin/apk-tool.py", "bin/chain-verify.py"]},   # no key, no signing, no network: it reads the two apk trees, binds Rebuild's apks to the signed rapk records (chain-verify.py verify and bind) and writes the result file; `make` is the word of `policy make`
     "bin/release-publish.sh": {"tools": ["crane", "jq", "python3", "trap"], "signs": False, "runs": ["bin/release-layout.py"]},   # round 1 B4: the layout is checked first
     "bin/release-layout.py":  {"tools": [], "signs": False, "runs": []},
     "bin/release-sign.sh":    {"tools": ["cosign", "git", "jq", "python3", "sha256sum", "trap"], "signs": False, "runs": ["bin/chain-verify.py"]},   # S2: Release checks Sign's signatures (bundle-check) and pushes them (cosign login, attach, verify); it signs nothing
-    "bin/release-signatures.sh": {"tools": ["bash", "git", "jq", "python3", "sha256sum", "trap"], "signs": "other", "runs": ["bin/chain-verify.py", "bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py", "bin/apk-tool.py", "bin/with-aws-token.sh"]},   # S2: the Sign job's release step: the one place the release KMS key is reached
-    "bin/release-stage.sh":   {"tools": ["python3"], "signs": False, "runs": ["bin/release-metadata.py"]},   # B-F22: gathers the release's files before release-postverify; no credential, no gh
-    "bin/release-assets.sh":  {"tools": ["gh", "python3"], "signs": False, "runs": ["bin/release-metadata.py"]},   # B-F22: creates the release after release-postverify has passed
+    "bin/release-signatures.sh": {"tools": ["bash", "git", "jq", "python3", "sha256sum", "trap"], "signs": "other", "runs": ["bin/build-admit.py", "bin/chain-verify.py", "bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py", "bin/apk-tool.py", "bin/with-aws-token.sh"]},   # S2: the Sign job's release step: the one place the release KMS key is reached
+    "bin/release-gate.py":    {"tools": [], "signs": False, "runs": []},   # AC20: the coverage gate alone, so release-assets.sh (a secret holder) runs no build-admit.py
+    "bin/release-stage.sh":   {"tools": ["python3"], "signs": False, "runs": ["bin/build-admit.py", "bin/release-gate.py", "bin/release-metadata.py"]},   # B-F22: gathers the release's files before release-postverify; no credential, no gh
+    "bin/release-assets.sh":  {"tools": ["gh", "python3"], "signs": False, "runs": ["bin/release-gate.py"]},   # B-F22: creates the release after release-postverify has passed
     "bin/release-postverify.sh": {"tools": ["bash", "python3"], "signs": False, "runs": ["bin/release-postverify.py", "bin/release-stage.sh"]},   # rule 79 amended; runs the staging first
-    "bin/release-postverify.py": {"tools": ["at", "command", "cosign", "exec", "gh", "jq", "just"], "signs": False, "runs": ["bin/chain-verify.py", "bin/guide_plan_judge.py"]},   # runs only verify forms, judged first
+    "bin/release-postverify.py": {"tools": ["at", "command", "cosign", "exec", "gh", "jq", "just"], "signs": False, "runs": ["bin/build-admit.py", "bin/chain-verify.py", "bin/guide_plan_judge.py"]},   # runs only verify forms, judged first
 }
 # commands a plain release script must not use unless its row lists them
 DENY = ("curl wget nc ncat ssh scp rsync git docker podman buildah buildx kaniko make xargs find eval source trap sudo bash sh dash zsh "
@@ -664,7 +665,7 @@ def metadata(path):
         return bad
     # G1: policy.json is made after the tag check and the key-reference check and before the first signature; a failure of the command stops the script (set -e), so no `|| ...` may follow it
     made = [i for i, l in enumerate(lines) if "policy make" in l]
-    tag_at, key_at = at(r"^\[\[ \$tag =~"), at(r"bin/chain-verify\.py key-ref-check")
+    tag_at, key_at = at(r'^python3 -I -B bin/build-admit\.py tag-ok --final "\$tag" \|\| '), at(r"bin/chain-verify\.py key-ref-check")
     if [lines[i] for i in made] != [POLICY_MAKE]:
         bad.append("release-signatures.sh must run exactly once, as one whole line, `%s` (policy.json is the file it signs as release-policy.bundle), found %s" % (POLICY_MAKE, [lines[i] for i in made]))
     elif tag_at is None or key_at is None or not tag_at < key_at < made[0] < marks["first"]:

@@ -296,7 +296,7 @@ mkbase() { # base fixture in $W/base: origin.git + repo with main, a signed tagg
       '{"required_checks":[{"context":"ci","integration_id":15368,"scope":"push"},{"context":"review","integration_id":15368,"scope":"pull_request"}]}\n' \
       > .github/policy/required-checks.json
   printf '{"required_checks":[{"context":"rel-only","integration_id":15368,"scope":"push"}]}\n' > .github/policy/release-only-checks.json
-  cp "$root/bin/admission-tag-signer.py" bin/; printf '#!/bin/sh\nexit 0\n' > bin/install-scanner.sh
+  cp "$root/bin/admission-tag-signer.py" "$root/bin/build-admit.py" bin/; printf '#!/bin/sh\nexit 0\n' > bin/install-scanner.sh
   # gate 7: main's judge, its helper and the writers policy (build-admit.py reads them from origin/main, never from the tagged commit)
   cp "$root/bin/audit-record.py" "$root/bin/audit-record-judge.sh" bin/; cp "$root/.github/policy/audit-writers.json" .github/policy/
   # commit A: the chain files (release.yml, the listed script bin/chain-bytes-sha.py, the policy files) and the release candidate tag on it
