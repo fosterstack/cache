@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # proves: REQ-SUP-001-AC33, REQ-SUP-001-AC36
+# proves: REQ-REL-015-AC11
 # Where the supply-chain checks run (owner ratified Oct 5; advisor 0172, 0175; the owner removed the wait for new
 # versions on Nov 11 2026; REQ-REL-014, Nov 17 2026): the pin audit is the one job,
 # `daily-audit`, on the schedule and by dispatch (never on a push, pull_request, pull_request_target or workflow_run: the
 # pin-age pull-request scan was deleted), with no secrets (AC4);
-# the daily job may write issues and nothing else; no job holds actions: write; REQ-SUP-001 is
+# the daily job may write issues and nothing else; evidence-letter-present reads releases and writes nothing; no job holds actions: write; REQ-SUP-001 is
 # pipeline-only for automatic patches; CI runs the tests.
 # Read from the PARSED files: the real files must pass and every mutation (made through the parsed document) must be
 # rejected FOR THE REASON NAMED.
-#   .github/workflows/supply-chain.yml: job `daily-audit` (schedule, dispatch)
+#   .github/workflows/supply-chain.yml: jobs `daily-audit` (schedule, dispatch) and `evidence-letter-present` (schedule, dispatch; the monthly evidence
+#   letter's daily presence check, read-only)
 set -euo pipefail
 export SC_ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 python3 - <<'PY'
@@ -78,8 +80,8 @@ def judge_wf(d, real=False):
     if top not in ({}, {"contents": "read"}, None) or (top is None):
         bad.append("the workflow has no top-level permissions block of {} or contents: read")
     jobs = d.get("jobs", {})
-    if sorted(jobs) != ["daily-audit"]:
-        bad.append(f"the jobs are not exactly daily-audit: {sorted(jobs)}")
+    if sorted(jobs) != ["daily-audit", "evidence-letter-present"]:
+        bad.append(f"the jobs are not exactly daily-audit and evidence-letter-present: {sorted(jobs)}")
         return bad
     # daily-audit
     j = jobs["daily-audit"]
@@ -99,6 +101,20 @@ def judge_wf(d, real=False):
     for jn, jj in jobs.items():
         if re.search(r"rerun|observations-out|gh run ", "\n".join(str(s.get("run", "")) for s in jj.get("steps", []))):
             bad.append(f"{jn} re-runs a run or records tag observations: nothing waits for a re-run")
+    # evidence-letter-present: the daily presence check of the monthly evidence letter; reads releases, writes nothing
+    j = jobs["evidence-letter-present"]
+    if j.get("permissions") != {"contents": "read"}:
+        bad.append("evidence-letter-present's permissions are not exactly contents: read "
+                   f"(found {j.get('permissions')})")
+    if str(j.get("if", "")) != "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'":
+        bad.append("evidence-letter-present's condition is not exactly the schedule or dispatch allow list")
+    elp = j.get("steps", [])
+    elp_co = [st for st in elp if str(st.get("uses", "")).startswith("actions/checkout@")]
+    if len(elp_co) != 1 or str((elp_co[0].get("with") or {}).get("persist-credentials")).lower() != "false":
+        bad.append("evidence-letter-present must check out once, with persist-credentials false")
+    if [str(st.get("run", "")).strip() for st in elp if "run" in st] != [
+            "bash bin/install-scanner.sh cosign", "bash bin/evidence-letter-present.sh"]:
+        bad.append("evidence-letter-present's run steps are not exactly the cosign install and the presence script")
     # nothing may change WHERE the checker comes from or what runs it
     for key in ("env", "defaults"):
         if key in d:
@@ -373,6 +389,17 @@ mut_wf("a top-level concurrency dropped entirely", "not the reviewed block", lam
 mut_wf("a top-level concurrency on its own", "not the reviewed block", lambda d: d.update(concurrency={"group": "x", "cancel-in-progress": "false"}))
 mut_wf("a sixth job appears", "the jobs are not exactly",
        lambda d: d["jobs"].update({"extra": {"runs-on": "ubuntu-latest"}}))
+mut_wf("evidence-letter-present gains id-token", "evidence-letter-present's permissions are not exactly",
+       lambda d: J(d, "evidence-letter-present")["permissions"].update({"id-token": "write"}))
+mut_wf("evidence-letter-present runs on any event but a pull request",
+       "evidence-letter-present's condition is not exactly",
+       lambda d: J(d, "evidence-letter-present").update({"if": "github.event_name != 'pull_request'"}))
+mut_wf("evidence-letter-present keeps the token in the checkout", "must check out once, with persist-credentials false",
+       lambda d: [x["with"].update({"persist-credentials": "true"})
+                  for x in J(d, "evidence-letter-present")["steps"] if "uses" in x])
+mut_wf("evidence-letter-present runs another script", "run steps are not exactly the cosign install",
+       lambda d: [x.update(run="bash bin/other.sh") for x in J(d, "evidence-letter-present")["steps"]
+                  if "evidence-letter-present" in str(x.get("run", ""))])
 mut_wf("daily-audit loses its concurrency group", "no concurrency group", lambda d: J(d, "daily-audit").pop("concurrency"))
 mut_wf("the daily audit records observations again", "re-runs a run or records tag observations",
         lambda d: [x.update(run=x["run"] + " --observations-out /tmp/x") for x in J(d, "daily-audit")["steps"]
