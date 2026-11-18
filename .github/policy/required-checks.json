@@ -1,8 +1,9 @@
 {
   "comment": [
     "What the release chain's source-admission stage requires green on a tagged commit.",
-    "The GitHub ruleset (main-protection) is the list that gates merges; nothing compares",
-    "the two, so keep this list to the checks admission should demand.",
+    "Only release admission (bin/build-admit.py) reads this file. The GitHub ruleset (main-protection)",
+    "is the only required list for merges; no job or test compares the two, so keep this list to the",
+    "checks admission should demand.",
     "integration_id 15368 is GitHub Actions: it pins each context to check runs produced",
     "by Actions, so a check run with the same name from any other app does not satisfy it.",
     "scope: 'push' means the check runs on main commits and release",

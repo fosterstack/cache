@@ -57,11 +57,12 @@ case_ no-dispatch             bad "d['on'].pop('workflow_dispatch')"
 # ---------------------------------------------------------------------------------------------------------------------
 # PR 2 of 4: ci.yml absorbs hygiene.yml and requirements.yml (REQ-REL-008-AC2). Every moved job
 # keeps its exact check name, top-level placement, job permissions, environment, needs and condition; ci.yml's
-# top-level permissions stay read-only and its one concurrency block is the reviewed one (judge_conc); every required check in
-# .github/policy/required-checks.json is still produced by a top-level job of a workflow on its scope's event.
+# top-level permissions stay read-only and its one concurrency block is the reviewed one (judge_conc); every context admission binds to a workflow
+# file (BOUND_CONTEXTS in bin/build-admit.py) or lists in release-only-checks.json is still produced by a top-level job. This suite does not read
+# .github/policy/required-checks.json: only release admission reads it, and the GitHub ruleset is the only required list.
 # dependabot-auto-merge.yml does NOT move: its events (pull_request only) differ from ci.yml's (advisor, 0051 check 3).
 judge_ci() { python3 - "$1" "$root" <<'PY'
-import glob, json, os, sys, yaml
+import ast, glob, json, os, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
@@ -112,15 +113,11 @@ for wf in glob.glob(os.path.join(root, ".github/workflows/*.yml")):
             values = next(iter(axes), [])   # a matrix job is named per value of its first axis
             for rendered in [f"{name} ({v})" for v in values] or [name]:
                 names.setdefault(rendered, set()).update(events)
-pol = json.load(open(os.path.join(root, ".github/policy/required-checks.json")))
-for rc in pol["required_checks"]:
-    ev = "push" if rc["scope"] == "push" else "pull_request"
-    if rc["integration_id"] != 15368:
-        continue                                    # the review gate's App check, published by the App, not a job
-    if ev not in names.get(rc["context"], set()):
-        bad.append("required check %r is no longer produced on %s" % (rc["context"], ev))
 # a promotion or release-only check is made on main, nightly or by dispatch (the full suite), never only by a pull request
-lists = [("promotion_checks", pol["promotion_checks"]),
+admit = ast.parse(open(os.path.join(root, "bin/build-admit.py")).read())
+bound = [c for n in admit.body if isinstance(n, ast.Assign) and any(getattr(x, "id", "") == "BOUND_CONTEXTS" for x in n.targets)
+         for c, _ in ast.literal_eval(n.value) if not c.endswith("*")]
+lists = [("BOUND_CONTEXTS", [{"context": c, "integration_id": 15368} for c in bound]),
          ("release-only-checks.json", json.load(open(os.path.join(root, ".github/policy/release-only-checks.json")))["required_checks"])]
 for where, entries in lists:
     for rc in entries:
@@ -161,7 +158,7 @@ case_ci requirements-runs-on-prs bad "d['jobs']['requirements'].pop('if', None)"
 case_ci allowlist-if-always      bad "d['jobs']['allowlist']['if'] = 'always()'"
 case_ci merge-group-back         bad "d['on']['merge_group'] = ''"
 case_ci events-changed           bad "d['on'].pop('pull_request')"
-case_ci required-check-gone      bad "d['jobs']['lint']['name'] = 'lint-go'"
+case_ci ruleset-check-renamed    ok  "d['jobs']['lint']['name'] = 'lint-go'"   # the ruleset is the only required list: this suite no longer reads required-checks.json
 # the release-only checks are made by full-suite.yml: the same judge over a copy edited by python (FULL_SUITE)
 case_full() {
   local f="$work/full-$1.yml"
