@@ -1079,7 +1079,7 @@ def _commands(script, depth=0, in_container=False):
     """The simple commands of a shell script, each a token list (quotes removed, comments dropped), starting at the
     first tool word; a `bash -c "…"` / `sh -c` / `eval "…"` argument is read as a script of its own."""
     import shlex
-    text, inner = _cut_substitutions(re.sub(r"\\\n", "", script))
+    text, inner = _cut_substitutions(_join_lines(script))
     out = []
     if any(re.search(r"(?<![\w.-])case(?![\w.-])", sub) for sub in inner):
         out.append(["__too_deep__", "case ... esac inside $( )"])    # a case pattern's `)` ends the substitution early: refuse (Codex #164 r19, B10)
@@ -1869,6 +1869,31 @@ def _operands(args, val, boolean):
     return pos, None
 
 
+def _join_lines(text):
+    """`text` with each backslash-newline joined, except inside a comment: a comment ends at its newline, so the line
+    after `#comment\\` is a real line. A `#` opens a comment only at the start of a word, outside quotes and unescaped."""
+    out, q, i = [], None, 0
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and text[i + 1:i + 2] == "\n":
+            i += 2
+        elif c == "\\" and q != "'":
+            out.append(text[i:i + 2])
+            i += 2
+        else:
+            if q is None and c == "#" and (not out or out[-1][-1] in " \t\n;&|()<>"):
+                j = text.find("\n", i)
+                j = len(text) if j < 0 else j
+                out.append(text[i:j])
+                i = j
+                continue
+            if c in "'\"" and q in (None, c):
+                q = None if q else c
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
 def _mask_shell(text, info=None):
     """(no_comments, blanked, open_quote): TWO copies of `text`, each the same length with every newline in place so
     positions and line numbers line up. no_comments has every real comment replaced by spaces; blanked also has every
@@ -1946,7 +1971,7 @@ def _touches(script, name, consumer):
     python -c, dd of=, sed -i, rsync … all count (Sonnet #164 r5, NEW-5/NEW-6)."""
     import shlex
     mention = re.compile(r"(^|[^A-Za-z0-9._-])" + _name_pattern(name) + r"($|[^A-Za-z0-9._-])")
-    text, inner = _cut_substitutions(re.sub(r"\\\n", "", script))
+    text, inner = _cut_substitutions(_join_lines(script))
     for sub in inner:
         if _touches(sub, name, consumer):
             return True
@@ -2469,7 +2494,7 @@ def _writes(script, rel, ctx=None):
     """True when a command of the job writes the exact file rel before it runs: a redirection onto it, tee, cp / mv /
     install / ln / rsync onto it, sed / perl -i on it, or a copy or extraction over its directory (_fills_dir)."""
     import shlex
-    text, inner = _cut_substitutions(re.sub(r"\\\n", "", script))
+    text, inner = _cut_substitutions(_join_lines(script))
     ctx = script if ctx is None else ctx                # where the job assigns its variables (f="$work/x" …)
     for sub in inner:
         if _writes(sub, rel, ctx):
@@ -2579,7 +2604,7 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
             found.append("scripts nest deeper than this check reads (%s); refused" % path)
             continue
         content = tree.read(rel)
-        inner = _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", content))))
+        inner = _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(_join_lines(content))))
         cd = bool(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(inner)))
         more, also = _run_scripts(inner, tree, cd, depth + 1, where, job, bases)
         added.append(content + ("\n" + more if more else ""))
@@ -2713,7 +2738,7 @@ def _unsafe_downloads(text):
         queue = [src]
         while queue:
             cur = queue.pop()
-            cut, inner = _cut_substitutions(re.sub(r"\\\n", "", cur))
+            cut, inner = _cut_substitutions(_join_lines(cur))
             queue += inner
             cut = re.sub(r"&>>", ">>", cut)                   # `cmd &> file` is a redirection of cmd: the split at & must not detach it
             cut = re.sub(r"&>|>\|", ">", cut)
@@ -2898,13 +2923,13 @@ def check_runs(where_job, scripts, bad, tree=None, mores=None):
     a digest). A step in a non-POSIX shell that names a container or package tool is a finding: this
     check reads POSIX shell only (Sonnet B8)."""
     def read(raw):
-        return _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", raw))))
+        return _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(_join_lines(raw))))
     posix = [not item[2] or re.match(r"^(bash|sh)(\s|$)", item[2]) for item in scripts]
     # steps of one job share a workspace: a file changed in ANY step of the job counts (Sonnet #164 r6, NEW-7); the
     # committed scripts they run are part of it (Codex #164 r2, C11)
     job0 = "\n".join(read(item[1]) for item, ok in zip(scripts, posix) if ok)
     for item, ok in zip(scripts, posix):
-        marked = _drop_foreign_heredocs(_decode_dollar_quotes(_mark_defaults(re.sub(r"\\\n", "", item[1]))))
+        marked = _drop_foreign_heredocs(_decode_dollar_quotes(_mark_defaults(_join_lines(item[1]))))
         for t in (_commands(marked) if ok else []):
             if t[0] == "__variable_program__" and PARAM_WORD.search(item[1]):
                 bad.append(f"{item[0]}: a program is named by a variable with a default ({t[1]}); bash runs the "
@@ -2945,7 +2970,7 @@ def check_runs(where_job, scripts, bad, tree=None, mores=None):
                 elif (ftext is not None and ftext.count(excl[2]) == 1
                       and len(re.findall(r"(?m)^\s*" + re.escape(excl[1]) + r"\s*:", ftext)) == 1):
                     continue
-            for cmd, why in _unsafe_downloads(_drop_foreign_heredocs(re.sub(r"\\\n", "", item[1]))):      # the raw text: `${X:-default}` must not be replaced by its default before the downloader is read
+            for cmd, why in _unsafe_downloads(_drop_foreign_heredocs(_join_lines(item[1]))):      # the raw text: `${X:-default}` must not be replaced by its default before the downloader is read
                 bad.append(f"{item[0]}: this job runs a committed script, and `{cmd[:80]}` is a download that is not demonstrably writing to standard output or "
                            f"/dev/null ({why}); a download can overwrite a committed script before it runs, so the destination is never trusted, refused "
                            f"(REQ-REL-005-AC3)")
@@ -3446,7 +3471,7 @@ def env_writes(text):
     """[(name, route)] for the env-file writes of a text whose name is literal: the three plain forms."""
     writes = [] if _REDEFINES.search(text) else \
         [(name, "GITHUB_ENV") for c in _split_commands(text) if (name := _echoed_env_name(c))]
-    joined = re.sub(r"\\\n", "", text)    # forms (2) and (3) are read from the text the route count reads
+    joined = _join_lines(text)    # forms (2) and (3) are read from the text the route count reads
     writes += [(m.group(2), "exportVariable") for m in _EXPORT_CALL.finditer(joined)]
     return writes + [(m.group(1), "::set-env") for m in _SET_ENV.finditer(joined)]
 
@@ -3457,7 +3482,7 @@ def step_write_findings(where, text):
     names = re.compile(r"(?<![A-Za-z0-9_])(?:(?:" + "|".join(STARTUP_HOOK_ENV) + r")(?![A-Za-z0-9_])|BASH_FUNC_)")
     found = []
     writes = env_writes(text)             # read as written: bash keeps a backslash-newline inside single quotes
-    text = re.sub(r"\\\n", "", text)
+    text = _join_lines(text)
     unread = collections.Counter(_ENV_ROUTE.findall(text))
     unread.subtract(route for _, route in writes)
     if path := _PATH_ROUTE.search(text):
