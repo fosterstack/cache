@@ -1056,8 +1056,9 @@ def body_of(f, rb, owner, ran, today):
 # every audit would stop at it for the 90-day lookback.
 # Anything else unreadable, and any other error of a listed revision, still ends the audit (fail closed): a
 # revision is added to this list only by a reviewed change that names it.
-# A revision whose workflow file does not parse is not on that list: it is reported by its sha and the walk goes on
-# (an old file nobody can fix); the tree of today is read apart from the walk and still ends the audit.
+# A workflow file that does not parse is not on that list: that file alone is left out of its revision and reported by the
+# revision's sha and its name (an old file nobody can fix); the revision's other files are judged as usual, and the daily clean
+# line counts the files not read. The tree of today is read apart from the walk and still ends the audit.
 P1P5_REASON = "bin/chain-rekor-key-test.sh held a 4529-character command line, since wrapped (0289dc91)"
 SKIP_UNREADABLE = {
     "792a2c7029de801fa7afbc16ceb36a636215f4b6": "PR 459 round 6 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
@@ -1082,7 +1083,7 @@ SKIP_UNREADABLE = {
 }
 
 
-def history_items(root, start, now):
+def history_items(root, start, now, unread=None):
     since = (now - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
     paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh", ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS]
     refs = ["--all"] if start == "HEAD" else [start]  # daily mode: every branch and PR ref this checkout has, not only the default branch's ancestry
@@ -1091,26 +1092,26 @@ def history_items(root, start, now):
     if before:
         revs.append(before)
     items = {}
-    unparsed = {}   # tree key -> the message of the file that does not parse, so a tree is parsed once however many revisions hold it
     memo = {}   # an inventory is a function of the files it reads: a revision whose (path, blob) pairs were already read reuses that inventory, but still merges it in its place (the last merge wins, as with one inventory per revision)
     for r in revs:
         key = inv.tree_key(root, r)
-        if key in unparsed:
-            print(f"information: revision {r} not read: {unparsed[key]}")
-            continue
         if key not in memo:
+            skipped = []   # the files of this tree that do not parse: each is left out alone, the tree's other files are judged as usual
+            inv._UNREAD[0] = skipped
             try:
-                memo[key] = inv.load_at(root, r)
-            except inv.Unparseable as e:
-                unparsed[key] = str(e)
-                print(f"information: revision {r} not read: {e}")
-                continue
+                memo[key] = (inv.load_at(root, r), skipped)
             except RuntimeError as e:
                 # only the named revisions, and only for the cap's own refusal; never remembered under the tree key (an unlisted revision of the same tree must still refuse)
                 if r in SKIP_UNREADABLE and "command line of" in str(e) and "refusing to read it partially" in str(e):
                     continue
                 raise
-        items.update(memo[key])
+            finally:
+                inv._UNREAD[0] = None
+        for msg in memo[key][1]:
+            print(f"information: revision {r}: file not read: {msg}")
+            if unread is not None:
+                unread.append((r, msg))
+        items.update(memo[key][0])
     return items
 
 
@@ -1244,6 +1245,7 @@ def main(argv=None):
         default_ex = os.path.join(a.root, ".github", "supply-chain-exceptions.json")
         exceptions = load_exceptions(a.exceptions or default_ex, bool(a.exceptions))
         phase("history")
+        unread = []   # (revision, message) of every old file the history walk left out
         try:
             head = inv.load_at(a.root, a.head if (a.base and a.head) else None)
         except RuntimeError as e:
@@ -1251,10 +1253,10 @@ def main(argv=None):
         try:
             if a.base:
                 audited = inv.moved(inv.load_at(a.root, a.base), head)
-                hist = history_items(a.root, a.base, now) if audited else {}
+                hist = history_items(a.root, a.base, now, unread) if audited else {}
                 ran_keys = set(hist)
             else:
-                hist = history_items(a.root, "HEAD", now)
+                hist = history_items(a.root, "HEAD", now, unread)
                 audited = [hist.get(k) or head[k] for k in sorted({**hist, **head})]
                 ran_keys = {i.key for i in audited}
         except RuntimeError as e:
@@ -1457,6 +1459,7 @@ def main(argv=None):
         print(f"audit: no known-compromised versions as of {today}"
               + (f" ({excepted_n} disputed hit(s) covered by a checked-in exception)" if excepted_n else "")
               + (f"; {len(dormant)} dormant exception ruling(s) wait for their pin: {', '.join(_ruling_label(e) for e in dormant)}" if dormant else "")
+              + (f"; {len(unread)} file(s) not read (listed above)" if unread else "")
               + (f"; {len(unchecked)} of {len(audited)} item(s) have no advisory source and were not checked (listed above)" if unchecked else ""))
         return 0
     except (Fail, age.CouldNotLook) as e:
