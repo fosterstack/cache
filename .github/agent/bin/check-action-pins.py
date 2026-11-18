@@ -294,9 +294,6 @@ class FsTree:
     def read(self, rel):
         return (self.root / rel).read_text(encoding="utf-8", errors="replace")
 
-    def read_bytes(self, rel):
-        return (self.root / rel).read_bytes()
-
 
 class GitTree:
     """A commit's tree read as git objects: nothing is checked out, nothing is executed."""
