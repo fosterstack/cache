@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-004-AC19, REQ-CHAIN-007-AC14
+# proves: REQ-CHAIN-004-AC20, REQ-CHAIN-007-AC14
 #
-# One tag grammar for every release script and check that reads a release tag (REQ-CHAIN-004-AC19). The grammar is TAG_PATTERN of
+# One tag grammar for every release script and check that reads a release tag (REQ-CHAIN-004-AC20). The grammar is TAG_PATTERN of
 # bin/build-admit.py: vX.Y.Z or vX.Y.Z-rcN, no leading zero in any number, an rc number of at least 1, full match only (no trailing
 # newline, no prefix). A Python script loads that pattern from bin/build-admit.py; a shell script or workflow step calls
 # `python3 -I -B bin/build-admit.py tag-ok [--final] TAG` (exit 0 accepted, exit 1 refused; --final also refuses a -rc tag) or reads

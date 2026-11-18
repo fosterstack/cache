@@ -53,18 +53,19 @@ rebuilds. Of the jobs above, Release is the only one that holds a registry crede
   and Maven suites, the no-phone-home and Kubernetes suites, the FIPS check
   and the customer-guide commands against the exact candidate digests, as
   Witness steps; it runs beside Rebuild.
-- **Release** (`stage-promote.yml`, environment `release`): six Witness steps,
-  each a committed script. `release-verify` checks the tag and verifies the
-  earlier stages' records in order before any credential exists in the job;
-  `release-apks` re-signs the apks with the release signing key through
-  `bin/release-sign-apks.sh`; `release-publish` pushes the images by digest to
-  `ghcr.io/fosterstack/cache` and `docker.io/fosterstack/cache` and reads each
-  registry back; `release-sign` signs the images in both registries and the
-  release files with the release signing key, each with a Rekor entry, and
-  `release-assets` attaches the
-  evidence to the GitHub release; `release-postverify` runs the customer-guide
-  commands that need a registry against what was just published. Release
-  creates no tag.
+- **Release** (`release.yml`, environment `release`): six Witness steps,
+  each a committed script, in one job that holds no signing role and no key.
+  `release-verify` checks the tag and verifies the earlier stages' records in
+  order before any credential exists in the job; `release-apks` puts the apk
+  signatures Sign made on the apks; `release-publish` pushes the images by
+  digest to `ghcr.io/fosterstack/cache` and `docker.io/fosterstack/cache` and
+  reads each registry back; `release-sign` checks every signature Sign made,
+  each with its Rekor entry, against the public release key and pushes them;
+  `release-postverify` runs the customer-guide commands that need a registry
+  against what was just published; and `release-assets` creates the GitHub
+  release only after that. Every signature is made before publishing by Sign's
+  third job, `sign-check`, on a final tag (`bin/release-signatures.sh`).
+  Release creates no tag.
 - **Release candidates**: a tag matching exactly `vX.Y.Z-rcN` runs every stage
   and Release's `release-verify`, and then ends: no credential is read, nothing
   is pushed, no release is created, no floating tag moves. A tag that is

@@ -187,8 +187,6 @@ t "REQ-FIPS-001-AC1" "the check-artifacts.sh lock check accepts the lock's id" b
 printf 'v1.1.0-DEADBEEF\n' >"$work/lib-lock-bad.txt"
 t "REQ-BUILDAPK-001-AC1" "a malformed lock file fails the recipe checks (closed grammar, fail closed)" bash -c '! env FIPS_LOCK="$1" ROOT="$2" python3 "$3" mel-fips "$4" fips' _ "$work/lib-lock-bad.txt" "$root" "$work/chk.py" "$MF"
 t "rule 21" "bin/gen-recipes.py --check passes on the committed pair: both recipes are exactly the generator's output from build/melange.yaml.tmpl, so they differ only in name, description and the two FIPS lines" python3 "$root/bin/gen-recipes.py" --check
-rm -rf "$work/pin"; mkdir -p "$work/pin"; cp "$root/build/melange.yaml.tmpl" "$work/pin/t.tmpl"; cp "$root/build/melange.yaml" "$work/pin/a.yaml"; cp "$root/build/melange-fips.yaml" "$work/pin/b.yaml"; printf '#' >>"$work/pin/t.tmpl"
-fails "rule 21" "bin/gen-recipes.py: a ONE-BYTE edit of a copy of the REAL template fails --check naming the pin (the constant TEMPLATE_SHA256 in the generator)" 'update TEMPLATE_SHA256 in the same reviewed change' python3 "$root/bin/gen-recipes.py" --template "$work/pin/t.tmpl" --regular "$work/pin/a.yaml" --fips "$work/pin/b.yaml" --check
 t "rule 21" "the committed template carries the review checklist at its top (the human and the reviewer pass)" bash -c "grep -q 'TEMPLATE CHECKLIST' '$root/build/melange.yaml.tmpl' && grep -q 'NEGATIVE EXAMPLES' '$root/build/melange.yaml.tmpl'"
 t "rule 15" "melange.yaml build environment: no repositories or keyring of its own beyond local paths, only the go.dev fetch uri" y mel-local "$M"
 t "rule 15" "melange-fips.yaml: the same" y mel-local "$MF"

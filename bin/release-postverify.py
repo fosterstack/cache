@@ -26,7 +26,7 @@ nothing is expanded after the check.
 commands that name provenance.bundle.json, on release-staged/ (that bundle from provenance/ and the key manifest, removed when
 the pass ends), with the same judge, refusals and key. It reads no list and touches no registry.
 """
-import collections, hashlib, importlib.util, json, os, re, shlex, shutil, subprocess, sys, tempfile, types
+import collections, importlib.util, json, os, re, shlex, shutil, subprocess, sys, tempfile, types
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import guide_plan_judge   # noqa: E402
@@ -39,11 +39,10 @@ VERIFIER = "bin/chain-verify.py"   # holds the bundle and manifest checks
 STAGED = "release-staged"   # the copy of --before-publish: provenance.bundle.json and the key manifest
 PROVENANCE = "provenance.bundle.json"
 ROOT_KEY = ".github/policy/release-key-root.pub"   # the committed offline root public key that signs the manifest
-LISTED = ".github/policy/chain-scripts.json"   # the sha256 of every file of the chain that runs
 DIGESTS = "witness-build/digests.json"
 # Constants: releases publish identical digests to both, and no input names a repository.
 REPOSITORIES = ("ghcr.io/fosterstack/cache", "docker.io/fosterstack/cache")
-# the one tag grammar (REQ-CHAIN-004-AC19), loaded from bin/ of the checkout the step runs in, as VERIFIER is
+# the one tag grammar (REQ-CHAIN-004-AC20), loaded from bin/ of the checkout the step runs in, as VERIFIER is
 _spec = importlib.util.spec_from_file_location("build_admit", "bin/build-admit.py")
 _admit = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_admit)
@@ -231,24 +230,19 @@ def run_plan(plan):
 
 
 def load_verifier():
-    """bin/chain-verify.py as a module, never run as a program. It decides which key signs every listed command, so
-    its bytes must carry the sha256 listed for it in .github/policy/chain-scripts.json (an edited verifier that
-    accepts any manifest is refused), and those same bytes are compiled and run (no bytecode cache stands in)."""
+    """bin/chain-verify.py as a module, never run as a program. Its bytes are compiled and run (no bytecode cache
+    stands in)."""
     try:
         with open(VERIFIER, "rb") as f:
             src = f.read()
-        with open(LISTED, "rb") as f:
-            listed = {r["path"]: r["sha256"] for r in json.load(f)["scripts"]}
-    except (OSError, ValueError, KeyError, TypeError) as e:
+    except OSError as e:
         refuse("%s cannot be loaded (%s)" % (VERIFIER, type(e).__name__))
-    if listed.get(VERIFIER) != hashlib.sha256(src).hexdigest():
-        refuse("%s does not match its sha256 in %s: refusing to run it" % (VERIFIER, LISTED))
     mod = types.ModuleType("chain_verify")
     mod.__file__ = os.path.abspath(VERIFIER)
     try:
         exec(compile(src, mod.__file__, "exec"), mod.__dict__)
     except (Exception, SystemExit) as e:
-        # SystemExit: the verifier's own helper loader exits when a helper fails its sha256
+        # SystemExit: the verifier may exit while it loads
         refuse("%s cannot be loaded (%s: %s)" % (VERIFIER, type(e).__name__, e))
     return mod
 

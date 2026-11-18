@@ -10,7 +10,7 @@ signs with the release key and no keyless signer is left (KMS rule 2).
 import argparse, datetime, importlib.util, os, re, subprocess, sys
 
 BLOCKS = {"SSH SIGNATURE": "ssh", "SIGNED MESSAGE": "x509", "PGP SIGNATURE": "pgp"}
-# the one tag grammar (REQ-CHAIN-004-AC19), loaded from the file beside this one
+# the one tag grammar (REQ-CHAIN-004-AC20), loaded from the file beside this one
 _spec = importlib.util.spec_from_file_location("build_admit", os.path.join(os.path.dirname(os.path.abspath(__file__)), "build-admit.py"))
 _admit = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_admit)

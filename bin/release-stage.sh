@@ -21,10 +21,15 @@ done
 for f in release-apks/*/*.apk; do
   [ -f "$f.bundle" ] && [ ! -L "$f.bundle" ] || { echo "release-stage: $f has no Rekor bundle beside it: the list is incomplete" >&2; exit 1; }
 done
-for n in scanners acceptance runtime arm64; do
-  [ -f "witness-check/witness-$n/$n-collection.json" ] || { echo "release-stage: the Check record witness-check/witness-$n/$n-collection.json is missing: the list is incomplete" >&2; exit 1; }
+runners=(ubuntu-24.04 ubuntu-24.04-arm)
+for c in "${runners[@]}"; do
+  for n in scanners acceptance runtime; do
+    [ -f "witness-check/$c/witness-$n/$n-collection.json" ] || { echo "release-stage: the Check record witness-check/$c/witness-$n/$n-collection.json is missing: the list is incomplete" >&2; exit 1; }
+  done
 done
-for r in witness-build/build witness-rebuild/rebuild witness-check/witness-scanners/scanners witness-check/witness-acceptance/acceptance witness-check/witness-runtime/runtime witness-check/witness-arm64/arm64; do
+records=(witness-build/build witness-rebuild/rebuild)
+for c in "${runners[@]}"; do for n in scanners acceptance runtime; do records+=("witness-check/$c/witness-$n/$n"); done; done
+for r in "${records[@]}"; do
   [ -f "$r-collection.rekor.json" ] || { echo "release-stage: $r-collection.rekor.json is missing: the entries file beside the record is part of the list, which is incomplete" >&2; exit 1; }
 done
 for f in release-key-manifest.json release-key-manifest.sig; do
@@ -63,16 +68,18 @@ for f in fscache-modules.spdx.json fscache-modules-fips.spdx.json; do stage "apk
 only witness-build build-collection.json build-collection.rekor.json digests.json items.json admission-baseline.json
 only witness-rebuild rebuild-collection.json rebuild-collection.rekor.json verdict.json
 only provenance provenance.json provenance.rekor.json provenance.bundle.json
-for n in scanners acceptance runtime arm64; do only "witness-check/witness-$n" "$n-collection.json" "$n-collection.rekor.json"; done
+for c in "${runners[@]}"; do for n in scanners acceptance runtime; do only "witness-check/$c/witness-$n" "$n-collection.json" "$n-collection.rekor.json"; done; done
 for f in dist/*.txt; do [ "${f##*/}" = checksums.txt ] || { echo "release-stage: $f is not in the inventory of dist (the four archives and checksums.txt)" >&2; exit 1; }; done
 for f in release-key-manifest.json release-key-manifest.sig; do stage ".github/policy/$f" "$f"; done
 for f in dist/*.tar.gz dist/checksums.txt release-evidence/*.bundle release-evidence/*.json release-metadata/release-manifest.json release-metadata/fosterstack-cache*.json release-metadata/release-files.sha256 policy.json \
          witness-build/build-collection.json witness-build/build-collection.rekor.json witness-build/digests.json witness-build/items.json witness-build/admission-baseline.json witness-rebuild/rebuild-collection.json witness-rebuild/rebuild-collection.rekor.json provenance/provenance.json provenance/provenance.rekor.json provenance/provenance.bundle.json; do
   stage "$f" "${f##*/}"
 done
-for n in scanners acceptance runtime arm64; do
-  stage "witness-check/witness-$n/$n-collection.json" "$n-collection.json"
-  stage "witness-check/witness-$n/$n-collection.rekor.json" "$n-collection.rekor.json"
+# the two chips each have the same three records: each is attached under its runner's name
+for c in "${runners[@]}"; do
+  for n in scanners acceptance runtime; do
+    for f in "$n-collection.json" "$n-collection.rekor.json"; do stage "witness-check/$c/witness-$n/$f" "$c-$f"; done
+  done
 done
 python3 -I -B bin/release-metadata.py gate --dir release-upload
 rm -rf release-published

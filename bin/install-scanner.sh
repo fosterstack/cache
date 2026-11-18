@@ -6,7 +6,7 @@
 # branch (the old approach) both broke - trivy v0.66.0 was not a real
 # release - and was unpinned. This verifies the exact bytes.
 #
-# Usage: install-scanner.sh <trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|
+# Usage: install-scanner.sh <trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|docker-scout-<version>|
 #        cosign|witness|go|crane|aws-cli|govulncheck> [dest-dir]
 # `aws-cli` (KA-2: the signer's KMS calls) installs the pinned AWS CLI v2 job-locally into $RUNNER_TEMP/aws-cli (the binary at $RUNNER_TEMP/aws-cli/aws) and takes no destination: nothing is left in /usr/local.
 # `go` installs the Go toolchain of the working directory's go.mod (its `toolchain` line, else its `go` line) into <dest-dir>/fscache-go, only when that

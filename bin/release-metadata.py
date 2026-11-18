@@ -33,7 +33,7 @@ REPO_GHCR, REPO_HUB = "ghcr.io/fosterstack/cache", "docker.io/fosterstack/cache"
 VARIANTS = ("production", "fips")
 ARCHES = ("amd64", "arm64")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
-# the one tag grammar (REQ-CHAIN-004-AC19), loaded from the file beside this one
+# the one tag grammar (REQ-CHAIN-004-AC20), loaded from the file beside this one
 _spec = importlib.util.spec_from_file_location("build_admit", os.path.join(os.path.dirname(os.path.abspath(__file__)), "build-admit.py"))
 _admit = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_admit)

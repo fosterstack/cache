@@ -672,7 +672,13 @@ ALIASING = re.compile(r"(?<![\w.-])(alias|expand_aliases)(?![\w.-])")
 PARAM_WORD = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*])(:?)([-=+?])([^{}]*)\}")
 
 
+DEFAULT_ASSIGNED = set()   # names a ${x:=word} or ${x=word} of the job's text may set; cleared at the start of check_runs
+
+
 def _expand_defaults(text):
+    """${x:-word} as word, ${x:=word} too. The names a `:=` or `=` form may set are kept in DEFAULT_ASSIGNED, read before
+    the word replaces the form: the variable's value is then unknown (_set_by_setter)."""
+    DEFAULT_ASSIGNED.update(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*):?=", text))   # nested words too: PARAM_WORD cannot see them
     while True:   # each pass removes at least one ${...}: it ends
         new = PARAM_WORD.sub(lambda m: m.group(4), text)
         if new == text:
@@ -799,6 +805,7 @@ def _split_commands(text):
     "…", $'…') and escapes, with comments (# at the start of a word, outside quotes) dropped. A raw split at these
     characters cut quoted text and comments into false commands (Codex #164 adversarial r1, C02 noise)."""
     out, cur, i, q, n = [], [], 0, None, len(text)
+    escaped = -1                                         # len(cur) just after a backslash pair
     while i < n:
         c = text[i]
         if q == "'":
@@ -817,7 +824,7 @@ def _split_commands(text):
             elif c == '"':
                 q = None
         elif c == "\\" and i + 1 < n:
-            cur += [c, text[i + 1]]; i += 1
+            cur += [c, text[i + 1]]; i += 1; escaped = len(cur)
         elif c == "$" and text[i + 1:i + 2] == "'":
             cur += ["$", "'"]; q = "$'"; i += 1
         elif c in "'\"":
@@ -853,8 +860,10 @@ def _split_commands(text):
             cur.append(text[i:j].replace("\n", " "))
             i = j
             continue
+        elif c == "|" and cur and cur[-1] == ">" and len(cur) != escaped:   # `>|` is a redirection that overrides noclobber, not a pipe
+            cur.append(c)
         elif c in ";&|()\n":
-            out.append("".join(cur)); cur = []
+            out.append("".join(cur)); cur = []; escaped = -1
         else:
             cur.append(c)
         i += 1
@@ -1997,6 +2006,97 @@ def _touches(script, name, consumer):
 OUTSIDE = ("$RUNNER_TEMP", "${RUNNER_TEMP}", "/", "$(mktemp")   # outside the checkout: never the file's directory
 
 
+# a command that may set a variable whose name is made at run time: a builtin that takes a variable name, or printf -v,
+# as a word anywhere in it (any prefix bash takes can come before it), with a $ or backtick in the same command
+_WORD = r"(?<![\w./-])(?:{})(?![\w./(-])"
+RUNTIME_NAME = re.compile(
+    _WORD.format("read|mapfile|readarray|getopts|declare|typeset|local|export|readonly|let|select"))
+PRINTF = re.compile(_WORD.format("printf"))
+# read across the whole script: ${!ref} and (( $x ))
+RUNTIME_EXPANSION = re.compile(r"\$\{!|\(\([^\n]*[$`]")
+
+
+def _builds_name(command):
+    if "$" not in command and "`" not in command:
+        return False
+    return bool(RUNTIME_NAME.search(command) or (PRINTF.search(command) and "-v" in command))
+
+
+def _only_read(name, script):
+    """True when the job script, as bash forms its words (quotes and backslashes removed), mentions `name` only as a
+    plain $name or ${name} read, runs no eval, and builds no variable name at run time ($'…', "${n}OUTPUT": a name the
+    check cannot read). Any other mention (read, for, printf -v, ${name:=x}, (( )), let, name[0]=, …) may set it."""
+    if "$'" in script:
+        return False
+    words = _unquoted(script)
+    word = r"(?<![A-Za-z0-9_])" + name + r"(?![A-Za-z0-9_])"
+    reads = r"\$" + name + r"(?![A-Za-z0-9_])|\$\{" + name + r"\}"
+    return (len(re.findall(word, words)) == len(re.findall(reads, words))
+            and not re.search(r"(?<![\w-])eval(?![\w-])", words)
+            and not RUNTIME_EXPANSION.search(words)
+            and not any(_builds_name(_unquoted(c)) for c in _split_commands(script)))
+
+
+def _cut_redirections(text):
+    """The text with each redirection cut off its word: from a < or > outside quotes to the next blank outside quotes.
+    A < or > inside '…' or "…" stays part of the word (declare -n r='out[1<0]')."""
+    out, q, cut, i = [], None, False, 0
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and q != "'" and i + 1 < len(text):
+            if not cut:
+                out.append(text[i:i + 2])
+            i += 2
+            continue
+        if q:
+            q = None if c == q else q
+        elif c in "'\"":
+            q = c
+        elif c in "<>":
+            cut = True
+        elif c.isspace():
+            cut = False
+        if not cut:
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
+SETTER_WORDS = re.compile("read|mapfile|readarray|getopts|declare|typeset|local|export|readonly|let|select|for")
+
+
+def _set_by_setter(name, script):
+    """True when a form other than name= names the variable as a literal word and may set it: a command that takes a
+    variable name (read, for, eval, trap …), -<letters>name attached to read or printf, a nameref to it, printf -v, name+=,
+    name[0]=, (( name = … )), ${name:=x} (DEFAULT_ASSIGNED)."""
+    if name in DEFAULT_ASSIGNED:
+        return True
+    word = r"(?<![\w/.$-])(?<!\$\{)" + name + r"(?![A-Za-z0-9_])"
+    step = r"(?:\+\+|--)"
+    arithmetic = (r"\(\([^\n]*(?:" + word + r"\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)|" + word + step + "|" + step + word + ")")
+    element = word + r"(?:\[[^]\n]*\])?\+=|" + word + r"\[[^]\n]*\]="
+    words = _unquoted(script)
+    if re.search(arithmetic, words) or re.search(element, words):
+        return True
+    for command in _split_commands(script):
+        body = _tokens(command)
+        toks = _tokens(_cut_redirections(_mask_shell(command)[0]))   # printf -vout>/dev/null: the redirection is no part of the name
+        names_it = any(re.fullmatch(name + r"(?:\[[^]]*\])?\+?(?:=.*)?", t, re.S) for t in toks)
+        if names_it and (any(SETTER_WORDS.fullmatch(t) for t in toks) or ("printf" in toks and "-v" in toks)):
+            return True
+        attached = any(re.fullmatch(r"-[A-Za-z]+" + name + r"(?:\[[^]]*\])?", t) for t in toks)
+        if attached and any(t in ("read", "mapfile", "readarray", "printf") for t in toks):
+            return True
+        nameref = any(re.fullmatch(r"[^=]+=" + name + r"(?:\[.*\])?", t, re.S) for t in toks)
+        with_n = any(re.fullmatch(r"-[A-Za-z]*n[A-Za-z]*", t) for t in toks)
+        if nameref and with_n and any(t in ("declare", "typeset", "local") for t in toks):
+            return True
+        if "eval" in toks or "trap" in toks:
+            if any(re.search(word, t) for t in toks) or any(_set_by_setter(name, t) for t in body if t not in ("eval", "trap")):
+                return True   # the literal body is read as a script: a setter form in it counts as at top level
+    return False
+
+
 def _outside(target, script, depth=0):
     """A destination that cannot be the checkout's directory: an absolute path outside the runner's workspace, a path
     under $RUNNER_TEMP or a fresh $(mktemp …), or a variable every assignment of which in the job is one of those —
@@ -2007,9 +2107,14 @@ def _outside(target, script, depth=0):
         return True
     if re.match(r"[\"']?\$\{?HOME\}?/(?!work(/|$))", target):
         return True                                      # $HOME/.docker …: the workspace is under $HOME/work
+    runner = re.fullmatch(r"[\"']?\$\{?(GITHUB_(?:OUTPUT|ENV|PATH|STATE|STEP_SUMMARY))\}?[\"']?", target)
+    if runner and _only_read(runner.group(1), script):
+        return True                                      # the runner's own files, made outside the checkout, until the job sets one
     m = re.match(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?(/.*)?$", target.strip("\"'"))
     if not m or depth > 4:
         return False
+    if _set_by_setter(m.group(1), script):
+        return False                                     # set by read, printf -v, (( )), name[0]= …: an unknown value
     values = re.findall(r"(?:^|[\s;(])" + m.group(1) + r"=[\"']?([^\s\"';)]*)", script)
     return bool(values) and all(_outside(v, script, depth + 1) for v in values)
 
@@ -2224,8 +2329,7 @@ TEST_HARNESS = re.compile(r"^(\.github/agent/tests/[^/]+\.sh|bin/[^/]+-test\.sh)
 # melange call of bin/build-apk.sh through fixed absolute paths held in variables (the lines of the script that end in
 # TEST-SUBST), the one form the chain judge (bin/chain-test-signers.py) admits, while this check reads a variable
 # program as unreadable. It installs nothing, pulls no image and starts only the pinned tools at fixed paths. It is
-# still read at its committed bytes and bound like any script (READ_SCRIPTS), never inlined; it is held whole by
-# sha256 (chain-scripts.json, NS_SHA) and every change to it gets both reviewers; the chain judge refuses on this
+# still read at its committed bytes and bound like any script (READ_SCRIPTS), never inlined; every change to it gets both reviewers; the chain judge refuses on this
 # listed script a deny word not in its tools, a deny name by path and an interpreter handed an unlisted path. ONE
 # exact path: no pattern, no directory match, so the same text under another name, or in another directory, is read as
 # every script is.
@@ -2429,26 +2533,29 @@ def _all_texts(text, depth=0):
 SHELL_SHEBANG = re.compile(r"#!\s*\S*/(?:env\s+(?:-\S+\s+)*)?(ba|da|z)?sh\b")
 
 
-def _writes(script, rel, ctx=None):
+def _writes(script, rel, ctx=None, early=True):
     """True when a command of the job writes the exact file rel before it runs: a redirection onto it, tee, cp / mv /
-    install / ln / rsync onto it, sed / perl -i on it, or a copy or extraction over its directory (_fills_dir)."""
+    install / ln / rsync onto it, sed / perl -i on it, or a copy or extraction over its directory (_fills_dir).
+    A redirect or tee onto a variable this check cannot place counts only when early (the job's own step text)."""
     import shlex
     text, inner = _cut_substitutions(re.sub(r"\\\n", "", script))
     ctx = script if ctx is None else ctx                # where the job assigns its variables (f="$work/x" …)
     for sub in inner:
-        if _writes(sub, rel, ctx):
+        if _writes(sub, rel, ctx, early):
             return True
     same = lambda t: os.path.normpath(re.sub(r"^\./", "", t.strip("'\""))) == rel
+    # a redirect or tee target is placed as a cp destination is: one this check cannot place outside the checkout may be rel
+    onto = lambda t: same(t) or (early and _variable(t) and not _outside(t, ctx))
     for chunk in _split_commands(text):
         toks = _tokens(chunk)
-        if any(same(t) for t in _redirect_targets(chunk)):
+        if any(onto(t) for t in _redirect_targets(chunk)):
             return True
         words = _command_words(toks)
         if not words:
             continue
         cmd, rest = _base(words[-1]), toks[toks.index(words[-1]) + 1:]
         pos = [t for t in rest if not t.startswith("-")]
-        if (cmd == "tee" and any(same(t) for t in pos)) or (cmd in ("cp", "mv", "install", "ln", "rsync") and pos and
+        if (cmd == "tee" and any(onto(t) for t in pos)) or (cmd in ("cp", "mv", "install", "ln", "rsync") and pos and
                                                               same(pos[-1])) or \
                 (cmd in ("sed", "perl") and any(t.startswith("-i") for t in rest) and any(same(t) for t in pos)) or \
                 _fills_dir(toks, rel, ctx):
@@ -2740,6 +2847,7 @@ def check_runs(where_job, scripts, bad, tree=None):
     check reads POSIX shell only (Sonnet B8)."""
     def read(raw):
         return _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", raw))))
+    DEFAULT_ASSIGNED.clear()
     posix = [not item[2] or re.match(r"^(bash|sh)(\s|$)", item[2]) for item in scripts]
     # steps of one job share a workspace: a file changed in ANY step of the job counts (Sonnet #164 r6, NEW-7); the
     # committed scripts they run are part of it (Codex #164 r2, C11)
@@ -2798,7 +2906,7 @@ def check_runs(where_job, scripts, bad, tree=None):
                         for src in others for ln in src.split("\n"))
         k = runs[-1] if runs and not via_other else len(lines)   # also reached through another committed script: judged against the whole job           
         before = "\n".join(lines[:k + 1])               # the run's own line too (printf … > x; bash x)
-        if any(_writes(t, rel, src) for src in [before] + others for t in _all_texts(src)):   # each in its own context
+        if any(_writes(t, rel, src, src is before) for src in [before] + others for t in _all_texts(src)):   # each in its own context; a variable redirect counts in the job's own text only
             bad.append(f"{scripts[0][0] if scripts else where_job}: {rel} is changed by the job before it runs; the "
                        f"committed bytes are not what runs, refused")
     READ_SCRIPTS.clear()

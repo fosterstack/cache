@@ -46,7 +46,7 @@ fips=$(jq -r '."image-fips" // empty' witness-build/digests.json)
 rx='^sha256:[0-9a-f]{64}$'
 [[ "$prod" =~ $rx ]] && [[ "$fips" =~ $rx ]] || { echo "release-signatures: an attested image digest is missing or malformed" >&2; exit 1; }
 # ruling G (cache-ce's interface): the dependency list is the tag checkout's own file, the govulncheck stream is Check's product, and the date is the admitted tag commit's committer date, never a clock
-gv=check-results/govulncheck.json
+gv=check-results/ubuntu-24.04/govulncheck.json
 [ -f "$gv" ] && [ ! -L "$gv" ] && [ -s "$gv" ] || { echo "release-signatures: $gv (Check's govulncheck stream) is missing, empty or not a regular file" >&2; exit 1; }
 [ -f dependency-provenance.json ] && [ ! -L dependency-provenance.json ] && [ -s dependency-provenance.json ] || { echo "release-signatures: dependency-provenance.json of the tag's checkout is missing, empty or not a regular file" >&2; exit 1; }
 date=$(git log -1 --format=%ct "$GITHUB_SHA")

@@ -38,7 +38,7 @@ TOKEN_NAMES = ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL",
 # certificate, signature or timestamp is looked at, and both early protection against honest confusion and lookalikes: the security boundary is the Build Config URI
 # pin of check_identity (the calling workflow must be release.yml at the tag).
 SNAPSHOT_NAME = re.compile(r"snapshot-[a-z0-9_-]*")                    # exactly this is "a snapshot record"
-RELEASE_NAMES = {"build": ("apk", "build"), "rebuild": ("rapk", "rebuild"), "check": ("scanners", "acceptance", "runtime", "arm64")}      # the collection names a stage reads; other stages' records are not collections
+RELEASE_NAMES = {"build": ("apk", "build"), "rebuild": ("rapk", "rebuild"), "check": ("scanners", "acceptance", "runtime"), "release": ("release-verify", "release-publish")}      # the collection names a stage reads; other stages' records are not collections
 SNAPSHOT_VERSION_FILE = re.compile(r"fscache(-fips)?[-_]0\.0\.0[_-]")           # fscache-0.0.0_rc1-r0.apk, fscache_0.0.0-rc.1_linux_amd64.tar.gz; not 10.0.0 or 0.10.0
 
 
@@ -576,7 +576,7 @@ def cmd_admission_baseline(a):
     if got["sha"] != a.sha:
         refuse("build", "sha: admission was for %s, this run is %s" % (got["sha"], a.sha))
     # a release candidate tag (vX.Y.Z-rcN) is admitted with its OWN baseline: the version is the tag itself; every other tag carries a vX.Y.Z baseline
-    syntax = sys.modules["build-admit"].TAG_SYNTAX      # the one tag grammar (REQ-CHAIN-004-AC19), loaded by the verifier that imports this file
+    syntax = sys.modules["build-admit"].TAG_SYNTAX      # the one tag grammar (REQ-CHAIN-004-AC20), loaded by the verifier that imports this file
     if not syntax.fullmatch(a.tag):
         refuse("build", "baseline: tag %r is not vX.Y.Z or vX.Y.Z-rcN, so it has no baseline" % a.tag)
     if "-rc" in a.tag:

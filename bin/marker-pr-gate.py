@@ -31,7 +31,7 @@ MARKER = ".github/policy/rc-proof.json"
 KNOWN_RED = "test-evidence/known-red.json"
 ENTRY = "KR-CUTOVER"
 WORKFLOW = ".github/workflows/release.yml"
-# the one tag grammar (REQ-CHAIN-004-AC19), loaded from the file beside this one
+# the one tag grammar (REQ-CHAIN-004-AC20), loaded from the file beside this one
 _spec = importlib.util.spec_from_file_location("build_admit", os.path.join(os.path.dirname(os.path.abspath(__file__)), "build-admit.py"))
 _admit = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_admit)
@@ -49,8 +49,8 @@ ARTIFACTS = (
     ("items", "witness-build"),
     ("provenance", "provenance"),
     ("witness-rebuild", "witness-rebuild"),
-    ("witness-check", "witness-check"),
-    ("witness-check-arm64", "witness-check/witness-arm64"),
+    ("witness-check-ubuntu-24.04", "witness-check/ubuntu-24.04"),
+    ("witness-check-ubuntu-24.04-arm", "witness-check/ubuntu-24.04-arm"),
     ("hostile-results", "hostile-results"),
 )
 

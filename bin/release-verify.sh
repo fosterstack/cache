@@ -36,8 +36,8 @@ python3 -I -B bin/chain-verify.py apk-compare --policy policy.json \
   --build-apk witness-apk-ubuntu-24.04/apk-collection.json --build-apk witness-apk-ubuntu-24.04-arm/apk-collection.json
 python3 -I -B bin/chain-verify.py check-list --policy policy.json --digests witness-build/digests.json \
   --dir witness-check
-# The govulncheck stream release-sign hands the evidence step is a product of Check's verified scanners
-# record, bound under Check's identity for Build's digests.
+# The govulncheck stream Sign signs as dependency evidence is a product of the scanners record of the amd64 runner,
+# the only one that runs govulncheck, bound under Check's identity for Build's digests.
 python3 -I -B bin/chain-verify.py bind-check --policy policy.json \
-  --record witness-check/witness-scanners/scanners-collection.json --digests witness-build/digests.json \
-  --file check-results/govulncheck.json --product check-results/govulncheck.json
+  --record witness-check/ubuntu-24.04/witness-scanners/scanners-collection.json --digests witness-build/digests.json \
+  --file check-results/ubuntu-24.04/govulncheck.json --product check-results/govulncheck.json
