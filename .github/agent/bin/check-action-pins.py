@@ -2676,8 +2676,8 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
             found.append("runs %s from a working directory this check cannot place; refused" % path)
             continue
         READ_SCRIPTS.append((rel, tree.read(rel)))       # bound to its committed bytes after inlining (check_runs)
-        if TEST_HARNESS.search(rel):
-            continue                                     # a test harness (its probes are fixture data): a documented exclusion
+        if TEST_HARNESS.search(rel) or rel in SEALED_PROBE:
+            continue                                     # a test harness (its probes are fixture data) or the sealed probe: documented exclusions
         if depth >= 4:
             found.append("scripts nest deeper than this check reads (%s); refused" % path)
             continue
