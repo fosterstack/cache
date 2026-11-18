@@ -1828,7 +1828,7 @@ else
   lcase trigger-workflow-call                  bad "d['on']['workflow_call'] = {}" "triggers beyond push, pull_request and merge_group: workflow_call"
   lcase permissions-read-dropped               bad "d['permissions'] = {'contents': 'read'}" "are not exactly {contents: read, pull-requests: read}"
   lcase permissions-pr-write                   bad "d['permissions'] = {'contents': 'read', 'pull-requests': 'write'}" "are not exactly {contents: read, pull-requests: read}"
-  lcase uses-digest-bumped                     ok  "[s.__setitem__('uses', 'actions/setup-python@abababababababababababababababababababab') for s in $J['allowlist-persona']['steps'] if s.get('uses', '').startswith('actions/setup-python@')]"
+  lbcase uses-digest-bumped                    ok  'i = b.index(b"\n  allowlist-persona:"); j = b.index(b"actions/setup-python@", i) + 21; b = b[:j] + b"a" * 40 + b[j + 40:]'
   lcase uses-tag-ref                           bad "[s.__setitem__('uses', 'actions/setup-python@v7') for s in $J['allowlist-persona']['steps'] if s.get('uses', '').startswith('actions/setup-python@')]" "differs in: uses"
   lcase uses-short-digest                      bad "[s.__setitem__('uses', 'actions/setup-python@abababababababababababababababababababa') for s in $J['allowlist-persona']['steps'] if s.get('uses', '').startswith('actions/setup-python@')]" "differs in: uses"
   lcase counting-step-or-true                  bad "x = $COUNTING; x['run'] += ' || true'"
