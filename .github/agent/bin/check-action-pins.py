@@ -1989,7 +1989,44 @@ def _setter_values(name, script):
     backslash escape or `${...}` inside a word hides nothing and opens nothing."""
     pat = re.compile(r"(?<![^\s;&|(])" + name + r"=(?:\"((?:\\.|[^\"\\])*)\"|'([^']*)'|((?:\\.|[^\s\"';)&|\\])*))"
                      r"|(?<![^\s;&|(])#[^\n]*|\"(?:\\.|[^\"\\])*\"|'[^']*'|(?:\\.|\$\{[^}]*\}|[^\s;&|()\"'\\])+")
-    return [m.group(m.lastindex) for m in pat.finditer(script) if m.lastindex]
+    _, masked, open_quote = _mask_shell(script)
+    return [m.group(m.lastindex) for m in pat.finditer(script)
+            if m.lastindex and (open_quote or not _subshell_setter(masked, m))]
+
+
+_SH_WORD = r"(?:\"[^\"]*\"|'[^']*'|[^\s;&|()<>\"'])+"         # a word of masked text: no pattern splits it two ways
+_SH_REDIR = r"(?:\d*|&)(?:>>|>\||>&|<&|>|<)[ \t]*(?:" + _SH_WORD + ")?"
+_SH_ASSIGN = r"[A-Za-z_]\w*(?:\[[^\]\s]*\])?\+?=(?:" + _SH_WORD + ")?"
+_SH_PREFIX = re.compile(r"[ \t]*(?:" + _SH_REDIR + "|" + _SH_ASSIGN + ")")
+_SH_TOKEN = re.compile(r"\|&?|&|" + _SH_REDIR + "|" + _SH_ASSIGN + "|" + _SH_WORD)
+_SH_END = re.compile(r"[ \t]*(?:\Z|\n|;|&&|\|\|)")
+_SH_PREFIX_WORD = re.compile(_SH_REDIR + "|" + _SH_ASSIGN)
+
+
+def _subshell_setter(masked, m):
+    """True unless the setter match `m` is a whole command of the shell that reads on: only further `name=value` words and
+    redirections, then the end, a newline, `;`, `&&` or `||` follow it, and no pipe, `(` or `{` group opens before it
+    (a pipe is looked for before the assignments and redirections that lead its command). `masked` is the script with
+    comments and quoted or escaped characters blanked, so none of them counts; text it cannot read (an open quote)
+    counts as a subshell, which flags the copy."""
+    end, depth = m.end(), masked[m.start():m.end()].count("$(")
+    while depth and end < len(masked):      # the value's own `$(...)` is part of the word
+        depth += (masked[end] == "(") - (masked[end] == ")")
+        end += 1
+    while True:                             # one token per step: a word is read one way only
+        step = _SH_PREFIX.match(masked, end)
+        if not step:
+            break
+        end = step.end()
+    before = masked[:m.start()]
+    opened = len(re.findall(r"\(|(?<!\$)\{(?=\s)", before)) - len(re.findall(r"\)|(?<=[;\s])\}", before))
+    flat = before
+    while (inner := re.sub(r"\([^()]*\)", "_", flat)) != flat:   # a balanced `$(...)`, `$((...))` or `(...)` is one word
+        flat = inner
+    toks = _SH_TOKEN.findall(re.split(r"\n|;|&&|\|\|", flat)[-1])
+    while toks and _SH_PREFIX_WORD.fullmatch(toks[-1]):
+        toks.pop()
+    return not _SH_END.match(masked, end) or opened > 0 or bool(toks and toks[-1] in ("|", "|&"))
 
 
 def _loose_values(name, script):
