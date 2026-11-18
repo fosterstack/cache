@@ -672,7 +672,13 @@ ALIASING = re.compile(r"(?<![\w.-])(alias|expand_aliases)(?![\w.-])")
 PARAM_WORD = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*])(:?)([-=+?])([^{}]*)\}")
 
 
+DEFAULT_ASSIGNED = set()   # names a ${x:=word} or ${x=word} of the job's text may set; cleared at the start of check_runs
+
+
 def _expand_defaults(text):
+    """${x:-word} as word, ${x:=word} too. The names a `:=` or `=` form may set are kept in DEFAULT_ASSIGNED, read before
+    the word replaces the form: the variable's value is then unknown (_set_by_setter)."""
+    DEFAULT_ASSIGNED.update(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*):?=", text))   # nested words too: PARAM_WORD cannot see them
     while True:   # each pass removes at least one ${...}: it ends
         new = PARAM_WORD.sub(lambda m: m.group(4), text)
         if new == text:
@@ -794,6 +800,38 @@ def _tokens(chunk):
         return text.split()
 
 
+def _paren_end(text, i):
+    """The index just past the ) that closes the ( at text[i], read with bash's quotes, escapes and comments; None when
+    it never closes."""
+    depth, j, aq, n, esc = 1, i + 1, None, len(text), -1    # esc: where the last backslash pair ended
+    while j < n and depth:
+        d = text[j]
+        if aq == "'":                              # no escaping at all inside a single quote
+            aq = None if d == "'" else aq
+        elif aq == '"' or d == "\\":                # a backslash escapes the next char, inside a
+            if d == "\\" and j + 1 < n:              # double quote OR outside any quote (Sonnet #164
+                j += 2; esc = j                       # r14, B1: the classic 'x'\''y' idiom embeds a
+                continue                             # literal apostrophe this way — the backslash is
+            aq = None if d == '"' else aq            # NOT a new quote opening)
+        elif d in "'\"":
+            aq = d
+        elif d == "#" and (j == i + 1 or (text[j - 1] in " \t\n;&|()<>" and j != esc)):
+            # a comment inside the array (Codex #164 r13, B1): its own ')' or apostrophe is not real
+            # syntax and must not move depth or open a quote — same rule as the outer loop's own #
+            while j < n and text[j] != "\n":
+                j += 1
+            continue
+        elif d == "(":
+            depth += 1
+        elif d == ")":
+            depth -= 1
+        j += 1
+    return None if depth else j
+
+
+CASE_WORD = re.compile(r"(?<![\w.-])case(?![\w.-])")
+
+
 def _split_commands(text):
     """The simple commands of a shell text, split as bash splits them: at ; & | ( ) and newlines OUTSIDE quotes ('…',
     "…", $'…') and escapes, with comments (# at the start of a word, outside quotes) dropped. A raw split at these
@@ -828,30 +866,17 @@ def _split_commands(text):
                 i += 1
             continue
         elif c == "(" and cur and cur[-1] == "=":         # NAME=( … ): an array's words, not commands
-            depth, j, aq = 1, i + 1, None
-            while j < n and depth:
-                d = text[j]
-                if aq == "'":                              # no escaping at all inside a single quote
-                    aq = None if d == "'" else aq
-                elif aq == '"' or d == "\\":                # a backslash escapes the next char, inside a
-                    if d == "\\" and j + 1 < n:              # double quote OR outside any quote (Sonnet #164
-                        j += 2                                # r14, B1: the classic 'x'\''y' idiom embeds a
-                        continue                             # literal apostrophe this way — the backslash is
-                    aq = None if d == '"' else aq            # NOT a new quote opening)
-                elif d in "'\"":
-                    aq = d
-                elif d == "#" and (j == i + 1 or text[j - 1] in " \t\n"):
-                    # a comment inside the array (Codex #164 r13, B1): its own ')' or apostrophe is not real
-                    # syntax and must not move depth or open a quote — same rule as the outer loop's own #
-                    while j < n and text[j] != "\n":
-                        j += 1
-                    continue
-                elif d == "(":
-                    depth += 1
-                elif d == ")":
-                    depth -= 1
-                j += 1
+            j = _paren_end(text, i) or n
             cur.append(text[i:j].replace("\n", " "))
+            i = j
+            continue
+        elif c in "<>" and text[i + 1:i + 2] == "(":      # <( … ) / >( … ): the command keeps it, its inside is read too
+            j = _paren_end(text, i + 1)
+            if j is None or CASE_WORD.search(text[i + 2:j - 1]):    # a case pattern's ) ends it early: refuse, read no more
+                out.append("__too_deep__ process-substitution")
+                break
+            out += _split_commands(text[i + 2:j - 1])
+            cur.append(c + "(_)")                         # one word, whatever is inside
             i = j
             continue
         elif c == "|" and cur and cur[-1] == ">" and len(cur) != escaped:   # `>|` is a redirection that overrides noclobber, not a pipe
@@ -1098,7 +1123,7 @@ def _commands(script, depth=0, in_container=False):
     import shlex
     text, inner = _cut_substitutions(re.sub(r"\\\n", "", script))
     out = []
-    if any(re.search(r"(?<![\w.-])case(?![\w.-])", sub) for sub in inner):
+    if any(CASE_WORD.search(sub) for sub in inner):
         out.append(["__too_deep__", "case ... esac inside $( )"])    # a case pattern's `)` ends the substitution early: refuse (Codex #164 r19, B10)
     if depth < 6:
         for sub in inner:
@@ -1112,6 +1137,9 @@ def _commands(script, depth=0, in_container=False):
         chunk = _skip_array_literal(chunk)
         toks = _tokens(chunk)
         if not toks or toks[0] in PRINTERS:
+            continue
+        if toks[0] == "__too_deep__":                      # the splitter refused a process substitution it cannot read
+            out.append(toks)
             continue
         for i, w in enumerate(toks):
             c = next((j for j in range(i + 1, len(toks)) if re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", toks[j])), None) \
@@ -1242,7 +1270,7 @@ def _stdin_shell(toks):
         i = 0
         while i < len(rest):
             a = rest[i]
-            if a.startswith("<(") or (re.fullmatch(r"[0-9]*<", a) and (i + 1 == len(rest) or rest[i + 1] == "<")):
+            if a.startswith("<(") or (re.fullmatch(r"[0-9]*<", a) and (i + 1 == len(rest) or rest[i + 1].startswith("<("))):
                 return w                                  # the script is a process substitution's output (NEW-34)
             if a.startswith("<"):                          # a redirection or herestring: not an operand
                 i += 1 if re.match(r"^<(<<?|&)?[^<>&]", a) else 2
@@ -2031,6 +2059,102 @@ def _only_read(name, script):
             and not any(_builds_name(_unquoted(c)) for c in _split_commands(script)))
 
 
+def _cut_redirections(text):
+    """The text with each redirection cut off its word: from a < or > outside quotes to the next blank outside quotes;
+    a bare operator (`< file`, `<<< x`) takes the word after it too, and <(…) goes whole. A < or > inside '…' or "…"
+    stays part of the word (declare -n r='out[1<0]')."""
+    out, q, cut, bare, i = [], None, False, False, 0
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and q != "'" and i + 1 < len(text):
+            if cut:
+                bare = False                             # the escaped word is the operand
+            else:
+                out.append(text[i:i + 2])
+            i += 2
+            continue
+        if q:
+            q = None if c == q else q
+        elif c in "<>" and text[i + 1:i + 2] == "(":
+            cut, bare = True, False
+            i = _paren_end(text, i + 1) or len(text)
+            continue
+        elif c in "'\"":
+            q = c
+            bare = False
+        elif c in "<>":
+            if not cut and out and out[-1].isdigit() and (len(out) == 1 or out[-2].isspace()):
+                out.pop()                                # the descriptor number of 2>file is part of the redirection
+            cut = bare = True
+        elif c.isspace():
+            cut = cut and bare
+        elif cut:
+            bare = False
+        if not cut:
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
+# the variable a read, mapfile or select sets when the command names none; a select sets REPLY besides its own name
+DEFAULT_TARGET = {"read": "REPLY", "select": "REPLY", "mapfile": "MAPFILE", "readarray": "MAPFILE"}
+READ_OPTIONS = ({"-a", "-d", "-i", "-n", "-N", "-p", "-t", "-u"}, {"-e", "-r", "-s"})   # taking a value, taking none
+MAPFILE_OPTIONS = ({"-d", "-n", "-O", "-s", "-u", "-C", "-c"}, {"-t"})
+OPTIONS = {"read": READ_OPTIONS, "mapfile": MAPFILE_OPTIONS, "readarray": MAPFILE_OPTIONS}
+
+
+def _default_target(toks):
+    """REPLY or MAPFILE when the command's read, select, mapfile or readarray sets it by default: a select always, the
+    others when no variable follows their options (read -a names an array)."""
+    words = _command_words(toks)
+    if not words or words[0] not in DEFAULT_TARGET:
+        return None
+    args = toks[toks.index(words[0]) + 1:]
+    if words[0] == "select":
+        return "REPLY"
+    first, _ = _options(args, *OPTIONS[words[0]])
+    if first < len(args) or any(re.match(r"-[ers]*a", a) for a in args):
+        return None
+    return DEFAULT_TARGET[words[0]]
+
+
+SETTER_WORDS = re.compile("read|mapfile|readarray|getopts|declare|typeset|local|export|readonly|let|select|for")
+
+
+def _set_by_setter(name, script):
+    """True when a form other than name= names the variable as a literal word and may set it: a command that takes a
+    variable name (read, for, eval, trap …), -<letters>name attached to read or printf, a nameref to it, printf -v, name+=,
+    name[0]=, (( name = … )), ${name:=x} (DEFAULT_ASSIGNED)."""
+    if name in DEFAULT_ASSIGNED:
+        return True
+    word = r"(?<![\w/.$-])(?<!\$\{)" + name + r"(?![A-Za-z0-9_])"
+    step = r"(?:\+\+|--)"
+    arithmetic = (r"\(\([^\n]*(?:" + word + r"\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)|" + word + step + "|" + step + word + ")")
+    element = word + r"(?:\[[^]\n]*\])?\+=|" + word + r"\[[^]\n]*\]="
+    words = _unquoted(script)
+    if re.search(arithmetic, words) or re.search(element, words):
+        return True
+    for command in _split_commands(script):
+        body = _tokens(command)
+        toks = _tokens(_cut_redirections(_mask_shell(command)[0]))   # printf -vout>/dev/null: the redirection is no part of the name
+        if _default_target(toks) == name:
+            return True
+        names_it = any(re.fullmatch(name + r"(?:\[[^]]*\])?\+?(?:=.*)?", t, re.S) for t in toks)
+        if names_it and (any(SETTER_WORDS.fullmatch(t) for t in toks) or ("printf" in toks and "-v" in toks)):
+            return True
+        attached = any(re.fullmatch(r"-[A-Za-z]+" + name + r"(?:\[[^]]*\])?", t) for t in toks)
+        if attached and any(t in ("read", "mapfile", "readarray", "printf") for t in toks):
+            return True
+        nameref = any(re.fullmatch(r"[^=]+=" + name + r"(?:\[.*\])?", t, re.S) for t in toks)
+        with_n = any(re.fullmatch(r"-[A-Za-z]*n[A-Za-z]*", t) for t in toks)
+        if nameref and with_n and any(t in ("declare", "typeset", "local") for t in toks):
+            return True
+        if "eval" in toks or "trap" in toks:
+            if any(re.search(word, t) for t in toks) or any(_set_by_setter(name, t) for t in body if t not in ("eval", "trap")):
+                return True   # the literal body is read as a script: a setter form in it counts as at top level
+    return False
+
+
 def _outside(target, script, depth=0):
     """A destination that cannot be the checkout's directory: an absolute path outside the runner's workspace, a path
     under $RUNNER_TEMP or a fresh $(mktemp …), or a variable every assignment of which in the job is one of those —
@@ -2047,6 +2171,8 @@ def _outside(target, script, depth=0):
     m = re.match(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?(/.*)?$", target.strip("\"'"))
     if not m or depth > 4:
         return False
+    if _set_by_setter(m.group(1), script):
+        return False                                     # set by read, printf -v, (( )), name[0]= …: an unknown value
     values = re.findall(r"(?:^|[\s;(])" + m.group(1) + r"=[\"']?([^\s\"';)]*)", script)
     return bool(values) and all(_outside(v, script, depth + 1) for v in values)
 
@@ -2779,6 +2905,7 @@ def check_runs(where_job, scripts, bad, tree=None):
     check reads POSIX shell only (Sonnet B8)."""
     def read(raw):
         return _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", raw))))
+    DEFAULT_ASSIGNED.clear()
     posix = [not item[2] or re.match(r"^(bash|sh)(\s|$)", item[2]) for item in scripts]
     # steps of one job share a workspace: a file changed in ANY step of the job counts (Sonnet #164 r6, NEW-7); the
     # committed scripts they run are part of it (Codex #164 r2, C11)

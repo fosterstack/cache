@@ -703,24 +703,24 @@ expect ok "the per-chip and per-phase Check files and names are gone from the re
 expect ok "the real bin/witnessed.sh is the one helper with the Witness flags and the KMS signer (rule 68)" "" helper "$root/bin/witnessed.sh"
 expect ok "the real chain-records.json has Check's Witness collection and no old acceptance record (rule 66)" "" records "$root/.github/policy/chain-records.json"
 expect ok "the real release.yml runs check beside rebuild, check needs check-govulncheck, build-assemble and sign, and the release job waits for check, sign, sign-rebuild and sign-check" "" graph "$root/.github/workflows/release.yml"
-job_has_if() {
-  python3 -c 'import sys, yaml; print("if" in yaml.safe_load(open(sys.argv[1]))["jobs"][sys.argv[2]])' "$1" "$2"
-}
-sed 's/^  check:$/  check:\n    if: false/' "$work/release.yml" > "$work/release-if.yml"
-if [ "$(job_has_if "$work/release-if.yml" check)" = True ] \
-   && [ "$(job_has_if "$work/release.yml" check)" = False ]; then
-  ok "AC2 fixture: a job-level if: on release.yml's check job is seen, the known-good file has none"
-else
-  bad "AC2 the job-level if: probe cannot tell a skippable check job from a plain one"
-fi
 job_if() {
-  python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["jobs"][sys.argv[2]].get("if", "none"))' "$1" "$2"
+  python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["jobs"][sys.argv[2]].get("if", ""))' "$1" "$2"
 }
-SNAP_IF="\${{ inputs.mode != 'snapshot' }}"
-if [ "$(job_if "$root/.github/workflows/release.yml" check)" = "$SNAP_IF" ]; then
-  ok "AC2 the real release.yml check job's job-level if: is exactly the snapshot guard (a release run cannot skip Check; only snapshot mode does)"
+snap="\${{ inputs.mode != 'snapshot' }}"
+sed 's/^  check:$/  check:\n    if: false/' "$work/release.yml" > "$work/release-if.yml"
+sed "s/^  check:\$/  check:\n    if: $snap/" "$work/release.yml" > "$work/release-snap.yml"
+if [ "$(job_if "$work/release-snap.yml" check)" = "$snap" ] \
+   && [ "$(job_if "$work/release-if.yml" check)" != "$snap" ] \
+   && [ "$(job_if "$work/release.yml" check)" != "$snap" ]; then
+  ok "AC2 fixture: only the exact snapshot condition on release.yml's check job is accepted, if: false and no if are not"
 else
-  bad "AC2 the real release.yml check job's if is not exactly the snapshot guard: $(job_if "$root/.github/workflows/release.yml" check)"
+  bad "AC2 the job-level if: probe cannot tell a skippable check job from one that skips only in snapshot mode"
+fi
+found=$(job_if "$root/.github/workflows/release.yml" check)
+if [ "$found" = "$snap" ]; then
+  ok "AC2 the real release.yml check job carries exactly the snapshot if: (Release cannot skip Check)"
+else
+  bad "AC2 the real release.yml check job's if: is not exactly the snapshot condition, found: $found"
 fi
 sed "s/^  check:\$/  check:\n    if: \${{ always() }}/" "$work/release.yml" > "$work/release-if2.yml"
 if [ "$(job_if "$work/release-if2.yml" check)" != "$SNAP_IF" ]; then ok "AC2 a check job with another if: (always()) is told from the snapshot guard"; else bad "AC2 the snapshot-guard probe takes always() for the snapshot guard"; fi

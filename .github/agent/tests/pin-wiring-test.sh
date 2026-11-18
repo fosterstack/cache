@@ -536,7 +536,7 @@ else:
     if not str(s0.get("uses", "")).startswith("actions/checkout@") or set(s0) - {"uses"}: bad.append("checkout step")
     if not str(s1.get("uses", "")).startswith("actions/setup-go@") or set(s1) - {"uses", "with"}: bad.append("setup-go step")
     if s2.get("run") != "bash bin/install-scanner.sh go" or set(s2) - {"name", "run"}: bad.append("installer step")
-    if s3.get("run") != "go install golang.org/x/vuln/cmd/govulncheck@" + pin or set(s3) - {"name", "run"}: bad.append("install step")
+    if s3.get("run") != "bash bin/install-scanner.sh govulncheck" or set(s3) - {"name", "run"}: bad.append("install step")
     if s4.get("run") != 'python3 -I -B bin/check-govulncheck.py --scanners .github/policy/scanners.json --out "$RUNNER_TEMP/gv"' or set(s4) - {"name", "run"}: bad.append("script step")
 sys.exit(1 if bad else 0)
 PY
@@ -1051,7 +1051,7 @@ gvgate_mut "no-isolation-flags" 'python3 -I -B bin' 'python3 bin'
 gvgate_mut "id-token" 'contents: read' 'contents: read
       id-token: write'
 gvgate_mut "job-renamed" 'name: govulncheck' 'name: govulncheck-gate'
-gvgate_mut "install-and-copy" 'govulncheck@v1.7.0' 'govulncheck@v1.7.0 && cp /bin/true ~/go/bin/govulncheck'
+gvgate_mut "install-and-copy" 'bash bin/install-scanner.sh govulncheck' 'bash bin/install-scanner.sh govulncheck && cp /bin/true ~/go/bin/govulncheck'
 gvgate_mut "planted-binary-step" '      - name: govulncheck (the same judgment as Check)' '      - name: plant
         run: cp /bin/true /usr/local/bin/fscache-go/bin/govulncheck
       - name: govulncheck (the same judgment as Check)'

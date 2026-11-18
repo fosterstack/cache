@@ -1815,7 +1815,7 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-DEP-003-AC3
-        given: a Dependabot pull request that changes a file under tools/govulncheck/ (go.mod and go.sum, the pin of the Go source scanner, whose version ci.yml repeats by hand so a bump alone cannot be right), or whose file list holds 100 or more entries (the API lists at most 100, so a longer one cannot be judged)
+        given: a Dependabot pull request that changes a file under tools/govulncheck/ (go.mod and go.sum, the pin of the Go source scanner, which ci.yml builds through bin/install-scanner.sh, so a new version gets a normal review), or whose file list holds 100 or more entries (the API lists at most 100, so a longer one cannot be judged)
         when: the auto-merge workflow or the hourly reviewer sees it
         then: "the workflow does not arm auto-merge for it (its arming step reads the pull request's files and stops), the reviewer does not review or arm it and turns off an arm made earlier (a failed state read or a failed disarm skips it and fails the step); it is held out of auto-merge and handled as a normal pull request, which is reviewed by both reviewers and merged; a path that only looks like the directory (tools/govulncheck-evil/) is not held, and 99 listed files are judged as usual"
         verification: { method: ci-workflow, release_blocking: false }
@@ -1881,9 +1881,9 @@ requirements:
         status: approved
 
   - id: REQ-REL-008
-    title: The workflow set is limited to a fixed list (16 files today), each file grouping jobs by purpose
+    title: The workflow set is limited to a fixed list (17 files today), each file grouping jobs by purpose
     statement: >
-      The repository's workflows shall be limited to a fixed list of files, 16 today (AC1 fixes the list), each file holding the jobs that a person would group by what they are
+      The repository's workflows shall be limited to a fixed list of files, 17 today (AC1 fixes the list), each file holding the jobs that a person would group by what they are
       for (jobs with nothing to do with each other never share a file to cut the count, and related jobs never get files of
       their own), the release being one file, release.yml, whose build, rebuild, check, sign and release jobs each run on their
       own runner. Each merge keeps every required check's name, top-level placement and events, and a new workflow file is
@@ -1897,7 +1897,7 @@ requirements:
       - id: REQ-REL-008-AC1
         given: "the four consolidation pull requests have landed"
         when: "the workflow directory is listed"
-        then: "it holds exactly the 16 listed files, the list fixed by bin/workflow-consolidation-test.sh: acceptance.yml, agent-review-gate.yml, auditor.yml, ci.yml, codeql.yml, customer-words-edited.yml, dependabot-auto-merge.yml, dependabot-reviewer.yml, go-freshness.yml, main-candidate-rescan.yml, persona-uat.yml, release.yml, reserved-branch-guard.yml, scan.yml, scorecard.yml and supply-chain.yml; no stage-*.yml file exists, because the release is the one file release.yml (one workflow file per purpose, the rule of Nov 13 2026); persona-uat.yml holds the persona UAT jobs (the weekly run and the release-candidate leg), one purpose"
+        then: "it holds exactly the 17 listed files, the list fixed by bin/workflow-consolidation-test.sh: acceptance.yml, agent-review-gate.yml, auditor.yml, ci.yml, codeql.yml, customer-words-edited.yml, dependabot-auto-merge.yml, dependabot-reviewer.yml, evidence-letter.yml, go-freshness.yml, main-candidate-rescan.yml, persona-uat.yml, release.yml, reserved-branch-guard.yml, scan.yml, scorecard.yml and supply-chain.yml; no stage-*.yml file exists, because the release is the one file release.yml (one workflow file per purpose, the rule of Nov 13 2026); persona-uat.yml holds the persona UAT jobs (the weekly run and the release-candidate leg), one purpose; evidence-letter.yml holds the monthly evidence letter's two jobs (REQ-REL-013), a purpose no other file has"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-008-AC2
@@ -3393,13 +3393,13 @@ requirements:
       - id: REQ-CHAIN-001-AC8
         given: "the workflow files of the repository"
         when: "the chain test reads their jobs"
-        then: "exactly the three jobs sign, sign-rebuild and sign-check of release.yml run in the environment sign and request the identity token for the release signing role, and no other job of any workflow file does, so a job of any other environment or file cannot obtain the role; the role's trust itself, which accepts only the environment sign of release.yml, is applied in the ops repository"
+        then: "exactly the three jobs sign, sign-rebuild and sign-check of release.yml run in the environment sign and request the identity token for the release signing role, and no other job of any workflow file does except the job sign of evidence-letter.yml (REQ-REL-013, in the environment evidence-letter, the only job outside the environment sign that does), so a job of any other environment or file cannot obtain the role; the role's trust itself, which accepts only the environment sign of release.yml and the environment evidence-letter of evidence-letter.yml on main, is applied in the ops repository"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-001-AC9
         given: "release.yml"
         when: "its jobs are read"
-        then: "the three jobs sign, sign-rebuild and sign-check each carry environment: sign, the guard S of REQ-CHAIN-005-AC5 and exactly the identity token write for the KMS federation, and are the only jobs that carry the KMS federation (AWS_ROLE_ARN, AWS_REGION, RELEASE_KMS_KEY_REF) and the only jobs that run the signing subcommand or bin/release-signatures.sh; sign-check runs bin/release-signatures.sh on a final tag only, with no registry credential (no DOCKERHUB_* and no GH_TOKEN) and no registry or packages write, and uploads the signatures as the artifact release-signed; the job release carries neither an AWS role nor an identity token for the key, its Witness records stay local evidence under a throwaway key, and its steps release-apks and release-sign check Sign's signatures and push them and sign nothing; no job of persona-uat.yml, live-test or live-test-release names the key role"
+        then: "the three jobs sign, sign-rebuild and sign-check each carry environment: sign, the guard S of REQ-CHAIN-005-AC5 and exactly the identity token write for the KMS federation, and are the only jobs of release.yml that carry the KMS federation (AWS_ROLE_ARN, AWS_REGION, RELEASE_KMS_KEY_REF) and the only jobs that run the signing subcommand or bin/release-signatures.sh; sign-check runs bin/release-signatures.sh on a final tag only, with no registry credential (no DOCKERHUB_* and no GH_TOKEN) and no registry or packages write, and uploads the signatures as the artifact release-signed; the job release carries neither an AWS role nor an identity token for the key, its Witness records stay local evidence under a throwaway key, and its steps release-apks and release-sign check Sign's signatures and push them and sign nothing; no job of persona-uat.yml, live-test or live-test-release names the key role; the one other holder of the KMS federation is the publish step of evidence-letter.yml (REQ-REL-013), in the job with environment: evidence-letter, which carries the three names as the env of that step only, so no job of that file carries them and no other step of it or job of any other file names the key role, the key reference or the environment sign"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
 
@@ -4101,7 +4101,7 @@ requirements:
       - id: REQ-CHAIN-006-AC2
         given: "release.yml"
         when: "its job graph is read"
-        then: "sign needs build; rebuild needs exactly build and sign; sign-rebuild needs exactly build and rebuild; check needs exactly build and sign; sign-check needs exactly build and check; rebuild does not need check and check does not need rebuild (they run side by side), and the release job needs exactly check, sign, sign-rebuild and sign-check; the check job carries no if of its own: it runs whenever build and sign ran, in a release and in a dry run"
+        then: "sign needs build; rebuild needs exactly build and sign; sign-rebuild needs exactly build and rebuild; check needs exactly build and sign; sign-check needs exactly build and check; rebuild does not need check and check does not need rebuild (they run side by side), and the release job needs exactly check, sign, sign-rebuild and sign-check; the check job carries exactly one if, the Check condition of REQ-CHAIN-005-AC5 (inputs.mode != 'snapshot'), and no other: it runs whenever build and sign ran, in a release and in a dry run, and only snapshot mode skips it"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-006-AC3

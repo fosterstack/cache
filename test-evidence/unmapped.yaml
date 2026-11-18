@@ -47,28 +47,6 @@ unmapped:
     reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
   - ac: REQ-REL-009-AC10
     reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
-  - ac: REQ-REL-013-AC1
-    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
-  - ac: REQ-REL-013-AC2
-    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
-  - ac: REQ-REL-013-AC3
-    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
-  - ac: REQ-REL-013-AC4
-    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
-  - ac: REQ-REL-013-AC5
-    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
-  - ac: REQ-REL-013-AC6
-    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
-  - ac: REQ-REL-013-AC7
-    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
-  - ac: REQ-REL-013-AC8
-    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
-  - ac: REQ-REL-013-AC9
-    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
-  - ac: REQ-REL-013-AC10
-    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
-  - ac: REQ-REL-013-AC11
-    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
   - ac: REQ-REL-009-AC1
     reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
   - ac: REQ-REL-009-AC2

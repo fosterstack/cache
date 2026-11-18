@@ -117,10 +117,13 @@ bin/layout-archive.sh bin/layout-archive-test.sh
 bin/chain-sandbox-probe.sh bin/build-sandbox-hostile-test.sh
 build/probe/control.yaml.tmpl build/probe/read-record.yaml.tmpl build/probe/write-record.yaml.tmpl
 build/probe/read-keydir.yaml.tmpl build/probe/read-token.yaml.tmpl build/probe/network.yaml.tmpl
+bin/evidence-letter.py bin/evidence-letter-test.sh docs/evidence-letter-signatory.txt
+bin/evidence-letter-fetch.sh bin/evidence-letter-publish.sh bin/evidence-letter-job-test.sh
+bin/evidence-letter-verify.sh bin/evidence-letter-present.sh
 bin/tag-sign.py bin/tag-sign-test.sh bin/chain-tag-jobs-judge.py bin/chain-tag-jobs-test.sh bin/patch-tag-texts-test.sh
 bin/tag-sign-prepare.sh bin/tag-sign-kms.sh bin/patch-decide.py bin/patch-decide-test.sh
 """.split())
-if len(DECLARED) != 98: errs.append("declared list is not 98 paths: %d" % len(DECLARED))
+if len(DECLARED) != 106: errs.append("declared list is not 106 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)

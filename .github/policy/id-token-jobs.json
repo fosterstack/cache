@@ -90,6 +90,11 @@
    "workflow": "scan.yml",
    "job": "build",
    "reason": "the call of release.yml in snapshot mode: id-token is the ceiling the caller grants (REQ-CHAIN-004-AC14); no called job holds it in that mode"
+  },
+  {
+   "workflow": "evidence-letter.yml",
+   "job": "sign",
+   "reason": "the monthly evidence letter's one signing job: the KMS release key by federation, its Rekor entry recorded (REQ-REL-013-AC9)"
   }
  ]
 }

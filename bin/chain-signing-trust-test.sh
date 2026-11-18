@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-001-AC8
 # REQ-CHAIN-001-AC8: exactly the four jobs sign, sign-rebuild, sign-check and sign-tag of release.yml run in the environment sign and request the identity token for the release signing
-# role (the job holds id-token: write and names the role: AWS_ROLE_ARN or RELEASE_KMS_KEY_REF); no other job of any workflow file does. The role's trust itself lives in the ops repository,
+# role (the job holds id-token: write and names the role: AWS_ROLE_ARN or RELEASE_KMS_KEY_REF); no other job of any workflow file does, except the job sign of evidence-letter.yml, which asks from the environment evidence-letter. The role's trust itself lives in the ops repository,
 # so this suite reads the workflow files only. The real files are judged, then mutated copies of them (each refused for its reason).
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -12,6 +12,7 @@ import copy, glob, json, os, re, sys
 import yaml
 
 FOUR = ["sign", "sign-check", "sign-rebuild", "sign-tag"]
+LETTER = ("evidence-letter.yml", "sign")
 KMS = re.compile(r"\bAWS_ROLE_ARN|RELEASE_KMS_KEY_REF|release-signing")
 
 def load(root):
@@ -33,10 +34,11 @@ def findings(wfs):
             if holds_token(wf, job) and KMS.search(json.dumps(job) + json.dumps(wf.get("env"))):
                 asking.append((name, jn))
     want = [("release.yml", j) for j in FOUR]
+    want_asking = sorted(want + [LETTER])
     if sorted(in_sign) != want:
         bad.append("the jobs in the environment sign are %s, not %s" % (sorted(in_sign), want))
-    if sorted(asking) != want:
-        bad.append("the jobs that request the identity token for the release signing role are %s, not %s" % (sorted(asking), want))
+    if sorted(asking) != want_asking:
+        bad.append("the jobs that request the identity token for the release signing role are %s, not %s" % (sorted(asking), want_asking))
     return bad
 
 def mutate(wfs, how):
@@ -71,6 +73,12 @@ def mutate(wfs, how):
         jobs["sign-tag"]["permissions"] = {"contents": "read"}
     elif how == "decide-in-sign":
         jobs["decide"]["environment"] = "sign"
+    elif how == "letter-second-job-asks":
+        w["evidence-letter.yml"]["jobs"]["extra"] = dict(extra, environment="evidence-letter")
+    elif how == "letter-sign-drops-token":
+        w["evidence-letter.yml"]["jobs"]["sign"]["permissions"] = {"contents": "read"}
+    elif how == "letter-sign-in-environment-sign":
+        w["evidence-letter.yml"]["jobs"]["sign"]["environment"] = "sign"
     elif how == "sign-rebuild-gone":
         del jobs["sign-rebuild"]
     elif how == "workflow-level-token":
@@ -93,7 +101,7 @@ mutated() { # mutated NAME
   if [ "$rc" = 1 ]; then pass=$((pass+1)); echo "PASS mutation $1 -> refused ($out)"
   else failn=$((failn+1)); echo "FAIL mutation $1 -> rc=$rc, wanted a refusal: $out"; fi
 }
-for m in release-job-signs release-job-in-sign fifth-job-in-release-yml job-of-another-file persona-uat-asks live-test-asks sign-check-leaves-sign sign-check-drops-token sign-rebuild-gone workflow-level-token fifth-job-cut-in-sign fifth-job-patch-notes-asks sign-tag-gone sign-tag-leaves-sign sign-tag-drops-token decide-in-sign; do
+for m in release-job-signs release-job-in-sign fifth-job-in-release-yml job-of-another-file persona-uat-asks live-test-asks sign-check-leaves-sign sign-check-drops-token sign-rebuild-gone workflow-level-token fifth-job-cut-in-sign fifth-job-patch-notes-asks sign-tag-gone sign-tag-leaves-sign sign-tag-drops-token decide-in-sign letter-second-job-asks letter-sign-drops-token letter-sign-in-environment-sign; do
   mutated "$m"
 done
 echo "chain-signing-trust: $pass passed, $failn failed"
