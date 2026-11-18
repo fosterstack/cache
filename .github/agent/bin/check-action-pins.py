@@ -1117,7 +1117,7 @@ def _commands(script, depth=0, in_container=False):
     """The simple commands of a shell script, each a token list (quotes removed, comments dropped), starting at the
     first tool word; a `bash -c "…"` / `sh -c` / `eval "…"` argument is read as a script of its own."""
     import shlex
-    text, inner = _cut_substitutions(re.sub(r"\\\n", "", script))
+    text, inner = _cut_substitutions(_join_lines(script))
     out = []
     if any(CASE_WORD.search(sub) for sub in inner):
         out.append(["__too_deep__", "case ... esac inside $( )"])    # a case pattern's `)` ends the substitution early: refuse (Codex #164 r19, B10)
@@ -1910,50 +1910,158 @@ def _operands(args, val, boolean):
     return pos, None
 
 
+def _join_full(text):
+    """`text` with every backslash-newline joined, as main reads it."""
+    return re.sub(r"\\\n", "", text)
+
+
+_read = _join_full     # the join of the read now running (_reads sets it)
+
+
+def _join_lines(text):
+    """`text` joined as the read now running joins it: one text, never both reads, and a second call changes nothing."""
+    return _read(text)
+
+
+def _reads():
+    """Yields once per read of a script: main's full join, then the comment-aware join (a comment ends at its newline, so
+    the line after `#comment\\` is a real line), with `_join_lines` joining as that read does. A caller runs its whole check
+    in the loop body, so each read is scanned on its own text and no quote, comment or route state passes from one to
+    the other, and it combines the answers: a finding either read shows counts, and a trust holds only when each grants it."""
+    global _read
+    try:
+        for _read in (_join_full, _join_outside_comments):
+            yield
+    finally:
+        _read = _join_full
+
+
+def _in_quoted_brace(stack):
+    """True when the innermost frames are `${ }` expansions and the outermost of them sits inside double quotes."""
+    for kind, outer in reversed(stack):
+        if kind != "{":
+            return False
+        if outer == '"':
+            return True
+    return False
+
+
+def _scan_shell(text):
+    """(kinds, nl_in_quote, open_quote): `kinds` has one letter per character of `text`: `c` code, `d` a quote mark, `q`
+    quoted content, `e` a backslash and the character it escapes, `k` a comment, `w` a `#`, `(`, `)`, `<` or `>` of `${ }` word text (no comment, no group; an unquoted `<(` or `>(` is a frame).
+    Quote state nests inside `$( )`, `${ }`, backticks and `<( )` / `>( )`, so a quote inside one never changes the quote
+    around it. A backtick substitution ends at the next unescaped backtick, scanned on its own. A `#` opens a comment only at
+    the start of a word: after a blank, newline, `;`, `&`, `|`, `(`, `)`, `<` or `>`, never after an escaped character, a
+    closed quote or a closed expansion (`\\;#x`, `$(x)#y`), and a backslash-newline is no word break. open_quote is True
+    when a quote or an expansion is still open at the end (a script like that grants no trust)."""
+    n, q, i, prev, nl, unread = len(text), None, 0, None, False, False
+    kinds, stack = ["c"] * n, []
+    while i < n:
+        c = text[i]
+        if q is not None and c == "\n":
+            nl = True
+        if q == "'":
+            kinds[i] = "d" if c == "'" else "q"
+            if c == "'":
+                q, prev = None, c
+        elif c == "\\" and i + 1 < n:
+            kinds[i] = kinds[i + 1] = "e"
+            prev = prev if text[i + 1] == "\n" else "W"
+            i += 1
+        elif c == "`":
+            j = i + 1
+            while j < n and text[j] != "`":
+                j += 2 if text[j] == "\\" else 1
+            inner, inner_nl, inner_open = _scan_shell(text[i + 1:j])
+            kinds[i + 1:j] = inner
+            nl, unread, prev, i = nl or inner_nl, unread or inner_open or j >= n, "W", j
+        elif c == "$" and text[i + 1:i + 2] in ("(", "{"):
+            stack.append((text[i + 1], q))
+            q, prev = None, text[i + 1]
+            i += 1
+        elif q == '"':
+            kinds[i] = "d" if c == '"' else "q"
+            if c == '"':
+                q, prev = None, c
+        elif c in "'\"":
+            kinds[i], q = "d", c
+        elif stack and stack[-1][0] == "{" and c in "#()<>" and not (
+                c in "<>" and text[i + 1:i + 2] == "(" and not _in_quoted_brace(stack)):
+            kinds[i], prev = "w", c     # inside ${ }: word text, no comment and no group (an unquoted <( or >( runs: a frame)
+        elif c in "<>" and text[i + 1:i + 2] == "(":
+            stack.append(("(", None))
+            prev = "("
+            i += 1
+        elif c == "(":
+            stack.append(("p", None))
+            prev = c
+        elif c == ")" and stack and stack[-1][0] in "(p":
+            kind, q = stack.pop()
+            prev = ")" if kind == "p" else "W"
+        elif c == "}" and stack and stack[-1][0] == "{":
+            q, prev = stack.pop()[1], "W"
+        elif c == "#" and (prev is None or prev in " \t\n;&|()<>"):
+            j = text.find("\n", i)
+            j = n if j < 0 else j
+            kinds[i:j] = "k" * (j - i)
+            i = j
+            continue
+        else:
+            prev = c
+        i += 1
+    return kinds, nl, unread or q is not None or bool(stack)
+
+
+def _blank_heredocs(text):
+    """`text` with each heredoc body and its delimiter line blanked, the same length: a quote in a body opens none."""
+    lines, i = text.split("\n"), 0
+    marks = _heredoc_marks(lines)
+    while i < len(lines):
+        i += 1
+        for m in marks[i - 1]:
+            while i < len(lines) and (lines[i].strip() if m.group(1) else lines[i]) != m.group(3):
+                lines[i], i = " " * len(lines[i]), i + 1
+            if i < len(lines):
+                lines[i] = " " * len(lines[i])
+            i += 1
+    return "\n".join(lines)
+
+
+def _join_outside_comments(text):
+    """`text` with each backslash-newline joined except one that ends a comment (`_scan_shell` finds the comments)."""
+    kinds = _scan_shell(_blank_heredocs(text))[0]
+    out, i = [], 0
+    while i < len(text):
+        if kinds[i] == "k":
+            j = text.find("\n", i)
+            j = len(text) if j < 0 else j
+            out.append(text[i:j].rstrip("\\"))
+            i = j
+        elif text[i:i + 2] == "\\\n":
+            i += 2
+        elif kinds[i] == "e":
+            out.append(text[i:i + 2])
+            i += 2
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
+
+
 def _mask_shell(text, info=None):
     """(no_comments, blanked, open_quote): TWO copies of `text`, each the same length with every newline in place so
     positions and line numbers line up. no_comments has every real comment replaced by spaces; blanked also has every
     quoted string's CONTENT (and every backslash-escaped character) replaced by spaces. Quote state runs across the whole
     text, never reset per line (Sonnet #164 r17, B2 / Codex r17, B01: a quoted string spanning lines hid a real
     keyword from a per-line scan and fabricated one from its second line), and a `#` starts a comment only at the start
-    of a word, never inside one (`hello#world`, `${#x}`, `$#`). open_quote is True when a quote is still open at the end:
-    the text cannot be read with confidence, so the caller denies trust (fail closed, advisor 0080)."""
-    n, q, i = len(text), None, 0
-    nc, bl = list(text), list(text)
-    def blank(k):
-        if text[k] != "\n":
-            bl[k] = " "
-    while i < n:
-        c = text[i]
-        if q is not None and c == "\n" and info is not None:
-            info["nl_in_quote"] = True
-        if q == "'":
-            if c == "'":
-                q = None
-            else:
-                blank(i)
-        elif q == '"':
-            if c == "\\" and i + 1 < n:
-                blank(i); blank(i + 1); i += 2
-                continue
-            if c == '"':
-                q = None
-            else:
-                blank(i)
-        elif c == "\\" and i + 1 < n:
-            blank(i); blank(i + 1); i += 2
-            continue
-        elif c in "'\"":
-            q = c
-        elif c == "#" and (i == 0 or text[i - 1] in " \t\n;&|()<>"):
-            j = text.find("\n", i)
-            j = n if j < 0 else j
-            for k in range(i, j):
-                nc[k] = bl[k] = " "
-            i = j
-            continue
-        i += 1
-    return "".join(nc), "".join(bl), q is not None
+    of a word, never inside one (`hello#world`, `${#x}`, `$#`; see `_scan_shell`). open_quote is True when a quote is
+    still open at the end: the text cannot be read with confidence, so the caller denies trust (fail closed, advisor 0080)."""
+    kinds, nl, open_quote = _scan_shell(text)
+    if nl and info is not None:
+        info["nl_in_quote"] = True
+    nc = [" " if k == "k" else c for c, k in zip(text, kinds)]
+    bl = ["_" if k == "w" else " " if k in "kqe" and c != "\n" else c for c, k in zip(text, kinds)]
+    return "".join(nc), "".join(bl), open_quote
 
 
 def _dockerfiles(tree, dockerfile):
@@ -1987,7 +2095,7 @@ def _touches(script, name, consumer):
     python -c, dd of=, sed -i, rsync … all count (Sonnet #164 r5, NEW-5/NEW-6)."""
     import shlex
     mention = re.compile(r"(^|[^A-Za-z0-9._-])" + _name_pattern(name) + r"($|[^A-Za-z0-9._-])")
-    text, inner = _cut_substitutions(re.sub(r"\\\n", "", script))
+    text, inner = _cut_substitutions(_join_lines(script))
     for sub in inner:
         if _touches(sub, name, consumer):
             return True
@@ -2175,11 +2283,64 @@ def _setter_values(name, script):
     return [m.group(m.lastindex) for m in pat.finditer(script) if m.lastindex and _whole_command(masked, m)]
 
 
+def _main_setter_values(name, script):
+    """_setter_values as main reads it: only a setter that is a whole command of the shell that reads on counts (see
+    _subshell_setter), and a script that cannot be read (an open quote) has none. The checker refuses when either reader does."""
+    pat = re.compile(r"(?<![^\s;&|(])" + name + r"=(?:\"((?:\\.|[^\"\\])*)\"|'([^']*)'|((?:\\.|[^\s\"';)&|\\])*))"
+                     r"|(?<![^\s;&|(])#[^\n]*|\"(?:\\.|[^\"\\])*\"|'[^']*'|(?:\\.|\$\{[^}]*\}|[^\s;&|()\"'\\])+")
+    _, masked, open_quote = _mask_shell(script)
+    if open_quote:
+        return []
+    return [m.group(m.lastindex) for m in pat.finditer(script) if m.lastindex and not _subshell_setter(masked, m)]
+
+
 def _whole_command(masked, m):
     """True when the setter match `m` is a command of the current shell: nothing but blanks and a command end after
     it, and no pipeline `|` just before it."""
     return bool(re.match(r"[ \t]*(?:\Z|[\n;]|&&|\|\|)", masked[m.end():])
                 and not re.search(r"(?<!\|)\|&?\s*\Z", masked[:m.start()]))
+
+
+_SH_WORD = r"(?:\"[^\"]*\"|'[^']*'|[^\s;&|()<>\"'])+"         # a word of masked text: no pattern splits it two ways
+_SH_REDIR = r"(?:\d*|&)(?:>>|>\||>&|<&|>|<)[ \t]*(?:" + _SH_WORD + ")?"
+_SH_ASSIGN = r"[A-Za-z_]\w*(?:\[[^\]\s]*\])?\+?=(?:" + _SH_WORD + ")?"
+_SH_PREFIX = re.compile(r"[ \t]*(?:" + _SH_REDIR + "|" + _SH_ASSIGN + ")")
+_SH_TOKEN = re.compile(r"\|&?|&|" + _SH_REDIR + "|" + _SH_ASSIGN + "|" + _SH_WORD)
+_SH_END = re.compile(r"[ \t]*(?:\Z|\n|;|&&|\|\|)")
+_SH_PREFIX_WORD = re.compile(_SH_REDIR + "|" + _SH_ASSIGN)
+
+
+def _subshell_setter(masked, m):
+    """True unless the setter match `m` is a whole command of the shell that reads on: only further `name=value` words and
+    redirections, then the end, a newline, `;`, `&&` or `||` follow it, and no pipe, `(` or `{` group opens before it
+    (a pipe is looked for before the assignments and redirections that lead its command). `masked` is the script with
+    comments and quoted or escaped characters blanked, so none of them counts; text it cannot read (an open quote)
+    counts as a subshell, which flags the copy."""
+    end, depth = m.end(), masked[m.start():m.end()].count("$(")
+    while depth and end < len(masked):      # the value's own `$(...)` is part of the word
+        depth += (masked[end] == "(") - (masked[end] == ")")
+        end += 1
+    while True:                             # one token per step: a word is read one way only
+        step = _SH_PREFIX.match(masked, end)
+        if not step:
+            break
+        end = step.end()
+    before = masked[:m.start()]
+    opened = len(re.findall(r"\(|(?<!\$)\{(?=\s)", before)) - len(re.findall(r"\)|(?<=[;\s])\}", before))
+    flat, starts = [], []                   # a balanced `$(...)`, `$((...))` or `(...)` is one word
+    for ch in before:
+        if ch == ")" and starts:
+            del flat[starts.pop():]
+            flat.append("_")
+            continue
+        if ch == "(":
+            starts.append(len(flat))
+        flat.append(ch)
+    flat = "".join(flat)
+    toks = _SH_TOKEN.findall(re.split(r"\n|;|&&|\|\|", flat)[-1])
+    while toks and _SH_PREFIX_WORD.fullmatch(toks[-1]):
+        toks.pop()
+    return not _SH_END.match(masked, end) or opened > 0 or bool(toks and toks[-1] in ("|", "|&"))
 
 
 def _loose_values(name, script):
@@ -2207,8 +2368,9 @@ def _outside(target, script, depth=0):
         return False
     if _set_by_setter(m.group(1), script):
         return False                                     # set by read, printf -v, (( )), name[0]= …: an unknown value
-    values = _setter_values(m.group(1), script)
-    return bool(values) and all(_outside(v, script, depth + 1) for v in values + _loose_values(m.group(1), script))
+    loose = _loose_values(m.group(1), script)
+    return all(values and all(_outside(v, script, depth + 1) for v in values + loose)
+               for values in (_setter_values(m.group(1), script), _main_setter_values(m.group(1), script)))
 
 
 def _redirect_targets(chunk):
@@ -2435,8 +2597,13 @@ def _heredoc_marks(lines):
     """For each line, the HEREDOC matches bash reads as operators: outside quotes and comments, inside $( ) and `…`
     too, with quote state carried across lines (Codex #164 r3, N01: `# <<EOF` and `echo '<<EOF'` start nothing).
     An unbalanced quote makes later markers unseen, so their bodies are read as shell: stricter, never looser."""
-    stack, marks = [], []
+    stack, marks, pending = [], [], []
     for line in lines:
+        if pending:                                        # a body line: its quotes carry on to no later line
+            if (line.strip() if pending[0].group(1) else line) == pending[0].group(3):
+                pending.pop(0)
+            marks.append([])
+            continue
         found, i, n = [], 0, len(line)
         while i < n:
             c, top = line[i], (stack[-1] if stack else None)
@@ -2480,6 +2647,7 @@ def _heredoc_marks(lines):
                         continue
             i += 1
         marks.append(found)
+        pending = found[:]
     return marks
 
 
@@ -2650,7 +2818,7 @@ def _writes(script, rel, ctx=None, early=True):
     install / ln / rsync onto it, sed / perl -i on it, or a copy or extraction over its directory (_fills_dir).
     A redirect or tee onto a variable this check cannot place counts only when early (the job's own step text)."""
     import shlex
-    text, inner = _cut_substitutions(re.sub(r"\\\n", "", script))
+    text, inner = _cut_substitutions(_join_lines(script))
     ctx = script if ctx is None else ctx                # where the job assigns its variables (f="$work/x" …)
     for sub in inner:
         if _writes(sub, rel, ctx, early):
@@ -2762,7 +2930,7 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
             found.append("scripts nest deeper than this check reads (%s); refused" % path)
             continue
         content = tree.read(rel)
-        inner = _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", content))))
+        inner = _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(_join_lines(content))))
         cd = bool(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(inner)))
         more, also = _run_scripts(inner, tree, cd, depth + 1, where, job, bases)
         added.append(content + ("\n" + more if more else ""))
@@ -2896,7 +3064,7 @@ def _unsafe_downloads(text):
         queue = [src]
         while queue:
             cur = queue.pop()
-            cut, inner = _cut_substitutions(re.sub(r"\\\n", "", cur))
+            cut, inner = _cut_substitutions(_join_lines(cur))
             queue += inner
             cut = re.sub(r"&>>", ">>", cut)                   # `cmd &> file` is a redirection of cmd: the split at & must not detach it
             cut = re.sub(r"&>|>\|", ">", cut)
@@ -3070,19 +3238,33 @@ def _excluded_run_texts(scripts, name):
 
 
 def check_runs(where_job, scripts, bad, tree=None, mores=None):
+    """_check_runs under each read of the scripts: a finding either read shows is in `bad` once, and `mores` holds the
+    committed scripts either read runs."""
+    reported = []
+    for _ in _reads():
+        found, own = [], {}
+        _check_runs(where_job, scripts, found, tree, own)
+        bad += [f for f in found if f not in reported]
+        reported += found
+        for where, more in own.items():
+            if mores is not None and more not in mores.get(where, ""):
+                mores[where] = f"{mores[where]}\n{more}" if where in mores else more
+
+
+def _check_runs(where_job, scripts, bad, tree, mores):
     """scripts: [(where, text, shell)] of ONE job (or one composite action), in order. No image name this job built or tagged is
     trusted (the owner's rule, Oct 3: every image is pinned by digest; reference a build you made by its image id, e.g. --iidfile, or
     a digest). A step in a non-POSIX shell that names a container or package tool is a finding: this
     check reads POSIX shell only (Sonnet B8)."""
     def read(raw):
-        return _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", raw))))
+        return _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(_join_lines(raw))))
     DEFAULT_ASSIGNED.clear()
     posix = [not item[2] or re.match(r"^(bash|sh)(\s|$)", item[2]) for item in scripts]
     # steps of one job share a workspace: a file changed in ANY step of the job counts (Sonnet #164 r6, NEW-7); the
     # committed scripts they run are part of it (Codex #164 r2, C11)
     job0 = "\n".join(read(item[1]) for item, ok in zip(scripts, posix) if ok)
     for item, ok in zip(scripts, posix):
-        marked = _drop_foreign_heredocs(_decode_dollar_quotes(_mark_defaults(re.sub(r"\\\n", "", item[1]))))
+        marked = _drop_foreign_heredocs(_decode_dollar_quotes(_mark_defaults(_join_lines(item[1]))))
         for t in (_commands(marked) if ok else []):
             if t[0] == "__variable_program__" and PARAM_WORD.search(item[1]):
                 bad.append(f"{item[0]}: a program is named by a variable with a default ({t[1]}); bash runs the "
@@ -3123,7 +3305,7 @@ def check_runs(where_job, scripts, bad, tree=None, mores=None):
                 elif (ftext is not None and ftext.count(excl[2]) == 1
                       and len(re.findall(r"(?m)^\s*" + re.escape(excl[1]) + r"\s*:", ftext)) == 1):
                     continue
-            for cmd, why in _unsafe_downloads(_drop_foreign_heredocs(re.sub(r"\\\n", "", item[1]))):      # the raw text: `${X:-default}` must not be replaced by its default before the downloader is read
+            for cmd, why in _unsafe_downloads(_drop_foreign_heredocs(_join_lines(item[1]))):      # the raw text: `${X:-default}` must not be replaced by its default before the downloader is read
                 bad.append(f"{item[0]}: this job runs a committed script, and `{cmd[:80]}` is a download that is not demonstrably writing to standard output or "
                            f"/dev/null ({why}); a download can overwrite a committed script before it runs, so the destination is never trusted, refused "
                            f"(REQ-REL-005-AC3)")
@@ -3624,18 +3806,26 @@ def env_writes(text):
     """[(name, route)] for the env-file writes of a text whose name is literal: the three plain forms."""
     writes = [] if _REDEFINES.search(text) else \
         [(name, "GITHUB_ENV") for c in _split_commands(text) if (name := _echoed_env_name(c))]
-    joined = re.sub(r"\\\n", "", text)    # forms (2) and (3) are read from the text the route count reads
+    joined = _join_lines(text)    # forms (2) and (3) are read from the text the route count reads
     writes += [(m.group(2), "exportVariable") for m in _EXPORT_CALL.finditer(joined)]
     return writes + [(m.group(1), "::set-env") for m in _SET_ENV.finditer(joined)]
 
 
 def step_write_findings(where, text):
+    """_step_write_findings under each read of the text, each finding once."""
+    found = []
+    for _ in _reads():
+        found += [f for f in _step_write_findings(where, text) if f not in found]
+    return found
+
+
+def _step_write_findings(where, text):
     """The findings for one text a step runs: a startup-hook name set through an env route, a PATH route, or an env route
     whose name is not literal text."""
     names = re.compile(r"(?<![A-Za-z0-9_])(?:(?:" + "|".join(STARTUP_HOOK_ENV) + r")(?![A-Za-z0-9_])|BASH_FUNC_)")
     found = []
     writes = env_writes(text)             # read as written: bash keeps a backslash-newline inside single quotes
-    text = re.sub(r"\\\n", "", text)
+    text = _join_lines(text)
     unread = collections.Counter(_ENV_ROUTE.findall(text))
     unread.subtract(route for _, route in writes)
     if path := _PATH_ROUTE.search(text):
