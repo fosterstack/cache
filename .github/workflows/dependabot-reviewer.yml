@@ -130,7 +130,7 @@ jobs:
             n=$(jq -r .number <<<"$pr"); sha=$(jq -r .headRefOid <<<"$pr")
             [ -z "$ONLY_PR" ] || [ "$ONLY_PR" = "$n" ] || continue
             # held out of auto-merge, handled as a normal PR: the pinned tool module (go.mod and go.sum under
-            # tools/govulncheck/, whose version ci.yml repeats by hand, so a Dependabot bump alone cannot be right), and any PR whose file list is at the API's cap of
+            # tools/govulncheck/, which ci.yml builds through bin/install-scanner.sh, so a new version gets a normal review), and any PR whose file list is at the API's cap of
             # 100 (it may be cut, so it cannot be judged). Never reviewed or armed here, an arm made earlier is turned off; a lookup or a disarm that fails skips it and fails the step
             if [ "$(jq '[.files[]?.path | select(startswith("tools/govulncheck/"))] | length' <<<"$pr")" != 0 ] || [ "$(jq '(.files | length) >= 100' <<<"$pr")" = true ]; then
               if ! armed=$(gh pr view "$n" --json autoMergeRequest --jq '.autoMergeRequest != null'); then

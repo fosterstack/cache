@@ -241,7 +241,8 @@ t "AC5" "the folders are also gone after a run with open walls" \
   bash -c "[ -z \"\$(ls -A '$work/tmp')\" ] && [ -z \"\$(ls -A '$work/rt')\" ]"
 setrc 0
 exits "AC5" "RUNNER_TEMP unset is a refusal (exit 2) that leaves no temporary folder" \
-  2 bash -c "cd '$co' && env -u RUNNER_TEMP TMPDIR='$work/tmp' bash '$work/probe.sh'"
+  2 bash -c "cd '$co' && env -u RUNNER_TEMP TMPDIR='$work/tmp' bash '$work/probe.sh' apk-collection.local.json"
+t "AC5" "...the message says RUNNER_TEMP is missing" grep -qF "RUNNER_TEMP is missing" "$work/o"
 t "AC5" "...and the temporary folder is empty" bash -c "[ -z \"\$(ls -A '$work/tmp')\" ]"
 # the repository was not written to: bin/ and build/ show what they showed before the run
 t "AC5" "the run left bin/ and build/ of the repository as they were (git status unchanged)" \
@@ -267,7 +268,8 @@ for hn in "${hostile_names[@]}"; do
   t "AC5" "...and melange never ran ([$hn])" bash -c "[ ! -s '$work/calls' ]"
   kr="$work/rtk $hn"; mkdir -p "$kr"; : > "$work/calls"
   exits "AC5" "a RUNNER_TEMP (key folder) path containing [$hn] is refused (exit 2)" 2 \
-    bash -c 'cd "$1" && TMPDIR="$2" RUNNER_TEMP="$3" bash "$4"' _ "$co" "$work/tmp" "$kr" "$work/probe.sh"
+    bash -c 'cd "$1" && TMPDIR="$2" RUNNER_TEMP="$3" bash "$4" "$5"' _ "$co" "$work/tmp" "$kr" "$work/probe.sh" \
+      apk-collection.local.json
   t "AC5" "...the message names the key folder path ([$hn])" grep -qF -e "$kr" "$work/o"
   t "AC5" "...and melange never ran for the key folder ([$hn])" bash -c "[ ! -s '$work/calls' ]"
 done
@@ -280,7 +282,8 @@ for hn in 'dol$lar' 'back`tick'; do
   t "AC5" "...and melange never ran ([$hn])" bash -c "[ ! -s '$work/calls' ]"
   kr="$work/rtk-$hn"; mkdir -p "$kr"; : > "$work/calls"
   exits "AC5" "a RUNNER_TEMP (key folder) path containing [$hn] is refused (exit 2)" 2 \
-    bash -c 'cd "$1" && TMPDIR="$2" RUNNER_TEMP="$3" bash "$4"' _ "$co" "$work/tmp" "$kr" "$work/probe.sh"
+    bash -c 'cd "$1" && TMPDIR="$2" RUNNER_TEMP="$3" bash "$4" "$5"' _ "$co" "$work/tmp" "$kr" "$work/probe.sh" \
+      apk-collection.local.json
   t "AC5" "...the message names the key folder path ([$hn])" grep -qF -e "$kr" "$work/o"
   t "AC5" "...and melange never ran for the key folder ([$hn])" bash -c "[ ! -s '$work/calls' ]"
 done
