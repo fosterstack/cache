@@ -79,18 +79,16 @@ class ContinuationFlagged(Base):
         self.clean("out=$RUNNER_TEMP/\\\n          x")
 
 
-class ContinuationHidesSetterUnit(unittest.TestCase):
-    def test_continuation_behind_safe_setter(self):
-        cases = {
-            "newline": "out=%s\nou\\\nt=." % SAFE,
-            "semicolon": "out=%s; ou\\\nt=." % SAFE,
-            "joined_read": "read ou\\\nt <<< x\nout=%s" % SAFE,
-        }
-        for k, s in cases.items():
-            with self.subTest(k):
-                self.assertIs(M._outside("$out", s), False)
-
-
 class ContinuationHidesSetterFlagged(Base):
     def test_safe_then_joined_dot(self):
         self.flagged("out=$RUNNER_TEMP/x\n          ou\\\n          t=.")
+
+    def test_continuation_behind_safe_setter(self):
+        cases = {
+            "newline": "out=%s\n          ou\\\n          t=." % SAFE,
+            "semicolon": "out=%s; ou\\\n          t=." % SAFE,
+            "joined_read": "read ou\\\n          t <<< x\n          out=%s" % SAFE,
+        }
+        for k, s in cases.items():
+            with self.subTest(k):
+                self.flagged(s)

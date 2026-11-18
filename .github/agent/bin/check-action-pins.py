@@ -2174,36 +2174,28 @@ def _set_by_setter(name, script):
 
 
 def _setter_values(name, script):
-    """The value of every `name=value` setter the shell reads in `script`: a value ends at a blank, `;`, `)` or an
-    unquoted `&` / `|`. Skipped: a comment (`#` opening a word), quoted text, and every other word whole, so a
-    backslash escape or `${...}` inside a word hides nothing and opens nothing."""
-    pat = re.compile(r"(?<![^\s;&|(])" + name + r"=(?:\"((?:\\.|[^\"\\])*)\"|'([^']*)'|((?:\\.|[^\s\"';)&|\\])*))"
+    """The value of every `name=value` setter that is a whole command in the shell that reads on: only blanks, then the
+    end, a newline, `;`, `&&` or `||` follow it, and no pipeline `|` comes just before it (read on text with comments,
+    quoted text and escapes blanked). A value ends at a blank, `;`, `)` or an unquoted `&` / `|`. Skipped: a comment (`#`
+    opening a word), quoted text, and every other word whole, so a backslash escape or `${...}` inside a word hides
+    nothing and opens nothing. Every other setter is dropped: a flagged copy is the worse mistake."""
+    pat = re.compile(r"(?<![^\s;&|(])" + name + r"=(?:\"((?:\\.|[^\"\\])*)\"|'([^']*)'|((?:\\.|\$\([^()|&;\n]*\)|[^\s\"';)&|\\])*))"
                      r"|(?<![^\s;&|(])#[^\n]*|\"(?:\\.|[^\"\\])*\"|'[^']*'|(?:\\.|\$\{[^}]*\}|[^\s;&|()\"'\\])+")
-    return [m.group(m.lastindex) for m in pat.finditer(script) if m.lastindex and not _subshell_setter(script, m)]
+    masked = _mask_shell(script)[1]
+    return [m.group(m.lastindex) for m in pat.finditer(script) if m.lastindex and _whole_command(masked, m)]
+
+
+def _whole_command(masked, m):
+    """True when the setter match `m` is a command of the current shell: nothing but blanks and a command end after
+    it, and no pipeline `|` just before it."""
+    return bool(re.match(r"[ \t]*(?:\Z|[\n;]|&&|\|\|)", masked[m.end():])
+                and not re.search(r"(?<!\|)\|&?\s*\Z", masked[:m.start()]))
 
 
 def _loose_values(name, script):
     """Every `name=value` the text spells, quotes and comments ignored: the fail-closed view."""
     pat = re.compile(r"(?<![^\s;&|(])" + name + r"=[\"']?([^\s\"';)&|]*)")
-    return [m.group(1) for m in pat.finditer(script) if not _subshell_setter(script, m)]
-
-
-def _subshell_setter(script, m):
-    """True when the setter match `m` runs in a subshell: a background job (`name=v&`) or an element of a pipeline
-    (`name=v|cat`, `cat|name=v`), so the shell that reads on never sees it."""
-    return bool(re.match(r"[ \t]*(?:\|(?!\|)|&(?![&>]))", script[m.end():])
-                or re.search(r"(?<!\|)\|&?\s*$", script[:m.start()]))
-
-
-def _joined(script):
-    """The script with each backslash-newline removed, as the shell does outside single quotes (inside double quotes too);
-    a comment and a single-quoted text are left whole, and an escaped backslash does not join."""
-    def join(m):
-        t = m.group()
-        if t[0] == '"':
-            return re.sub(r"\\(\n|.)", lambda k: "" if k.group(1) == "\n" else k.group(), t, flags=re.S)
-        return "" if t == "\\\n" else t
-    return re.sub(r"'[^']*'|(?<![^\s;&|(])#[^\n]*|\"(?:\\.|[^\"\\])*\"|\\.", join, script, flags=re.S)
+    return [m.group(1) for m in pat.finditer(script)]
 
 
 def _outside(target, script, depth=0):
@@ -2212,7 +2204,6 @@ def _outside(target, script, depth=0):
     followed through other variables (f="$work/x", work=$(mktemp -d))."""
     if target.startswith(("/home/runner/work", "/github/workspace")):
         return False                                     # the checkout's own absolute path (Codex #164 r3, C11)
-    script = _joined(script)
     if target.startswith(OUTSIDE):
         return True
     if re.match(r"[\"']?\$\{?HOME\}?/(?!work(/|$))", target):
@@ -2956,7 +2947,8 @@ def check_runs(where_job, scripts, bad, tree=None):
     a digest). A step in a non-POSIX shell that names a container or package tool is a finding: this
     check reads POSIX shell only (Sonnet B8)."""
     def read(raw):
-        return _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", raw))))
+        joined = re.sub(r"(?<![^\s;&|(])#[^\n]*|\\\n", lambda m: m.group() if m.group()[0] == "#" else "", raw)   # a comment never continues
+        return _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(joined)))
     DEFAULT_ASSIGNED.clear()
     posix = [not item[2] or re.match(r"^(bash|sh)(\s|$)", item[2]) for item in scripts]
     # steps of one job share a workspace: a file changed in ANY step of the job counts (Sonnet #164 r6, NEW-7); the
