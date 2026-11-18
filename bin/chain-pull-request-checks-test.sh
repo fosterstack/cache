@@ -2,7 +2,7 @@
 # proves: REQ-REL-014-AC1, REQ-REL-014-AC2, REQ-REL-014-AC3
 # Pull requests run six checks (test, lint, govulncheck, analyze (go), fips140-only, scan with the jobs scan needs), the held check
 # marker-gate, customer-words-edited, agent-review-gate.yml and dependabot-auto-merge.yml; every other job runs on push to main, on a
-# schedule or in the release chain (REQ-REL-014-AC1). supply-chain.yml has no pull_request trigger, no pin-age job and runs only its
+# schedule or in the release chain (REQ-REL-014-AC1); suite-list, suites and allowlist-chain are in full-suite.yml, on a schedule and dispatch only. supply-chain.yml has no pull_request trigger, no pin-age job and runs only its
 # daily audit; required-checks.json has no pin-age entry (AC2) and no acceptance entry, and every check it scopes to push is produced by a
 # job that runs on push (AC3). Reads the committed workflows and required-checks.json.
 set -uo pipefail
@@ -120,9 +120,6 @@ res(set(triggers(wf["acceptance.yml"])) == {"workflow_call"}, "AC1: acceptance.y
 
 # ---- jobs that run on push to main only: their job-level if is the one string, so they cannot run on a pull request
 PUSH_IF = {("ci.yml", "allowlist"): "github.event_name == 'push'",
-           ("ci.yml", "suite-list"): "github.event_name == 'push'",
-           ("ci.yml", "suites"): "github.event_name == 'push'",
-           ("ci.yml", "allowlist-chain"): "always() && github.event_name == 'push'",
            ("ci.yml", "requirements"): "github.event_name == 'push'",
            ("ci.yml", "go-exact-pins"): "github.event_name == 'push'",
            ("scan.yml", "reproducibility"): "always() && github.event_name == 'push'"}
@@ -134,6 +131,20 @@ for (f, j), want in sorted(PUSH_IF.items()):
     res(not runs_on(jb.get("if"), "pull_request") and not runs_on(jb.get("if"), "merge_group"),
         "AC1: %s %s does not run on pull_request or merge_group" % (f, j))
     res(runs_on(jb.get("if"), "push") and "push" in triggers(wf[f]), "AC1: %s %s runs on push" % (f, j))
+
+# ---- the suites moved to full-suite.yml (REQ-CI-007-AC2, AC4): schedule and workflow_dispatch only, never push or a pull request, and ci.yml holds none of them
+FS = wf["full-suite.yml"]
+res(set(triggers(FS)) == {"schedule", "workflow_dispatch"}, "AC1: full-suite.yml triggers only on schedule and workflow_dispatch (%s)" % sorted(triggers(FS)))
+for j in ("suite-list", "suites", "allowlist-chain"):
+    jb = (FS.get("jobs") or {}).get(j)
+    res(jb is not None, "AC1: full-suite.yml has the job %s" % j)
+    res(j not in (wf["ci.yml"].get("jobs") or {}), "AC1: ci.yml has no job %s" % j)
+    res(not any(runs_on((jb or {}).get("if"), e) and e in triggers(FS) for e in PR_EVENTS + ("push",)),
+        "AC1: full-suite.yml %s does not run on pull_request, merge_group or push" % j)
+    res(("full-suite.yml:" + j) not in on_pr and ("full-suite.yml:" + j) not in jobs_on("push"),
+        "AC1: full-suite.yml %s is in no pull-request or push job list" % j)
+    res(runs_on((jb or {}).get("if"), "schedule") and runs_on((jb or {}).get("if"), "workflow_dispatch"),
+        "AC1: full-suite.yml %s runs on schedule and workflow_dispatch" % j)
 
 # ---- REQ-REL-014-AC2: supply-chain.yml and the list of required checks
 sc = wf["supply-chain.yml"]
@@ -155,11 +166,14 @@ res("pin-age" not in scopes, "AC2: required-checks.json has no pin-age entry")
 # ---- REQ-REL-014-AC3: a push-scoped check is produced by a job that runs on push; acceptance is no entry
 res("acceptance" not in scopes, "AC3: required-checks.json has no acceptance entry")
 WANT = {"test": "push", "lint": "push", "govulncheck": "push", "analyze (go)": "push", "allowlist": "push",
-        "allowlist-chain": "push", "fips140-only": "push", "requirements": "push", "reproducibility": "push",
+        "fips140-only": "push", "requirements": "push", "reproducibility": "push",
         "scan": "push", "go-exact-pins": "push",
         "auditor-review-gate": "pull_request"}
-res(scopes == WANT, "AC3: required-checks.json holds exactly the twelve remaining contexts with their scopes (diff: %s)"
+res(scopes == WANT, "AC3: required-checks.json holds exactly the eleven remaining contexts with their scopes (diff: %s)"
     % sorted(k for k in set(scopes) | set(WANT) if scopes.get(k) != WANT.get(k)))
+ro = json.load(open(root + "/.github/policy/release-only-checks.json"))["required_checks"]
+res({c["context"]: c["scope"] for c in ro}.get("allowlist-chain") == "push", "AC3: release-only-checks.json holds allowlist-chain, scope push")
+res("allowlist-chain" not in scopes, "AC3: required-checks.json has no allowlist-chain entry")
 res([c for c in checks if c["context"] == "go-exact-pins"] == [{"context": "go-exact-pins", "integration_id": 15368, "scope": "push"}],
     "AC3: required-checks.json has exactly one go-exact-pins entry, integration_id 15368, scope push")
 gj = (wf["ci.yml"].get("jobs") or {}).get("go-exact-pins") or {}
