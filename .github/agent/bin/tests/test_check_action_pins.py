@@ -1552,5 +1552,27 @@ class BasenameWriteProofFailsClosed(unittest.TestCase):  # the "another name" pr
         self.assertIsNone(self.resolve(body))
 
 
+class FsTreeReadBytes(unittest.TestCase):                # check-action-pins.py FsTree.read_bytes, in-process
+    def test_read_bytes_returns_the_raw_bytes_of_a_tree_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "f.bin"), "wb") as fh:
+                fh.write(b"\xff\xfe\x00ok")
+            self.assertEqual(M.FsTree(d).read_bytes("f.bin"), b"\xff\xfe\x00ok")
+
+
+class BasenameIsOtherWordCount(unittest.TestCase):       # check-action-pins.py _basename_is_other, called directly
+    def test_one_literal_word_of_another_name_is_other(self):
+        self.assertTrue(M._basename_is_other("bin/other.sh", "tool.sh"))
+
+    def test_one_literal_word_of_the_same_name_is_not_other(self):
+        self.assertFalse(M._basename_is_other("bin/tool.sh", "tool.sh"))
+
+    def test_more_than_one_word_is_not_proved_other(self):
+        self.assertFalse(M._basename_is_other("bin/other.sh bin/tool.sh", "tool.sh"))
+
+    def test_no_word_is_not_proved_other(self):
+        self.assertFalse(M._basename_is_other("", "tool.sh"))
+
+
 if __name__ == "__main__":       # last: every test class above is defined first (Codex #164 adversarial r1, R02)
     unittest.main()
