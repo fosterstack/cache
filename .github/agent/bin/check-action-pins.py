@@ -1895,27 +1895,99 @@ def _reads():
         _read = _join_full
 
 
-def _join_outside_comments(text):
-    """`text` with each backslash-newline joined except one that ends a comment. A `#` opens a comment only at the start
-    of a word, outside quotes and unescaped."""
-    out, q, i = [], None, 0
-    while i < len(text):
+def _in_quoted_brace(stack):
+    """True when the innermost frames are `${ }` expansions and the outermost of them sits inside double quotes."""
+    for kind, outer in reversed(stack):
+        if kind != "{":
+            return False
+        if outer == '"':
+            return True
+    return False
+
+
+def _scan_shell(text):
+    """(kinds, nl_in_quote, open_quote): `kinds` has one letter per character of `text`: `c` code, `d` a quote mark, `q`
+    quoted content, `e` a backslash and the character it escapes, `k` a comment, `w` a `#`, `(`, `)`, `<` or `>` of `${ }` word text (no comment, no group; an unquoted `<(` or `>(` is a frame).
+    Quote state nests inside `$( )`, `${ }`, backticks and `<( )` / `>( )`, so a quote inside one never changes the quote
+    around it. A backtick substitution ends at the next unescaped backtick, scanned on its own. A `#` opens a comment only at
+    the start of a word: after a blank, newline, `;`, `&`, `|`, `(`, `)`, `<` or `>`, never after an escaped character, a
+    closed quote or a closed expansion (`\\;#x`, `$(x)#y`), and a backslash-newline is no word break. open_quote is True
+    when a quote or an expansion is still open at the end (a script like that grants no trust)."""
+    n, q, i, prev, nl, unread = len(text), None, 0, None, False, False
+    kinds, stack = ["c"] * n, []
+    while i < n:
         c = text[i]
-        if c == "\\" and text[i + 1:i + 2] == "\n":
+        if q is not None and c == "\n":
+            nl = True
+        if q == "'":
+            kinds[i] = "d" if c == "'" else "q"
+            if c == "'":
+                q, prev = None, c
+        elif c == "\\" and i + 1 < n:
+            kinds[i] = kinds[i + 1] = "e"
+            prev = prev if text[i + 1] == "\n" else "W"
+            i += 1
+        elif c == "`":
+            j = i + 1
+            while j < n and text[j] != "`":
+                j += 2 if text[j] == "\\" else 1
+            inner, inner_nl, inner_open = _scan_shell(text[i + 1:j])
+            kinds[i + 1:j] = inner
+            nl, unread, prev, i = nl or inner_nl, unread or inner_open or j >= n, "W", j
+        elif c == "$" and text[i + 1:i + 2] in ("(", "{"):
+            stack.append((text[i + 1], q))
+            q, prev = None, text[i + 1]
+            i += 1
+        elif q == '"':
+            kinds[i] = "d" if c == '"' else "q"
+            if c == '"':
+                q, prev = None, c
+        elif c in "'\"":
+            kinds[i], q = "d", c
+        elif stack and stack[-1][0] == "{" and c in "#()<>" and not (
+                c in "<>" and text[i + 1:i + 2] == "(" and not _in_quoted_brace(stack)):
+            kinds[i], prev = "w", c     # inside ${ }: word text, no comment and no group (an unquoted <( or >( runs: a frame)
+        elif c in "<>" and text[i + 1:i + 2] == "(":
+            stack.append(("(", None))
+            prev = "("
+            i += 1
+        elif c == "(":
+            stack.append(("p", None))
+            prev = c
+        elif c == ")" and stack and stack[-1][0] in "(p":
+            kind, q = stack.pop()
+            prev = ")" if kind == "p" else "W"
+        elif c == "}" and stack and stack[-1][0] == "{":
+            q, prev = stack.pop()[1], "W"
+        elif c == "#" and (prev is None or prev in " \t\n;&|()<>"):
+            j = text.find("\n", i)
+            j = n if j < 0 else j
+            kinds[i:j] = "k" * (j - i)
+            i = j
+            continue
+        else:
+            prev = c
+        i += 1
+    return kinds, nl, unread or q is not None or bool(stack)
+
+
+def _join_outside_comments(text):
+    """`text` with each backslash-newline joined except one that ends a comment (`_scan_shell` finds the comments)."""
+    kinds = _scan_shell(text)[0]
+    out, i = [], 0
+    while i < len(text):
+        if kinds[i] == "k":
+            j = text.find("\n", i)
+            j = len(text) if j < 0 else j
+            out.append(text[i:j].rstrip("\\"))
+            i = j
+        elif text[i:i + 2] == "\\\n":
             i += 2
-        elif c == "\\" and q != "'":
+        elif kinds[i] == "e":
             out.append(text[i:i + 2])
             i += 2
         else:
-            if q is None and c == "#" and (not out or out[-1][-1] in " \t\n;&|()<>"):
-                j = text.find("\n", i)
-                j = len(text) if j < 0 else j
-                out.append(text[i:j].rstrip("\\"))
-                i = j
-                continue
-            if c in "'\"" and q in (None, c):
-                q = None if q else c
-            out.append(c)
+            out.append(text[i])
             i += 1
     return "".join(out)
 
@@ -1926,44 +1998,14 @@ def _mask_shell(text, info=None):
     quoted string's CONTENT (and every backslash-escaped character) replaced by spaces. Quote state runs across the whole
     text, never reset per line (Sonnet #164 r17, B2 / Codex r17, B01: a quoted string spanning lines hid a real
     keyword from a per-line scan and fabricated one from its second line), and a `#` starts a comment only at the start
-    of a word, never inside one (`hello#world`, `${#x}`, `$#`). open_quote is True when a quote is still open at the end:
-    the text cannot be read with confidence, so the caller denies trust (fail closed, advisor 0080)."""
-    n, q, i = len(text), None, 0
-    nc, bl = list(text), list(text)
-    def blank(k):
-        if text[k] != "\n":
-            bl[k] = " "
-    while i < n:
-        c = text[i]
-        if q is not None and c == "\n" and info is not None:
-            info["nl_in_quote"] = True
-        if q == "'":
-            if c == "'":
-                q = None
-            else:
-                blank(i)
-        elif q == '"':
-            if c == "\\" and i + 1 < n:
-                blank(i); blank(i + 1); i += 2
-                continue
-            if c == '"':
-                q = None
-            else:
-                blank(i)
-        elif c == "\\" and i + 1 < n:
-            blank(i); blank(i + 1); i += 2
-            continue
-        elif c in "'\"":
-            q = c
-        elif c == "#" and (i == 0 or text[i - 1] in " \t\n;&|()<>"):
-            j = text.find("\n", i)
-            j = n if j < 0 else j
-            for k in range(i, j):
-                nc[k] = bl[k] = " "
-            i = j
-            continue
-        i += 1
-    return "".join(nc), "".join(bl), q is not None
+    of a word, never inside one (`hello#world`, `${#x}`, `$#`; see `_scan_shell`). open_quote is True when a quote is
+    still open at the end: the text cannot be read with confidence, so the caller denies trust (fail closed, advisor 0080)."""
+    kinds, nl, open_quote = _scan_shell(text)
+    if nl and info is not None:
+        info["nl_in_quote"] = True
+    nc = [" " if k == "k" else c for c, k in zip(text, kinds)]
+    bl = ["_" if k == "w" else " " if k in "kqe" and c != "\n" else c for c, k in zip(text, kinds)]
+    return "".join(nc), "".join(bl), open_quote
 
 
 def _dockerfiles(tree, dockerfile):
@@ -2041,8 +2083,10 @@ def _setter_values(name, script):
     pat = re.compile(r"(?<![^\s;&|(])" + name + r"=(?:\"((?:\\.|[^\"\\])*)\"|'([^']*)'|((?:\\.|[^\s\"';)&|\\])*))"
                      r"|(?<![^\s;&|(])#[^\n]*|\"(?:\\.|[^\"\\])*\"|'[^']*'|(?:\\.|\$\{[^}]*\}|[^\s;&|()\"'\\])+")
     _, masked, open_quote = _mask_shell(script)
+    if open_quote:
+        return []                           # a script that cannot be read grants no setter (never a trust)
     return [m.group(m.lastindex) for m in pat.finditer(script)
-            if m.lastindex and (open_quote or not _subshell_setter(masked, m))]
+            if m.lastindex and not _subshell_setter(masked, m)]
 
 
 _SH_WORD = r"(?:\"[^\"]*\"|'[^']*'|[^\s;&|()<>\"'])+"         # a word of masked text: no pattern splits it two ways
