@@ -2045,9 +2045,16 @@ def _subshell_setter(masked, m):
         end = step.end()
     before = masked[:m.start()]
     opened = len(re.findall(r"\(|(?<!\$)\{(?=\s)", before)) - len(re.findall(r"\)|(?<=[;\s])\}", before))
-    flat = before
-    while (inner := re.sub(r"\([^()]*\)", "_", flat)) != flat:   # a balanced `$(...)`, `$((...))` or `(...)` is one word
-        flat = inner
+    flat, starts = [], []                   # a balanced `$(...)`, `$((...))` or `(...)` is one word
+    for ch in before:
+        if ch == ")" and starts:
+            del flat[starts.pop():]
+            flat.append("_")
+            continue
+        if ch == "(":
+            starts.append(len(flat))
+        flat.append(ch)
+    flat = "".join(flat)
     toks = _SH_TOKEN.findall(re.split(r"\n|;|&&|\|\|", flat)[-1])
     while toks and _SH_PREFIX_WORD.fullmatch(toks[-1]):
         toks.pop()

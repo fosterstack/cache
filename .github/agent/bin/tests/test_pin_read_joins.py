@@ -29,12 +29,18 @@ class ReadJoinsUnit(unittest.TestCase):
                 self.assertIs(M._outside("$out", raw(lines)), True)
 
     def test_deep_parentheses_are_fast(self):
-        setters = "\n".join(SAFE for _ in range(10))
-        script = "(" * 2000 + setters + "\n" + COPY
+        script = "(" * 2000 + "\n".join([SAFE] * 10) + "\n" + COPY
         start = time.perf_counter()
         result = M._outside("$out", script)
         self.assertLess(time.perf_counter() - start, 1.0)
         self.assertIs(result, False)
+
+    def test_very_deep_balanced_parentheses_are_fast(self):
+        script = "(" * 5000 + ")" * 5000 + "\n" + "\n".join([SAFE] * 10) + "\n" + COPY
+        start = time.perf_counter()
+        result = M._outside("$out", script)
+        self.assertLess(time.perf_counter() - start, 1.0)
+        self.assertIs(result, True)
 
 
 class ReadJoinsEndToEnd(Base):
