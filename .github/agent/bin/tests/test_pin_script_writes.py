@@ -19,8 +19,6 @@ M = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(M)
 
 GATE = os.path.join(BIN, "..", "..", "workflows", "agent-review-gate.yml")
-QJ_REL = ".github/agent/bin/queue-gate-judge.sh"   # the script the gate's queue-judge job runs
-QJ = os.path.join(BIN, "queue-gate-judge.sh")
 # the programs the gate workflow names; the checker wants each to exist in the tree
 GATE_PROGRAMS = dict.fromkeys([".github/agent/bin/auditor-review-gate.py", ".github/agent/bin/check-action-pins.py",
                               "bin/check-file-allowlist.sh", ".github/agent/tests/pin-wiring-test.sh",
@@ -32,8 +30,8 @@ WORKFLOW = "on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n 
 def repo(files, gate=True):
     """A throwaway tree; it carries the real, pinned gate workflow unless gate=False."""
     if gate:
-        with open(GATE) as fh, open(QJ) as qj:
-            files = {".github/workflows/agent-review-gate.yml": fh.read(), QJ_REL: qj.read(), **files}
+        with open(GATE) as fh:
+            files = {".github/workflows/agent-review-gate.yml": fh.read(), **files}
     d = tempfile.mkdtemp()
     for rel, text in files.items():
         p = os.path.join(d, rel)
