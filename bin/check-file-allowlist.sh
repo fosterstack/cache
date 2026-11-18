@@ -169,7 +169,7 @@ ALLOW_PATTERNS=(
   '^bin/chain_items\.py$'
   '^bin/chain-admission-old-steps\.txt$'
   '^bin/chain-(sign-wiring|check-scripts)-fixtures\.txt$'
-  '^bin/chain-(bind|build-admit|build-wiring|install-witness|rebuild|snapshot)-test\.sh$'
+  '^bin/chain-(bind|build-admit|build-wiring|install-witness|pull-request-checks|rebuild|snapshot)-test\.sh$'
   '^bin/chain-(test-(harness|shape)|known-red)\.py$'
   '^test-evidence/known-red\.json$'
   # The v0.3.0 release chain, Check (PR 3): the check scripts and their two helpers, the shared acceptance suites (and the two helpers of the Kubernetes

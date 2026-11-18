@@ -46,8 +46,20 @@ def _load(name):
 inv = _load("pin-inventory")
 age = _load("pin-age-check")
 
+# strict SemVer 2.0 with a leading v (no leading zero in a number or a numeric pre-release identifier, no empty identifier; the only build part is +incompatible, any other is read by Go as a branch query), or a full commit
+_NUM = r"(?:0|[1-9][0-9]*)"
+_PRE_ID = r"(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+GO_EXACT = re.compile(rf"v{_NUM}\.{_NUM}\.{_NUM}(?:-{_PRE_ID}(?:\.{_PRE_ID})*)?(?:\+incompatible)?|[0-9a-f]{{40}}")
 
-GO_EXACT = re.compile(r"v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?|[0-9a-f]{40}")
+
+def report_unpinned(keys):
+    for k in keys:
+        print(f"audit: UNPINNED GO TOOL: {clean(k)} is not an exact version (vMAJOR.MINOR.PATCH or a full commit)")
+
+
+def unpinned_go_tools(items):
+    """REQ-SUP-001-AC37: the keys of the go installs whose version is not exact."""
+    return sorted(k for k, i in items.items() if i.kind == "gotool" and not GO_EXACT.fullmatch(i.version))
 
 
 class Fail(Exception):
@@ -1408,6 +1420,8 @@ def main(argv=None):
     ap.add_argument("--deadline", type=int,
                     help="seconds the whole run may take before it ends itself with exit 2 "
                          "(1 to 86400; default 900, or 600 for --base)")
+    ap.add_argument("--go-exact-only", action="store_true",
+                    help="judge only that every go install of the tree is at an exact version (REQ-SUP-001-AC38): no network, no issue")
     a = ap.parse_args(argv)
     if a.deadline is not None and not 1 <= a.deadline <= 86400:
         print("audit: cannot do its job: --deadline must be from 1 to 86400 seconds", file=sys.stderr)
@@ -1423,6 +1437,15 @@ def main(argv=None):
     timer.daemon = True
     timer.start()
     try:
+        if a.go_exact_only:
+            try:
+                unpinned = unpinned_go_tools(inv.load_at(a.root, None))
+            except RuntimeError as e:
+                raise Fail(str(e))
+            report_unpinned(unpinned)
+            if not unpinned:
+                print("audit: every go install is at an exact version")
+            return 1 if unpinned else 0
         fx = None
         if a.fixtures:
             try:
@@ -1624,11 +1647,11 @@ def main(argv=None):
         for e in dead:
             print(f"audit: DEAD EXCEPTION: {dead_message(e, held, net)}")
         for e in dormant:
-            print(f"information: dormant exception: the ruling for {_ruling_label(e)} waits for its pin; nobody holds it")
-        # REQ-SUP-001-AC34: a go install whose version is not exact is a finding of the daily run (the pull-request scan that judged it is deleted)
-        unpinned = [] if a.base else sorted(k for k, i in head.items() if i.kind == "gotool" and not GO_EXACT.fullmatch(i.version))
-        for k in unpinned:
-            print(f"audit: UNPINNED GO TOOL: {clean(k)} is not an exact version (vMAJOR.MINOR.PATCH or a full commit)")
+            print(f"information: dormant exception: the ruling for {_ruling_label(e)} waits for its pin; nobody holds "
+                  f"it")
+        # REQ-SUP-001-AC37: a go install whose version is not exact is a finding of the daily run (the pull-request scan that judged it is deleted)
+        unpinned = [] if a.base else unpinned_go_tools(head)
+        report_unpinned(unpinned)
         plan, disputes, per_item, pending = [], {}, {}, []
         for f in findings:
             print(f"audit: {'DISPUTED' if f.disputed else 'HIT'}: {clean(f.item.key)} ({clean(', '.join(f.ids))}): "

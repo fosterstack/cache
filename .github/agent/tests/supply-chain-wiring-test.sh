@@ -1,16 +1,12 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC33, REQ-SUP-001-AC36
+# proves: REQ-SUP-001-AC41, REQ-SUP-001-AC33, REQ-SUP-001-AC36, REQ-REL-014-AC2
 # proves: REQ-REL-015-AC11
-# Where the supply-chain checks run (owner ratified Oct 5; advisor 0172, 0175; the owner removed the wait for new
-# versions on Nov 11 2026; REQ-REL-014, Nov 17 2026): the pin audit is the one job,
-# `daily-audit`, on the schedule and by dispatch (never on a push, pull_request, pull_request_target or workflow_run: the
-# pin-age pull-request scan was deleted), with no secrets (AC4);
-# the daily job may write issues and nothing else; evidence-letter-present reads releases and writes nothing; no job holds actions: write; REQ-SUP-001 is
-# pipeline-only for automatic patches; CI runs the tests.
-# Read from the PARSED files: the real files must pass and every mutation (made through the parsed document) must be
-# rejected FOR THE REASON NAMED.
-#   .github/workflows/supply-chain.yml: jobs `daily-audit` (schedule, dispatch) and `evidence-letter-present` (schedule, dispatch; the monthly evidence
-#   letter's daily presence check, read-only)
+# proves: REQ-SUP-001-AC38
+# Where the supply-chain checks run (owner ratified Oct 5, changed Nov 17 2026: no supply-chain check runs on a pull request): Dependabot carries no cooldown and one entry per
+# ecosystem root; supply-chain.yml has no pull_request trigger and two jobs, the daily audit (may write issues and nothing else) and the evidence letter's presence check (read-only),
+# both on schedule and dispatch only (REQ-REL-014-AC2); no job holds actions: write; REQ-SUP-001 is pipeline-only for automatic patches; CI runs the tests. Read from the PARSED files:
+# the real files must pass and every mutation (made through the parsed document) must be rejected FOR THE REASON NAMED.
+#   .github/workflows/supply-chain.yml: jobs `daily-audit` and `evidence-letter-present` (schedule, workflow_dispatch)
 set -euo pipefail
 export SC_ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 python3 - <<'PY'
@@ -25,7 +21,9 @@ ADM = os.path.join(root, "bin/admission-tag-signer.py")
 PIN = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 ALLOWED_ACTIONS = ("actions/checkout",)
 
-CANONICAL_RUNS = {'daily-audit': 'python3 .github/agent/supply-chain/pin-audit.py'}
+CANONICAL_RUNS = {
+    'daily-audit': 'python3 .github/agent/supply-chain/pin-audit.py',
+}
 
 
 def load(p): return yaml.load(open(p), Loader=yaml.BaseLoader)
@@ -64,12 +62,13 @@ def judge_wf(d, real=False):
     on = d.get("on", {})
     if not isinstance(on, dict):
         return ["the workflow's triggers are not a mapping"]
-    if "pull_request_target" in on or "workflow_run" in on:
-        bad.append("a pull_request_target or workflow_run trigger (the audit runs on the schedule and by dispatch only)")
-    if "pull_request" in on:
-        bad.append("the pull_request trigger is back: the supply-chain audit is not a pull request check (REQ-REL-014)")
-    if "push" in on:
-        bad.append("a push trigger: the supply-chain audit runs on the schedule and by hand, never on a push or a pull request (REQ-REL-014)")
+    for ev in ("pull_request", "pull_request_target", "workflow_run", "push"):
+        if ev in on:
+            bad.append(f"a {ev} trigger: no job of this workflow runs on a pull request or a push (REQ-REL-014-AC2)")
+    if set(on) != {"schedule", "workflow_dispatch"}:
+        bad.append(f"the triggers are not exactly schedule and workflow_dispatch: {sorted(on)}")
+    if "merge_group" in on:
+        bad.append("a merge_group trigger: there is no merge queue")
     crons = [c.get("cron") for c in (on.get("schedule") or [])]
     if len(crons) != 1 or not re.fullmatch(r"\d{1,2} \d{1,2} \* \* \*", crons[0] or ""):
         bad.append("no single daily schedule")
@@ -81,7 +80,7 @@ def judge_wf(d, real=False):
         bad.append("the workflow has no top-level permissions block of {} or contents: read")
     jobs = d.get("jobs", {})
     if sorted(jobs) != ["daily-audit", "evidence-letter-present"]:
-        bad.append(f"the jobs are not exactly daily-audit and evidence-letter-present: {sorted(jobs)}")
+        bad.append(f"the jobs are not exactly daily-audit and evidence-letter-present (no pin-age job): {sorted(jobs)}")
         return bad
     # daily-audit
     j = jobs["daily-audit"]
@@ -133,13 +132,13 @@ def judge_wf(d, real=False):
         if name != "daily-audit" and "concurrency" in jj:
             bad.append(f"{name} has a concurrency block")
         if "env" in jj:
-            bad.append(f"{name} has a job-level env (PYTHONPATH and friends could redirect the audit)")
+            bad.append(f"{name} has a job-level env")
     # the check steps' commands are pinned EXACTLY: any other flag, an extra assignment, a duplicated argument, a changed order is a changed (rejected) workflow
     norm = lambda t: "\n".join(l.strip() for l in str(t).strip().split("\n") if l.strip() and not l.strip().startswith("#"))
     for jn, want in CANONICAL_RUNS.items():
         for st in jobs[jn].get("steps", []):
             r = str(st.get("run", ""))
-            if r and ("pin-age-check" in r or "pin-audit" in r) and norm(r) != norm(want):
+            if r and "pin-audit" in r and norm(r) != norm(want):
                 bad.append(f"{jn}: the check step's commands differ from the ratified text (any added flag, assignment or duplicated argument is a change)")
     if re.search(r"secrets\s*\[", text):
         bad.append("the workflow indexes secrets[...]: no secrets anywhere")
@@ -155,7 +154,7 @@ def judge_wf(d, real=False):
             for forbidden in ("shell", "working-directory"):
                 if forbidden in st:
                     bad.append(f"{name}: a step sets {forbidden}: it could replace what actually runs")
-            may_set = {"GH_TOKEN", "GITHUB_REPOSITORY", "BASE_SHA", "HEAD_SHA"} if name == "pin-age" else {"GH_TOKEN", "GITHUB_REPOSITORY"}
+            may_set = {"GH_TOKEN", "GITHUB_REPOSITORY"}
             extra_env = set(st.get("env") or {}) - may_set
             if extra_env:
                 allowed = ' and '.join(sorted(may_set))
@@ -317,6 +316,17 @@ result(not b, "the real dependabot.yml: no cooldown anywhere, every gomod entry 
 b = judge_rest()
 result(not b, "REQ-SUP-001 is pipeline-only and the CI suite list runs the three tests" + ("" if not b else ": " + "; ".join(b)))
 
+# the ci.yml job go-exact-pins (REQ-SUP-001-AC38) runs exactly the ratified command, read from the parsed file
+CI = os.path.join(root, ".github/workflows/ci.yml")
+GO_EXACT_RUN = "python3 .github/agent/supply-chain/pin-audit.py --go-exact-only"
+def go_exact_runs(d): return [str(st.get("run", "")).strip() for st in (((d.get("jobs") or {}).get("go-exact-pins") or {}).get("steps") or [])]
+real_ci = load(CI)
+result(any(r == GO_EXACT_RUN for r in go_exact_runs(real_ci)), "AC38: the ci.yml job go-exact-pins runs " + GO_EXACT_RUN)
+mut_ci = copy.deepcopy(real_ci)
+for st in mut_ci["jobs"]["go-exact-pins"]["steps"]:
+    if "run" in st: st["run"] = st["run"].replace(" --go-exact-only", "")
+result(not any(r == GO_EXACT_RUN for r in go_exact_runs(mut_ci)), "caught: the go-exact-pins command loses --go-exact-only (reason: no step runs " + GO_EXACT_RUN + ")")
+
 def mut_wf(name, expect, fn):
     if real_wf is None:
         result(False, f"cannot mutate (no workflow): {name}"); return
@@ -348,23 +358,26 @@ def J(d, n): return d["jobs"][n]
 def eco(d, e): return next(u for u in d["updates"] if u["package-ecosystem"] == e)
 def gmod(d, p): return next(u for u in d["updates"] if u["package-ecosystem"] == "gomod" and u["directory"] == p)
 
-# --- the workflow (AC4) ---
+# --- the workflow (AC4, AC6) ---
+mut_wf("a pull_request trigger returns", "a pull_request trigger", lambda d: d["on"].update(pull_request={}))
+mut_wf("a pull_request trigger with a filter returns", "a pull_request trigger", lambda d: d["on"].update(pull_request={"paths": ["bin/**"]}))
 mut_wf("a push trigger appears", "a push trigger", lambda d: d["on"].update(push={"branches": ["main"]}))
-mut_wf("the pull_request trigger is back", "pull_request trigger is back", lambda d: d["on"].update(pull_request={}))
+mut_wf("a pin-age job returns", "the jobs are not exactly daily-audit and evidence-letter-present",
+       lambda d: d["jobs"].update({"pin-age": {"if": "github.event_name == 'pull_request'", "runs-on": "ubuntu-latest", "steps": []}}))
+mut_wf("a job-level env appears", "job-level env", lambda d: J(d, "daily-audit").update(env={"PYTHONPATH": "pr"}))
 mut_wf("a pull_request_target trigger", "pull_request_target", lambda d: d["on"].update(pull_request_target={}))
-mut_wf("a workflow_run trigger", "pull_request_target or workflow_run", lambda d: d["on"].update(workflow_run={"workflows": ["x"]}))
+mut_wf("a workflow_run trigger", "a workflow_run trigger", lambda d: d["on"].update(workflow_run={"workflows": ["x"]}))
 mut_wf("no schedule", "no single daily schedule", lambda d: d["on"].pop("schedule"))
+mut_wf("a daily step gains a condition", "a step has a condition", lambda d: [x.update({"if": "false"}) for x in J(d, "daily-audit")["steps"] if "pin-audit" in str(x.get("run", ""))])
+mut_wf("a workflow-level env appears", "top-level env", lambda d: d.update(env={"PYTHONPATH": "pr"}))
 mut_wf("a step is disabled with if: false", "a step has a condition", lambda d: J(d, "daily-audit")["steps"][-1].update({"if": "false"}))
 mut_wf("a step skips bots", "a step has a condition", lambda d: J(d, "daily-audit")["steps"][-1].update({"if": "github.actor != 'dependabot[bot]'"}))
 mut_wf("a step tolerates failure", "continue-on-error", lambda d: J(d, "daily-audit")["steps"][-1].update({"continue-on-error": "true"}))
 mut_wf("exit 0 is appended to the check step", "exits early", lambda d: [x.update(run=x["run"] + "\nexit 0") for x in J(d, "daily-audit")["steps"] if "run" in x][-1:])
 mut_wf("exit 0 is put first", "exits early", lambda d: [x.update(run="exit 0\n" + x["run"]) for x in J(d, "daily-audit")["steps"] if "run" in x][-1:])
 mut_wf("a failure is swallowed with || true", "exits early", lambda d: [x.update(run=x["run"] + " || true") for x in J(d, "daily-audit")["steps"] if "run" in x][-1:])
-mut_wf("a daily step gains a condition", "a step has a condition", lambda d: [x.update({"if": "false"}) for x in J(d, "daily-audit")["steps"] if "pin-audit" in str(x.get("run", ""))])
 mut_wf("a job container image appears", "job-level container", lambda d: J(d, "daily-audit").update(container={"image": "evil:latest"}))
 mut_wf("a job service appears", "job-level services", lambda d: J(d, "daily-audit").update(services={"x": {"image": "evil"}}))
-mut_wf("a workflow-level env appears", "top-level env", lambda d: d.update(env={"PYTHONPATH": "pr"}))
-mut_wf("a job-level env appears", "job-level env", lambda d: J(d, "daily-audit").update(env={"PYTHONPATH": "pr"}))
 mut_wf("a shell default appears", "job-level defaults", lambda d: J(d, "daily-audit").update(defaults={"run": {"shell": "python3 {0}"}}))
 mut_wf("fixtures are passed to the checker", "test-only flag", lambda d: [x.update(run=x["run"] + " --fixtures pr/fx.json") for x in J(d, "daily-audit")["steps"] if "run" in x][-1:])
 mut_wf("a step sets PYTHONPATH", "sets env", lambda d: [x.setdefault("env", {}).update(PYTHONPATH="pr") for x in J(d, "daily-audit")["steps"] if "run" in x][-1:])
@@ -431,6 +444,7 @@ mut_wf("a job gets an environment", "has an environment or secrets", lambda d: J
 mut_wf("a second job appears", "the jobs are not exactly",
        lambda d: d["jobs"].update(extra={"runs-on": "ubuntu-latest", "steps": []}))
 mut_wf("image-signatures returns", "the jobs are not exactly", lambda d: d["jobs"].update({"image-signatures": {"runs-on": "ubuntu-latest", "steps": []}}))
+mut_wf("a step gains a condition of its own", "a step has a condition", lambda d: J(d, "daily-audit")["steps"][0].update({"if": "github.event_name == 'pull_request'"}))
 mut_wf("a job holds an actions permission", "has an actions permission", lambda d: J(d, "daily-audit")["permissions"].update(actions="read"))
 mut_wf("top-level permissions widened", "no top-level permissions block", lambda d: d.update(permissions={"contents": "write"}))
 # --- dependabot (AC1) ---
