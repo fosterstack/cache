@@ -156,7 +156,7 @@
       "version": "3.37.8"
     }
   ],
-  "_format_unmeasured_text": "From round 6 of cache#922 a text ruling (starts 'text, not a command: ') is no row of this list: see reviewed_files. REQ-SUP-001-AC16 (advisor ruling, Oct 10): one row per line that the pin-age check's strict scan reads as an unmeasured download but that only MENTIONS the tool as text (a comment, an echo string, a stub written as data, a package name). file and form as the scan names them; key: the scan's 64-hex sha256 prefix of what it hashes (for a download, the one command segment that names curl or wget); line: the 64-hex sha256 prefix of the WHOLE whitespace-flattened line that segment sits in, so the same segment in any other line is not ruled and editing any part of the line voids the row; ruling: what the line is, never empty; count (optional, default 1): how many occurrences of that line in the file the row covers. A row for a line inside a quoted here-document or a string may add body-first, body-last and body-sha256 together: the text of the first and last line of the span the line was reviewed in, and the sha256 of the span (those lines, first and last included, joined by newlines). The row rules the line only when exactly one span in the head file has that hash and every copy of the line sits inside it; a row for a line that sits in no span is a plain per-line row. Read from the base branch only: rows a pull request brings do nothing until merged. REQ-SUP-001-AC20 (advisor ruling, Oct 14): the same rows rule a script line (a *.sh file outside the auditor's own tree) that names an unpinned package in a pip install, with form \"an unpinned package install\" and key equal to line (the hash of the whole flattened line); a line joined from a continuation can never be ruled. A row is only ever written for a line that is HARMLESS IN ANY SHELL CONTEXT (read as a command it runs no download: a comment, an echo or printf, a cat into a file, Python source or a package list bash cannot parse), because moving a line out of a heredoc keeps its identity; the reviewer refuses any other row. A line with whitespace other than space or tab, or joined from a backslash-newline continuation, is never ruled. Editing only a row's ruling prose does not void it. Allowed row forms (advisor, Oct 10; the reviewer refuses any other row): (1) TEXT lines: a comment, a quoted or echoed string, a data heredoc (a stub body or its opener), Python or package-name text that bash cannot parse; (2) HARNESS ASSERTION lines, whose whole grammar is the single data structure HARNESS_WHITELIST in harness_form.py (written by the pin-age check's own test suite); anything it does not name is refused. In short: t \"RULE\" \"TITLE\" bash -c 'BODY' _ followed by at most nine path arguments \"$NAME\" or \"$NAME/path\" with NAME in work, CALLS; no expansion of any kind in RULE or TITLE (no $, backtick, backslash or quote); the body SINGLE-QUOTED (Codex, pull request 289: a double-quoted body let the outer shell splice a variable's value into the code) and naming the paths only as whole \"$1\"..\"$9\"; the commands grep, test, [, cat and exit with one digit; grep in the shape grep OPTION... -- PATTERN [\"$N\"...]: the options -E, -q, -v and -Eq as bare words, -- REQUIRED before the pattern, the pattern a double-quoted word that does not start with - (or the bare '.'), file operands only \"$N\" (Codex and Sonnet, pull request 289 round 3: a double-quoted word in an option position is an option to grep); cat only as cat -- \"$N\"; test and [ only the file tests -f -s -e -d -r on a positional \"$N\" (never a literal path or a substitution: Codex, pull request 289 round 6), = and !=, and count comparisons between digits and \"$(grep -c ...)\" (never -v, -R or an arithmetic operand that is a name or expression: bash 5 evaluates $(...) there); the substitutions \"$(grep -c OPTION... -- PATTERN \"$N\")\" and \"$(cat -- \"$N\")\" only; no unquoted glob, brace, subscript or expansion word; and no character outside printable ASCII and tab (Sonnet, pull request 289). The test proves the whitelist closed: a complement enumeration of every token class outside it in every position (none accepted, none refused for another reason), and a mutation run that widens it by one token at a time and requires an unexpected acceptance or a refusal for another reason (reported apart). The role rules that live in the parser's code (a file test on a positional, cat with exactly one operand, a positional within the arguments) are pinned by code mutants that loosen each one and must be caught. A harness line that reads a test stub's call log matches whole ROLE-TAGGED fields of a log the stub writes from its own parse (opt, val, out, url, unk; brackets inside a word become _), never substrings of flattened text (Codex and Sonnet, pull request 289 round 4); the later rows pull request runs each such line against logs with the right words in the wrong roles, forged fields inside URLs and -o values imitating flags. Scope (coordinator, Oct 11): this pull request carries the FORM (the parser, HARNESS_WHITELIST pinned by its golden canonical sha256, the complement enumeration, the mutation run, the runtime corpus with synthetic lines in the shapes of the input refresh assertions) and the three comment rows; the rows for the input refresh harness lines, with the test of what each line asserts, come with those lines in a later rows pull request. HARNESS_WHITELIST is pinned by HARNESS_WHITELIST_GOLDEN in the test: any change to the grammar needs that value edited in the same reviewed diff. REQ-SUP-001-AC19 (orchestrator ruling, Oct 14): the same rows rule a local reusable-workflow call that keeps a with: block, with form \"a local reusable workflow call\", file the workflow that holds the call, and key equal to line (the 64-hex hash of the item's whole identity, its called file and the hash of its with: block), so an edited block is another item.",
+  "_format_unmeasured_text": "From round 6 of cache#922 a text ruling (starts 'text, not a command: ') is no row of this list: see reviewed_files. REQ-SUP-001-AC16 (advisor ruling, Oct 10): one row per line that the pin-age check's strict scan reads as an unmeasured download but that only MENTIONS the tool as text (a comment, an echo string, a stub written as data, a package name). file and form as the scan names them; key: the scan's 64-hex sha256 prefix of what it hashes (for a download, the one command segment that names curl or wget); line: the 64-hex sha256 prefix of the WHOLE whitespace-flattened line that segment sits in, so the same segment in any other line is not ruled and editing any part of the line voids the row; ruling: what the line is, never empty; count (optional, default 1): how many occurrences of that line in the file the row covers. Read from the base branch only: rows a pull request brings do nothing until merged. REQ-SUP-001-AC20 (advisor ruling, Oct 14): the same rows rule a script line (a *.sh file outside the auditor's own tree) that names an unpinned package in a pip install, with form \"an unpinned package install\" and key equal to line (the hash of the whole flattened line); a line joined from a continuation can never be ruled. A row is only ever written for a line that is HARMLESS IN ANY SHELL CONTEXT (read as a command it runs no download: a comment, an echo or printf, a cat into a file, Python source or a package list bash cannot parse), because moving a line out of a heredoc keeps its identity; the reviewer refuses any other row. A line with whitespace other than space or tab, or joined from a backslash-newline continuation, is never ruled. Editing only a row's ruling prose does not void it. Allowed row forms (advisor, Oct 10; the reviewer refuses any other row): (1) TEXT lines: a comment, a quoted or echoed string, a data heredoc (a stub body or its opener), Python or package-name text that bash cannot parse; (2) HARNESS ASSERTION lines, whose whole grammar is the single data structure HARNESS_WHITELIST in harness_form.py (written by the pin-age check's own test suite); anything it does not name is refused. In short: t \"RULE\" \"TITLE\" bash -c 'BODY' _ followed by at most nine path arguments \"$NAME\" or \"$NAME/path\" with NAME in work, CALLS; no expansion of any kind in RULE or TITLE (no $, backtick, backslash or quote); the body SINGLE-QUOTED (Codex, pull request 289: a double-quoted body let the outer shell splice a variable's value into the code) and naming the paths only as whole \"$1\"..\"$9\"; the commands grep, test, [, cat and exit with one digit; grep in the shape grep OPTION... -- PATTERN [\"$N\"...]: the options -E, -q, -v and -Eq as bare words, -- REQUIRED before the pattern, the pattern a double-quoted word that does not start with - (or the bare '.'), file operands only \"$N\" (Codex and Sonnet, pull request 289 round 3: a double-quoted word in an option position is an option to grep); cat only as cat -- \"$N\"; test and [ only the file tests -f -s -e -d -r on a positional \"$N\" (never a literal path or a substitution: Codex, pull request 289 round 6), = and !=, and count comparisons between digits and \"$(grep -c ...)\" (never -v, -R or an arithmetic operand that is a name or expression: bash 5 evaluates $(...) there); the substitutions \"$(grep -c OPTION... -- PATTERN \"$N\")\" and \"$(cat -- \"$N\")\" only; no unquoted glob, brace, subscript or expansion word; and no character outside printable ASCII and tab (Sonnet, pull request 289). The test proves the whitelist closed: a complement enumeration of every token class outside it in every position (none accepted, none refused for another reason), and a mutation run that widens it by one token at a time and requires an unexpected acceptance or a refusal for another reason (reported apart). The role rules that live in the parser's code (a file test on a positional, cat with exactly one operand, a positional within the arguments) are pinned by code mutants that loosen each one and must be caught. A harness line that reads a test stub's call log matches whole ROLE-TAGGED fields of a log the stub writes from its own parse (opt, val, out, url, unk; brackets inside a word become _), never substrings of flattened text (Codex and Sonnet, pull request 289 round 4); the later rows pull request runs each such line against logs with the right words in the wrong roles, forged fields inside URLs and -o values imitating flags. Scope (coordinator, Oct 11): this pull request carries the FORM (the parser, HARNESS_WHITELIST pinned by its golden canonical sha256, the complement enumeration, the mutation run, the runtime corpus with synthetic lines in the shapes of the input refresh assertions) and the three comment rows; the rows for the input refresh harness lines, with the test of what each line asserts, come with those lines in a later rows pull request. HARNESS_WHITELIST is pinned by HARNESS_WHITELIST_GOLDEN in the test: any change to the grammar needs that value edited in the same reviewed diff. REQ-SUP-001-AC19 (orchestrator ruling, Oct 14): the same rows rule a local reusable-workflow call that keeps a with: block, with form \"a local reusable workflow call\", file the workflow that holds the call, and key equal to line (the 64-hex hash of the item's whole identity, its called file and the hash of its with: block), so an edited block is another item.",
   "unmeasured_text": [
     {
       "file": ".github/workflows/release.yml",
@@ -370,7 +370,7 @@
       "ruling": "build-container install, advisor reading Oct 19: test-only build container, never shipped; base image pinned by digest; the only thing built (strace) comes from a checksum-verified tarball; packages are build tools"
     }
   ],
-  "_format_reviewed_files": "REQ-SUP-001-AC16 (orchestrator ruling, Nov 14): one row per file that holds text the strict scan reads as an unmeasured download or package install but that only MENTIONS the tool (a comment, an echo string, a stub written as data, a package name). file; ruling: what the text is, never empty; body-sha256: the sha256 of the lines '<path> <sha256 of the file's bytes>' (newline after each), the file first, then every file it sources by a plain line 'source PATH' or '. PATH' (PATH one literal path in the repository), by path. While the head's files hash to it, the row rules every unmeasured occurrence in the file; any edit to the file or to a file it sources stops the row matching, and every occurrence in the file is then a finding. A file with a source that is no plain line (if, time, eval, builtin, command, a variable, a cd before it) or a file that is missing, a link or unreadable has no hash: its row never matches. No other field. Read from the base branch only. unmeasured_text keeps only the rows that prove their own line: pinned, live and Go fetches, a build container and local reusable workflow calls (with REQ-SUP-001-AC19 form).",
+  "_format_reviewed_files": "REQ-SUP-001-AC16 (orchestrator ruling, Nov 14): one row per file that holds text the strict scan reads as an unmeasured download or package install but that only MENTIONS the tool (a comment, an echo string, a stub written as data, a package name). file; ruling: what the text is, never empty; the row rules every unmeasured occurrence in the file. No other field. Read from the base branch only. unmeasured_text keeps only the rows that prove their own line: pinned, live and Go fetches, a build container and local reusable workflow calls (with REQ-SUP-001-AC19 form).",
   "_format_file_pins": "REQ-SUP-001-AC34 (advisor ruling Oct 23, a fix to an existing coded check): one row per checksum file for an UPSTREAM artifact that the pin-age check cannot date by itself (the inventory gives such a file the version '(file)'). file: the repository path as git names it; content: the 64-hex sha256 of path + NUL + the file's text, exactly the #content: part of the item's key in the check's output (a changed file is another content and the row rules nothing); upstream: an https URL of the artifact's publisher that carries the sum; version: the upstream release the sum belongs to; published: the release's server-side publication time (ISO 8601; a time in the future or an offset that does not exist lends no age). The row only dates the file: the 7 days still apply. Read from the base branch only: a row a pull request brings does nothing until merged.",
   "file_pins": [
     {
@@ -384,138 +384,111 @@
   "reviewed_files": [
     {
       "file": ".github/agent/bin/auditor-manifest.py",
-      "ruling": "text, not a command: Python source of .github/agent/bin/auditor-manifest.py (python runs it, no shell reads it): reads the endoflife.date API",
-      "body-sha256": "2ae5bd7d7b01c2acac90528a31e93c1309c46c83bba53a6d0746542b51cefefa"
+      "ruling": "text, not a command: Python source of .github/agent/bin/auditor-manifest.py (python runs it, no shell reads it): reads the endoflife.date API"
     },
     {
       "file": ".github/agent/bin/auditor-panel.py",
-      "ruling": "text, not a command: Python source of .github/agent/bin/auditor-panel.py (python runs it, no shell reads it): reads the OSV API and asks the Actions identity-token endpoint",
-      "body-sha256": "8ac021278c6227b2dafc628f5bcfb7bd325791f8dab94ab6b1641cacef4835d5"
+      "ruling": "text, not a command: Python source of .github/agent/bin/auditor-panel.py (python runs it, no shell reads it): reads the OSV API and asks the Actions identity-token endpoint"
     },
     {
       "file": ".github/agent/bin/check-action-pins.py",
-      "ruling": "text, not a command: Python source of .github/agent/bin/check-action-pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made | text, not a command: a comment in .github/agent/bin/check-action-pins.py that names the tool",
-      "body-sha256": "aea67411b11ec483256ab15a996107fdf955e651e5bee507e378b37acaa5d8e0"
+      "ruling": "text, not a command: Python source of .github/agent/bin/check-action-pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made | text, not a command: a comment in .github/agent/bin/check-action-pins.py that names the tool"
     },
     {
       "file": ".github/agent/bin/tests/system_path_allowlist.py",
-      "ruling": "text, not a command: Python source of .github/agent/bin/tests/system_path_allowlist.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "6e126c735fe00a30e0e7b9250bacc88201f602a7abb62b8b33587bbb0ec7174a"
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/system_path_allowlist.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     },
     {
       "file": ".github/agent/bin/tests/test_check_action_pins.py",
-      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "6298305b885adca1369b652e6f7bf0d92803f0055eeda271c9fc4104680b6ebd"
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     },
     {
       "file": ".github/agent/bin/tests/test_cov_manifest.py",
-      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_cov_manifest.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "89e7de3c53bf56d23986b6dfcb79e68e076b43f6b08912c541c3f0d5d899fb7d"
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_cov_manifest.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     },
     {
       "file": ".github/agent/bin/tests/test_fs_guard.py",
-      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_fs_guard.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "867422151daf2ec06f6b1751d113e68575653927729ad7a21930636e2573f1bc"
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_fs_guard.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     },
     {
       "file": ".github/agent/bin/tests/test_panel_io.py",
-      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_panel_io.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "389bfe7a0f038660c843318c3e1a3ad4ee7c660587810d249ffa57baca683f18"
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_panel_io.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     },
     {
       "file": ".github/agent/bin/tests/test_pin_plain_forms.py",
-      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_pin_plain_forms.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "2781b610532bb693687e0fe1aec2ac82c1aac1b42491197e8122913a60b2f2a1"
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_pin_plain_forms.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     },
     {
       "file": ".github/agent/supply-chain/pin-age-check.py",
-      "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-age-check.py (python runs it, no shell reads it): reads registry, index, GitHub and Rekor APIs for a pin's age and signature | text, not a command: Python source of .github/agent/supply-chain/pin-age-check.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made | text, not a command: a comment in .github/agent/supply-chain/pin-age-check.py that names the tool",
-      "body-sha256": "840b89b9f670185c4eaf54caf665f1b88b36023c16dc4935040db71501bbe0bb"
+      "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-age-check.py (python runs it, no shell reads it): reads registry, index, GitHub and Rekor APIs for a pin's age and signature | text, not a command: Python source of .github/agent/supply-chain/pin-age-check.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made | text, not a command: a comment in .github/agent/supply-chain/pin-age-check.py that names the tool"
     },
     {
       "file": ".github/agent/supply-chain/pin-audit.py",
-      "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-audit.py (python runs it, no shell reads it): reads the OSV API for advisories",
-      "body-sha256": "f6b954a1621cda59823066e07e6405b9150d867c90bc5fba109b00f367d6d848"
+      "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-audit.py (python runs it, no shell reads it): reads the OSV API for advisories"
     },
     {
       "file": ".github/agent/supply-chain/pin-inventory.py",
-      "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-inventory.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made | text, not a command: the tuple of client module names in .github/agent/supply-chain/pin-inventory.py (data; it runs nothing)",
-      "body-sha256": "725f8292200d6df8a12c5cc21211798e4bf0be833722d293f6e1e074fe78b4fc"
+      "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-inventory.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made | text, not a command: the tuple of client module names in .github/agent/supply-chain/pin-inventory.py (data; it runs nothing)"
     },
     {
       "file": ".github/agent/tests/k8s-harness-fence-test.sh",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/k8s-harness-fence-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-sha256": "ee7fcb479feebb227278e22df7336444e361e73c6d64836ef7056864be2afe0e"
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/k8s-harness-fence-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body"
     },
     {
       "file": ".github/agent/tests/pin-audit-go-major-test.sh",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-go-major-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-sha256": "e085cd574f4e3ac8a2319fe54cbba1bebbd8868b33780a2fe246c256dae6a22f"
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-go-major-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body"
     },
     {
       "file": ".github/agent/tests/pip-pin-test.sh",
-      "ruling": "text, not a command: a comment in .github/agent/tests/pip-pin-test.sh that names the tool | text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-sha256": "2bf93b6fa66cc6b58dde737b412f801cdbb64c60244d1cc4ff11e466db402664"
+      "ruling": "text, not a command: a comment in .github/agent/tests/pip-pin-test.sh that names the tool | text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body"
     },
     {
       "file": ".github/agent/tests/s2-p2-strict-lookups-test.sh",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/s2-p2-strict-lookups-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body | text, not a command: a comment in .github/agent/tests/s2-p2-strict-lookups-test.sh that names the tool",
-      "body-sha256": "d3c4da9a13d2b3131c8804ef59ae773aa4ad90e9bcd02f47b0e3a128d80a471d"
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/s2-p2-strict-lookups-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body | text, not a command: a comment in .github/agent/tests/s2-p2-strict-lookups-test.sh that names the tool"
     },
     {
       "file": "bin/acceptance-k8s-smoke.py",
-      "ruling": "text, not a command: a comment in bin/acceptance-k8s-smoke.py that names the tool | text, not a command: Python source of bin/acceptance-k8s-smoke.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "a49d28aff8695aef6d7a7685291422cbb9b8b8347aaa3ed997ed925e16069cfb"
+      "ruling": "text, not a command: a comment in bin/acceptance-k8s-smoke.py that names the tool | text, not a command: Python source of bin/acceptance-k8s-smoke.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     },
     {
       "file": "bin/chain-release-scripts-test.sh",
-      "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "5f2ddd7aafb48cfecf5aed7482d595ed800f8ac6d17aa47a1d078d68a38cb329"
+      "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review"
     },
     {
       "file": "bin/chain-release-shape.py",
-      "ruling": "text, not a command: Python source of bin/chain-release-shape.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "bf046abf4cb2227a117932cbbe80681e85e06882d2939030e901beb59092c884"
+      "ruling": "text, not a command: Python source of bin/chain-release-shape.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     },
     {
       "file": "bin/chain-test-signers.py",
-      "ruling": "text, not a command: a comment in bin/chain-test-signers.py that names the tool | text, not a command: Python source of bin/chain-test-signers.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "afb7b73c076851f42188514a9812fbebdc4b291a3b095d228affd40239c1a830"
+      "ruling": "text, not a command: a comment in bin/chain-test-signers.py that names the tool | text, not a command: Python source of bin/chain-test-signers.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     },
     {
       "file": "bin/chain-verify.py",
-      "ruling": "text, not a command: Python source of bin/chain-verify.py (python runs it, no shell reads it): reads and queries the Rekor transparency log",
-      "body-sha256": "0d89310431b053d606d2e03ef71daa056c315022cd390fa12ecc2a4fd3f813ec"
+      "ruling": "text, not a command: Python source of bin/chain-verify.py (python runs it, no shell reads it): reads and queries the Rekor transparency log"
     },
     {
       "file": "bin/loopback-get.sh",
-      "ruling": "text, not a command: a comment in the script; nothing runs it",
-      "body-sha256": "e3d4213d91beed11740880638ff36f755a6d9752719ec8c883309a6557ee0106"
+      "ruling": "text, not a command: a comment in the script; nothing runs it"
     },
     {
       "file": "bin/persona-uat-wiring-test.sh",
-      "ruling": "text, not a command: a comment in the test; nothing runs it | text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "08a845523ace56de7821b9241fb32b4c882df9a345fdd7b3f90fbca9ace5db54"
+      "ruling": "text, not a command: a comment in the test; nothing runs it | text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review"
     },
     {
       "file": "bin/persona-uat.py",
-      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): probes a local endpoint and asks the Actions identity-token endpoint | text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "a86bd08035df06aa178432d939322ebe3be7511596d3c785908fc861e2eaac2c"
+      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): probes a local endpoint and asks the Actions identity-token endpoint | text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     },
     {
       "file": "bin/release-postverify.py",
-      "ruling": "text, not a command: Python source of bin/release-postverify.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "c31c24a566053e630e7e1967c2c7b497c0ea0aa8b588fb80552631b2803e3b4c"
+      "ruling": "text, not a command: Python source of bin/release-postverify.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     },
     {
       "file": "bin/vex-live-test-test.sh",
-      "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "d5bbdf0332d0802cdfba4dca6f9a3475c3f6a171ca77ed6dc9636f52bff2dcfa"
+      "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review"
     },
     {
       "file": "bin/vex-live-test.py",
-      "ruling": "text, not a command: Python source of bin/vex-live-test.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "a7b0ca7a30c882046839eb26a6b0747ef24da9c870b084d494b103984892e1d0"
+      "ruling": "text, not a command: Python source of bin/vex-live-test.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     }
   ]
 }

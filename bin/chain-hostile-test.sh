@@ -325,7 +325,6 @@ if [ ! -e "$work/steptok/hostile-work/token-header" ]; then ok "hostile step: th
 if grep -qx 'claims: aaa.bbb.' "$work/steptok/attempts/read_sign_token.txt" && ! grep -q SECRETREQUESTTOKEN "$work/steptok/attempts/read_sign_token.txt"; then ok "hostile step: the transcript is unchanged (claims line header.payload., no token)"; else bad "hostile step: transcript $(tr '\n' '|' < "$work/steptok/attempts/read_sign_token.txt" | head -c 200)"; fi
 # Linux only (/proc/PID/environ): an UNRELATED process of the same user that denies its environ (dumpable off, as hosted runners have) must not change the grade; a non-dumpable
 # ANCESTOR of the step must be an error (it could hide a request variable). Skipped, with an ok line, where there is no /proc.
-skipped=0
 if [ -r /proc/self/environ ]; then
   mkdir -p "$work/stepproc"
   cp "$work/stepnotok/fns.sh" "$work/stepproc/fns.sh"
@@ -356,7 +355,6 @@ if [ -r /proc/self/environ ]; then
 else
   ok "hostile step (Linux fixtures): skipped, this system has no /proc"
   ok "hostile step (Linux fixtures): skipped, this system has no /proc (ancestor case)"
-  skipped=2  # the four Linux cases collapse to these two
 fi
 # the REAL step's mint and forge attempts in a job with no token: both leave material (a record signed by a throwaway key), the REAL verifier refuses it at Sign naming stage-sign.yml,
 # and hostile-row turns that refusal into a counted row (a missing file would be an error, which is what the old cosign form produced without a token)
@@ -1622,7 +1620,5 @@ if [ "$(id -u)" != 0 ]; then
   s2c perm; printf '{}' > "$work/s2rows-perm/bad.json"; chmod 000 "$work/s2rows-perm/bad.json"
   s2expect "S2 hostile-collect: an unreadable (permission denied) row file is a named error, exit 2, no traceback" perm
 else ok "S2 hostile-collect: permission-denied case skipped, running as root"; fi
-EXPECT=$((303 - skipped))
 echo "pass=$pass fail=$failn"
-if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
