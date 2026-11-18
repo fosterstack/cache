@@ -2002,7 +2002,7 @@ RUNTIME_NAME = re.compile(
     _WORD.format("read|mapfile|readarray|getopts|declare|typeset|local|export|readonly|let|select"))
 PRINTF = re.compile(_WORD.format("printf"))
 # read across the whole script: ${!ref} and (( $x ))
-RUNTIME_EXPANSION = re.compile(r"\$\{!|\(\([^\n)]*[$`]")
+RUNTIME_EXPANSION = re.compile(r"\$\{!|\(\([^\n]*[$`]")
 
 
 def _builds_name(command):
