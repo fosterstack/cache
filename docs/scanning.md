@@ -115,16 +115,18 @@ against the published OpenVEX file ([above](#using-our-vex-files-in-your-scanner
 ## Reproducing our own gate
 
 Our release pipeline's scan step is public:
-[`bin/check-scan.sh`](../bin/check-scan.sh), run by the Check stage
-([`.github/workflows/stage-verify.yml`](../.github/workflows/stage-verify.yml)),
+[`bin/check-scan.sh`](../bin/check-scan.sh), run by the Check jobs
+([`.github/workflows/release.yml`](../.github/workflows/release.yml)),
 is the gate itself. The scanners are the ones in
 [the scanner list](../.github/policy/scanners.json): Grype and OSV-Scanner.
 Both scan the exact built images by digest (Grype also scans the four Linux
 archives, OSV-Scanner the Go modules). The same Check stage also runs
 `govulncheck` once on the tagged source, a separate Go source scan with its own
-policy that the rest of this section does not describe. On every pull request,
-[`scan.yml`](../.github/workflows/scan.yml) scans the candidate images,
-with Grype and Amazon Inspector.
+policy that the rest of this section does not describe. Before a release, on every pull
+request, every push to `main` and every day,
+[`scan.yml`](../.github/workflows/scan.yml) scans the candidate images with Grype
+and Amazon Inspector. A release-candidate tag is accepted only when a scan run on
+that exact commit, started on a schedule or by hand, passed.
 
 The gate's policy is every severity, with the published VEX applied, and the
 example below uses the same policy.

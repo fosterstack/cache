@@ -14,7 +14,7 @@ vulnerability); this page is what we do.
   [required checks](../.github/policy/required-checks.json)).
 - **Signed release tags, checked first.** Build first verifies the tag signature
   against a list of allowed signers kept on `main`, then builds
-  ([build stage](../.github/workflows/stage-build.yml),
+  ([build jobs](../.github/workflows/release.yml),
   [allowed signers](../.github/policy/allowed_signers)).
 - **Release tags are protected.** Creating a release tag is restricted by a
   repository rule, and a published release tag cannot be moved, updated or deleted
@@ -51,8 +51,11 @@ vulnerability); this page is what we do.
   proposes the bump when a newer supported release exists
   ([freshness job](../.github/workflows/go-freshness.yml)).
 - **Go vulnerability analysis and code scanning.** `govulncheck` runs on every pull
-  request and push; CodeQL reads the code on every pull request ([CI](../.github/workflows/ci.yml),
-  [CodeQL](../.github/workflows/codeql.yml)).
+  request and every push to `main`. CodeQL reads the code on every pull request,
+  every push to `main` and once a day. A release-candidate tag is accepted only
+  when a CodeQL run on that exact commit, started on a schedule or by hand, passed
+  ([CI](../.github/workflows/ci.yml), [CodeQL](../.github/workflows/codeql.yml),
+  [release checks](../.github/policy/required-checks.json)).
 - **Posture is measured in public.** OpenSSF Scorecard runs weekly and its badge is
   on the README ([Scorecard](../.github/workflows/scorecard.yml)).
 
@@ -69,44 +72,46 @@ describe that chain.
   record, and the next stage verifies it ([RELEASING.md](../RELEASING.md)).
 - **Pinned toolchain.** The build uses the Go version from `go.mod` with downloads
   of a newer toolchain disabled, and module manifests are verified, never rewritten
-  ([build stage](../.github/workflows/stage-build.yml)).
+  ([build jobs](../.github/workflows/release.yml)).
 - **The Wolfi packages in the image come from our own archive.** The
   image is assembled by apko from Wolfi packages that we keep in our own archive,
   plus the project's own package, which the build job makes. A
   scheduled job refreshes the archive and a committed pointer names its digest; the
   build pulls the archive by that digest and checks every package against its
   recorded hash, so a Wolfi package that was not archived and verified cannot
-  reach an image ([build stage](../.github/workflows/stage-build.yml),
+  reach an image ([build jobs](../.github/workflows/release.yml),
   [refresh job](../.github/workflows/go-freshness.yml)).
 - **The build tools are downloaded at a pinned version and checked.** The
   tools that make the packages and the image are fetched from their release pages
   at an exact version and verified against a checksum before they run
-  ([build stage](../.github/workflows/stage-build.yml)).
+  ([build jobs](../.github/workflows/release.yml)).
 - **Minimal image, assembled from pinned packages.** Each image variant is built
   from a few packages and the binary, with no base image and no build step inside
   the image; the production and FIPS images have no shell and no package manager
-  ([build stage](../.github/workflows/stage-build.yml)).
+  ([build jobs](../.github/workflows/release.yml)).
 - **Build, Rebuild and a no-secret compare job.** Build makes the apks
   and the images. Rebuild makes its own copy from the same commit in its own jobs,
   and a separate compare job, which holds no secret, no environment and no identity
-  token, compares Build's and Rebuild's apks before the release job signs or publishes
-  ([reproducibility stage](../.github/workflows/stage-reproducibility.yml),
-  [release stage](../.github/workflows/stage-promote.yml)).
+  token, compares Build's and Rebuild's apks before the release job publishes
+  ([rebuild jobs](../.github/workflows/release.yml),
+  [release jobs](../.github/workflows/release.yml)).
 - **Every build is its own job.** Each build, for each architecture, runs
   in a fresh virtual machine that holds no stored secret, and no build shares a
-  machine with the job that signs or publishes
+  machine with the job that signs or the job that publishes
   ([build and signing-key isolation](build-and-signing-isolation.md) explains it).
 - **The signer never receives an apk or an image that Rebuild made.** The
-  release job signs and publishes Build's exact artifacts, after checking each
+  release job publishes Build's exact artifacts, after checking each
   against the digest Build attested; the rebuilt files only feed the comparison. Only
-  the Sign stage's jobs and the release job can use the signing key; builds and pull
+  the three Sign jobs can use the signing key; the release job, builds and pull
   requests never can
   (same page, section 3).
 - **Assembled twice and compared.** The image assembly is repeated on a fresh runner
-  and the digests must be equal ([reproducibility stage](../.github/workflows/stage-reproducibility.yml)).
+  and the digests must be equal ([rebuild jobs](../.github/workflows/release.yml)).
 - **A FIPS variant.** A `-fips` build uses Go's FIPS 140-3 validated cryptographic
   module, announces itself at startup, and the whole test suite runs in
-  `fips140=only` mode on every pull request ([SECURITY.md](../SECURITY.md#approved-only-cryptography)).
+  `fips140=only` mode on every pull request and every push to `main`
+  ([CI](../.github/workflows/ci.yml),
+  [SECURITY.md](../SECURITY.md#approved-only-cryptography)).
 - **Approved-only cryptography is checked by lint too.** A lint rule denies the
   third-party cryptographic packages we name, such as `golang.org/x/crypto`, so code
   reaches for the validated module instead ([`.golangci.yml`](../.golangci.yml)).
@@ -117,8 +122,11 @@ describe that chain.
   the repository, each scanner blocks at every severity including unknown, and
   nothing hard-codes a name or a count ([scanner list](../.github/policy/scanners.json),
   [SECURITY.md](../SECURITY.md#nothing-ships-with-a-known-cve)).
-- **Scanned on every pull request.** The scan builds the same image the
-  release would ship and scans it ([scan workflow](../.github/workflows/scan.yml)).
+- **Scanned on every pull request, every push to `main` and every day.** The scan
+  builds the same image the release would ship and scans it. A release-candidate tag
+  is accepted only when a scan run on that exact commit, started on a schedule or by
+  hand, passed ([scan workflow](../.github/workflows/scan.yml),
+  [release checks](../.github/policy/required-checks.json)).
 - **Four scanners, every day.** The daily rescan builds main's candidate and scans
   it with four independent scanners, Grype, Docker Scout, Amazon Inspector and
   Google Artifact Analysis, then tallies how many saw each finding
@@ -136,8 +144,8 @@ describe that chain.
 
 ## Release
 
-- **Signed images.** Every image is signed with the release key by the promotion workflow, in
-  both registries ([verify-images.md](verify-images.md)).
+- **Signed images.** Every image is signed with the release key by the Sign stage and
+  the signature is pushed, after it is checked, to both registries ([verify-images.md](verify-images.md)).
 - **Signed provenance.** The images and archives Build made have signed build
   provenance naming the commit and the CI run that made them
   ([verify-images.md](verify-images.md)).
@@ -146,25 +154,30 @@ describe that chain.
   ([RELEASING.md](../RELEASING.md#vex-statements)).
 - **The release stage checks every earlier stage first.** Before it publishes
   anything it verifies the tag, the release policy and each earlier stage's signed
-  record, in order ([release stage](../.github/workflows/stage-promote.yml)).
+  record, in order ([release jobs](../.github/workflows/release.yml)).
 - **Builds and signing are kept apart.** Every build is its own job on its own
-  virtual machine, only the Sign stage's jobs and the release job can use the signing
-  key (builds and pull requests never can), and the comparison of the rebuilt files
+  virtual machine, only the Sign stage's jobs can use the signing
+  key (the release job, builds and pull requests never can), and the comparison of the rebuilt files
   runs in a job with no secrets
   ([build and signing-key isolation](build-and-signing-isolation.md)).
 - **The release is checked as a customer would.** After promotion the public digests
   are verified and pulled anonymously, and only then is the release published
-  ([promotion stage](../.github/workflows/stage-promote.yml)).
+  ([release jobs](../.github/workflows/release.yml)).
+- **The full test suite runs before a release candidate.** Every test suite that
+  pull-request CI does not run, and the Gradle and Maven acceptance suites, run every
+  night and on demand, never on a pull request or a push. A release is refused unless
+  they passed on the exact tagged commit
+  ([full suite](../.github/workflows/full-suite.yml),
+  [release-only checks](../.github/policy/release-only-checks.json)).
 - **Acceptance runs against the exact artifacts.** The archives and images that ship
   run the customer scenarios first: Gradle, Maven, Kubernetes and the artifact checks
-  ([acceptance](../.github/workflows/acceptance.yml),
-  [check stage](../.github/workflows/stage-verify.yml)).
+  ([check jobs](../.github/workflows/release.yml)).
 
 ## Runtime
 
 - **No telemetry and no outbound connections.** The server sends nothing anywhere,
   and a release test traces the candidate from its first instruction with egress
-  denied to prove it ([check stage](../.github/workflows/stage-verify.yml),
+  denied to prove it ([check jobs](../.github/workflows/release.yml),
   [SECURITY.md](../SECURITY.md#data-handling)).
 - **No request access log.** The only per-request logging is on failure, and it never
   carries a body, a credential or a client address
