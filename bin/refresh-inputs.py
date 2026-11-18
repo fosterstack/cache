@@ -385,7 +385,7 @@ def fips_module(pr_author, goroot, modfile, tmp, staged):
         open(tmp + "/new", "w").write("")
         sys.exit(0)
     open_prs_guard("fips-module", True)   # before any file is changed
-    # only the DATA file changes; the recipes are what the generator makes of it (the template and its pin are never
+    # only the DATA file changes; the recipes are what the generator makes of it (the template is never
     # touched by an automated change)
     gen_dir = tmp + "/gen"
     os.makedirs(gen_dir, exist_ok=True)
@@ -1202,7 +1202,7 @@ if sorted(old_mel) != new_mel:
 # the recipes are regenerated and compared on EVERY run, whether or not the lock changed: a run interrupted between the
 # lock write and the recipe writes is repaired by the next one (the lock is already current, the recipes are not) the
 # recipes are GENERATED from the template and the two data files (the melange lock and the FIPS module file): the job
-# edits only the lock, then asks the generator what the recipes become. The template and its pin are never touched by an
+# edits only the lock, then asks the generator what the recipes become. The template is never touched by an
 # automated change.
 gen_dir = tmp + "/gen"
 os.makedirs(gen_dir, exist_ok=True)

@@ -85,7 +85,7 @@ jobs:
           LATEST: ${{ steps.cmp.outputs.latest }}
         # Recovery logic (orphaned-branch, closed/merged handling) lives in the
         # unit-tested bin/go-bump-open-pr.sh, exercised by
-        # bin/go-bump-open-pr-test.sh in hygiene CI (audit R03).
+        # .github/agent/tests/go-bump-open-pr-test.sh in hygiene CI (audit R03).
         run: |
           set -euo pipefail
           gh auth setup-git

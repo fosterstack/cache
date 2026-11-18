@@ -27,12 +27,22 @@
       "scope": "push"
     },
     {
+      "context": "analyze (go)",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
       "context": "allowlist",
       "integration_id": 15368,
       "scope": "push"
     },
     {
       "context": "allowlist-chain",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "fips140-only",
       "integration_id": 15368,
       "scope": "push"
     },

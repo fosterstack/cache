@@ -37,13 +37,6 @@ vulnerability); this page is what we do.
 - **Container images are named by digest.** An image a workflow runs, pulls or
   passes to an action must be a digest, never a tag, and the same checker fails
   the pull request otherwise (the pin checker, `check-action-pins.py`).
-- **A new version waits seven days.** A pull request that moves a pinned version is
-  held until that version has been public for seven days, by a server-side time
-  ([supply-chain workflow](../.github/workflows/supply-chain.yml)). Two exceptions,
-  both still checked against published advisories: Go's own releases from go.dev,
-  verified against their published checksum, and Wolfi packages (with v0.3, those
-  packages are taken from our own archive and checked against their recorded hash
-  before a build uses them).
 - **Everything we pin is checked daily.** The inventory of pinned actions and
   packages is checked once a day against published advisories and malicious-package
   reports ([supply-chain workflow](../.github/workflows/supply-chain.yml)).

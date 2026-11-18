@@ -1328,6 +1328,22 @@ for args in ([], ["run"], ["cleanup"]):
     check("executed with %r and every input missing the script fails cleanly: non-zero, names a missing input, calls no tool" % args,
           rc != 0 and re.search(r"ECR|GAR|RUNNER_TEMP|GITHUB_RUN_ID", out) and calls == [] and "command not found" not in out, (rc, calls, out[-200:]))
 
+# a guide command runs in a child bash, which sees only exported names and PATH: the grype the script sets up must reach it
+with tempfile.TemporaryDirectory() as t:
+    os.makedirs(os.path.join(t, "tools")); os.makedirs(os.path.join(t, "ws", "bin"))
+    with open(os.path.join(t, "tools", "grype"), "w") as fh:
+        fh.write('#!/usr/bin/env bash\necho "grype-stub $*"\n')
+    with open(os.path.join(t, "ws", "bin", "vex-live-test.py"), "w") as fh:
+        fh.write("import subprocess, sys\nsys.exit(subprocess.run(['bash', '-c', 'grype --version']).returncode)\n")
+    os.chmod(os.path.join(t, "tools", "grype"), 0o755)
+    # the script's own lines up to its first command, then the guide call; the script's definitions of grype are the ones used
+    head = re.split(r"(?m)^\[ \"\$\{1:-\}\" = run \].*$", _run)[0]
+    open(os.path.join(t, "slice.sh"), "w").write(head + "guide grype\n")
+    e = dict(os.environ, RUNNER_TEMP=t, GITHUB_WORKSPACE=os.path.join(t, "ws"), ECR="e", GAR="g", GITHUB_RUN_ID="1")
+    r = subprocess.run(["bash", os.path.join(t, "slice.sh"), "run"], cwd=t, env=e, capture_output=True, text=True)
+    check("a guide command `grype` run by the guide runner's child bash finds and runs $RUNNER_TEMP/tools/grype",
+          r.returncode == 0 and "grype-stub --version" in r.stdout, (r.returncode, (r.stdout + r.stderr)[-200:]))
+
 # one journal_push, and PUSHED_LOG is required: no default of /dev/null, no push without the journal
 check("one journal_push function, and it is the only place that appends to PUSHED_LOG",
       len(re.findall(r"(?m)^journal_push\(\)", _run)) == 1 and len(re.findall(r">>\s*\"?\$\{?PUSHED_LOG", _run)) == 1

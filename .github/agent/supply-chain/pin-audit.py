@@ -4,14 +4,13 @@ disputed hits.
 
   pin-audit.py --root REPO [--base REV] [--fixtures FILE] [--now ISO] [--gh CMD] [--exceptions FILE]
 
-Daily mode (no --base): every item in today's inventory AND in the workflow history of the last 90 days. Pull request
-mode (--base REV): only the
-items the head moved. A hit becomes ONE issue (found again later: updated, never a second issue) labelled
-supply-chain-hit, naming the version,
-the advisory id and the rollback; it is also labelled owner-decision when no clean version exists or
-the version ran in the last
-90 days. A disputed hit (the two lists disagree about the same incident) is reported without rolling back unless a
-checked-in exception applies.
+Daily mode (no --base): every item in today's inventory AND in the workflow history of the last 90 days. Pull
+request mode (--base REV): only the items the head moved. A hit becomes ONE issue (found again later: updated,
+never a second issue) labelled supply-chain-hit, naming the version,
+the advisory id and the rollback; it is also labelled owner-decision when no clean version exists or the version
+ran in the last 90 days. A disputed hit (the two lists disagree about the same incident) is reported without
+rolling back
+unless a checked-in exception applies.
 Exit 0: clean (or only excepted disputes); 1: a hit or an unexcepted disputed hit; 2: it could not do its job.
 Only public facts go in an issue: versions, advisory ids, dates. It never produces run, environment or secret names.
 """
@@ -1158,22 +1157,24 @@ UNKNOWN = "unknown"
 
 
 def rollback(item, net):
-    """The newest clean version, whatever its age. None: drop it. UNKNOWN: this kind of item
-    could not be searched."""
+    """The newest clean version. None: drop it. UNKNOWN: this kind of item could not be searched."""
     versions = net.versions(item)
     if versions is None:
         return UNKNOWN
-    eligible = [v for v in versions if v["version"] != (item.label or item.version) and v.get("sha") != item.version]
-    def vkey(v):
+    eligible = []
+    for v in versions:
+        if v["version"] == (item.label or item.version) or v.get("sha") == item.version:
+            continue
+        eligible.append(v)
+    def vkey(x):
         try:
-            nums, cls, parts = _vt(v["version"])
+            nums, cls, parts = _vt(x["version"])
         except ValueError:
             return None
         # a pre-release is never a rollback target
         return (nums, cls, [(0, q) if isinstance(q, int) else (1, q) for q in parts]) if cls != 0 else None
-    ordered = [v for v in eligible if vkey(v) is not None]
-    # newest VERSION first (a late backport is not "newest"); the lists of a candidate are fetched only when it is
-    # reached
+    ordered = [x for x in eligible if vkey(x) is not None]
+    # newest VERSION first (a late backport is not "newest"); the lists of a candidate are fetched only when it is reached
     for v in sorted(ordered, key=vkey, reverse=True):
         lists = v.get("lists")
         if lists is None:
@@ -1183,7 +1184,8 @@ def rollback(item, net):
             continue
         cand = v.get("_item")
         if cand is not None and not age.judge_item(cand)[0]:
-            # the candidate must itself be an exact pin (an action named by a tag, not a commit, is no rollback target)
+            # the candidate must itself be an exact pin (an action named by its commit):
+            # a tag or a missing sha is no rollback target
             continue
         if cand is not None and cand.kind == "action" and hasattr(net, "nested"):
             # the candidate's whole nested tree (depth 3) must be clean too: a replacement that calls a compromised
@@ -1263,8 +1265,8 @@ def body_of(f, rb, owner, ran, today):
                      "nobody has looked for a clean one, so the owner decides.")
     elif rb:
         lines.append(f"Rollback: pin the newest clean version: {_safe(rb['version'])}"
-                     + (f" (commit {_safe(rb['sha'])})" if rb.get("sha")
-                        else "") + f", published {_safe(rb['published'])}.")
+                     + (f" (commit {_safe(rb['sha'])})" if rb.get("sha") else "")
+                     + (f", published {_safe(rb['published'])}" if rb.get("published") else "") + ".")
     else:
         lines.append("No clean version exists: drop it (remove its use) until one does.")
     if ran:
@@ -1414,9 +1416,7 @@ def main(argv=None):
     ap.add_argument("--now")
     ap.add_argument("--gh", default="gh")
     ap.add_argument("--exceptions")
-    ap.add_argument("--report-only", action="store_true",
-                    help="print findings and exit 1; never touch issues (the pull request job's token cannot write "
-                         "them)")
+    ap.add_argument("--report-only", action="store_true", help="print findings and exit 1; never touch issues (the pull request job's token cannot write them)")
     ap.add_argument("--deadline", type=int,
                     help="seconds the whole run may take before it ends itself with exit 2 "
                          "(1 to 86400; default 900, or 600 for --base)")
@@ -1479,10 +1479,10 @@ def main(argv=None):
                 ran_keys = {i.key for i in audited}
         except RuntimeError as e:
             raise Fail(str(e))
-        # placeholders (a local action, a download source) have no advisories; their CHANGE is refused by the age check
+        # placeholders (a local action, a download source) have no advisories; their CHANGE is refused by the pin scan
         audited = [i for i in audited if i.version not in ("(local)", "(source)")]
-        # REQ-SUP-001-AC20: an unpinned package that a ruled script line made is judged by that ruling (the age check
-        # reports it), never as an advisory hit
+        # REQ-SUP-001-AC20: an unpinned package that a ruled script line made is judged by that ruling
+        # (the pin scan reports it), never as an advisory hit
         if a.base:
             try:
                 audited = age.drop_ruled_unpinned(audited,
@@ -1743,3 +1743,4 @@ if __name__ == "__main__":
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         code = 120
     sys.exit(code)
+

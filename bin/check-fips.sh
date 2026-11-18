@@ -36,7 +36,7 @@ mkdir -p "$out"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT   # no docker has run yet: the container cleanup below is installed once the bind has passed
 # Round 1 F1: the images are the ones Build recorded, bound to digests.json before anything is loaded or started; the bind also lists the files of each
-# layout docker may be given (REQ-SUP-001-AC33)
+# layout docker may be given (REQ-SUP-001-AC39)
 python3 bin/check-bind.py --digests "$digests" --images "$images" --members-out "$tmp" || exit 1
 cleanup() { rm -rf "$tmp"; for v in production fips; do docker rm -f "fscache-check-$v" > /dev/null 2>&1 || true; done; }
 trap cleanup EXIT

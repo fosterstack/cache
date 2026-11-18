@@ -59,7 +59,11 @@ def readers_of(name):
     return sorted(found)
 
 
-for gone in ("fulcio-chain.pem", "tsa-chain.pem"):
+# the Fulcio chain file is kept, but nothing reads it: the release chain does not, and the pin-age check that did is gone
+check(os.path.exists(os.path.join(pol, "fulcio-chain.pem")), "fulcio-chain.pem is kept (no reader remains)")
+fulcio_readers = readers_of("fulcio-chain.pem")
+check(not fulcio_readers, "no file under bin/ or .github/ names fulcio-chain.pem (readers: %s)" % ", ".join(fulcio_readers[:6]))
+for gone in ("tsa-chain.pem",):
     check(not os.path.exists(os.path.join(pol, gone)), "%s is deleted (no kept reader needs it)" % gone)
     readers = readers_of(gone)
     check(not readers, "no file under bin/ or .github/ still names %s%s" % (gone, " (readers: %s)" % ", ".join(readers[:4]) if readers else ""))

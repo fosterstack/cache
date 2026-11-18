@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC1, REQ-SUP-001-AC36, REQ-REL-014-AC2
-# proves: REQ-REL-013-AC11
+# proves: REQ-SUP-001-AC41, REQ-SUP-001-AC33, REQ-SUP-001-AC36, REQ-REL-014-AC2
+# proves: REQ-REL-015-AC11
 # proves: REQ-SUP-001-AC38
 # Where the supply-chain checks run (owner ratified Oct 5, changed Nov 17 2026: no supply-chain check runs on a pull request): Dependabot carries no cooldown and one entry per
 # ecosystem root; supply-chain.yml has no pull_request trigger and two jobs, the daily audit (may write issues and nothing else) and the evidence letter's presence check (read-only),
@@ -97,6 +97,9 @@ def judge_wf(d, real=False):
     pull_fetches = [st for st in j.get("steps", []) if fetches_pull_ref(st.get("run", ""))]
     if pull_fetches:
         bad.append("daily-audit has a step that runs git fetch of refs/pull: the history is read from main only")
+    for jn, jj in jobs.items():
+        if re.search(r"rerun|observations-out|gh run ", "\n".join(str(s.get("run", "")) for s in jj.get("steps", []))):
+            bad.append(f"{jn} re-runs a run or records tag observations: nothing waits for a re-run")
     # evidence-letter-present: the daily presence check of the monthly evidence letter; reads releases, writes nothing
     j = jobs["evidence-letter-present"]
     if j.get("permissions") != {"contents": "read"}:
@@ -131,7 +134,7 @@ def judge_wf(d, real=False):
         if "env" in jj:
             bad.append(f"{name} has a job-level env")
     # the check steps' commands are pinned EXACTLY: any other flag, an extra assignment, a duplicated argument, a changed order is a changed (rejected) workflow
-    norm = lambda t: "\n".join(l.strip() for l in str(t).strip().split("\n") if l.strip())
+    norm = lambda t: "\n".join(l.strip() for l in str(t).strip().split("\n") if l.strip() and not l.strip().startswith("#"))
     for jn, want in CANONICAL_RUNS.items():
         for st in jobs[jn].get("steps", []):
             r = str(st.get("run", ""))
@@ -144,8 +147,8 @@ def judge_wf(d, real=False):
             # a step may not be skipped, tolerated or cut short: the only conditions are the ratified ones
             if "continue-on-error" in st:
                 bad.append(f"{name}: a step has continue-on-error: a failing check must fail the job")
-            if "if" in st:
-                bad.append(f"{name}: a step has a condition ({st.get('if')!r}): the job-level one is the only one, a step could skip the check")
+            if st.get("if") is not None:
+                bad.append(f"{name}: a step has a condition ({st.get('if')!r}): it could skip the check")
             if "timeout-minutes" in st:
                 bad.append(f"{name}: a step has its own timeout-minutes")
             for forbidden in ("shell", "working-directory"):
@@ -208,7 +211,7 @@ def judge_db(d, gomod_dirs=GOMOD_DIRS):
             ups.setdefault(k[0], u)
     for u in d.get("updates", []):
         if "cooldown" in u:
-            bad.append(f"the {u.get('package-ecosystem')} {u.get('directory')} entry has a cooldown: there is no release-age wait")
+            bad.append(f"the {u.get('package-ecosystem')} {u.get('directory')} entry has a cooldown key, which this repo does not use")
     for eco in ("github-actions", "pip"):
         # exactly weekly and no extra key (no day, time or timezone)
         if (ups.get(eco) or {}).get("schedule") != {"interval": "weekly"}:
@@ -367,6 +370,18 @@ mut_wf("a workflow_run trigger", "a workflow_run trigger", lambda d: d["on"].upd
 mut_wf("no schedule", "no single daily schedule", lambda d: d["on"].pop("schedule"))
 mut_wf("a daily step gains a condition", "a step has a condition", lambda d: [x.update({"if": "false"}) for x in J(d, "daily-audit")["steps"] if "pin-audit" in str(x.get("run", ""))])
 mut_wf("a workflow-level env appears", "top-level env", lambda d: d.update(env={"PYTHONPATH": "pr"}))
+mut_wf("a step is disabled with if: false", "a step has a condition", lambda d: J(d, "daily-audit")["steps"][-1].update({"if": "false"}))
+mut_wf("a step skips bots", "a step has a condition", lambda d: J(d, "daily-audit")["steps"][-1].update({"if": "github.actor != 'dependabot[bot]'"}))
+mut_wf("a step tolerates failure", "continue-on-error", lambda d: J(d, "daily-audit")["steps"][-1].update({"continue-on-error": "true"}))
+mut_wf("exit 0 is appended to the check step", "exits early", lambda d: [x.update(run=x["run"] + "\nexit 0") for x in J(d, "daily-audit")["steps"] if "run" in x][-1:])
+mut_wf("exit 0 is put first", "exits early", lambda d: [x.update(run="exit 0\n" + x["run"]) for x in J(d, "daily-audit")["steps"] if "run" in x][-1:])
+mut_wf("a failure is swallowed with || true", "exits early", lambda d: [x.update(run=x["run"] + " || true") for x in J(d, "daily-audit")["steps"] if "run" in x][-1:])
+mut_wf("a job container image appears", "job-level container", lambda d: J(d, "daily-audit").update(container={"image": "evil:latest"}))
+mut_wf("a job service appears", "job-level services", lambda d: J(d, "daily-audit").update(services={"x": {"image": "evil"}}))
+mut_wf("a shell default appears", "job-level defaults", lambda d: J(d, "daily-audit").update(defaults={"run": {"shell": "python3 {0}"}}))
+mut_wf("fixtures are passed to the checker", "test-only flag", lambda d: [x.update(run=x["run"] + " --fixtures pr/fx.json") for x in J(d, "daily-audit")["steps"] if "run" in x][-1:])
+mut_wf("a step sets PYTHONPATH", "sets env", lambda d: [x.setdefault("env", {}).update(PYTHONPATH="pr") for x in J(d, "daily-audit")["steps"] if "run" in x][-1:])
+mut_wf("PYTHONPATH in the script", "test-only flag", lambda d: [x.update(run="export PYTHONPATH=pr\n" + x["run"]) for x in J(d, "daily-audit")["steps"] if "run" in x][-1:])
 mut_wf("--report-only on the daily audit", "differ from the ratified text", lambda d: [x.update(run=x["run"] + " --report-only") for x in J(d, "daily-audit")["steps"] if "pin-audit" in str(x.get("run", ""))])
 mut_wf("a secret indexed with brackets", "indexes secrets", lambda d: [x["env"].update(GH_TOKEN="${{ secrets['PAT'] }}") for x in J(d, "daily-audit")["steps"] if "pin-audit" in str(x.get("run", ""))])
 mut_wf("a step sets shell", "sets shell", lambda d: [x.update(shell='bash -c "true" {0}') for x in J(d, "daily-audit")["steps"] if "run" in x][-1:])
@@ -399,6 +414,12 @@ mut_wf("evidence-letter-present runs another script", "run steps are not exactly
        lambda d: [x.update(run="bash bin/other.sh") for x in J(d, "evidence-letter-present")["steps"]
                   if "evidence-letter-present" in str(x.get("run", ""))])
 mut_wf("daily-audit loses its concurrency group", "no concurrency group", lambda d: J(d, "daily-audit").pop("concurrency"))
+mut_wf("the daily audit records observations again", "re-runs a run or records tag observations",
+        lambda d: [x.update(run=x["run"] + " --observations-out /tmp/x") for x in J(d, "daily-audit")["steps"]
+        if "pin-audit" in str(x.get("run", ""))])
+mut_wf("the daily audit re-runs a run", "re-runs a run or records tag observations",
+        lambda d: [x.update(run=x["run"] + "\ngh run rerun 1") for x in J(d, "daily-audit")["steps"]
+        if "pin-audit" in str(x.get("run", ""))])
 FETCH_REASON = "daily-audit has a step that runs git fetch of refs/pull"
 mut_wf("daily-audit gains a pull request fetch", FETCH_REASON,
        lambda d: J(d, "daily-audit")["steps"].insert(1, {"run": "git fetch --no-tags origin '+refs/pull/*/head:refs/pull/*/head'"}))
@@ -420,7 +441,6 @@ ctl_wf("a fetch of a branch named like a pull word", "git fetch --no-tags origin
 ctl_wf("a fetch of a tag", "git fetch --no-tags origin refs/tags/v1:refs/tags/v1")
 ctl_wf("a command that only prints pull/1/head", "echo pull/1/head")
 mut_wf("a job gets an environment", "has an environment or secrets", lambda d: J(d, "daily-audit").update(environment="release"))
-mut_wf("a merge_group trigger returns", "a merge_group trigger", lambda d: d["on"].update(merge_group={}))
 mut_wf("a second job appears", "the jobs are not exactly",
        lambda d: d["jobs"].update(extra={"runs-on": "ubuntu-latest", "steps": []}))
 mut_wf("image-signatures returns", "the jobs are not exactly", lambda d: d["jobs"].update({"image-signatures": {"runs-on": "ubuntu-latest", "steps": []}}))

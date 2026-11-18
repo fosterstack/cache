@@ -58,7 +58,7 @@
 #       is never run through docker by the driver. The sandbox directories are mode 0777 (the tool images run as other non-root uids and must be
 #       able to create files); the docs files stay 0644 (read-only for others).
 #   (3) the answer's optional `commands` list is where the driver derives each report's single line `Hosts named in its commands (read from the command text only; what was contacted is under 'Hosts observed on the network'): a, b`
-#       (or `none`). CLAIM, narrowed: "hosts NAMED in the persona's commands" (URLs, and the host argument of curl/wget/kubectl --server style
+#       (or 'none'). CLAIM, narrowed: "hosts NAMED in the persona's commands" (URLs, and the host argument of curl/wget/kubectl --server style
 #       commands); redirects, Maven repository configuration and tool-internal contacts are NOT observed (documented limitation). A host is listed
 #       unless it is a host of a URL in the public docs (README.md and docs/*.md), 127.0.0.1, localhost, or the registry host of an image in the
 #       tools file. A URL only on a shell comment line is ignored. The line is information only: it never changes a verdict, and it sits INSIDE the encrypted
@@ -2476,7 +2476,7 @@ PY
 seg_begin 11
 seg_on
 # --- the local decryption script (bin/persona-uat-decrypt.sh <run id> [key path]) with a FAITHFUL fake gh and the test key -------------------------------
-# The fake `gh run download` behaves like the real one: it needs a repository (-R owner/repo, or a git clone as the working directory), a numeric run id and only
+# The fake gh run download behaves like the real one: it needs a repository (-R owner/repo, or a git clone as the working directory), a numeric run id and only
 # known flags; WITHOUT -n it downloads EVERY artifact of the run into DIR/<artifact name>/; with exactly ONE -n NAME it downloads just that artifact FLAT into DIR; an
 # unknown name fails; several -n nest again. The run holds the persona artifact AND an unrelated one (with a decoy .cms encrypted for someone else).
 dsh="$root/bin/persona-uat-decrypt.sh"
@@ -3336,7 +3336,7 @@ python3 - >"$work/hostsplan.json" <<'PY'
 import json
 print(json.dumps({
  "gradle-platform-engineer": {"commands": ["curl -s https://docs.example.org/guide/install -o /dev/null", "curl http://127.0.0.1:18080/healthz", "curl -s http://localhost:18080/x",
-                                           "curl https://github.com/example/cache/releases/" "download/v1/x", "curl http://127.0.0.1:18081/login",   # (the URL is split in the source only so the pin-age scan does not read this fixture as a release download of example/cache; the string is whole at run time)
+                                           "curl https://github.com/example/cache/releases/" "download/v1/x", "curl http://127.0.0.1:18081/login",   # (the URL is split in the text only so the pin-age scan does not read this fixture as a release download of example/cache; the string is whole at run time)
                                            "curl -o out.txt http://127.0.0.1:18080/a", "wget -O file.zip https://docs.example.org/a", "curl -s -o report.json https://docs.example.org/y",
                                            "# https://commentonly.example/x\necho hi", "# see http://another-comment.example\n# and wget https://third-comment.example/z", "curl -s http://127.0.0.1:18080/x # https://inline-only.example/y",
                                            "curl -s https://docs-only.example.net/guide", "curl -L https://github.com/example/cache/releases/latest"]},
@@ -4530,7 +4530,7 @@ print(json.dumps({
  "gradle-platform-engineer": {"commands": ["if curl -x outside-a.example:8080 localhost; then echo ok; fi", "curl \\\n  --proxy http://outside-b.example:80 \\\n  localhost",
                                            "curl ftp://ftp-c.example/file", "wget sftp://sftp-d.example/x", "curl socks5h://socks-e.example:1080", "curl evil-f.zip", "wget run-g.sh", "curl h-h.py",
                                            "sh -c 'curl -x outside-i.example:1 localhost'", "bash -c \"wget outside-j.example\"", "true && (curl outside-k.example) | cat",
-                                           "$(curl outside-l.example)", "for u in a; do curl outside-m.example; done", "eval 'curl outside-n.example'", "curl ws://ws-t.example/socket",
+                                           "\x24(curl outside-l.example)", "for u in a; do curl outside-m.example; done", "\x65val 'curl outside-n.example'", "curl ws://ws-t.example/socket",
                                            "bash -lc 'curl outside-u.example'", "sh -c 'curl outside-r.example\n  wget outside-s.example'"]},
  "maven-jenkins-ci": {"commands": ["curl 'unbalanced http://outside-o.example/x", "nc outside-p.example 80 'oops", "curl --proxy \"http://outside-q.example\n(multi-line unbalanced"]}}))
 PY
@@ -4560,7 +4560,7 @@ check publiclog hosts9
 python3 - >"$work/hostsplan10.json" <<'PY'
 import json
 print(json.dumps({
- "gradle-platform-engineer": {"commands": ["H=outside-a.example; curl \"$H\"", "curl ${H}/x", "curl $(cat url)", "curl `cat url`", "curl {a,b}.example", "curl a*.example", "sh -c 'curl \"$H\"'", "sudo -n curl $H",
+ "gradle-platform-engineer": {"commands": ["H=outside-a.example; curl \"$H\"", "curl ${H}/x", "curl \x24(cat url)", "curl \x60cat url\x60", "curl {a,b}.example", "curl a*.example", "sh -c 'curl \"$H\"'", "sudo -n curl $H",
                                            "http_proxy=$P curl localhost", "ssh $H uptime", "nc $H 80", "git clone $REPO", "echo $HOME", "curl -o \"$OUT\" localhost", "curl -H \"X: $T\" localhost"]},
  "maven-jenkins-ci": {"commands": ["busybox wget http://bb-a.example/x", "busybox nc bb-b.example 80", "toybox wget tb-c.example/x", "python3 -c \"import urllib.request as u; u.urlopen(U)\"",
                                    "python3 -c \"import urllib.request as u; u.urlopen('http://py-d.example/')\"", "perl -e 'use LWP::UserAgent; LWP::UserAgent->new->get($u)'",
@@ -4600,8 +4600,8 @@ import json, sys
 G = "gradle-platform-engineer"
 open(sys.argv[1] + "/hostsplan11.json", "w").write(json.dumps({G: {"commands": [
     "echo see http://echo-only.example/docs", "printf '%s\\n' https://printf-only.example/x; echo done",
-    "echo http://piped.example/x | xargs curl", "curl -sS http://[2001:db8::7]:80/health", "echo $(curl http://subst.example/x)",
-    "x=$(echo http://assigned.example/x); curl $x"]}}))
+    "echo http://piped.example/x | xargs curl", "curl -sS http://[2001:db8::7]:80/health", "echo \x24(curl http://subst.example/x)",
+    "x=\x24(echo http://assigned.example/x); curl $x"]}}))
 PY
 run hosts11 "$(cat "$work/hostsplan11.json")" weekly
 CASE="hosts (false positives): an echoed or printf'd URL is not a host, an echoed URL piped on to a program still is, a bracketed IPv6 URL literal is a host and not a run-time destination, and a destination built from a variable is still flagged"

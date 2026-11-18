@@ -38,7 +38,7 @@ ALLOW_PATTERNS=(
   '^\.github/dependabot\.yml$'
   '^\.github/PULL_REQUEST_TEMPLATE\.md$'
   # Policy lists: the single sources of truth for the required-check set
-  # and the scanner set, consumed by the auto-merge guard and the release
+  # and the scanner set, read by the release
   # workflows.
   '^\.github/policy/[A-Za-z0-9._-]+\.json$'
   '^\.github/policy/allowed_signers$'
@@ -104,6 +104,7 @@ ALLOW_PATTERNS=(
   '^bin/install-scanner\.sh$'
   '^bin/install-scanner-test\.sh$'
   '^bin/dependabot-reviewer\.py$'
+  '^bin/dependabot-reviewer-version\.sh$'
   '^bin/dependabot-reviewer-test\.sh$'
   '^bin/dependabot-screen\.sh$'
   '^bin/dependency-lanes-test\.sh$'
@@ -126,6 +127,7 @@ ALLOW_PATTERNS=(
   '^\.github/supply-chain-exceptions\.json$'
   '^bin/workflow-consolidation-test\.sh$'
   '^bin/go-freshness-wiring-test\.sh$'
+  '^bin/pull-request-checks-test\.sh$'
   '^bin/dependabot-reviewer-gather-test\.sh$'
   '^bin/inspector-gate\.py$'
   '^bin/inspector-gate-test\.sh$'
@@ -139,7 +141,6 @@ ALLOW_PATTERNS=(
   '^bin/vex-both-scanners-test\.sh$'
   '^bin/vex-scope-test\.sh$'
   '^bin/go-bump-open-pr\.sh$'
-  '^bin/go-bump-open-pr-test\.sh$'
   # The v0.3.0 release chain, Sign boundary (PR 1): the verifier, its tests, the hostile dry-run step and the signer table the
   # tests share; the Sigstore PUBLIC trust material the release policy pins (exact names: a private key never matches); results/
   # holds the dry run's per-attempt rows (.gitkeep only, the rows come from the run)
@@ -150,6 +151,7 @@ ALLOW_PATTERNS=(
   '^bin/chain-test-signers\.(py|json)$'
   '^\.github/policy/cosign-signing-config\.json$'
   '^\.github/policy/rekor\.pub$'
+  '^\.github/policy/fulcio-chain\.pem$'
   '^test-evidence/witness-real/(build|apk)-collection\.real\.txt$'
   '^results/\.gitkeep$'
   # The v0.3.0 release chain, Build and Rebuild (PR 2): the Witness wrapper, the per-job stage scripts and their snapshot variants, the admission
@@ -199,6 +201,9 @@ ALLOW_PATTERNS=(
   # shared library, and their parser unit tests, plus the parser-test runner.
   '^\.github/agent/bin/auditor-[a-z0-9-]+\.py$'
   '^\.github/agent/bin/check-action-pins\.py$'
+  # The review gate in the merge queue (REQ-DEP-005-AC3): the judge of a queue's temporary branch
+  # (its test is under tests/).
+  '^\.github/agent/bin/queue-gate-judge\.sh$'
   '^\.github/agent/bin/auditorlib/[A-Za-z0-9._-]+\.py$'
   # the published OpenVEX schema the writer validates against (production data, beside its code)
   '^\.github/agent/bin/auditorlib/openvex-schema\.json$'
@@ -206,6 +211,8 @@ ALLOW_PATTERNS=(
   # REQ-AUD-18 AC1: the auditor's suites (matrix, mutants, parser runner, govulncheck fixture
   # materializer) and its requirements matrix live under .github/agent/ with the code.
   '^\.github/agent/tests/[A-Za-z0-9._-]+\.(sh|py)$'
+  # REQ-SUP-001: recorded publisher signatures (public Sigstore data: certificates, signatures, log entries) for the pin-age tests; JSON files in this one folder.
+  '^\.github/agent/tests/fixtures/image-publishers/[A-Za-z0-9._-]+\.json$'
   # REQ-AUD-18 AC2: the hash-pinned coverage tool and the reasoned exclusion ranges.
   '^\.github/agent/coverage-requirements\.txt$'
   # the report lint's hash-pinned, test-only renderer (GitHub's cmark-gfm)
@@ -345,7 +352,7 @@ ALLOW_PATTERNS=(
   # The release key page (docs/verify-key.md) is judged by bin/verify-key-page-test.sh, REQ-CHAIN-008.
   '^bin/verify-key-page-test\.sh$'
   '^bin/layout-archive(-test)?\.sh$'
-  # The monthly evidence letter (REQ-REL-013): the letter script, the fetch, publish, verify and presence scripts, the
+  # The monthly evidence letter (REQ-REL-015): the letter script, the fetch, publish, verify and presence scripts, the
   # two tests and the signatory text.
   '^bin/evidence-letter\.py$'
   '^bin/evidence-letter(-fetch|-publish|-verify|-present|-test|-job-test)\.sh$'

@@ -670,7 +670,7 @@ cp "$work/wf-ok"/* "$work/wf-old/"; : > "$work/wf-old/stage-admission.yml"
 cp "$work/wf-ok"/* "$work/wf-cw-new/"; : > "$work/wf-cw-new/sprawl.yml"
 expect ok     "AC1 fixture: a workflow directory of release.yml (one file for the release), persona-uat.yml and customer-words-edited.yml, with no stage-*.yml file, passes" "" workflows "$work/wf-ok"
 expect caught "AC1 a new workflow file other than the two named" "was added" workflows "$work/wf-new"
-expect ok     "AC1 evidence-letter.yml is admitted beside release.yml (REQ-REL-013)" "" workflows "$work/wf-letter"
+expect ok     "AC1 evidence-letter.yml is admitted beside release.yml (REQ-REL-015)" "" workflows "$work/wf-letter"
 expect caught "AC1 persona-uat.yml and customer-words-edited.yml do not admit any other new file" "was added" workflows "$work/wf-cw-new"
 expect caught "AC1 a stage-*.yml file is back (stage-admission.yml)" "stage-admission.yml" workflows "$work/wf-old"
 for st in stage-build.yml stage-sign.yml stage-verify.yml stage-promote.yml stage-reproducibility.yml; do
@@ -2695,12 +2695,12 @@ assert "no stage file or stage script names apko, passes a lock," not in t11
 assert t11.endswith("; apko builds the production and fips images from build/apko.yaml and build/apko-fips.yaml with their lock files"), t11[-200:]
 assert "relative path" not in t11 and "temporary copy" not in t11 and "absolute path" not in t11
 PY
-# REQ-CHAIN-006-AC10, REQ-REL-009-AC1 and REQ-SUP-001-AC1 say what rules 61 and 65 removed and what replaced it (advisor R61 text, Oct 12; the base inputs are one committed list)
-python3 - "$root/requirements/requirements.yaml" <<'PY' && ok "006-AC10, REL-009-AC1, SUP-001-AC1 text: no Dockerfile, buildx, goreleaser or Dependabot docker entry; the base inputs are one committed list" || bad "006-AC10, REL-009-AC1, SUP-001-AC1 text: the rule 61 wording is missing"
+# REQ-CHAIN-006-AC10, REQ-REL-009-AC1 and REQ-SUP-001-AC41 say what rules 61 and 65 removed and what replaced it (advisor R61 text, Oct 12; the base inputs are one committed list)
+python3 - "$root/requirements/requirements.yaml" <<'PY' && ok "006-AC10, REL-009-AC1, SUP-001-AC41 text: no Dockerfile, buildx, goreleaser or Dependabot docker entry; the base inputs are one committed list" || bad "006-AC10, REL-009-AC1, SUP-001-AC41 text: the rule 61 wording is missing"
 import sys, yaml
 R = {r["id"]: r for r in yaml.safe_load(open(sys.argv[1]))["requirements"]}
 def then(rid, n): return next(a for a in R[rid]["acceptance_criteria"] if a["id"] == "%s-AC%d" % (rid, n))["then"]
-t10, t9, ts = then("REQ-CHAIN-006", 10), then("REQ-REL-009", 1), then("REQ-SUP-001", 1)
+t10, t9, ts = then("REQ-CHAIN-006", 10), then("REQ-REL-009", 1), then("REQ-SUP-001", 41)
 assert "and no .goreleaser.yaml, no build/docker directory or file named Dockerfile and no Dependabot docker entry exists" in t10 and "a candidate image is read by crane, by digest" in t10
 assert "a change of a base input listed in .github/policy/base-inputs.json" in t9 and "base-image digest pins" not in t9
 assert "no docker entry exists (the repository has no container build file for it to watch)" in ts and "docker entries are unchanged" not in ts

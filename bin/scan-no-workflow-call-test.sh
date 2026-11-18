@@ -19,7 +19,7 @@ tree = sys.argv[1]
 # The only triggers each guarded file may have. Anything else (workflow_call in any spelling or case, a merge key,
 # a missing `on`) fails: the allowlist is the rule, workflow_call is just the case we care about most.
 ALLOWED = {
-    "scan.yml": {"pull_request", "push"},
+    "scan.yml": {"pull_request", "merge_group", "push"},
     "main-candidate-rescan.yml": {"schedule", "workflow_dispatch"},
 }
 GUARDED_STEMS = ("scan", "main-candidate-rescan")
@@ -244,6 +244,11 @@ expect caught "scan.yml: no on key at all" "$(mutate a7 .github/workflows/scan.y
 expect caught "scan.yml: empty on:" "$(mutate a8 .github/workflows/scan.yml $'on:\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo')"
 expect caught "scan.yml: an anchor elsewhere in the file" "$(mutate a9 .github/workflows/scan.yml $'on:\n  pull_request:\nenv: &e\n  A: b\njobs:\n  s:\n    runs-on: ubuntu-latest\n    env: *e\n    steps:\n      - run: echo')"
 expect ok "scan.yml: pull_request with a branch filter and push with tags stays allowed" "$(mutate a10 .github/workflows/scan.yml $'on:\n  pull_request:\n  push:\n    branches: [main]\n    tags: [\'v*\']\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo')"
+
+# the merge queue runs scan.yml (merge_group); the rescan allows only schedule and workflow_dispatch
+expect ok "scan.yml: merge_group beside pull_request and push is allowed" "$(mutate q1 .github/workflows/scan.yml $'on:\n  pull_request:\n  merge_group:\n  push:\n    branches: [main]\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo')"
+expect caught "main-candidate-rescan.yml: merge_group is not one of its triggers" "$(mutate q2 .github/workflows/main-candidate-rescan.yml $'on:\n  schedule:\n    - cron: "41 7 * * *"\n  merge_group:\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo')" "merge_group"
+expect caught "scan.yml: workflow_call is still refused beside merge_group" "$(mutate q3 .github/workflows/scan.yml $'on:\n  pull_request:\n  merge_group:\n  workflow_call:\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo')" "workflow_call"
 
 # 2d. YAML forms that could hide a declaration from a reader (fail closed, each refusal names its reason)
 GOODJOB=$'jobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo'
