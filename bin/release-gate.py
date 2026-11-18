@@ -66,7 +66,7 @@ def same_as(a):
 
 # signed by the offline root key, checked by Check after a publish (REQ-CHAIN-008)
 KEY_MANIFEST = ("release-key-manifest.json", "release-key-manifest.sig")
-# Sign's three files: the record the Sign stage signed; the bundle carries its signature (AC9, AC20)
+# Sign's three files: the record the Sign stage signed; the bundle carries its signature (AC9, REQ-CHAIN-007-AC19)
 PROVENANCE = ("provenance.json", "provenance.rekor.json", "provenance.bundle.json")
 # Build's products of its signed record
 BUILD_FILES = ("digests.json", "items.json", "admission-baseline.json")

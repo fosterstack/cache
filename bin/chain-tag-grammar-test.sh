@@ -416,7 +416,7 @@ else
     '{"tagName":"v1.2.10","isDraft":false,"isPrerelease":false},' \
     '{"tagName":"v1.3.0","isDraft":true,"isPrerelease":false}' ']' > "$S/wf/releases.json"
   { printf 'set -euo pipefail\nw=%q\n' "$S/wf"; printf '%s\n' "$fr" 'echo "$current"'; } > "$S/wf/cur.sh"
-  got=$(cd "$S/wf" && PATH="/usr/bin:/bin" bash cur.sh 2> err)
+  got=$(cd "$S/wf" && TAG_RE="$("$REALPY" -I "$root/bin/build-admit.py" tag-pattern)" PATH="/usr/bin:/bin" bash cur.sh 2> err)   # the collect step gets TAG_RE from the pattern step
   [ "$got" = "v1.2.10" ] && ok "main-candidate-rescan picks the current release among grammar finals only" || bad "main-candidate-rescan picks the current release among grammar finals only" "got '$got': $(head -c 150 "$S/wf/err")"
 fi
 # (2) the shape every rescan target must have
@@ -438,7 +438,7 @@ import json, sys
 print(json.dumps([{"release": sys.argv[1], "variant": "standard", "digest": "sha256:" + "a" * 64, "scanner": "trivy"}]))
 PY
     { printf 'set -u\ntargets=$(cat targets.json)\n'; printf '%s\n' "$head_fr"; } > "$d/run.sh"
-    (cd "$S/wf" && cd shape && mkdir -p bin; cp "$root/bin/build-admit.py" bin/; PATH="/usr/bin:/bin" bash run.sh > out 2> err < /dev/null)
+    (cd "$S/wf" && cd shape && mkdir -p bin; cp "$root/bin/build-admit.py" bin/; TAG_RE="$("$REALPY" -I "$root/bin/build-admit.py" tag-pattern)" PATH="/usr/bin:/bin" bash run.sh > out 2> err < /dev/null)
   }
   for t in v01.2.3 v1.02.3 v1.2.3-rc0 v1.2.3-rc.1 v1.2.3-rc01 1.2.3; do
     shape "$t" && bad "main-candidate-rescan refuses the target release $t" "accepted" || ok "main-candidate-rescan refuses the target release $t"
@@ -522,6 +522,13 @@ done
 for f in bin/release-apks.sh bin/release-signatures.sh bin/release-stage.sh bin/release-verify.sh bin/install-scanner.sh .github/workflows/main-candidate-rescan.yml; do
   grep -qE 'build-admit\.py (tag-ok|tag-pattern)' "$root/$f" && ok "$f calls build-admit.py tag-ok or tag-pattern" || bad "$f calls build-admit.py tag-ok or tag-pattern" "no such call"
 done
+# in the rescan workflow the grammar is read only by the tokenless `pattern` step: the collect step (which holds GH_TOKEN) never names build-admit.py
+"$REALPY" - "$root/.github/workflows/main-candidate-rescan.yml" <<'PY' && ok "main-candidate-rescan: build-admit.py tag-pattern is called in the pattern step, not in collect" || bad "main-candidate-rescan: build-admit.py tag-pattern is called in the pattern step, not in collect" "see the rescan-current-only-test structure cases"
+import sys, yaml
+steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["manifests"]["steps"]
+by = {s.get("id"): s for s in steps}
+sys.exit(0 if "pattern" in by and "build-admit.py tag-pattern" in by["pattern"].get("run", "") and "build-admit" not in by["collect"].get("run", "") else 1)
+PY
 for f in bin/release-signatures.sh bin/release-stage.sh bin/release-apks.sh; do
   # the final-only shell steps pass --final (the Python scripts refuse a release candidate in code)
   grep -qE 'build-admit\.py tag-ok( -[A-Za-z-]+)* --final|build-admit\.py tag-ok --final' "$root/$f" && ok "$f passes --final" || bad "$f passes --final" "no tag-ok --final call"

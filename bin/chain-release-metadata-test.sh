@@ -290,6 +290,41 @@ obj = os.path.join(tempfile.mkdtemp(), "tag.txt"); open(obj, "w").write(GEN)
 rc, so, se = run("tag-notes", "--tag", "v0.3.1", "--object", obj)
 check(rc != 0 and so == "", "tag-notes: a tag with SIGNED MESSAGE notes text is not accepted as notes (no such subcommand)", "rc=%s out=%r" % (rc, so[:60]))
 check("tag-notes" not in open(os.path.join(BIN, "release-metadata.py")).read(), "tag-notes: the script holds no tag-notes code")
+# ---- REQ-CHAIN-004-AC20: `images` runs beside the secrets (bin/vex-live-run.sh) and loads nothing of bin/build-admit.py -------------------------------------
+NOADMIT = tempfile.mkdtemp()
+for n in os.listdir(BIN):
+    if n != "build-admit.py" and os.path.isfile(os.path.join(BIN, n)): shutil.copy(os.path.join(BIN, n), NOADMIT)
+check(not os.path.exists(NOADMIT + "/build-admit.py") and os.path.exists(os.path.join(BIN, "release-metadata.py")), "AC20 the build-admit-absent copy of bin/ lacks build-admit.py")
+WATCH = ('import sys, runpy, json\nseen = []\n'
+         'def hook(ev, args):\n    if ev in ("open", "import") and ("build-admit" in str(args[0]) or "build_admit" in str(args[0])): seen.append([ev, str(args[0])])\n'
+         'sys.addaudithook(hook)\nrc = 0\n'
+         'try:\n    sys.argv = sys.argv[2:]\n    runpy.run_path(sys.argv[0], run_name="__main__")\nexcept SystemExit as e:\n    rc = e.code or 0\n'
+         'open(__import__("os").environ["WATCH_OUT"], "w").write(json.dumps({"seen": seen, "mods": sorted(m for m in sys.modules if "admit" in m)}))\nsys.exit(rc)\n')
+def images_in(bin_dir, t, out, watch=False):
+    args = ["images", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images", "--items", t + "/witness-build/items.json", "--out", out]
+    env = dict(os.environ, WATCH_OUT=t + "/watch.json")
+    cmd = ["python3", "-c", WATCH, "x", os.path.join(bin_dir, "release-metadata.py")] + args if watch else ["python3", os.path.join(bin_dir, "release-metadata.py")] + args
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env); return r.returncode, r.stdout, r.stderr
+t, d = tree(); with_out, without_out = t + "/with.json", t + "/without.json"
+rc1, so1, se1 = images_in(BIN, t, with_out)
+rc2, so2, se2 = images_in(NOADMIT, t, without_out)
+check(rc2 == 0 and os.path.exists(without_out), "AC20 images succeeds with bin/build-admit.py absent", "rc=%s %s" % (rc2, se2[:300]))
+check(rc1 == 0 and rc2 == 0 and open(with_out).read() == open(without_out).read() and so1 == so2, "AC20 images with build-admit.py absent writes the same file and output as with it present", "%s %s" % (se1[:100], se2[:200]))
+t, d = tree(); rcw, sow, sew = images_in(BIN, t, t + "/w.json", watch=True)
+w = json.load(open(t + "/watch.json")) if os.path.exists(t + "/watch.json") else {"seen": ["no watch file"], "mods": []}
+check(rcw == 0 and w["seen"] == [] and w["mods"] == [], "AC20 images opens, imports and executes nothing of build-admit.py and registers no build_admit module", "rc=%s seen=%s mods=%s %s" % (rcw, str(w["seen"])[:200], w["mods"], sew[:100]))
+for label, mutate, word in (("a bad items hash is still refused with build-admit.py absent", lambda t, d: open(t + "/images/fips.digest", "w").write(sha(b"other") + "\n"), "fips"),
+                            ("a missing manifests file is still refused with build-admit.py absent", lambda t, d: os.remove(t + "/images/production.manifests"), "production.manifests")):
+    t, d = tree(); mutate(t, d); rc, so, se = images_in(NOADMIT, t, t + "/o.json")
+    check(rc == 1 and word in se and not os.path.exists(t + "/o.json") and "Traceback" not in se, "AC20 images: " + label, "rc=%s %s" % (rc, se[:200]))
+# a subcommand that judges a version still needs the grammar: with build-admit.py absent it fails closed, never succeeds
+t = tempfile.mkdtemp(); adm = t + "/admission.json"
+open(adm, "w").write(json.dumps({"baseline": "requirements/releases/v0.3.0.yaml", "baseline_version": "v0.3.0", "sha": "a" * 40, "tag": "v0.3.1"}))
+def baseline_in(bin_dir):
+    r = subprocess.run(["python3", bin_dir + "/release-metadata.py", "baseline", "--admission", adm, "--tag", "v0.3.1", "--commit", "a" * 40], capture_output=True, text=True); return r.returncode, r.stdout, r.stderr
+brc, bso, bse = baseline_in(BIN); nrc, nso, nse = baseline_in(NOADMIT)
+check(brc == 0 and bso.strip() == "v0.3.0", "AC20 baseline with build-admit.py present prints the baseline version (control)", "rc=%s %s" % (brc, bse[:150]))
+check(nrc != 0 and nso == "", "AC20 baseline with build-admit.py absent fails closed (non-zero, prints no version)", "rc=%s out=%r" % (nrc, nso[:60]))
 # ---- usage: the docstring (the script's usage text) names every subcommand it has, and no other ----------------------------------------
 import ast
 SUBS = ("images", "manifest", "baseline", "list", "bind-archives", "checksums")
