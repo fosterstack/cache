@@ -1992,19 +1992,24 @@ def _setter_values(name, script):
     backslash escape or `${...}` inside a word hides nothing and opens nothing."""
     pat = re.compile(r"(?<![^\s;&|(])" + name + r"=(?:\"((?:\\.|[^\"\\])*)\"|'([^']*)'|((?:\\.|[^\s\"';)&|\\])*))"
                      r"|(?<![^\s;&|(])#[^\n]*|\"(?:\\.|[^\"\\])*\"|'[^']*'|(?:\\.|\$\{[^}]*\}|[^\s;&|()\"'\\])+")
-    return [m.group(m.lastindex) for m in pat.finditer(script) if m.lastindex and not _subshell_setter(script, m)]
+    _, masked, open_quote = _mask_shell(script)
+    return [m.group(m.lastindex) for m in pat.finditer(script)
+            if m.lastindex and (open_quote or not _subshell_setter(masked, m))]
 
 
-def _subshell_setter(script, m):
-    """True when the setter match `m` runs in a subshell: a background job (`name=v&`) or an element of a pipeline
-    (`name=v|cat`, `cat|name=v`), so the shell that reads on never sees it."""
-    return bool(re.match(r"[ \t]*(?:\|(?!\|)|&(?![&>]))", script[m.end():])
-                or re.search(r"(?<!\|)\|&?\s*$", script[:m.start()]))
-
-
-def _joined(script):
-    """`script` with each line continuation (a backslash that is not itself escaped, then a newline) removed."""
-    return re.sub(r"(?<!\\)((?:\\\\)*)\\\n", r"\1", script)
+def _subshell_setter(masked, m):
+    """True unless the setter match `m` is a whole command of the shell that reads on: only blanks, then the end, a
+    newline, `;`, `&&` or `||` follow it, and no pipe, `(` or `{` group opens before it. `masked` is the script with
+    comments and quoted or escaped characters blanked, so none of them counts; text it cannot read (an open quote)
+    counts as a subshell, which flags the copy."""
+    end, depth = m.end(), masked[m.start():m.end()].count("$(")
+    while depth and end < len(masked):      # the value's own `$(...)` is part of the word
+        depth += (masked[end] == "(") - (masked[end] == ")")
+        end += 1
+    before, after = masked[:m.start()], masked[end:]
+    word = r"(?:\s*[A-Za-z_]\w*=(?:\"[^\"]*\"|'[^']*'|\S*))*"
+    opened = len(re.findall(r"\(|(?<!\$)\{(?=\s)", before)) - len(re.findall(r"\)|(?<=[;\s])\}", before))
+    return not re.match(r"[ \t]*(?:$|\n|;|&&|\|\|)", after) or opened > 0 or bool(re.search(r"(?<!\|)\|&?" + word + r"\s*$", before))
 
 
 def _loose_values(name, script):
@@ -2025,7 +2030,6 @@ def _outside(target, script, depth=0):
     m = re.match(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?(/.*)?$", target.strip("\"'"))
     if not m or depth > 4:
         return False
-    script = _joined(script)
     values = _setter_values(m.group(1), script)
     return bool(values) and all(_outside(v, script, depth + 1) for v in values + _loose_values(m.group(1), script))
 
