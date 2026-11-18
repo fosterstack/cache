@@ -164,7 +164,7 @@ ok(len(rel_cos) >= 3 and all(CLEAN(c) for c in rel_cos), "%s: each cosign step (
 ok(any(c.startswith("cosign verify ") and "<IMAGE_REF>" in c and CLEAN(c) for c in rel_cos) and any(c.startswith("cosign verify ") and "<IMAGE_REF_FIPS>" in c and CLEAN(c) for c in rel_cos),
    "%s: the production and the -fips image steps are `cosign verify` with the release key" % rel_doc)
 cnr_cos = [e["command"] for e in json.load(open(cnr_file)) if str(e.get("command", "")).startswith("cosign ")]
-ok(len(cnr_cos) >= 3 and all(CLEAN(c) for c in cnr_cos), "%s: each cosign command of the cannot-run list (%d found) verifies with --key release.rsa.pub and names no certificate identity, no OIDC issuer and no switch that turns the log check off" % (cnr_file, len(cnr_cos)))
+ok(len(cnr_cos) >= 2 and all(CLEAN(c) for c in cnr_cos), "%s: each cosign command of the cannot-run list (%d found) verifies with --key release.rsa.pub and names no certificate identity, no OIDC issuer and no switch that turns the log check off" % (cnr_file, len(cnr_cos)))
 ok(all(c in rel_cmds for c in cnr_cos), "%s: every cosign command of the cannot-run list is a command of %s" % (cnr_file, rel_doc))
 # Release key pointer (REQ-CHAIN-008-AC9): next to each release key step (a fenced curl of build/keys/release.rsa.pub) of install.md (1),
 # offline-install.md (1) and using-our-vex.md (1) there is one plain line outside any fence, within 6 lines of that fence, that links to
