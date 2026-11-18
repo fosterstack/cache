@@ -7,6 +7,7 @@
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
+umask 022   # the fixtures are built as CI builds them: vendor-check.sh refuses mode 600 files, so the caller's umask must not decide the verdict
 work=$(mktemp -d); trap 'chmod -R u+w "$work" 2>/dev/null; rm -rf "$work"' EXIT
 pass=0 failn=0
 ok()  { pass=$((pass+1)); }
