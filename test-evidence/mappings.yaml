@@ -423,7 +423,7 @@ mappings:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_images_tar.py" }
   - ac: REQ-REL-004-AC4
     evidence:
-      - { type: shell-test, ref: "bin/go-bump-open-pr-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/go-bump-open-pr-test.sh" }
       - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/go-freshness.yml: scheduled daily; compares the go directive against the newest patch of a supported minor (go.dev mode=json) and opens the go.mod bump PR (both modules) when a newer patch exists" }
   - ac: REQ-REL-004-AC5
@@ -441,7 +441,7 @@ mappings:
       - { type: workflow-job, ref: ".github/workflows/ci.yml: bin/inspector-reuse-test.sh, whose wiring cases over scan.yml and main-candidate-rescan.yml (reuse program before any ScanSbom call, the pinned stock actions/cache restore and save, same-repo condition, save only on fresh results, permissions unchanged; each mutation caught)" }
   - ac: REQ-REL-004-AC9
     evidence:
-      - { type: shell-test, ref: "bin/go-bump-open-pr-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/go-bump-open-pr-test.sh" }
   - ac: REQ-REL-004-AC10
     evidence:
       - { type: inspection, ref: "Verified by reviewer inspection; there is no coded check." }

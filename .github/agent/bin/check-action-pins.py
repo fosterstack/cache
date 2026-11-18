@@ -176,6 +176,7 @@ usage: check-action-pins.py [--verify-tags] [--git <commit>] [repo-root]
 """
 import collections
 import csv
+import hashlib
 import json
 import os
 import pathlib
@@ -2463,14 +2464,7 @@ def _drop_foreign_heredocs(text):
 # Documented exclusions of a non-committed script a step runs (each with its reason, handoff 0023): the two scripts
 # (/tmp/pf-forward.sh, /tmp/smoke-assert.sh) that main's stage-acceptance-k8s.yml writes itself. Any other eval of a
 # variable, anywhere, is refused by the variable-program rule.
-GENERATED_OK = {
-    (".github/workflows/stage-acceptance-k8s.yml", "/tmp/smoke-assert.sh"):
-        "the documented smoke commands of docs/kubernetes.md (committed, reviewed), written by the step's own python "
-        "heredoc; they assert against the kind cluster and fetch nothing",
-    (".github/workflows/stage-acceptance-k8s.yml", "/tmp/pf-forward.sh"):
-        "the documented kubectl port-forward command of docs/kubernetes.md, written by the same heredoc; run verbatim "
-        "because rule 12 tests the customer's commands exactly as published",
-}
+GENERATED_OK = {}
 
 
 # main's copy: the pull request's base sha, or (the merge queue, REQ-DEP-005) the queue's base sha, the group's parent
@@ -2998,16 +2992,16 @@ def _token_url_breach(text, name, run_texts, key):
 
 
 DOWNLOAD_EXCLUSIONS = {
-    (".github/workflows/auditor.yml", "audit", 10): (
+    (".github/workflows/auditor.yml", "audit", 10, "ec6b56ab920e50d88208a5c553521658f5eab8c32cff1cc0d56404e1b27de643"): (
         "the CISA KEV catalog is fetched to ${AUDITOR_KEV_CATALOG}, a file under runner.temp that the step's env names and nothing else assigns (this exclusion "
         "holds only while the file assigns that variable exactly once, as `AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json`); it is read as data by the auditor and never run",
         "AUDITOR_KEV_CATALOG", "AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json"),
-    (".github/workflows/dependabot-reviewer.yml", "review", 4): (
+    (".github/workflows/dependabot-reviewer.yml", "review", 4, "bd33b686b13cadaf9d7b3b2216165f30fa6dbe35ef74bcefaebe9c5c86d4e3f1"): (
         "the identity-token request: curl prints the JSON answer from ${ACTIONS_ID_TOKEN_REQUEST_URL} "
         "(set by the runner, quoted, followed by a literal &audience=) into a "
         "command substitution that jq reads; it writes no file " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
-    (".github/workflows/dependabot-reviewer.yml", "review", 7): (
+    (".github/workflows/dependabot-reviewer.yml", "review", 7, "b1c51ee65f4383b4ae9236b202c03ac511fc4ce1963575e46c33f72462867182"): (
         "the same identity-token request inside the decision loop's token refresh: "
         "stdout into a command substitution that jq reads, no file written " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
@@ -3017,9 +3011,9 @@ DOWNLOAD_EXCLUSIONS = {
 
 def _exclusion_key(item):
     """The DOWNLOAD_EXCLUSIONS key of one step of a job's scripts:
-    (workflow file, job, step index), or None."""
+    (workflow file, job, step index, sha256 of the step's run text), or None."""
     m = re.match(r"^(.*)\.jobs\.([^.\[]+)\.steps\[(\d+)\]\.run$", item[0])
-    return (m.group(1), m.group(2), int(m.group(3))) if m else None
+    return (m.group(1), m.group(2), int(m.group(3)), hashlib.sha256(item[1].encode("utf-8", "replace")).hexdigest()) if m else None
 
 
 def _excluded_run_texts(scripts, name):

@@ -49,7 +49,6 @@ PINS = {
                  'fh.write(HEAD + "    steps:\\n      - run: |\\n          printf x > /tmp/smoke-assert.sh; bash '
                  '/tmp/smoke-assert.sh\\n")',
                  'for script in ("/tmp/smoke-assert.sh", "/tmp/pf-forward.sh"):',
-                 'for script in ("/tmp/smoke-assert.sh", "/tmp/pf-forward.sh"):',
                  'code, out = run([self.tree_with(self.K8S, "/tmp/other.sh")])',
                  'for js in ("core.addPath(\'/tmp/bin\')", "core.addPath(p)", "core.addPath(`${dir}/bin`)"):'],
         "shell-script TEXT handed to the pin checker's string analysers (script_installs, _downloaded_commands, _outside, _made_executable); /home/runner/work and /usr/local/bin are the literal GitHub-runner and install-location strings those rules match on, and the functions never open, stat or resolve them (the checker reads only entries of the tree it is given; the guard proves the suite touches no system path at run time); the added for-loop line holds JavaScript test strings (core.addPath arguments) that are written into a throwaway fixture workflow, never used as paths"),

@@ -1725,7 +1725,7 @@ PRSFILE="$w/prs-patch.json" PARENT=p1 PRIORP1=success cand "" 0 \
   "a patch head that only merges main into a passed head (same diff) is not a candidate"
 carried "the success is published on the new head, naming the head it is carried from, after both diffs were read" \
   sha90 p1
-grep -q "output\[summary\]=Not read again: this head's diff against main is byte for byte the diff of p1," "$w/gh.log" \
+grep -q "output\[summary\]=Not reviewed again: this head's diff against main is byte for byte the diff of p1," "$w/gh.log" \
   && { echo "ok: candidates: the carried check says which head it is carried from"; pass=$((pass+1)); } || {
     echo "FAIL: candidates: carried summary"; fail=$((fail+1)); }
 ONLY=99 PARENT=p1 PRIORP1=success cand "" 0 \

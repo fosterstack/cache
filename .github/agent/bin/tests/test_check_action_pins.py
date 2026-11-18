@@ -904,7 +904,7 @@ class GateWorkflowPresence(unittest.TestCase):
 
 
 class MainKeepers(unittest.TestCase):
-    """What main's checker accepts beside the chain's forms: the two generated Kubernetes smoke scripts, in that one workflow only."""
+    """The two generated Kubernetes smoke scripts of main's k8s workflow: no entry excuses them on this tree, so each is refused."""
     K8S = ".github/workflows/stage-acceptance-k8s.yml"
 
     def tree_with(self, rel, script):
@@ -923,13 +923,7 @@ class MainKeepers(unittest.TestCase):
             fh.write(HEAD + "    steps:\n      - run: |\n          printf x > /tmp/smoke-assert.sh; bash /tmp/smoke-assert.sh\n")
         code, out = run([d])
         self.assertEqual(code, 1, out)
-        self.assertIn("is fenced as written only by its python heredoc", out)
-
-    def test_the_generated_smoke_scripts_pass_in_the_k8s_workflow(self):
-        for script in ("/tmp/smoke-assert.sh", "/tmp/pf-forward.sh"):
-            with self.subTest(script=script):
-                code, out = run([self.tree_with(self.K8S, script)])
-                self.assertEqual(code, 0, out)
+        self.assertIn("smoke-assert.sh, which is not a committed file", out)
 
     def test_the_same_script_names_in_another_workflow_are_refused(self):
         for script in ("/tmp/smoke-assert.sh", "/tmp/pf-forward.sh"):

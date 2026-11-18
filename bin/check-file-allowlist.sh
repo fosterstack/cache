@@ -141,7 +141,6 @@ ALLOW_PATTERNS=(
   '^bin/vex-both-scanners-test\.sh$'
   '^bin/vex-scope-test\.sh$'
   '^bin/go-bump-open-pr\.sh$'
-  '^bin/go-bump-open-pr-test\.sh$'
   # The v0.3.0 release chain, Sign boundary (PR 1): the verifier, its tests, the hostile dry-run step and the signer table the
   # tests share; the Sigstore PUBLIC trust material the release policy pins (exact names: a private key never matches); results/
   # holds the dry run's per-attempt rows (.gitkeep only, the rows come from the run)

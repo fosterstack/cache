@@ -4029,9 +4029,9 @@ for what, text in (
         ("a job service with no env", put(JOB, "    services:\n      side:\n        image: %s\n" % IMG))):
     missed.append("%s is a finding" % what) if whole(text) != [4, 7] else None
 assert not missed, missed
-cdwf = chain_file(D)
+cdwf = dwf
 csteps = yaml.safe_load(cdwf)["jobs"]["review"]["steps"]
-chain = {4: csteps[4]["run"], 7: csteps[7]["run"]}                            # the chain's: steps 4 and 7
+chain = {4: csteps[4]["run"], 7: csteps[7]["run"]}                            # this tree's steps 4 and 7
 assert judge_job(chain, {D: cdwf}) == [], "the chain's two exact steps are excluded"
 assert judge_job({5: chain[4], 7: chain[7]}, {D: cdwf}) == [5, 7], "the chain's step 4 text at another index is a finding"
 assert judge_job(chain, {D: cdwf}, job="other") == [4, 7], "the chain's texts in another job are findings"
@@ -4039,6 +4039,9 @@ assert judge_job(chain, {".github/workflows/x.yml": cdwf}, file=".github/workflo
         "the chain's texts in another file are findings"
 assert judge_job(chain, {D: cdwf + "\n          ACTIONS_ID_TOKEN_REQUEST_URL: file:///x\n"}) == [4, 7], \
         "an assignment of the URL variable is a finding"
+oldsteps = yaml.safe_load(chain_file(D))["jobs"]["review"]["steps"]
+assert oldsteps[7]["run"] != chain[7], "the chain's step 7 text is this tree's"
+assert 7 in judge_job({4: chain[4], 7: oldsteps[7]["run"]}, {D: cdwf}), "a bound step whose text has changed is a finding"
 PY
 fi
 
