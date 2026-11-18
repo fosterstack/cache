@@ -6,11 +6,11 @@
 #        untouched workflows (agent-review-gate.yml, dependabot-auto-merge.yml); every other job of ci.yml, scan.yml,
 #        acceptance.yml still runs on push to main; supply-chain.yml has no job on a pull request or a push.
 #   AC2  supply-chain.yml (the daily audit) has no push, pull_request, pull_request_target or workflow_run trigger: the
-#        pin-age pull-request scan was deleted. dependency-review (ci.yml) runs on push to main only and judges the commit
-#        before the push (github.event.before) to the commit after it (github.sha) through its base-ref and head-ref.
-#   AC3  required-checks.json scopes dependency-review to push, and release admission's own step (run from
-#        stage-admission.yml against a stub of the GitHub API) refuses a tag whose commit has a red or missing run of any
-#        push-scoped check, dependency-review included.
+#        pin-age pull-request scan was deleted. The chain has no dependency-review job.
+#   AC3  required-checks.json scopes requirements to push and lists each of the six; the chain's release admission is
+#        bin/build-admit.py (its own test), so no stage-admission.yml step is run here.
+# On the chain: scan needs build, the scanner and the inspector; marker-gate and customer-words-edited are its own
+# pull-request jobs outside the six (marker-gate has no push run).
 # The real files must pass and each mutated copy must be caught.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -163,14 +163,17 @@ def closure(w, jid):
 SIX = {"ci.yml:test", "ci.yml:lint", "ci.yml:govulncheck", "ci.yml:fips140-only", "codeql.yml:analyze", "scan.yml:scan"}
 SIX_NAMES = {"test", "lint", "govulncheck", "analyze (go)", "fips140-only", "scan"}
 UNTOUCHED = {"agent-review-gate.yml:judge", "agent-review-gate.yml:publish", "dependabot-auto-merge.yml:auto-merge"}
+# the chain's own pull-request jobs, outside the six (a later change removes them); marker-gate has no push run
+CHAIN_PR = {"ci.yml:marker-gate", "customer-words-edited.yml:customer-words-edited"}
 
 
 def judge_ac1(wfs):
     bad = []
     scan = wfs["scan.yml"]
     wanted = SIX | {f"scan.yml:{n}" for n in closure(scan, "scan")} | UNTOUCHED
-    if wanted - SIX - UNTOUCHED != {"scan.yml:build", "scan.yml:assemble", "scan.yml:scanners", "scan.yml:scanner"}:
-        bad.append("scan no longer needs exactly build, assemble, the scanner list and the scanners: %s" % sorted(wanted))
+    if wanted - SIX - UNTOUCHED != {"scan.yml:build", "scan.yml:scanner", "scan.yml:inspector"}:
+        bad.append("scan no longer needs exactly build, the scanner and the inspector: %s" % sorted(wanted))
+    wanted |= CHAIN_PR
     got = pr_jobs(wfs)
     if got - wanted:
         bad.append("jobs that run on a pull request and should not: %s" % sorted(got - wanted))
@@ -181,7 +184,7 @@ def judge_ac1(wfs):
         bad.append("the six jobs' check names are not %s: %s" % (sorted(SIX_NAMES), sorted(names)))
     # the checks that left the pull request still run on push to main (and so on the exact tagged commit)
     for f in ("ci.yml", "scan.yml", "acceptance.yml"):
-        lost = set(wfs[f]["jobs"]) - runs_on(wfs[f], "push")
+        lost = set(wfs[f]["jobs"]) - runs_on(wfs[f], "push") - {"marker-gate"}
         if lost:
             bad.append("%s jobs that no longer run on push to main: %s" % (f, sorted(lost)))
     return bad
@@ -195,13 +198,8 @@ def judge_ac2(wfs):
             bad.append("supply-chain.yml still has the %s trigger" % ev)
     if "pin-age" in (sc.get("jobs") or {}):
         bad.append("supply-chain.yml still has the pin-age job")
-    ci = wfs["ci.yml"]["jobs"]["dependency-review"]
-    if evaluate(ci.get("if"), "push") is False:
-        bad.append("ci.yml's dependency-review is skipped on push")
-    act = [s for s in ci.get("steps") or [] if str(s.get("uses", "")).startswith("actions/dependency-review-action@")]
-    w = (act[0].get("with") or {}) if act else {}
-    if w.get("base-ref") != "${{ github.event.before }}" or w.get("head-ref") != "${{ github.sha }}":
-        bad.append("dependency-review does not judge github.event.before to github.sha: %s" % w)
+    if "dependency-review" in wfs["ci.yml"]["jobs"]:       # the chain has no such job (the base never had it)
+        bad.append("ci.yml has a dependency-review job: this test reads none")
     return bad
 
 
@@ -228,12 +226,12 @@ for cond, ev, want in [(None, "pull_request", True), ("${{ github.event_name != 
 bad = judge_ac1(real)
 check("AC1 the real workflows: the pull_request job list is the six, scan's needs and the two untouched workflows", not bad, "; ".join(bad))
 for name, f, edit, want_bad in [
-    ("gosec-on-pull-request", "ci.yml", "J['gosec'].pop('if', None)", True),
+    ("allowlist-on-pull-request", "ci.yml", "J['allowlist'].pop('if', None)", True),
     ("test-skipped-on-pull-request", "ci.yml", "J['test']['if'] = \"github.event_name != 'pull_request'\"", True),
-    ("vendored-job-unconditional", "ci.yml", "J['ven' + 'dor'].pop('if', None)", True),
-    ("dependency-review-on-pull-request", "ci.yml", "J['dependency-review']['if'] = \"${{ github.event_name == 'pull_request' }}\"", True),
-    ("reproducibility-on-pull-request", "scan.yml", "J['reproducibility'].pop('if', None); J['assemble-b'].pop('if', None)", True),
-    ("artifact-acceptance-on-pull-request", "scan.yml", "J['artifact-acceptance'].pop('if', None)", True),
+    ("requirements-unconditional", "ci.yml", "J['requirements'].pop('if', None)", True),
+    ("requirements-pull-request-only", "ci.yml", "J['requirements']['if'] = \"${{ github.event_name == 'pull_request' }}\"", True),
+    ("reproducibility-on-pull-request", "scan.yml", "J['reproducibility'].pop('if', None)", True),
+    ("suite-list-on-pull-request", "ci.yml", "J['suite-list'].pop('if', None)", True),
     ("acceptance-on-pull-request", "acceptance.yml", "d['on']['pull_request'] = ''", True),
     ("codeql-off-pull-request", "codeql.yml", "d['on'].pop('pull_request')", True),
     ("supply-chain-on-pull-request", "supply-chain.yml", "d['on']['pull_request'] = {}; J['daily-audit'].pop('if')", True),
@@ -246,14 +244,12 @@ for name, f, edit, want_bad in [
 
 # AC2
 bad = judge_ac2(real)
-check("AC2 the real workflows: supply-chain.yml has no pull-request or push trigger; dependency-review runs on push to main and judges before..sha", not bad, "; ".join(bad))
+check("AC2 the real workflows: supply-chain.yml has no pull-request or push trigger and ci.yml has no dependency-review job", not bad, "; ".join(bad))
 for name, f, edit in [
     ("pull-request-trigger-back", "supply-chain.yml", "d['on']['pull_request'] = {}"),
     ("push-trigger-back", "supply-chain.yml", "d['on']['push'] = {'branches': ['main']}"),
     ("pin-age-job-back", "supply-chain.yml", "J['pin-age'] = J['daily-audit']"),
-    ("review-skipped-on-push", "ci.yml", "J['dependency-review']['if'] = \"${{ github.event_name == 'pull_request' }}\""),
-    ("review-base-ref-dropped", "ci.yml", "[s.setdefault('with', {}).pop('base-ref', None) for s in J['dependency-review']['steps'] if str(s.get('uses','')).startswith('actions/dependency-review-action@')]"),
-    ("review-head-ref-pr", "ci.yml", "[s.setdefault('with', {}).__setitem__('head-ref', '${{ github.event.pull_request.head.sha }}') for s in J['dependency-review']['steps'] if str(s.get('uses','')).startswith('actions/dependency-review-action@')]"),
+    ("dependency-review-job-added", "ci.yml", "J['dependency-review'] = J['lint']"),
 ]:
     got = judge_ac2(mutated(f, edit))
     check("AC2 mutant %s is caught" % name, bool(got), got)
@@ -262,57 +258,13 @@ for name, f, edit in [
 POL = os.path.join(root, ".github/policy")
 req = json.load(open(os.path.join(POL, "required-checks.json")))["required_checks"]
 rel = json.load(open(os.path.join(POL, "release-only-checks.json")))["required_checks"]
-for ctx in ("dependency-review",):
+for ctx in ("requirements",):
     ents = [c for c in req + rel if c["context"] == ctx]
     check("AC3 %s is listed once, scope push, Actions app" % ctx, ents == [{"context": ctx, "integration_id": 15368, "scope": "push"}], ents)
 
-adm = load(os.path.join(WF, "stage-admission.yml"))
-step = next(s for j in adm["jobs"].values() for s in j["steps"] if s.get("name") == "every required check green, app-pinned, per its scope")
-SHA, PRHEAD = "a" * 40, "b" * 40
-os.makedirs(os.path.join(work, "bin"))
-open(os.path.join(work, "bin/gh"), "w").write("""#!/usr/bin/env bash
-case "$*" in
-  *"/commits/$FAKE_SHA/check-runs"*) cat "$FAKE_DIR/sha-runs.json" ;;
-  *"/commits/$FAKE_PRHEAD/check-runs"*) cat "$FAKE_DIR/pr-runs.json" ;;
-  *"/pulls"*) cat "$FAKE_DIR/pulls.json" ;;
-  *"/status"*) echo '[]' ;;
-  *) echo "stub gh: unexpected $*" >&2; exit 9 ;;
-esac
-""")
-os.chmod(os.path.join(work, "bin/gh"), 0o755)
-text = step["run"].replace("/tmp/", work + "/")
-os.makedirs(os.path.join(work, "policy"), exist_ok=True)
-json.dump({"required_checks": req + rel}, open(os.path.join(work, "policy/required-checks.json"), "w"))
-open(os.path.join(work, "pulls.json"), "w").write(json.dumps([{"number": 7, "head_sha": PRHEAD}]))
-
-
-def admit(name, drop=(), red=(), only_on_pr=()):
-    """run the real step with every required check green on the tagged commit except `drop` (missing) and `red` (failed)."""
-    sha_runs, pr_runs = [], []
-    for i, c in enumerate(req + rel):
-        run = {"name": c["context"], "conclusion": "failure" if c["context"] in red else "success", "app_id": c["integration_id"], "id": 100 + i, "head_sha": SHA}
-        if c["context"] not in drop and (c["scope"] == "pull_request" or c["context"] in only_on_pr):
-            pr_runs.append(run)
-        if c["context"] not in drop and c["context"] != "auditor-review-gate" and c["context"] not in only_on_pr:
-            sha_runs.append(run)
-    for n, v in (("sha-runs", sha_runs), ("pr-runs", pr_runs)):
-        json.dump(v, open(os.path.join(work, n + ".json"), "w"))
-    env = dict(os.environ, PATH=os.path.join(work, "bin") + ":" + os.environ["PATH"], FAKE_DIR=work, FAKE_SHA=SHA, FAKE_PRHEAD=PRHEAD,
-               GITHUB_SHA=SHA, GITHUB_REPOSITORY="o/r", GH_TOKEN="x")
-    r = subprocess.run(["bash", "-c", text], env=env, capture_output=True, text=True)
-    return r.returncode, r.stdout + r.stderr
-
-
-rc, out = admit("all green")
-check("AC3 admission passes when every required check is green on the tagged commit", rc == 0, out.strip()[-300:])
-for ctx in [c["context"] for c in req + rel if c["context"] != "auditor-review-gate"]:
-    rc, out = admit("missing " + ctx, drop=(ctx,))
-    check("AC3 admission refuses a tag whose commit has no run of %s" % ctx, rc != 0 and "'%s'" % ctx in out and "tagged commit" in out, out.strip()[-300:])
-for ctx in ("dependency-review",):
-    rc, out = admit("red " + ctx, red=(ctx,))
-    check("AC3 admission refuses a tag whose commit has a red run of %s" % ctx, rc != 0 and "'%s'" % ctx in out, out.strip()[-300:])
-    rc, out = admit("pr-only " + ctx, drop=(ctx,), only_on_pr=(ctx,))
-    check("AC3 admission does not take %s from the merged pull request's head" % ctx, rc != 0 and "tagged commit" in out, out.strip()[-300:])
+# the chain's admission is bin/build-admit.py (bin/chain-build-admit-test.sh runs it), not a step of stage-admission.yml
+listed = {c["context"] for c in req}
+check("AC3 each of the six has its check name on required-checks.json", SIX_NAMES <= listed, sorted(SIX_NAMES - listed))
 
 print("pull-request-checks: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
