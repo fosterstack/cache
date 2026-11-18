@@ -115,6 +115,10 @@ def _hide(text):
     return re.sub(r"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?", "${var}", text)  # a shell variable's name (an env var, maybe a secret's) never prints either
 
 
+class Unparseable(RuntimeError):
+    """A workflow or action file whose YAML does not parse (the history walk reports an old one and goes on)."""
+
+
 class Item:
     def __init__(self, kind, name, version, label="", path=""):
         self.kind, self.name, self.version, self.label, self.path = kind, _hide(name), _hide(version), _hide(label), _hide(path)  # path: an action's subdirectory
@@ -837,7 +841,7 @@ def _file_found(path, text):
             doc = yaml.load(text, Loader=yaml.BaseLoader)
         except yaml.YAMLError as e:
             mark = getattr(e, "problem_mark", None)  # the line number only: the message would quote source text (names that must stay private)
-            raise RuntimeError(f"{path} does not parse (line {mark.line + 1 if mark else '?'})")
+            raise Unparseable(f"{path} does not parse (line {mark.line + 1 if mark else '?'})")
         if isinstance(doc, dict) and isinstance(doc.get("runs"), dict):
             _INPUT_CTX[0] = json.dumps(doc.get("inputs"), sort_keys=True, default=str)   # a composite action's input defaults select what its steps download
         try:
@@ -859,8 +863,12 @@ def _file_found(path, text):
     return found
 
 
+_UNREAD = [None]   # set only by the history walk: a list that gets the message of each file that does not parse
+
+
 def inventory(files):
-    """The items of one tree's files ({path: text}). Raises on a workflow that does not parse: a pin we cannot read is never skipped."""
+    """The items of one tree's files ({path: text}). Raises on a workflow that does not parse: a pin we cannot read is never skipped.
+    Only the history walk sets _UNREAD: then that file alone is left out and its message is listed."""
     items = {}
     _TREE[0] = frozenset(n for n in files if any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS))
     _FILES[0] = files
@@ -872,7 +880,13 @@ def inventory(files):
         if hit is not None:
             found = [copy.copy(it) for it in hit[0]]      # the de-duplication below renames steps: it must never touch the remembered items
         else:
-            found = _file_found(path, text)
+            try:
+                found = _file_found(path, text)
+            except Unparseable as e:
+                if _UNREAD[0] is None:
+                    raise
+                _UNREAD[0].append(str(e))
+                continue
             if mk is not None:                              # a raise left nothing here: only a completed file is remembered; each different set of reads is kept
                 _FILE_MEMO.setdefault(mk, []).append(([copy.copy(it) for it in found], tuple(_READS)))
         for it in found:
