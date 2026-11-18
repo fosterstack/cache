@@ -17,7 +17,7 @@ the job graph is exactly the keys and targets in CHAIN. Anything else is a fault
   listed CHAIN_SCRIPTS.json ROOT            the stage scripts are rows of .github/policy/chain-scripts.json with their real sha256 (PR 1's design)
   callers FILE                              REQ-CHAIN-004-AC14: a proof workflow calls release.yml with mode: snapshot and nothing else
   graph FILE                                REQ-CHAIN-005-AC5: the fifteen chain jobs of release.yml, each with its exact needs, if, permissions and environment, and the jobs around them
-  workflows DIR                             REQ-CHAIN-004-AC1: no workflow file is added beyond persona-uat.yml and customer-words-edited.yml,
+  workflows DIR                             REQ-CHAIN-004-AC1: no workflow file is added beyond persona-uat.yml, customer-words-edited.yml and evidence-letter.yml,
                                              and no stage-*.yml file exists
   recordenv FILE                            REQ-CHAIN-004-AC8: no token variable or token in a Witness collection (a DSSE envelope)
   nosource ROOT                             sandboxed-build rule 1: no step of Build or Rebuild runs source code
@@ -1546,8 +1546,8 @@ go-freshness.yml main-candidate-rescan.yml release.yml reserved-branch-guard.yml
 def workflows(directory):
     import os
     have = set(os.listdir(directory))
-    added = sorted(have - KNOWN_WORKFLOWS - {"persona-uat.yml", "customer-words-edited.yml"})
-    only = "(the only new files of v0.3.0 are persona-uat.yml, REQ-UAT-001, and customer-words-edited.yml, decision 98; release.yml is the one file of the release chain)"
+    added = sorted(have - KNOWN_WORKFLOWS - {"persona-uat.yml", "customer-words-edited.yml", "evidence-letter.yml"})
+    only = "(the only new files of v0.3.0 are persona-uat.yml, REQ-UAT-001, customer-words-edited.yml, decision 98, and evidence-letter.yml, REQ-REL-013; release.yml is the one file of the release chain)"
     bad = ["workflow file %s was added %s" % (f, only) for f in added]
     return bad + ["%s still exists (the stage files are folded into release.yml, REQ-CHAIN-005-AC5)" % f for f in sorted(have) if f.startswith("stage-")]
 
