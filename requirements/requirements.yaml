@@ -4104,7 +4104,7 @@ requirements:
       - id: REQ-CHAIN-006-AC2
         given: "release.yml"
         when: "its job graph is read"
-        then: "sign needs build; rebuild needs exactly build and sign; sign-rebuild needs exactly build and rebuild; check needs exactly build and sign; sign-check needs exactly build and check; rebuild does not need check and check does not need rebuild (they run side by side), and the release job needs exactly check, sign, sign-rebuild and sign-check; the check job carries no if of its own: it runs whenever build and sign ran, in a release and in a dry run"
+        then: "sign needs build; rebuild needs exactly build and sign; sign-rebuild needs exactly build and rebuild; check needs exactly build and sign; sign-check needs exactly build and check; rebuild does not need check and check does not need rebuild (they run side by side), and the release job needs exactly check, sign, sign-rebuild and sign-check; the check job carries exactly one if, the Check condition of REQ-CHAIN-005-AC5 (inputs.mode != 'snapshot'), and no other: it runs whenever build and sign ran, in a release and in a dry run, and only snapshot mode skips it"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-006-AC3
