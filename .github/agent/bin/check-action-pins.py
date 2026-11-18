@@ -974,9 +974,11 @@ def _cut_substitutions(text, data=False):
     return "".join(out), inner
 
 
-def _options(args, val, boolean):
+def _options(args, val, boolean, taken=None):
     """Skip the options at the front of args. Returns (index of the first operand, an unknown option or None);
-    a variable where an option or the operand would be stops the walk (the review pass covers it)."""
+    a variable where an option or the operand would be stops the walk (the review pass covers it). Each option the
+    walk consumes as an option, not as another option's value, is appended to `taken` when it is given."""
+    taken = [] if taken is None else taken
     i = 0
     while i < len(args):
         a = args[i]
@@ -988,8 +990,10 @@ def _options(args, val, boolean):
             name = a.split("=", 1)[0]
             if name in boolean or (name in val and "=" in a):
                 i += 1
+                taken.append(name)
             elif name in val:
                 i += 2
+                taken.append(name)
             else:
                 return i, a
             continue
@@ -998,9 +1002,11 @@ def _options(args, val, boolean):
         while j < len(a):
             o = "-" + a[j]
             if o in boolean:
+                taken.append(o)
                 j += 1
                 continue
             if o in val:
+                taken.append(o)
                 i += 1 if j + 1 < len(a) else 2
                 break
             return i, a if a[j] not in short else a
@@ -2083,9 +2089,14 @@ def _cut_redirections(text):
             q = c
             bare = False
         elif c in "<>":
-            if not cut and out and out[-1].isdigit() and (len(out) == 1 or out[-2].isspace()):
-                out.pop()                                # the descriptor number of 2>file is part of the redirection
+            k = len(out)
+            while k and out[k - 1].isdigit():
+                k -= 1
+            if not cut and k < len(out) and (k == 0 or out[k - 1].isspace()):
+                del out[k:]                              # the descriptor number of 2>file or 12>file is part of the redirection
             cut = bare = True
+            i += len(re.match(r"<<-|<<<|<<|>>|>[|&]|<[&>]|[<>]", text[i:]).group())   # <<- and >| are one operator
+            continue
         elif c.isspace():
             cut = cut and bare
         elif cut:
@@ -2105,17 +2116,24 @@ OPTIONS = {"read": READ_OPTIONS, "mapfile": MAPFILE_OPTIONS, "readarray": MAPFIL
 
 def _default_target(toks):
     """REPLY or MAPFILE when the command's read, select, mapfile or readarray sets it by default: a select always, the
-    others when no variable follows their options (read -a names an array)."""
+    others when no variable follows their options (read -a names an array), through command and builtin. An operand that
+    is only a $expansion may be empty, and an option this check does not know may be anything: both leave the default."""
     words = _command_words(toks)
-    if not words or words[0] not in DEFAULT_TARGET:
+    if not words:
         return None
-    args = toks[toks.index(words[0]) + 1:]
-    if words[0] == "select":
+    if words[0] == "builtin":
+        return _default_target(toks[toks.index("builtin") + 1:])
+    prog = words[-1]
+    if prog not in DEFAULT_TARGET:
+        return None
+    args = toks[toks.index(prog) + 1:]
+    if prog == "select":
         return "REPLY"
-    first, _ = _options(args, *OPTIONS[words[0]])
-    if first < len(args) or any(re.match(r"-[ers]*a", a) for a in args):
+    taken = []
+    first, unknown = _options(args, *OPTIONS[prog], taken)
+    if "-a" in taken or (not unknown and not all(a.startswith("$") for a in args[first:])):
         return None
-    return DEFAULT_TARGET[words[0]]
+    return DEFAULT_TARGET[prog]
 
 
 SETTER_WORDS = re.compile("read|mapfile|readarray|getopts|declare|typeset|local|export|readonly|let|select|for")
@@ -2161,12 +2179,31 @@ def _setter_values(name, script):
     backslash escape or `${...}` inside a word hides nothing and opens nothing."""
     pat = re.compile(r"(?<![^\s;&|(])" + name + r"=(?:\"((?:\\.|[^\"\\])*)\"|'([^']*)'|((?:\\.|[^\s\"';)&|\\])*))"
                      r"|(?<![^\s;&|(])#[^\n]*|\"(?:\\.|[^\"\\])*\"|'[^']*'|(?:\\.|\$\{[^}]*\}|[^\s;&|()\"'\\])+")
-    return [m.group(m.lastindex) for m in pat.finditer(script) if m.lastindex]
+    return [m.group(m.lastindex) for m in pat.finditer(script) if m.lastindex and not _subshell_setter(script, m)]
 
 
 def _loose_values(name, script):
     """Every `name=value` the text spells, quotes and comments ignored: the fail-closed view."""
-    return re.findall(r"(?:^|[\s;&|(])" + name + r"=[\"']?([^\s\"';)]*)", script)
+    pat = re.compile(r"(?<![^\s;&|(])" + name + r"=[\"']?([^\s\"';)&|]*)")
+    return [m.group(1) for m in pat.finditer(script) if not _subshell_setter(script, m)]
+
+
+def _subshell_setter(script, m):
+    """True when the setter match `m` runs in a subshell: a background job (`name=v&`) or an element of a pipeline
+    (`name=v|cat`, `cat|name=v`), so the shell that reads on never sees it."""
+    return bool(re.match(r"[ \t]*(?:\|(?!\|)|&(?![&>]))", script[m.end():])
+                or re.search(r"(?<!\|)\|&?\s*$", script[:m.start()]))
+
+
+def _joined(script):
+    """The script with each backslash-newline removed, as the shell does outside single quotes (inside double quotes too);
+    a comment and a single-quoted text are left whole, and an escaped backslash does not join."""
+    def join(m):
+        t = m.group()
+        if t[0] == '"':
+            return re.sub(r"\\(\n|.)", lambda k: "" if k.group(1) == "\n" else k.group(), t, flags=re.S)
+        return "" if t == "\\\n" else t
+    return re.sub(r"'[^']*'|(?<![^\s;&|(])#[^\n]*|\"(?:\\.|[^\"\\])*\"|\\.", join, script, flags=re.S)
 
 
 def _outside(target, script, depth=0):
@@ -2175,6 +2212,7 @@ def _outside(target, script, depth=0):
     followed through other variables (f="$work/x", work=$(mktemp -d))."""
     if target.startswith(("/home/runner/work", "/github/workspace")):
         return False                                     # the checkout's own absolute path (Codex #164 r3, C11)
+    script = _joined(script)
     if target.startswith(OUTSIDE):
         return True
     if re.match(r"[\"']?\$\{?HOME\}?/(?!work(/|$))", target):
