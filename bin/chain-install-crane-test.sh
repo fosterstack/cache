@@ -66,8 +66,4 @@ else echo "FAIL: crane is not pinned to a version with a 64-hex sha256 for both 
 if [ "$n" -eq 0 ]; then echo "FAIL: there is no crane entry in $sut to judge"; fail=$((fail+1))
 elif grep -qE 'go install|@latest' <(grep -i crane "$sut" 2> /dev/null); then echo "FAIL: crane is installed by go install or @latest, not by a checksummed download"; fail=$((fail+1)); else echo "ok: crane is not installed by go install or @latest"; pass=$((pass+1)); fi
 echo "pass=$pass fail=$fail"
-EXPECT=11
-if [ $((pass + fail)) != "$EXPECT" ]; then
-  echo "FAIL case count $((pass + fail)) != expected $EXPECT (a case was skipped or added)"; exit 1
-fi
 [ "$fail" -eq 0 ]

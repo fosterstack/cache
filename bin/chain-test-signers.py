@@ -8,7 +8,7 @@ Two small things, and nothing else:
      sign` keeps its signer).
  (2) the stage-file GRAMMAR (advisor decision b, Oct 9; finite grammar; replaces the script-reach scan of rounds 4-11): the engine no
      longer tries to work out what a shell might reach. A release-chain stage file may only run what a committed allowlist names:
-       .github/policy/chain-scripts.json  {"env_names":[...],"scripts":[{"path","sha256","tools":[...],"signs":false|"provenance"|"other",
+       .github/policy/chain-scripts.json  {"env_names":[...],"scripts":[{"path","tools":[...],"signs":false|"provenance"|"other",
                                                       "runs":[listed paths it may start],"reason"}]}
      * KEYS are closed at workflow (name, on, permissions, jobs), job (name, needs, if, runs-on, permissions, steps, outputs,
        timeout-minutes, strategy.matrix of literal labels, environment) and step level (name, id, uses, with, run, env, if,
@@ -20,14 +20,14 @@ Two small things, and nothing else:
        No local composite action, no docker://, no github-script, no job-level `uses`.
      * every `run:` line is exactly one of: `set -euo pipefail`; `bash PATH ARGS`; `python3 -I [-B] PATH ARGS`; `printf '%s' "$NAME" >
        digests.json` (the ONE write the Sign job needs; any other line starting with printf is an error); PATH is a plain relative
-       literal that is LISTED, with the sha256 the file has; ARGS are literal words or a whole "$NAME" read of the step's env:.
+       literal that is LISTED; ARGS are literal words or a whole "$NAME" read of the step's env:.
        Anything else at command position is an ERROR naming the file and line.
      * a LISTED script is not parsed. scan_script is a conservative TEXT scan over the raw file (any extension or shebang): a command
        from the finite DENY list not in its `tools`; another script not in its `runs`; `witness run ... --` followed by anything but a
        literal path in `runs`; setting PATH/BASH_ENV/LD_*/PYTHON*... Its signing calls are judged from the row's `signs` on the raw
-       text (comments, quotes and heredocs included). `provenance` is allowed only for a script that stage-sign.yml alone runs.
+       text (comments, quotes and heredocs included). `provenance` is allowed only for a script that the sign jobs of release.yml alone run.
        STATED EXCLUSION: a command or script path built at run time inside a listed script is not detected; listed scripts are
-       committed, sha256-bound and reviewed at PR time (row 78). Python/JS argv-array signers and downloaded binaries likewise.
+       committed and reviewed at PR time (row 78). Python/JS argv-array signers and downloaded binaries likewise.
      * other workflows (ci.yml, scan.yml ...), composite actions and release.yml's non-stage jobs are NOT stage files: they keep only
        the direct signer-call scan (listed with a reason in .github/policy/chain-signers.json).
 Modelled on: in-toto-witness options/run.go:64 (attestations flag forms), docs/commands.md."""
@@ -565,41 +565,35 @@ SIGNS = (False, "provenance", "other")
 # PR 1b: the CLOSED list of rules a per-row `exceptions` entry may waive (extend only by a reviewed edit when a real text needs it)
 # Round 3 (5): the ONE pinned step REQ-CHAIN-004-AC2 ratifies, as an exact tuple (file, job, id) -> run text. An entry for any other tuple or text is
 # an error until a later reviewed change adds it HERE.
-PINNED_IF = {(".github/workflows/stage-reproducibility.yml", "assemble", "records"): "${{ inputs.mode == 'release' }}",
-             (".github/workflows/stage-reproducibility.yml", "rapk", "records"): "${{ inputs.mode == 'release' }}",
-             (".github/workflows/stage-reproducibility.yml", "rapk-arm", "records"): "${{ inputs.mode == 'release' }}"}
-PINNED_ALLOWED = {(".github/workflows/stage-build.yml", "assemble", "digests"): 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"',
-                  (".github/workflows/stage-reproducibility.yml", "assemble", "records"): 'r=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm) && echo "records=$r" >> "$GITHUB_OUTPUT"',
-                  (".github/workflows/stage-reproducibility.yml", "rapk", "records"): 'r=$(bash bin/rebuild-records-digests.sh --rapk ubuntu-24.04 witness-rapk) && echo "records=$r" >> "$GITHUB_OUTPUT"',
-                  (".github/workflows/stage-reproducibility.yml", "rapk-arm", "records"): 'r=$(bash bin/rebuild-records-digests.sh --rapk ubuntu-24.04-arm witness-rapk) && echo "records=$r" >> "$GITHUB_OUTPUT"',
-                  # REQ-REL-011-AC1 (cache#606): the Check jobs list their records the same way (a failing list script fails the step: the substitution is assigned first); no condition (they run in every mode)
-                  (".github/workflows/stage-verify.yml", "check", "records"): 'r=$(bash bin/check-records-digests.sh witness-scanners witness-acceptance witness-runtime) && echo "records=$r" >> "$GITHUB_OUTPUT"',
-                  (".github/workflows/stage-verify.yml", "check-arm64", "records-arm64"): 'r=$(bash bin/check-records-digests.sh witness-arm64) && echo "records-arm64=$r" >> "$GITHUB_OUTPUT"'}
+_R = ".github/workflows/release.yml"          # the one release file: every chain job (all but NON_CHAIN_JOBS) is judged by the stage grammar
+PINNED_IF = {(_R, "rebuild-assemble", "records"): "${{ inputs.mode != 'snapshot' }}"}
+PINNED_ALLOWED = {(_R, "build-assemble", "digests"): 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"',
+                  (_R, "rebuild-assemble", "records"): 'r=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm) && echo "records=$r" >> "$GITHUB_OUTPUT"'}
 EXC_RULES = ("launcher", "evaluator", "deny", "script-name", "witness-target")
 # PR 1b (B): the value an AMBIENT env name may carry: one whole plain expression (the job token, a workflow input or a matrix key) or a
 # plain literal; never a secret, a glued expression or a substitution
 AMBIENT_VALUE = re.compile(r"\$\{\{ ?(?:github\.token|inputs\.[A-Za-z_][\w-]*|matrix\.[A-Za-z_][\w-]*) ?\}\}|[A-Za-z0-9_./:-]+")
 
-# Release's NAMED SECRETS (rule 56: only Release holds a stored secret; advisor 0386 J): ONE closed list of four rows, in code, so that a fifth row, another name, another place
-# or another script is a reviewed edit of this file and nothing else.  name -> {(stage file, job): the listed scripts that may receive it}.  bin/witnessed.sh receives every
-# name at the place it is bound (it is the wrapper), GH_TOKEN being bound at exactly the two places below.
-_SB, _SP, _WIT = ".github/workflows/stage-build.yml", ".github/workflows/stage-promote.yml", "bin/witnessed.sh"
+# Release's NAMED SECRETS (rule 56: only the release job holds a stored secret or the registry credentials; advisor 0386 J; REQ-REL-011-AC3, REQ-CHAIN-007-AC18): ONE closed list of rows, in code, so that another row, another name, another place
+# or another script is a reviewed edit of this file and nothing else.  name -> {(stage file, job): the listed scripts that may receive it}.  the sign jobs hold no row at all (no secret, no GH_TOKEN, no DOCKERHUB_*);
+# the registry credentials are bound only in release-publish and release-sign of the release job.  The wrapper receives every name at the place it is bound, GH_TOKEN being bound at the three places below.
+_WIT = "bin/witnessed.sh"
 _WITL = "bin/witnessed-local.sh"      # the Witness wrapper of the BUILDING steps (owner Oct 22): Build's apk job binds the admission token to it; Release binds every name to bin/witnessed.sh
-_HUB = {(_SP, "release"): {_WIT, "bin/release-publish.sh", "bin/release-sign.sh"}}
+_HUB = {(_R, "release"): {_WIT, "bin/release-publish.sh", "bin/release-sign.sh"}}
 SECRET_ROWS = {
-    "GH_TOKEN": {(_SB, "apk"): {_WITL, "bin/build-stage-apk.sh", "bin/build-admit.py"},                      # row 1: the run's own token, admission only
-                 (_SP, "release"): {_WIT, "bin/release-publish.sh", "bin/release-sign.sh", "bin/release-assets.sh"}},   # row 5
-    "DOCKERHUB_USERNAME": _HUB,                                                                             # row 3
-    "DOCKERHUB_TOKEN": _HUB,                                                                                # row 4
+    "GH_TOKEN": {(_R, "build-apk"): {_WITL, "bin/build-stage-apk.sh", "bin/build-admit.py"},                 # the run's own token, admission only
+                 (_R, "release"): {_WIT, "bin/release-publish.sh", "bin/release-sign.sh", "bin/release-assets.sh"}},
+    "DOCKERHUB_USERNAME": _HUB,
+    "DOCKERHUB_TOKEN": _HUB,
 }
 SECRET_VALUE = {"GH_TOKEN": "${{ github.token }}",
                 "DOCKERHUB_USERNAME": "${{ secrets.DOCKERHUB_USERNAME }}", "DOCKERHUB_TOKEN": "${{ secrets.DOCKERHUB_TOKEN }}"}
 # W1 (#822 round 1): the three NON-SECRET federation entries of the signing steps: the AWS role of the release Sign identity, its region and the release key's reference. They are step env
-# literals, allowed only where a step signs through bin/chain-verify.py sign-record or sign (stage-sign.yml's three jobs, Release's six witnessed steps), reaching only the scripts below,
+# literals, allowed only where a step signs through bin/chain-verify.py sign-record or sign (the sign jobs of release.yml), reaching only the scripts below,
 # and each must be exactly the value below; the key reference is the verifier's own RELEASE_KEY_REF, read from bin/chain-verify.py beside this file.
-_SS = ".github/workflows/stage-sign.yml"
-_FED_AT = {(_SS, "sign"): {"bin/witness-sign-staged.sh", "bin/with-aws-token.sh"}, (_SS, "sign-rebuild"): {"bin/witness-sign-staged.sh"}, (_SS, "sign-check"): {"bin/witness-sign-staged.sh"},
-           (_SP, "release"): {_WIT, "bin/release-verify.sh", "bin/release-apks.sh", "bin/release-publish.sh", "bin/release-sign.sh", "bin/release-assets.sh", "bin/release-postverify.sh"}}
+# the three sign jobs hold the three as their job env (judged beside the job keys); no step repeats them, so no step place is listed
+SIGN_JOBS = {"sign", "sign-rebuild", "sign-check"}
+_FED_AT = {}
 FED_ROWS = {"AWS_ROLE_ARN": _FED_AT, "AWS_REGION": _FED_AT, "RELEASE_KMS_KEY_REF": _FED_AT}
 
 
@@ -616,9 +610,11 @@ def fed_value(name):
 
 
 # the job that holds a named credential holds exactly these permissions (Build's apk job: read-only, no identity token since the Witness record is signed outside the build; Release: the three writes)
-PLACE_PERMS = {(_SB, "apk"): {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read"},
-               (_SP, "release"): {"contents": "write", "packages": "write", "id-token": "write"}}
-CHAIN_STAGE_FILES = {_SB, _SP, ".github/workflows/stage-sign.yml", ".github/workflows/stage-reproducibility.yml", ".github/workflows/stage-verify.yml"}
+PLACE_PERMS = {(_R, "build-apk"): {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read"},
+               (_R, "release"): {"contents": "write", "packages": "write"}}
+CHAIN_STAGE_FILES = {_R}
+# the jobs of release.yml the stage grammar does not judge (they test or report the release, call another workflow, or run no chain script): only the direct signer-call scan reads them
+NON_CHAIN_JOBS = {"live-test", "live-test-release", "hostile-verify", "hostile-verdict", "persona-uat-rc", "patch-failed"}
 CLOSED = "not in the closed secret list"
 
 # STATED LIMITS of the PR 1b mechanisms (round 1 (8)); none of them is closed by a judge of this kind:
@@ -638,7 +634,7 @@ CLOSED = "not in the closed secret list"
 #  - round 3: comment stripping inside ${..}, backticks and $'..' contexts; strings that span lines (a quote spanning lines pairs with a later quote on
 #    its own line, read as unterminated and so left unmasked); brace expansion that builds a command word ({se,d}); and the ambient handoff is judged on
 #    the script text only (textual order of simple commands, no loops or conditionals followed), not on what runs.
-#  - the AC8 `unset GH_TOKEN` placement relative to child scripts is a reviewed line bound by the script's sha256 and the exact-text row below
+#  - the AC8 `unset GH_TOKEN` placement relative to child scripts is a reviewed line, bound by the exact-text row below
 #    (ambient_env `handoff_line`), not modelled: the judge does not follow order, depth, lists, functions, subshells or here-documents.
 #  - round 4: quote-split word forms in the raw-token words beyond what the normalized reader resolves; trap and alias string bodies; a bare "$x" command
 #    word (not refused: it would be a new class of finding for plain variable use, not measured against real scripts); git rebase -x, bisect run,
@@ -648,13 +644,13 @@ CLOSED = "not in the closed secret list"
 #    pip, dpkg, su, crontab, script, trap (quote-split and backslash-escaped spellings such as \curl, cu""rl, c\x27\x27url are a stated limit); the positional
 #    skip of a deny budget was tried (e059a3f on branch pipeline-chain-judge-exceptions-fix5) and withdrawn: it skipped a token whenever any command
 #    word started there and read CRLF text as LF.
-#  - deny exceptions bind the exact physical line with its sha256 and an exact count; the normalized-word check for \curl, cu""rl, c\x27\x27url is a stated limit.
+#  - deny exceptions bind the exact physical line text and an exact count; the normalized-word check for \curl, cu""rl, c\x27\x27url is a stated limit.
 class EnvNames(set):
     """The closed `env_names` (a set of names) that also carries `.ambient`: {name: {listed script paths that read it from their own
     environment}} from the top-level `ambient_env` list of chain-scripts.json (PR 1b, B). A step env name that its run line does not read
     whole is allowed only through this map."""
     def __init__(self, *a):
-        super().__init__(*a); self.ambient = {}; self.pinned = {}; self.ambient_bind = {}; self.closed = False   # closed: the tree has a Release (stage-promote.yml job release), so the four named-secret rows are enforced
+        super().__init__(*a); self.ambient = {}; self.pinned = {}; self.ambient_bind = {}; self.closed = False   # closed: the tree has a Release (release.yml job release), so the four named-secret rows are enforced
 INTERPRETERS = {"bash", "sh", "dash", "zsh", "ksh", "python", "python3", "node", "ruby", "perl", "source", "eval", "exec",
                 "make", "gmake", "xargs", "run-parts", "npm", "yarn", "pnpm", "just", "task", "parallel", "env", "sudo", "nohup",
                 "timeout", "nice", "command", "builtin", "watch", "at", "find"}
@@ -671,8 +667,8 @@ STAGE_STEP_KEYS = {"name", "id", "uses", "with", "run", "env", "if", "timeout-mi
 HOSTED = re.compile(r"ubuntu-(22\.04|24\.04)(-arm)?|ubuntu-latest")  # CLOSED set of GitHub-hosted labels (Codex #249 r6 B5); extend only by a reviewed edit
 MATRIX_READ = re.compile(r"\$\{\{ ?matrix\.([A-Za-z_][\w-]*) ?\}\}")  # the one expression runs-on may hold: a whole read of one matrix key
 MATRIX_LIT = re.compile(r"[A-Za-z0-9_.-]+")
-GV_IDS_STEP = (".github/workflows/stage-verify.yml", "check")        # the one step that may download by artifact id (the Check job, govulncheck-build's artifact)
-GV_IDS_VALUE = "${{ needs.govulncheck-build.outputs.artifact-id }}"
+GV_IDS_STEP = (_R, "check")        # the one step that may download by artifact id (the Check job, govulncheck-build's artifact)
+GV_IDS_VALUE = "${{ needs.check-govulncheck.outputs.artifact-id }}"
 USES_OK = re.compile(r"actions/(checkout|download-artifact|upload-artifact)@([0-9a-f]{40})")
 
 def action_files(base):
@@ -792,14 +788,12 @@ def exception_entries(path, ex):
     errs, good, seen = [], [], set()
     for e in ex:
         if isinstance(e, dict) and e.get("rule") == "deny":
-            # the LINE-BOUND shape: a deny exception binds the exact physical line, its sha256 and the exact number of such lines
-            if set(e) != {"rule", "line", "line_sha256", "count", "why"}:
-                errs.append("chain-scripts.json: %s a deny exception is line-bound: an object with exactly rule, line, line_sha256, count and why (the {rule, text, why} shape is not accepted for deny): %r" % (path, e)); continue
-            ln, sha, cnt, why = e["line"], e["line_sha256"], e["count"], e["why"]
+            # the LINE-BOUND shape: a deny exception binds the exact physical line and the exact number of such lines
+            if set(e) != {"rule", "line", "count", "why"}:
+                errs.append("chain-scripts.json: %s a deny exception is line-bound: an object with exactly rule, line, count and why (the {rule, text, why} shape is not accepted for deny): %r" % (path, e)); continue
+            ln, cnt, why = e["line"], e["count"], e["why"]
             if not isinstance(ln, str) or not ln or any(not (" " <= ch <= "~") for ch in ln):
                 errs.append("chain-scripts.json: %s deny exception line %r must be one non-empty line of printable ASCII" % (path, ln)); continue
-            if not isinstance(sha, str) or sha != hashlib.sha256(ln.encode("utf-8")).hexdigest():
-                errs.append("chain-scripts.json: %s deny exception line %r: line_sha256 is not the sha256 of the line" % (path, ln)); continue
             if not isinstance(cnt, int) or isinstance(cnt, bool) or cnt < 1:
                 errs.append("chain-scripts.json: %s deny exception line %r: count must be a positive integer" % (path, ln)); continue
             if not isinstance(why, str) or not why.strip():
@@ -826,7 +820,7 @@ def load_scripts(base):
     env_names is the closed set of names a stage step may put in env: (never BASH_ENV, PATH, LD_*, PYTHON*, ...)."""
     f = os.path.join(base, ".github/policy/chain-scripts.json")
     if not os.path.exists(f):
-        return {}, ["missing .github/policy/chain-scripts.json (the scripts a release-chain stage file may run, by path and sha256)"], set()
+        return {}, ["missing .github/policy/chain-scripts.json (the scripts a release-chain stage file may run, by path)"], set()
     errs, rows = [], {}
     try:
         doc = jload(f)
@@ -837,8 +831,8 @@ def load_scripts(base):
         return {}, ["chain-scripts.json has no `scripts` list"], set()
     names = doc.get("env_names", [])
     env_names = EnvNames()
-    try:       # the four rows are enforced once the tree has a Release: stage-promote.yml with a job named release (a tree without one has nothing to bind them to)
-        env_names.closed = re.search(r"(?m)^  release:\s*$", open(os.path.join(base, ".github/workflows/stage-promote.yml"), errors="replace").read()) is not None
+    try:       # the four rows are enforced once the tree has a Release: release.yml with a job named release (a tree without one has nothing to bind them to)
+        env_names.closed = re.search(r"(?m)^  release:\s*$", open(os.path.join(base, ".github/workflows/release.yml"), errors="replace").read()) is not None
     except OSError:
         env_names.closed = False
     if not isinstance(names, list): errs.append("chain-scripts.json: env_names must be a list")
@@ -854,8 +848,6 @@ def load_scripts(base):
         if p in rows: errs.append("chain-scripts.json: %s listed twice" % p); continue
         full = os.path.join(base, p)
         if not os.path.isfile(full): errs.append("chain-scripts.json: %s is not a file in the tree" % p); continue
-        if hashlib.sha256(open(full, "rb").read()).hexdigest() != str(r.get("sha256", "")):
-            errs.append("chain-scripts.json: %s has a different sha256 than the file (a changed script must change its row)" % p)
         if not isinstance(r.get("tools"), list) or not all(isinstance(t, str) and re.fullmatch(r"[A-Za-z0-9_.+-]+", t) for t in r["tools"]):
             errs.append("chain-scripts.json: %s `tools` must be a list of plain command names" % p)
         if r.get("signs", False) not in SIGNS:
@@ -933,16 +925,16 @@ def load_scripts(base):
                 errs.append("chain-scripts.json: ambient_env %s for %s at %s job %s is %s" % (nm, sc, e["file"], e["job"], CLOSED)); continue
             if (nm, sc, e["file"], e["job"]) in seen_at:
                 errs.append("chain-scripts.json: ambient_env %s for %s is listed twice at %s job %s" % (nm, sc, e["file"], e["job"])); continue
-            if (nm, sc) in seen and not (nm == "GH_TOKEN" and sc == _WIT):      # only the wrapper is bound at both places of GH_TOKEN
+            if (nm, sc) in seen and not (nm == "GH_TOKEN" and sc in (_WIT, _WITL)):      # only the wrappers are bound at several places of GH_TOKEN
                 errs.append("chain-scripts.json: ambient_env %s for %s is listed twice" % (nm, sc)); continue
-            if "file" in e and not re.fullmatch(r"\.github/workflows/stage-[A-Za-z0-9_.-]+\.ya?ml", e["file"]):
-                errs.append("chain-scripts.json: ambient_env %s for %s: file %r is not a stage file path (.github/workflows/stage-*.yml)" % (nm, sc, e["file"])); continue
+            if "file" in e and e["file"] != _R:
+                errs.append("chain-scripts.json: ambient_env %s for %s: file %r is not the release file (%s)" % (nm, sc, e["file"], _R)); continue
             if "job" in e and not re.fullmatch(r"[A-Za-z0-9_-]+", e["job"]):
                 errs.append("chain-scripts.json: ambient_env %s for %s: job %r is not a plain job name" % (nm, sc, e["job"])); continue
             hl = e.get("handoff_line")
             if "handoff_line" in e and (not isinstance(hl, str) or any(not (" " <= ch <= "~") for ch in hl)):
                 errs.append("chain-scripts.json: ambient_env %s for %s: handoff_line must be one line of printable ASCII" % (nm, sc)); continue
-            if isinstance(hl, str) and hl.strip():       # round 4 (B): ONE exact source line, once, outside comments (its position is bound by the sha256 pin and review)
+            if isinstance(hl, str) and hl.strip():       # round 4 (B): ONE exact source line, once, outside comments (its position is bound by review)
                 n_hl = sum(1 for l in strip(open(os.path.join(base, sc), errors="replace").read()).splitlines() if l.strip() == hl.strip())
                 if n_hl != 1:
                     errs.append("chain-scripts.json: ambient_env %s for %s: handoff_line %r occurs %d times outside comments in %s (exactly once is required)" % (nm, sc, hl, n_hl, sc)); continue
@@ -955,8 +947,8 @@ def load_scripts(base):
             if not isinstance(e, dict) or set(e) != {"file", "job", "id", "run", "why"} or not all(isinstance(v, str) for v in e.values()):
                 errs.append("chain-scripts.json: pinned_steps entry %r must be an object with exactly file, job, id, run and why (strings)" % (e,)); continue
             f, j, i, run, why = e["file"], e["job"], e["id"], e["run"], e["why"]
-            if not re.fullmatch(r"\.github/workflows/stage-[A-Za-z0-9_.-]+\.ya?ml", f) or ".." in f:
-                errs.append("chain-scripts.json: pinned_steps file %r is not a stage file (.github/workflows/stage-*.yml)" % f); continue
+            if f != _R:
+                errs.append("chain-scripts.json: pinned_steps file %r is not the release file (%s)" % (f, _R)); continue
             if not os.path.isfile(os.path.join(base, f)):
                 errs.append("chain-scripts.json: pinned_steps file %s is not in the tree" % f); continue
             if not re.fullmatch(r"[A-Za-z0-9_-]+", j) or not re.fullmatch(r"[A-Za-z0-9_-]+", i):
@@ -1091,10 +1083,11 @@ def check_run(run, envnames, rows, reads=None, argpaths=None):
             extras = rows[path].get("arg_extra")
             extras = extras if isinstance(extras, dict) else {}
             extra = extras.get(raw0)                                   # the word a step's script takes after its path
-            want = 2 + (extra is not None)
-            if len(args) != want or am.get(raw0) != raw1 or any(len(a[1]) != 1 or a[1][0][0] != "lit" for a in args) \
-                    or (extra is not None and args[2][0] != extra):
-                errs.append("line %d: %s: %s takes exactly STEP TARGET as plain words with TARGET the one path"
+            third = raw0 if extra is None else extra                   # a Check phase script is given its step name again; a step with an arg_extra takes that word instead
+            lengths = (2, 3) if extra is None else (3,)
+            if len(args) not in lengths or am.get(raw0) != raw1 or any(len(a[1]) != 1 or a[1][0][0] != "lit" for a in args) \
+                    or (len(args) == 3 and args[2][0] != third):
+                errs.append("line %d: %s: %s takes exactly STEP TARGET (and, for a Check phase, the step name again) as plain words with TARGET the one path"
                             " its arg_map binds to STEP, then the word its arg_extra names for STEP (%s; %s)"
                             % (n, line[:90], path,
                                ", ".join("%s %s" % kv for kv in sorted(am.items())),
@@ -1191,24 +1184,28 @@ def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
     pins = getattr(env_names, "pinned", {})        # round 1 (5): (file, job, id) -> the reviewed pinned step
     found = set()
     run_count = {}                                  # round 4 (7): how often each run text occurs in the whole file
-    for _jn, _j in ((d.get("jobs") or {}).items()):
+    chain_jobs = {k: v for k, v in (d.get("jobs") or {}).items() if not (full == _R and k in NON_CHAIN_JOBS)}   # release.yml: the grammar judges its chain jobs only
+    for _jn, _j in chain_jobs.items():
         for _s in ((_j.get("steps") or []) if isinstance(_j, dict) else []):
             if isinstance(_s, dict) and isinstance(_s.get("run"), str): run_count[_s["run"]] = run_count.get(_s["run"], 0) + 1
     amb = getattr(env_names, "ambient", {})        # PR 1b (B): name -> listed scripts that read it from their own environment
     closed = getattr(env_names, "closed", False)
     if closed and full in CHAIN_STAGE_FILES:       # rule 56: a stored secret is read only as the value of a named env entry of Release; nowhere else, in no other stage
-        def _noenv(x):
-            if isinstance(x, dict): return {k: _noenv(v) for k, v in x.items() if not (k == "env" and full == _SP)}
-            if isinstance(x, list): return [_noenv(v) for v in x]
+        def _noenv(x, hold):
+            if isinstance(x, dict): return {k: _noenv(v, hold) for k, v in x.items() if not (k == "env" and hold)}
+            if isinstance(x, list): return [_noenv(v, hold) for v in x]
             return x
-        if re.search(r"(?i)\bsecrets\b", json.dumps(_noenv(d))):
-            errs.append("%s: a stored secret outside %s (rule 56: %s)" % (rel, "the named env entries of Release" if full == _SP else "Release", "only Release holds a stored secret"))
+        holders = {pl for places in SECRET_ROWS.values() for pl in places}      # the jobs that bind a named secret: their step env is judged by the rows below
+        if re.search(r"(?i)\bsecrets\b", json.dumps({k: _noenv(v, (full, k) in holders) for k, v in chain_jobs.items()})):
+            errs.append("%s: a stored secret outside the named env entries of the jobs that hold one (rule 56: only Release holds a stored secret)" % rel)
     extra = set(d) - STAGE_WF_KEYS
     if extra: errs.append("%s: workflow keys %s are not allowed in a stage file (env, defaults, concurrency, run-name can reroute every step)" % (rel, sorted(extra)))
-    for jn, j in ((d.get("jobs") or {}).items()):
+    for jn, j in chain_jobs.items():
         pre = "%s job %s" % (rel, jn)
-        extra = set(j) - STAGE_JOB_KEYS
+        extra = set(j) - STAGE_JOB_KEYS - ({"env"} if full == _R and jn in SIGN_JOBS else set()) - ({"concurrency"} if (full, jn) == (_R, "release") else set())
         if extra: errs.append("%s: job keys %s are not allowed (container, services, defaults, env, uses, secrets, with run other code or reroute steps)" % (pre, sorted(extra)))
+        if full == _R and jn in SIGN_JOBS and j.get("env") != {k: fed_value(k) for k in FED_ROWS}:
+            errs.append("%s: the job env must be exactly the three federation literals %s, found %r" % (pre, {k: fed_value(k) for k in FED_ROWS}, j.get("env")))
         errs += _runner_errors(pre, j)
         if closed and (full, jn) in PLACE_PERMS and j.get("permissions") != PLACE_PERMS[(full, jn)]:
             errs.append("%s: job %s must hold exactly the permissions %s, found %s" % (full, jn, PLACE_PERMS[(full, jn)], j.get("permissions")))
@@ -1246,7 +1243,7 @@ def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
                         errs.append("%s: checkout may carry only persist-credentials: false (explicit) and fetch-depth (no ref, repository, path, token): %s" % (sp, w))
                 elif act == "download-artifact":
                     # REQ-REL-011-AC1 (advisor, Oct 23): ONE step may select its artifact by id instead of by name, so the artifact another job uploaded under the same name cannot be swapped in:
-                    # stage-verify.yml's check job downloads govulncheck-build's artifact with exactly `artifact-ids: <that job's artifact-id output>` and a path, nothing else beside them.
+                    # release.yml's check job downloads govulncheck-build's artifact with exactly `artifact-ids: <that job's artifact-id output>` and a path, nothing else beside them.
                     by_id = "artifact-ids" in w
                     if by_id and not ((full, jn) == GV_IDS_STEP and set(w) == {"artifact-ids", "path"} and w.get("artifact-ids") == GV_IDS_VALUE):
                         errs.append("%s: download-artifact artifact-ids is allowed only as exactly %r with a path, in %s job %s (no name, pattern or merge-multiple beside it)" % (sp, GV_IDS_VALUE, GV_IDS_STEP[0], GV_IDS_STEP[1]))
@@ -1271,7 +1268,7 @@ def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
                     used = set(r) | argp
                     scripts = FED_ROWS[k].get((full, jn))
                     if scripts is None or not used <= scripts:
-                        errs.append("%s: %s is allowed only on the signing steps of stage-sign.yml and the witnessed steps of stage-promote.yml job release: found in %s job %s, reaching %s" % (
+                        errs.append("%s: %s is allowed only as the job env of the four sign jobs of release.yml, never on a step: found in %s job %s, reaching %s" % (
                             sp, k, full, jn, ", ".join(sorted(used - (scripts or set())) or ["no listed script"])))
                     elif v != fed_value(k):
                         errs.append("%s: %s must be exactly the literal %r, found %r" % (sp, k, fed_value(k), v))
@@ -1280,7 +1277,7 @@ def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
                     used = set(r) | argp
                     scripts = SECRET_ROWS[k].get((full, jn))
                     if scripts is None or not used <= scripts:
-                        errs.append("%s: %s is allowed only %s (%s): found in %s job %s, reaching %s" % (sp, k, "for the admission step of stage-build.yml job apk" if k == "GH_TOKEN" else "in the named steps of stage-promote.yml job release",
+                        errs.append("%s: %s is allowed only %s (%s): found in %s job %s, reaching %s" % (sp, k, "for the named steps of the build-apk and release jobs of release.yml" if k == "GH_TOKEN" else "in the named step of the release job of release.yml",
                                     CLOSED, full, jn, ", ".join(sorted(used - (scripts or set())) or ["no listed script"])))
                     elif v != SECRET_VALUE[k]:
                         errs.append("%s: %s must be exactly %s, found %r" % (sp, k, SECRET_VALUE[k], v))
@@ -1672,7 +1669,7 @@ def scan_script(path, text, row, rows, base):
     (c) `witness run ... --`: the first word after `--` must be a literal path in `runs` (never $@, "$@", $*, a variable or
     substitution); (d) setting PATH, BASH_ENV, ENV, LD_*, PYTHON*, NODE_OPTIONS, IFS ... anywhere. Signing calls are judged by the
     caller from the row's `signs` (raw text, comments and quotes included). Stated exclusion: a command or script path BUILT AT RUN
-    TIME inside a listed script is not detected; listed scripts are committed, sha256-bound and reviewed at PR time (row 78).
+    TIME inside a listed script is not detected; listed scripts are committed and reviewed at PR time (row 78).
     PR 1b, reviewed exceptions: a finding of rule launcher, evaluator, deny, script-name or witness-target carries the exact text it matched
     (launcher / evaluator / script-name at a command position: the WHOLE simple command, command word through the next ; & | ) } or end of line, as
     written; deny and a script token: the

@@ -55,7 +55,7 @@ OWNER_SSH = "owner-ssh"
 FREEZE_FILE = "freeze/freeze.txt"
 FREEZE_CAP = 65536
 FREEZE_LINE = re.compile(r"freeze-ok ([0-9a-f]{40}) (%s)" % TAG_PATTERN)
-# REQ-CHAIN-004-AC19: each promotion or release-only context, by glob, and the one workflow file that produces it. A check run of
+# REQ-CHAIN-004-AC20: each promotion or release-only context, by glob, and the one workflow file that produces it. A check run of
 # such a context counts only from a schedule or dispatch run of that file on the tagged commit. A literal of pairs, read as data by others.
 BOUND_CONTEXTS = (
     ("analyze (go)", "codeql.yml"),

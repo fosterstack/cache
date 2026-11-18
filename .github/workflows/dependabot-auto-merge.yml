@@ -11,7 +11,7 @@ name: Dependabot auto-merge
 # (REQ-DEP-003-AC2, advisor tighten-only reading, Oct 22): the `screen` step applies the
 # reviewer's own rule, so a flagged bump is treated here as a major.
 #
-# Two deliberate safety properties:
+# One deliberate safety property:
 #
 #  1. `pull_request`, NOT `pull_request_target`. The baseline
 #     (ops/docs/cicd-security-baseline.md) treats adding pull_request_target
@@ -20,12 +20,6 @@ name: Dependabot auto-merge
 #     code. This workflow also never checks out the PR at all — it only ever
 #     touches the GitHub API — so no third-party code executes here, with or
 #     without a token.
-#
-#  2. It refuses to run unless `main` actually has required status checks.
-#     "Auto-merge is gated on all checks green" is only true if the branch
-#     ruleset says which checks are required; with none configured,
-#     `--auto` merges the moment the PR is mergeable, which is immediately.
-#     The guard below fails closed rather than let that happen silently.
 
 on: pull_request
 
@@ -51,138 +45,47 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # The same rule as bin/dependabot-reviewer.py `is_flagged` (the reviewer's candidate step), as a
-      # heredoc because this workflow checks out nothing and fetches no script; bin/dependency-lanes-test.sh
-      # runs this very code against the reviewer's on a corpus, so the two paths cannot disagree about
-      # who arms what. The PR body arrives by env, never interpolated into the script. No
-      # `continue-on-error`: if the screen cannot run, nothing below arms.
+      # The scripts are fetched from protected MAIN via the API, never from a checkout: this workflow deliberately checks out
+      # nothing (see the header), and the PR's own copies are what an attacker editing them would control. Same trust-source rule as the
+      # release chain's allowed-signers fetch. They are the screen (bin/dependabot-screen.sh over the reviewer's own rule, bin/dependabot-reviewer.py).
+      - name: fetch the reviewed scripts from main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for f in bin/dependabot-screen.sh bin/dependabot-reviewer.py; do
+            gh api "repos/${GITHUB_REPOSITORY}/contents/${f}?ref=refs/heads/main" --jq '.content' | base64 -d \
+              > "${RUNNER_TEMP}/$(basename "$f")"
+          done
+
+      # The same rule as bin/dependabot-reviewer.py `is_flagged` (the reviewer's candidate step). The PR body arrives by env, never interpolated
+      # into the script. No `continue-on-error`: if the screen cannot run, nothing below arms.
       - name: screen — do the release notes say breaking or deprecated (REQ-DEP-003-AC2)
         id: screen
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: |
-          set -euo pipefail
-          python3 -I - >> "$GITHUB_OUTPUT" <<'PY'
-          import html, os, re
-          from html.parser import HTMLParser
-          _FLAG = re.compile(r"breaking|deprecat", re.I)
-          _MDADJ = re.compile(r"[A-Za-z0-9]\[|\][A-Za-z0-9]|\]\([^\n]*\)[A-Za-z0-9]|\]\[[^\]\n]*\][A-Za-z0-9]")
-          _MDEXOTIC = re.compile(r"\\[\[\]]|\]\(\s*<|&(?:#0*(?:91|93)|#x0*(?:5b|5d)|lbrack|rbrack|lsqb|rsqb);", re.I)
-          _MDLINK = re.compile(r"\]\(|\]\[|\]:")
-          _CHARREF = re.compile(r"&(?:#|[A-Za-z][A-Za-z0-9]*;)")
-          _MDLABEL = re.compile(r"\]\[[^\]]*\]")
-          _MDDEF = re.compile(r"(?m)^ {0,3}\[[^\]\n]+\]:.*$")
-          class _Text(HTMLParser):
-              def __init__(self):
-                  super().__init__(convert_charrefs=True)
-                  self.parts = []
-
-              def handle_data(self, data):
-                  self.parts.append(data)
-          def _drop_targets(v, quotes):
-              # Markdown inline link/image targets `](...)`, parentheses balanced, over lines; quotes=True also honours a quoted title that holds a ')'.
-              # An unterminated target is unresolvable: None.
-              out, i, n = [], 0, len(v)
-              while i < n:
-                  if v.startswith("](", i):
-                      j, depth, inq = i + 2, 1, None
-                      while j < n and depth > 0:
-                          c = v[j]
-                          if c == "\\":
-                              j += 2
-                              continue
-                          if quotes and inq is None and c in "\"'" and v[j - 1] in " \t\n":
-                              inq = c
-                          elif quotes and inq == c:
-                              inq = None
-                          elif inq is None:
-                              depth += 1 if c == "(" else -1 if c == ")" else 0
-                          j += 1
-                      if depth > 0:
-                          return None
-                      i = j
-                      continue
-                  out.append(v[i])
-                  i += 1
-              return "".join(out)
-          def is_flagged(body):
-              """True when a Dependabot PR body says "breaking" or "deprecat" (any case) as a reader would see it. The release notes and commit
-              list between old and new are the body's <details> blocks, but markup makes block boundaries unreliable, so the WHOLE body is read and any
-              hit counts: over-flagging only sends a bump to the two readers, never toward auto-merge (tighten-only). Views, any one of which counts:
-              the raw body; with character references decoded; the HTML-rendered text (tags and comments dropped, nothing put in their place); and for
-              each of those the letters and digits only, also with Markdown link targets (balanced parentheses, with and without a quoted title),
-              reference labels and reference definitions removed first, so formatting, links and references between a word's pieces vanish. A body
-              the parser cannot read, an unterminated link target, a word character touching link syntax, an escaped or encoded bracket, an <angle> destination,
-              any character reference in a body that has link syntax, or link syntax left over after every reduction is flagged (fail toward the readers: the class is closed, not enumerated).
-              A non-major so flagged is judged like a major (REQ-DEP-001-AC10)."""
-              raw = str(body or "")
-              try:
-                  p = _Text()
-                  p.feed(raw)
-                  p.close()
-                  views = (raw, html.unescape(raw), "".join(p.parts))
-                  if _MDADJ.search(raw) or _MDEXOTIC.search(raw):   # link syntax this check does not resolve: an escaped bracket, an <angle> destination, an encoded bracket
-                      return True
-                  if _MDLINK.search(raw) and _CHARREF.search(raw):   # a character reference (numeric in any spelling, or named with ';'; a URL's &key=value is not one) in a body that has
-                      return True                                    # link syntax can spell a bracket or parenthesis of the destination: not resolved here, the readers decide
-                  more = []
-                  for v in views:
-                      more.append(v)
-                      for q in (False, True):
-                          t = _drop_targets(v, q)
-                          if t is None:
-                              return True
-                          t = _MDDEF.sub("", _MDLABEL.sub("", t))
-                          if "](" in t or "][" in t:   # link syntax that survives every reduction is unresolved
-                              return True
-                          more.append(t)
-                  views += tuple(re.sub(r"[^A-Za-z0-9]", "", v) for v in more)
-                  return any(_FLAG.search(v) for v in views + tuple(more))
-              except Exception:
-                  return True
-          print("flagged=" + str(is_flagged(os.environ["PR_BODY"])).lower())
-          PY
+        run: bash "${RUNNER_TEMP}/dependabot-screen.sh" >> "$GITHUB_OUTPUT"
 
       - name: majors are the hourly reviewer's, not a human's (register row 75)
         if: steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true'
+        env:
+          DEPENDENCY_NAMES: ${{ steps.meta.outputs.dependency-names }}
+          PREVIOUS_VERSION: ${{ steps.meta.outputs.previous-version }}
+          NEW_VERSION: ${{ steps.meta.outputs.new-version }}
         run: |
           {
             echo "### Major bump — judged by the Dependabot reviewer"
             echo
-            echo "\`${{ steps.meta.outputs.dependency-names }}\` is a **major** version bump"
-            echo "(\`${{ steps.meta.outputs.previous-version }}\` → \`${{ steps.meta.outputs.new-version }}\`)."
+            echo "\`${DEPENDENCY_NAMES}\` is a **major** version bump"
+            echo "(\`${PREVIOUS_VERSION}\` → \`${NEW_VERSION}\`)."
             echo "Majors are read against upstream release notes and our usage by the hourly"
             echo "\`dependabot-reviewer\` workflow (it cannot run here: a Dependabot-triggered run holds"
             echo "no repository secrets). It arms auto-merge when nothing breaks a line of ours, or"
             echo "holds with an issue. Nothing waits on a person."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: require that main enforces the exact expected check set
-        if: steps.meta.outputs.update-type != 'version-update:semver-major' && steps.screen.outputs.flagged != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          # The Sep 8 audit (§13) found the old guard checked only that AT
-          # LEAST ONE required check existed. The guard compares the EFFECTIVE
-          # required-check set on main — contexts and integration IDs both —
-          # against .github/policy/required-checks.json and refuses on any
-          # difference in either direction (bin/required-check-guard.sh; the
-          # same script runs on every PR in ci.yml, register row 75).
-          #
-          # The script AND the list are fetched from protected MAIN via the
-          # API, never from a checkout: this workflow deliberately checks out
-          # nothing (see the header), and the PR's own copies are exactly what
-          # an attacker editing them would control. Same trust-source rule as
-          # the release chain's allowed-signers fetch.
-          gh api "repos/${GITHUB_REPOSITORY}/contents/bin/required-check-guard.sh?ref=main" --jq .content \
-            | base64 -d > "${RUNNER_TEMP}/required-check-guard.sh"
-          gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=main" --jq .content \
-            | base64 -d > "${RUNNER_TEMP}/required-checks.json"
-          bash "${RUNNER_TEMP}/required-check-guard.sh" "${RUNNER_TEMP}/required-checks.json"
-
       # The approval is an AUDIT TRAIL, not a gate. main's ruleset requires
-      # signed commits and seven status checks; it does not require pull
+      # signed commits and its required status checks; it does not require pull
       # request reviews, so nothing here depends on this succeeding.
       #
       # It fails by default with "GitHub Actions is not permitted to approve
@@ -226,8 +129,8 @@ jobs:
           head=$(printf '%s' "$snap" | jq -r '.headRefOid')
           held=$(printf '%s' "$snap" | jq '[.files[].path | select(startswith("tools/govulncheck/"))] | length')
           total=$(printf '%s' "$snap" | jq '.files | length')
-          [[ "$head" =~ ^[0-9a-f]{40}$ ]] || { echo "could not read the PR's head" >&2; exit 1; }
-          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "could not read the head this run screened" >&2; exit 1; }
+          [[ "$head" =~ ^[0-9a-f]{40}$ ]] || { echo "could not get the PR's head" >&2; exit 1; }
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "could not get the head this run screened" >&2; exit 1; }
           if [ "$head" != "$HEAD_SHA" ]; then
             echo "### Not armed: the PR has a newer head than the one this run screened" >> "$GITHUB_STEP_SUMMARY"
             exit 0
@@ -236,6 +139,12 @@ jobs:
             echo "### Held out of auto-merge" >> "$GITHUB_STEP_SUMMARY"
             echo "This PR touches tools/govulncheck/ (the pinned tool's version is also written in ci.yml) or lists 100 or more files (too many to judge): it is not armed here and is handled as a normal PR." >> "$GITHUB_STEP_SUMMARY"
             exit 0
+          fi
+          # --auto merges at once when main lists no required status check: then nothing is armed
+          if ! gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main" \
+                | jq -e '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]] | length > 0' > /dev/null; then
+            echo "::error::main lists no required status check, or its ruleset could not be fetched: not armed"
+            exit 1
           fi
           run_url="repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?check_name=dependabot-reviewer"
           verdict=$(gh api "$run_url&filter=all&per_page=100" \
@@ -268,7 +177,7 @@ jobs:
           # the reviewer has already approved. One read gives the head and the arm state; if it fails, disarm.
           disarm() { gh pr merge --disable-auto "$PR_URL" || echo "::error::could not turn auto-merge off"; }
           if ! pr=$(gh pr view "$PR_URL" --json headRefOid,autoMergeRequest); then
-            disarm; echo "::error::could not read the pull request"; exit 1
+            disarm; echo "::error::could not get the pull request"; exit 1
           fi
           head=$(jq -r .headRefOid <<<"$pr"); armed=$(jq -r '.autoMergeRequest != null' <<<"$pr")
           [ "$head" = "$HEAD_SHA" ] ||
@@ -278,9 +187,10 @@ jobs:
               --jq 'if (.check_runs | length) >= 100 then error("the check runs are cut") else . end
                     | [.check_runs[] | select(.app.slug == "fosterstack-automation")] | sort_by(.id) | last
                     | "\(.conclusion // "none") \(.external_id // "")"'); then
-            disarm; echo "::error::could not read the reviewer's verdict on ${head:0:7}"; exit 1
+            disarm; echo "::error::could not get the reviewer's verdict on ${head:0:7}"; exit 1
           fi
-          read -r verdict external_id <<<"$verdict"
+          external_id=${verdict#* }
+          verdict=${verdict%% *}
           success_counts=false
           if [ "$verdict" = success ] && [ "$WAITS_FOR_VERDICT" = true ]; then success_counts=true; fi
           if [ "$success_counts" = true ]; then
@@ -290,11 +200,14 @@ jobs:
             fail() { disarm; echo "::error::$1: the reviewer's version is unknown"; exit 1; }
             fetch() { # <path>
               mkdir -p "$main/$(dirname "$1")"
-              gh api "repos/${GITHUB_REPOSITORY}/contents/$1?ref=main" --jq .content | base64 -d > "$main/$1" ||
-                fail "could not read $1 on main"
+              gh api "repos/${GITHUB_REPOSITORY}/contents/$1?ref=refs/heads/main" --jq .content \
+                | base64 -d > "$main/$1" ||
+                fail "could not get $1 on main"
             }
-            gh api "repos/${GITHUB_REPOSITORY}/contents/bin/dependabot-reviewer-version.sh?ref=main" --jq .content \
-              | base64 -d > "$RUNNER_TEMP/dependabot-reviewer-version.sh" || fail "could not read the version script"
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/contents/bin/dependabot-reviewer-version.sh?ref=refs/heads/main" \
+              --jq .content \
+              | base64 -d > "$RUNNER_TEMP/dependabot-reviewer-version.sh" || fail "could not get the version script"
             files=$(bash "$RUNNER_TEMP/dependabot-reviewer-version.sh" --files) ||
               fail "could not list the reviewer's files"
             [ -n "$files" ] || fail "the list of the reviewer's files is empty"

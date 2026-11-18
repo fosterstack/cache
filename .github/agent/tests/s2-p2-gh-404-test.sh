@@ -72,6 +72,33 @@ assert msg is not None, "digits 404 in a longer text read as 'not there'"
 assert err in msg, msg      # the reason printed is gh's own text
 PY
 done
+CASE="_gh_pages: a 403 whose URL contains 404 raises CouldNotLook instead of returning None"
+check python3 - "$work/pre.py" "$work/gh" <<'PY'
+import sys; exec(open(sys.argv[1]).read())
+age = load("pin-age-check")
+os.environ["PATH"] = os.path.dirname(sys.argv[2]) + ":" + os.environ["PATH"]
+os.environ["GH_ERR"] = "gh: Forbidden (HTTP 403)  https://api.github.com/repos/o/404/tags"
+msg = caught(age.CouldNotLook, lambda: age._gh_pages("repos/o/404/tags?per_page=100", (("name", str),)))
+assert msg is not None and "HTTP 403" in msg, msg
+PY
+CASE="_gh_pages: a 500 raises CouldNotLook saying so instead of returning None"
+check python3 - "$work/pre.py" "$work/gh" <<'PY'
+import sys; exec(open(sys.argv[1]).read())
+age = load("pin-age-check")
+os.environ["PATH"] = os.path.dirname(sys.argv[2]) + ":" + os.environ["PATH"]
+os.environ["GH_ERR"] = "gh: Server Error (HTTP 500)"
+msg = caught(age.CouldNotLook, lambda: age._gh_pages("repos/o/r/tags?per_page=100", (("name", str),)))
+assert msg is not None and "HTTP 500" in msg, msg
+PY
+CASE="_gh_pages: a real 404 still means 'not there' (None)"
+check python3 - "$work/pre.py" "$work/gh" <<'PY'
+import sys; exec(open(sys.argv[1]).read())
+age = load("pin-age-check")
+os.environ["PATH"] = os.path.dirname(sys.argv[2]) + ":" + os.environ["PATH"]
+os.environ["GH_ERR"] = "gh: Not Found (HTTP 404)"
+assert age._gh_pages("repos/o/r/tags?per_page=100", (("name", str),)) is None
+PY
+
 LN='aud = load("pin-audit"); net = aud.LiveNet([sys.argv[2]], "/nonexistent")'
 CASE="pin-audit _gh_json (strict): a 403 whose URL contains 404 is Fail, not 'absent'"
 check python3 - "$work/pre.py" "$work/gh" <<PY

@@ -1,89 +1,97 @@
 #!/usr/bin/env bash
-# Release, fourth witnessed step (rules 53, 56, 63): signs with the release KMS key (handoff 0713), and with a Rekor entry, everything a customer verifies. The images are signed
-# by digest in BOTH registries (a signature is a per-registry object). The SBOMs, the lock files, the dependency evidence, the release policy
-# and the archives' checksums file are signed with a bundle each, kept in release-evidence/. The transparency log is never turned off: a bundle without a Rekor entry fails the
-# step and names the file. The four release metadata files (the OpenVEX file, the CSAF file, the inspector-filters file and release-manifest.json) are made
-# from Build's verified digest list and listed, with their hashes, in release-files.sha256, which is signed too. The Witness records of the earlier stages are extra evidence and are not signed again.
+# Release, fourth witnessed step (rules 53, 56, 63): pushes Sign's signatures and holds no key (docs/ratify/2026-10-28-kms-signing-key-and-one-step-build.md:24). Sign made them, each with its Rekor entry, and
+# shipped them in release-signed/ (the Sign job's signing step). Every file is checked here against build/keys/release.rsa.pub and its bundle's one Rekor entry (bin/chain-verify.py bundle-check, offline: the entry
+# travels in the bundle) before it is used; a signature with no entry, or with an entry that is not this signature's, stops the step and names the file, so nothing is pushed without a log entry. The images' signatures are attached by digest in BOTH
+# registries (a signature is a per-registry object): the payload and signature Sign made, with the Rekor entry as the bundle of the signature object. The release manifest stays attached to each public digest as an OCI referrer, as on v0.2.x
+# (REQ-CHAIN-007-AC8): GHCR is authoritative and required; the Docker Hub mirror is best-effort with a loud warning. The blobs and their bundles are placed where release-stage reads them: release-evidence/, release-metadata/ and dist/checksums.txt.
+# The Witness records of the earlier stages are extra evidence and are not signed again.
 set -euo pipefail
-for name in DOCKERHUB_USERNAME DOCKERHUB_TOKEN GH_TOKEN RELEASE_KMS_KEY_REF RUNNER_TEMP; do
-  if [ -z "${!name:-}" ]; then echo "release-sign: $name is unset" >&2; exit 2; fi
+for name in DOCKERHUB_USERNAME DOCKERHUB_TOKEN GH_TOKEN; do
+  printenv "$name" > /dev/null || { echo "release-sign: $name is unset" >&2; exit 2; }
 done
-# RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE come from the Witness wrapper (what Witness records must hold no AWS name); cosign's KMS client reads the same values as AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE, exported on the last line below
-case "${RELEASE_ROLE_ARN:-}" in ?*) ;; *) echo "release-sign: RELEASE_ROLE_ARN is unset" >&2; exit 2;; esac
-case "${RELEASE_TOKEN_FILE:-}" in ?*) ;; *) echo "release-sign: RELEASE_TOKEN_FILE is unset" >&2; exit 2;; esac
-export AWS_ROLE_ARN="$RELEASE_ROLE_ARN" AWS_WEB_IDENTITY_TOKEN_FILE="$RELEASE_TOKEN_FILE"
-# the reference is one word of plain characters, so nothing else can reach cosign as part of it
-[[ "$RELEASE_KMS_KEY_REF" =~ ^awskms:///[A-Za-z0-9/_+=,.@:-]+$ ]] && [[ ! "$RELEASE_KMS_KEY_REF" =~ ^awskms:///[a]lias/?$ ]] || { echo "release-sign: RELEASE_KMS_KEY_REF is not a KMS key reference" >&2; exit 1; }
-[[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "release-sign: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never reaches this step)" >&2; exit 1; }
-# the one key-reference check (bin/chain-verify.py key-ref-check): the job's reference is the release key's, byte for byte, and the key lists RSASSA_PKCS1_V1_5_SHA_256 (the KA-0 guard: cosign signs with the first algorithm the key lists);
-# exit 2 before anything is made or signed (the tag check above runs no tool).
-python3 -I -B bin/chain-verify.py key-ref-check --algorithm-guard --aws "$RUNNER_TEMP/aws-cli/aws" || exit $?
-# REQ-CHAIN-007-AC21 (Astra R3): checksums.txt has no other producer. Before any evidence is made or anything is signed, the four archives in dist are bound to Build's digests.json
-# and the file release-assets attaches and this step signs is written from them; an archive that is missing, extra or not Build's stops the step here
-python3 bin/release-metadata.py checksums --version "${GITHUB_REF_NAME#v}" --digests witness-build/digests.json --dist dist --out dist/checksums.txt
+tag=${GITHUB_REF_NAME:-}
+[[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "release-sign: tag refused: $tag is not vX.Y.Z (a release candidate never reaches this step)" >&2; exit 1; }
 repo="fosterstack/cache"
+cfg=.github/policy/cosign-signing-config.json
+pub=build/keys/release.rsa.pub
+signed=release-signed
+[ -d "$signed" ] && [ ! -L "$signed" ] || { echo "release-sign: $signed (Sign's signatures) is missing or not a directory" >&2; exit 1; }
+openssl rsa -pubin -in "$pub" -noout 2>/dev/null || { echo "release-sign: $pub is not a readable public key" >&2; exit 1; }
 prod=$(jq -r '."image-production" // empty' witness-build/digests.json)
 fips=$(jq -r '."image-fips" // empty' witness-build/digests.json)
-# ruling G (cache-ce's interface): the dependency list is the tag checkout's own file, the govulncheck stream is Check's product (bound to its scanners record by
-# release-verify), and the date is the admitted tag commit's committer date, never a clock; a file or a date that is not usable stops the step before anything is made
-gv=check-results/govulncheck.json
-[ -f "$gv" ] && [ ! -L "$gv" ] && [ -s "$gv" ] || { echo "release-sign: $gv (Check's govulncheck stream) is missing, empty or not a regular file" >&2; exit 1; }
-[ -f dependency-provenance.json ] && [ ! -L dependency-provenance.json ] && [ -s dependency-provenance.json ] || { echo "release-sign: dependency-provenance.json of the tag's checkout is missing, empty or not a regular file" >&2; exit 1; }
-date=$(git log -1 --format=%ct "$GITHUB_SHA")
-[[ "$date" =~ ^[0-9]+$ ]] || { echo "release-sign: the commit date of $GITHUB_SHA is not epoch seconds: $date" >&2; exit 1; }
-python3 bin/vendor-provenance.py evidence --out release-evidence --provenance dependency-provenance.json --govulncheck "$gv" --date "$date"
-mkdir -p release-metadata
-python3 bin/release-metadata.py images --digests witness-build/digests.json --images-dir images --items witness-build/items.json --out release-metadata/vex-images.json
-cp .vex/fosterstack-cache.openvex.json release-metadata/
-python3 bin/vex-forms.py --openvex .vex/fosterstack-cache.openvex.json --images release-metadata/vex-images.json --version "$GITHUB_REF_NAME" --out-dir release-metadata
-# the baseline is the one admission chose (REQ-CHAIN-007-AC19): read from Build's verified admission-baseline.json (bound to Build's record by release-verify), so an
-# owner-signed tag uses its own and a CI patch tag the line's owner baseline; Release never picks one itself
-baseline=$(python3 bin/release-metadata.py baseline --admission witness-build/admission-baseline.json --tag "$GITHUB_REF_NAME" --commit "$GITHUB_SHA")
-python3 bin/release-metadata.py manifest --digests witness-build/digests.json --images-dir images --items witness-build/items.json --modules-dir apks/ubuntu-24.04 --vex-dir release-metadata --baseline-version "$baseline" --repo-root . --version "$GITHUB_REF_NAME" --commit "$GITHUB_SHA" --ci-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --workflow "$GITHUB_WORKFLOW_REF" --out release-metadata/release-manifest.json
-python3 bin/release-metadata.py list --version "$GITHUB_REF_NAME" --dir release-metadata --out release-metadata/release-files.sha256
+rx='^sha256:[0-9a-f]{64}$'
+[[ "$prod" =~ $rx ]] && [[ "$fips" =~ $rx ]] || { echo "release-sign: an attested image digest is missing or malformed" >&2; exit 1; }
+scratch=$(mktemp -d)
+[ -n "$scratch" ] && [ -d "$scratch" ] || { echo "release-sign: no scratch directory" >&2; exit 1; }
+trap 'rm -rf "$scratch"' EXIT
+# check_signed FILE BUNDLE: the bundle holds one Rekor entry of the signature of exactly this file's sha256, and the signature is RSA PKCS#1 v1.5 SHA-256 under the release public key
+check_signed() {
+  local dg
+  [ -f "$1" ] && [ ! -L "$1" ] && [ -f "$2" ] && [ ! -L "$2" ] || { echo "release-sign: $1 or its bundle $2 is missing or not a regular file" >&2; exit 1; }
+  read -r dg _ < <(sha256sum "$1")
+  python3 -I -B bin/chain-verify.py bundle-check --bundle "$2" --digest "$dg" --public-key "$pub" --signing-config "$cfg" || { echo "release-sign: $2 is not the signature of $1 with its Rekor entry" >&2; exit 1; }
+  jq -er .messageSignature.signature "$2" | base64 -d > "$scratch/check.sig"
+  openssl dgst -sha256 -verify "$pub" -signature "$scratch/check.sig" "$1" > /dev/null || { echo "release-sign: the signature in $2 does not verify for $1 under $pub" >&2; exit 1; }
+}
+# the blobs Sign made: placed where release-stage reads them, after the check
+mkdir -p release-evidence release-metadata
+for f in "$signed"/release-evidence/*.json; do
+  check_signed "$f" "$f.bundle"
+  cp "$f" "$f.bundle" release-evidence/
+done
+check_signed "$signed/checksums.txt" "$signed/checksums.txt.bundle"
+cp "$signed/checksums.txt" dist/checksums.txt
+cp "$signed/checksums.txt.bundle" release-evidence/checksums.txt.bundle
+for f in "$signed"/release-metadata/*.json "$signed"/release-metadata/release-files.sha256; do cp "$f" release-metadata/; done
+check_signed release-metadata/release-files.sha256 "$signed/release-metadata/release-files.sha256.bundle"
+cp "$signed/release-metadata/release-files.sha256.bundle" release-evidence/release-files.sha256.bundle
+# the blobs Release holds from Build: their bundles are Sign's
+check_signed images/production-sbom/sbom.json "$signed/release-evidence/production.sbom.json.bundle"
+check_signed images/fips-sbom/sbom.json "$signed/release-evidence/fips.sbom.json.bundle"
+check_signed apks/ubuntu-24.04/fscache-modules.spdx.json "$signed/release-evidence/fscache-modules.spdx.json.bundle"
+check_signed apks/ubuntu-24.04/fscache-modules-fips.spdx.json "$signed/release-evidence/fscache-modules-fips.spdx.json.bundle"
+check_signed images/production.full.lock.json "$signed/release-evidence/production.full.lock.json.bundle"
+check_signed images/fips.full.lock.json "$signed/release-evidence/fips.full.lock.json.bundle"
+check_signed policy.json "$signed/release-evidence/release-policy.bundle"
+for b in production.sbom.json fips.sbom.json fscache-modules.spdx.json fscache-modules-fips.spdx.json production.full.lock.json fips.full.lock.json; do cp "$signed/release-evidence/$b.bundle" release-evidence/; done
+cp "$signed/release-evidence/release-policy.bundle" release-evidence/
+# the images' payloads and bundles are checked too, before any login: a payload names its registry's repository and this digest
+for host in ghcr.io docker.io; do
+  for pair in "production:$prod" "fips:$fips"; do
+    v="${pair%%:*}"; d="${pair#*:}"; p="$signed/images/$host/$v.payload"
+    check_signed "$p" "$signed/images/$host/$v.bundle"
+    jq -e --arg d "$d" --arg r "$host/$repo" '.critical.image."docker-manifest-digest" == $d and .critical.identity."docker-reference" == $r' "$p" > /dev/null || { echo "release-sign: $p does not name $host/$repo@$d" >&2; exit 1; }
+  done
+done
 # The logins live in a private DOCKER_CONFIG of this step, removed when it ends (round 1 F2).
 DOCKER_CONFIG=$(mktemp -d)
 [ -n "$DOCKER_CONFIG" ] && [ -d "$DOCKER_CONFIG" ] || { echo "release-sign: no private credential directory: refusing to log in" >&2; exit 1; }
 export DOCKER_CONFIG
-trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+trap 'rm -rf "$DOCKER_CONFIG" "$scratch"' EXIT
 cosign login ghcr.io -u "${GITHUB_ACTOR:-fosterstack}" --password-stdin <<< "$GH_TOKEN"
 cosign login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin <<< "$DOCKERHUB_TOKEN"
 for host in ghcr.io docker.io; do
-  for digest in "$prod" "$fips"; do
-    cosign sign --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json "$host/$repo@$digest"
+  for pair in "production:$prod" "fips:$fips"; do
+    v="${pair%%:*}"; d="${pair#*:}"; ref="$host/$repo@$d"
+    p="$signed/images/$host/$v.payload"; b="$signed/images/$host/$v.bundle"
+    # cosign's signature object: the payload, the signature (base64) and the log entry in the form cosign reads (--rekor-response)
+    jq -er .messageSignature.signature "$b" > "$scratch/image.sig"
+    logid=$(jq -er '.verificationMaterial.tlogEntries[0].logId.keyId' "$b" | base64 -d | od -An -tx1 | tr -d ' \n')
+    jq -ce --arg logid "$logid" '.verificationMaterial.tlogEntries[0] as $e | {base64Signature: .messageSignature.signature, rekorBundle: {SignedEntryTimestamp: $e.inclusionPromise.signedEntryTimestamp, Payload: {body: $e.canonicalizedBody, integratedTime: ($e.integratedTime | tonumber), logIndex: ($e.logIndex | tonumber), logID: $logid}}}' "$b" > "$scratch/rekor.json"
+    cosign attach signature --payload "$p" --signature "$scratch/image.sig" --rekor-response "$scratch/rekor.json" "$ref"
+    cosign verify --key "$pub" "$ref" > /dev/null || { echo "release-sign: cosign verify --key does not pass on the signature attached to $ref" >&2; exit 1; }
   done
 done
-# the release manifest stays attached to each public digest as an OCI referrer, as on v0.2.x (REQ-CHAIN-007-AC8): GHCR is authoritative and required; the Docker Hub mirror
-# is best-effort with a loud warning, never a silent skip (referrer support there varies). The predicate is the file release-files.sha256 lists and signs.
-for digest in "$prod" "$fips"; do
-  cosign attest --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --predicate release-metadata/release-manifest.json --type https://fosterstack.com/attestations/release-manifest/v1 "ghcr.io/$repo@$digest"
-  cosign attest --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --predicate release-metadata/release-manifest.json --type https://fosterstack.com/attestations/release-manifest/v1 "docker.io/$repo@$digest" || echo "::warning::could not attach the manifest referrer on docker.io/$repo@$digest: the GHCR referrer is authoritative"
+# the release manifest, attached to each public digest: the attestation Sign made (a bundle with its Rekor entry)
+for host in ghcr.io docker.io; do
+  for pair in "production:$prod" "fips:$fips"; do
+    v="${pair%%:*}"; d="${pair#*:}"; ref="$host/$repo@$d"
+    att="$signed/images/$host/$v.attestation.bundle"
+    jq -e --arg d "${d#sha256:}" --slurpfile m release-metadata/release-manifest.json '(.dsseEnvelope.payload | @base64d | fromjson) as $s | $s.subject[0].digest.sha256 == $d and $s.predicate == $m[0]' "$att" > /dev/null || { echo "release-sign: $att is not the attestation of release-manifest.json for $ref" >&2; exit 1; }
+    if [ "$host" = ghcr.io ]; then
+      cosign attach attestation --attestation "$att" "$ref"
+    else
+      cosign attach attestation --attestation "$att" "$ref" || echo "::warning::could not attach the manifest referrer on $ref: the GHCR referrer is authoritative"
+    fi
+  done
 done
-mkdir -p release-evidence
-# the dependency list is signed and attached as dependency-list.json: a signing call that names provenance is read as a provenance signer, which only Sign may be
-cp dependency-provenance.json release-evidence/dependency-list.json
-has_rekor() {
-  if ! jq -e '(.verificationMaterial.tlogEntries // []) | length > 0' "$1" > /dev/null; then echo "release-sign: $1 has no Rekor entry: its signature cannot be checked in the public log" >&2; exit 1; fi
-}
-cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/production.sbom.json.bundle images/production-sbom/sbom.json
-has_rekor release-evidence/production.sbom.json.bundle
-cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/fips.sbom.json.bundle images/fips-sbom/sbom.json
-has_rekor release-evidence/fips.sbom.json.bundle
-cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/fscache-modules.spdx.json.bundle apks/ubuntu-24.04/fscache-modules.spdx.json
-has_rekor release-evidence/fscache-modules.spdx.json.bundle
-cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/fscache-modules-fips.spdx.json.bundle apks/ubuntu-24.04/fscache-modules-fips.spdx.json
-has_rekor release-evidence/fscache-modules-fips.spdx.json.bundle
-cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/production.full.lock.json.bundle images/production.full.lock.json
-has_rekor release-evidence/production.full.lock.json.bundle
-cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/fips.full.lock.json.bundle images/fips.full.lock.json
-has_rekor release-evidence/fips.full.lock.json.bundle
-cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/vendor-evidence.json.bundle release-evidence/vendor-evidence.json
-has_rekor release-evidence/vendor-evidence.json.bundle
-cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/dependency-list.json.bundle release-evidence/dependency-list.json
-has_rekor release-evidence/dependency-list.json.bundle
-cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/checksums.txt.bundle dist/checksums.txt
-has_rekor release-evidence/checksums.txt.bundle
-cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/release-policy.bundle policy.json
-has_rekor release-evidence/release-policy.bundle
-cosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle release-evidence/release-files.sha256.bundle release-metadata/release-files.sha256
-has_rekor release-evidence/release-files.sha256.bundle

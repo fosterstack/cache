@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC24
 # bin/loopback-get.sh (advisor reading, Oct 17): the only way a script reaches a local or in-cluster address. It refuses every URL that is not
 # http://localhost, http://127.0.0.1 (any port), the in-cluster service name `fscache`, or the runner's own token endpoint; it allows a closed list of
 # curl options; it never follows a redirect, never uses a proxy, never speaks https to a loopback name. A stub `curl` on PATH records the call.
@@ -190,7 +189,10 @@ for f in acceptance-serve.sh acceptance-egress.sh check-artifacts.sh check-fips.
   if [ -n "$d" ] && { [ -z "$fn" ] || [ "$d" -lt "$fn" ]; }; then ok "bin/$f defines its loopback function at the top level"; else bad "bin/$f defines its loopback function inside a step (line ${d:-none}, first step line ${fn:-none})"; fi
 done
 # the three requests to the runner's token endpoint go through the helper, with the bearer in the header option and nothing else changed
-for f in witnessed.sh chain-hostile-step.sh; do
+# R3: bin/witnessed.sh (the Release helper) fetches no identity token any more: it names neither the fetch program nor the helper, nor the token endpoint
+n=$(grep -v '^[[:space:]]*#' "$root/bin/witnessed.sh" | grep -Ec "\b$STUBNAME\b|loopback-get|ACTIONS_ID_TOKEN_REQUEST_(URL|TOKEN)=|audience=" || true)
+if [ "$n" = 0 ]; then ok "bin/witnessed.sh fetches no token (no fetch program, no loopback helper, no token request)"; else bad "bin/witnessed.sh still fetches a token ($n lines)"; fi
+for f in chain-hostile-step.sh; do
   n=$(grep -v '^[[:space:]]*#' "$root/bin/$f" | grep -c "\b$STUBNAME\b" || true)
   lim=0
   # the hostile step keeps one fixture string that spells a malicious step name

@@ -27,11 +27,13 @@ ENVBIN=/usr/bin/env             # TEST-SUBST
 SEALED_ENV=build/sealed-env.json  # TEST-SUBST
 REPO=$PWD/archive               # TEST-SUBST (the archive the apk build reads)
 KEYRING=$PWD/archive/keys/wolfi-signing.rsa.pub  # TEST-SUBST
-RECORD=$PWD/witness-apk/apk-collection.local.json  # TEST-SUBST (this job's Witness record)
 LOCK=build/locks/melange.lock   # TEST-SUBST
 
 [ -f bin/chain-sandbox-probe.sh ] && [ -f bin/build-apk-helper.py ] && [ -f build/sealed-env.json ] \
   || { echo "chain-sandbox-probe.sh: run it from the repository root" >&2; exit 2; }
+# The one argument is the file name of this job's Witness record in witness-apk/; no other file is read.
+[ "$#" -eq 1 ] || { echo "chain-sandbox-probe.sh: want one argument, the record's file name" >&2; exit 2; }
+RECORD=$PWD/witness-apk/$1
 [ -f "$RECORD" ] || { echo "chain-sandbox-probe.sh: the Witness record $RECORD is missing" >&2; exit 2; }
 rt=${RUNNER_TEMP:-}
 [ -n "$rt" ] || { echo "chain-sandbox-probe.sh: RUNNER_TEMP is missing" >&2; exit 2; }
@@ -45,6 +47,11 @@ tmp=$(mktemp -d)
 kd=$(mktemp -d "$rt/probe-keydir.XXXXXX")
 trap 'rm -rf "$tmp" "$kd" 2>/dev/null || "$SUDO" rm -rf "$tmp" "$kd" >/dev/null 2>&1 || true' EXIT HUP INT TERM
 printf 'dummy, not a key\n' >"$kd/dummy"
+# the paths are pasted into recipe shell lines: only letters, digits and / . _ - are let through
+for path in "$RECORD" "$kd"; do
+  printf '%s' "$path" | grep -q '[^A-Za-z0-9/._-]' \
+    && { echo "chain-sandbox-probe.sh: refused path $path (shell character)" >&2; exit 2; }
+done
 mkdir -p "$tmp/recipes" "$tmp/cache" "$tmp/src"
 for w in control read-record write-record read-keydir read-token network; do
   sed -e "s|@BUSYBOX@|$busybox|" -e "s|@RECORD@|$RECORD|" -e "s|@KEYDIR@|$kd|" \

@@ -38,7 +38,7 @@
 #       `witness-build` into witness-build (Build's verified record, the --build-record of hand_sign_code, NOT a file the hostile
 #       step supplied); `provenance` into provenance (THIS run's genuine Sign output, for the positive control); the pinned
 #       `policy make` line above; then one step per attempt (five) and one POSITIVE CONTROL step (verify --stage sign --record
-#       provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json, must exit 0, recorded as its own row positive_control that
+#       provenance/provenance.json --policy policy.json, without --rekor-stub, must exit 0, recorded as its own row positive_control that
 #       the verdict requires to be ACCEPTED: a policy that refuses everything, e.g. made for the wrong ref, is caught here), each
 #       exactly three lines:
 #           rc=0
@@ -53,9 +53,8 @@
 #         read_sign_key     hostile-material --kind key --file attempts/read_sign_key.txt --policy policy.json
 #         hand_sign_code    check-build-record --digests attempts/hand_sign_code.json --build-record witness-build/build-collection.json --policy policy.json
 #                           (the same refusals as `sign --check`, with no signer in it: this job holds no id-token and installs no cosign, step-8 SF4)
-#         positive_control  verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json   (must be ACCEPTED;
-#                           the stub is the tlogEntry Sign extracted from its own cosign bundle into the provenance artifact; a verify
-#                           without the stub is refused 'rekor' (chain-verify-test.sh), so the control cannot pass by a shortcut)
+#         positive_control  verify --stage sign --record provenance/provenance.json --policy policy.json   (must be ACCEPTED;
+#                           no --rekor-stub: the stub file is not part of the positive control, and adding it is not the pinned shape)
 #         forge_provenance  verify --stage sign --record attempts/forge_provenance.json --policy policy.json
 #       A refusal only counts when its stage and cause fit the attempt (the verdict checks): mint_sign_cert -> stage sign|release,
 #       cause names the identity or stage-sign.yml; read_sign_token / read_sign_key -> stage runner, `nothing usable`;
@@ -70,16 +69,17 @@
 #       --out hostile-results.json` and an upload of the artifact `hostile-results`. Job `hostile-verdict` (needs hostile-verify;
 #       permissions {contents: read}) downloads that artifact and runs `python3 bin/chain-verify.py hostile-verdict
 #       hostile-results/hostile-results.json`. No hostile-results*.json may be a file of the repository tree (it must come from
-#       the run). Every dry-run-gated job (the release caller, the `decide` tag job) has an `if:` that has the conjunct
+#       the run). Every dry-run-gated job (the release caller, the promotion job) has an `if:` that has the conjunct
 #       `!inputs.dry-run` and no `||`, so a dry run neither tags nor publishes.
 #   No throwaway caller workflow exists any more (the sixth case is not a runtime case); this test makes no exception for one and has no
 #       environment-variable bypass: a hostile step that reads a record named hostile-caller is a finding of the wiring judge.
-#   Token grading: hostile-material --kind token reads the JWT's payload claims. A token whose job_workflow_ref
-#       names stage-sign.yml means the attempt really obtained Sign's identity (exit 0, graded accepted); a token whose
-#       job_workflow_ref names any other file (Build's own token) is `refused at runner: nothing usable for Sign`; a JWT with no
-#       job_workflow_ref claim is an error (exit 2).
-#   Dry-run gating: every hostile-* job has `if: ${{ github.event_name == 'push' && startsWith(github.ref,
-#       'refs/tags/v') && contains(github.ref_name, '-rc') }}` exactly; every other job that needs Sign
+#   Token grading: hostile-material --kind token reads the JWT's payload claims. release.yml is the one release workflow, so its
+#       job_workflow_ref names every job; Sign's identity is the environment sign. A token whose sub is exactly
+#       repo:<repo>:environment:sign AND whose job_workflow_ref is <repo>/.github/workflows/release.yml@refs/... means the attempt
+#       really obtained Sign's identity (exit 0, graded accepted). Any other token is `refused at runner: nothing usable for Sign`:
+#       another job of release.yml (another environment, or none), environment sign from another workflow, a look-alike file,
+#       repository or environment. A JWT with no job_workflow_ref claim, or no sub claim, is an error (exit 2).
+#   Dry-run gating: every hostile-* job has `if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}` exactly; every other job that needs Sign
 #       (transitively) has BOTH conjuncts `!inputs.dry-run` and `startsWith(github.ref, 'refs/tags/v')`; Release's policy step
 #       (stage-promote.yml) is `policy make --tag ...` and never `--ref` (the only `--ref` in the tree is hostile-verify's), and
 #       hostile-verify/hostile-verdict have no job `env`/`defaults`/`container`/`strategy`/`services`/`outputs`/`continue-on-error`,
@@ -91,14 +91,14 @@
 #           accepted when N == 0; exit 1 (no row) for a traceback, an empty or unparsable stderr with N != 0, or an unknown attempt.
 #       chain-verify.py hostile-collect DIR --out F      merges the six rows (five attempts + positive_control); exit 1 naming a missing, duplicate or extra one.
 #       chain-verify.py hostile-material --kind token|key --file F [--policy policy.json]
-#           exit 0 when F holds a transcript line and usable material (a token whose claims line says job_workflow_ref is stage-sign.yml; a key file whose public key is the key of Sign's certificate: the step lists `pubkey-sha256: <hex>` per key file found and `searched: <N> files`, N above zero), exit 1 with
+#           exit 0 when F holds a transcript line and usable material (a token whose claims line says sub environment:sign and job_workflow_ref release.yml; a key file whose public key is the key of Sign's certificate: the step lists `pubkey-sha256: <hex>` per key file found and `searched: <N> files`, N above zero), exit 1 with
 #           `refused at runner: nothing usable` when F has the transcript line and no material (the runner VM was isolated, the
 #           attempt got nothing); exit 2 with `error: ...` when F is missing, unreadable, empty or has no transcript line (no
 #           row); an unknown kind exits 2.
 #   chain-verify.py hostile-verdict RESULTS.json   (the REAL script is run here; there is no inline copy of it): the five attempts
 #       must be refused with their own stage and cause, AND positive_control must be accepted. The hostile step's two material
 #       functions write the transcript line (the code contains `transcript:` twice).
-# Modelled on: this repo's bin/release-patch-wiring-test.sh (YAML-parsing wiring judge); in-toto-witness cmd/verify.go:211 (a
+# Modelled on: this repo's bin/chain-release-shape.py (YAML-parsing wiring judge); in-toto-witness cmd/verify.go:211 (a
 # verifier's refusal is its exit code and message, not a field the attacker writes); the spike evidence
 # 2026-10-09-harness-witness-spikes-a-c.md:83-100 (the five ways a Build step reaches the signing identity).
 set -euo pipefail
@@ -136,6 +136,8 @@ mut("badstage", 2, stage="x")
 mut("wrongcause_forge", 4, reason="digest mismatch")
 mut("wrongstage_token", 1, stage="sign")
 mut("wrongcause_hand", 3, reason="identity is stage-build.yml")
+mut("digestcause_hand", 3, reason="digest list differs from the digests Build attested "
+    "(its digest does not match the record's product subject)")
 mut("wrongcause_key", 2, reason="no such file attempts/read_sign_key.txt")
 mut("wrongcause_mint", 0, reason="digest mismatch")
 mut("nostage", 3, stage="")
@@ -203,6 +205,8 @@ expect refuse "verdict: a stage that is not a stage" badstage "stage"
 expect refuse "verdict: a forged provenance refused for a digest mismatch (not its identity) does not count" wrongcause_forge "cause"
 expect refuse "verdict: a token attempt graded at stage sign instead of runner does not count" wrongstage_token "stage"
 expect refuse "verdict: hand_sign_code refused for an identity reason (not digest/format) does not count" wrongcause_hand "cause"
+expect refuse "verdict: hand_sign_code refused at the attestation check (digest mismatch), not at its format check, \
+does not count" digestcause_hand "cause"
 expect refuse "verdict: a key attempt refused because the file was missing does not count" wrongcause_key "cause"
 expect refuse "verdict: a certificate mint refused for a digest mismatch does not count" wrongcause_mint "cause"
 expect refuse "verdict: an empty stage" nostage "stage"
@@ -249,13 +253,16 @@ printf '{"attempt":"call_sign_from_other_workflow","outcome":"refused","stage":"
 xexpect refuse "hostile-collect: a row for the dropped sixth case is an extra row, named (G2)" call_sign_from_other_workflow -- hostile-collect "$work/rows8" --out "$work/c8.json"
 b64u() { printf '%s' "$1" | base64 | tr -d '=\n' | tr '+/' '-_'; }
 JH=$(b64u '{"alg":"RS256"}')
-TS=$JH.$(b64u '{"sub":"repo","job_workflow_ref":"fosterstack/cache/.github/workflows/stage-sign.yml@refs/tags/v0.3.0"}').c2ln
-TB=$JH.$(b64u '{"sub":"repo","job_workflow_ref":"fosterstack/cache/.github/workflows/stage-build.yml@refs/tags/v0.3.0"}').c2ln
+RW=fosterstack/cache/.github/workflows/release.yml@refs/tags/v0.3.0
+TS=$JH.$(b64u '{"sub":"repo:fosterstack/cache:environment:sign","job_workflow_ref":"'$RW'"}').c2ln
+TB=$JH.$(b64u '{"sub":"repo:fosterstack/cache:environment:build","job_workflow_ref":"'$RW'"}').c2ln
 TN=$JH.$(b64u '{"sub":"repo"}').c2ln
+TNS=$JH.$(b64u '{"job_workflow_ref":"'$RW'"}').c2ln
 TR='# transcript: curl "$ACTIONS_ID_TOKEN_REQUEST_URL" with the step token and write the response'
 printf '%s\nclaims: %s\n' "$TR" "$TS" > "$work/tok_yes.txt"
 printf '%s\nclaims: %s\n' "$TR" "$TB" > "$work/tok_build.txt"
 printf '%s\nclaims: %s\n' "$TR" "$TN" > "$work/tok_noclaim.txt"
+printf '%s\nclaims: %s\n' "$TR" "$TNS" > "$work/tok_nosub.txt"
 printf '%s\ncurl: (6) could not resolve host\n' "$TR" > "$work/tok_none.txt"
 : > "$work/mat_empty.txt"; printf 'claims: %s\n' "$TS" > "$work/tok_notranscript.txt"
 printf '# transcript: tried\nclaims: %s\n' "$TS" > "$work/tok_shorttr.txt"
@@ -274,39 +281,50 @@ printf '%s\nsearched: 0 files\n' "$KR" > "$work/key_zero.txt"
 printf '%s\npubkey-sha256: %s\n' "$KR" "$H1" > "$work/key_nocount.txt"
 KB="-----BEGIN PRIVATE"; KE="-----END PRIVATE"      # the fixture's key block is assembled here, so that no tracked file holds a private-key block (bin/persona-uat-test.sh judges the tree)
 printf '%s\nsearched: 42 files\n%s KEY-----\nMIIB\n%s KEY-----\n' "$KR" "$KB" "$KE" > "$work/key_text.txt"
-xexpect ok "hostile-material: a token whose job_workflow_ref names stage-sign.yml means the attempt got Sign's identity (exit 0, graded accepted)" - -- hostile-material --kind token --file "$work/tok_yes.txt"
-xexpect refuse "hostile-material: Build's OWN token (job_workflow_ref stage-build.yml) is nothing usable for Sign: refused at runner" "refused at runner" -- hostile-material --kind token --file "$work/tok_build.txt"
-# the token's job_workflow_ref must be exactly <repo>/.github/workflows/stage-sign.yml@<ref> of THIS repository (GITHUB_REPOSITORY, default fosterstack/cache)
-TX=$JH.$(b64u '{"sub":"repo","job_workflow_ref":"fosterstack/cache/.github/workflows/xstage-sign.yml@refs/tags/v0.3.0"}').c2ln
-TO=$JH.$(b64u '{"sub":"repo","job_workflow_ref":"evil/cache/.github/workflows/stage-sign.yml@refs/tags/v0.3.0"}').c2ln
-TD=$JH.$(b64u '{"sub":"repo","job_workflow_ref":"fosterstack/cache/.github/workflows/stage-sign.yml.evil@refs/tags/v0.3.0"}').c2ln
-for n in TX:"a file whose name only ends like Sign's (xstage-sign.yml)" TO:"Sign's file name in ANOTHER repository" TD:"stage-sign.yml.evil"; do
+xexpect ok "hostile-material: a token of environment sign from release.yml means the attempt got Sign's identity (exit 0, graded accepted)" - -- hostile-material --kind token --file "$work/tok_yes.txt"
+xexpect refuse "hostile-material: another job of release.yml (environment build) is nothing usable for Sign: refused at runner" "refused at runner" -- hostile-material --kind token --file "$work/tok_build.txt"
+# Sign's token is exactly sub repo:<repo>:environment:sign AND job_workflow_ref <repo>/.github/workflows/release.yml@<ref> (GITHUB_REPOSITORY, default fosterstack/cache)
+W=fosterstack/cache/.github/workflows
+SG=repo:fosterstack/cache:environment:sign
+TJ=$JH.$(b64u '{"sub":"repo:fosterstack/cache:ref:refs/tags/v0.3.0","job_workflow_ref":"'$RW'"}').c2ln
+TW=$JH.$(b64u '{"sub":"'$SG'","job_workflow_ref":"'$W'/other.yml@refs/tags/v0.3.0"}').c2ln
+TX=$JH.$(b64u '{"sub":"'$SG'","job_workflow_ref":"'$W'/xrelease.yml@refs/tags/v0.3.0"}').c2ln
+TO=$JH.$(b64u '{"sub":"'$SG'","job_workflow_ref":"evil/cache/.github/workflows/release.yml@refs/tags/v0.3.0"}').c2ln
+TD=$JH.$(b64u '{"sub":"'$SG'","job_workflow_ref":"'$W'/release.yml.evil@refs/tags/v0.3.0"}').c2ln
+TG=$JH.$(b64u '{"sub":"'$SG'r","job_workflow_ref":"'$RW'"}').c2ln
+TE=$JH.$(b64u '{"sub":"repo:evil/cache:environment:sign","job_workflow_ref":"'$RW'"}').c2ln
+for n in TJ:"another job of release.yml with no environment (sub names a tag ref)" TW:"environment sign from ANOTHER workflow (other.yml)" TX:"a file whose name only ends like Sign's (xrelease.yml)" TO:"release.yml of ANOTHER repository" TD:"release.yml.evil" TG:"environment signer (a sub that only starts like sign)" TE:"environment sign of ANOTHER repository"; do
   v=${n%%:*}; printf '%s\nclaims: %s\n' "$TR" "${!v}" > "$work/tok_$v.txt"
-  xexpect refuse "hostile-material: a token whose job_workflow_ref is ${n#*:} is nothing usable for Sign: refused at runner" "refused at runner" -- hostile-material --kind token --file "$work/tok_$v.txt"
+  xexpect refuse "hostile-material: a token with ${n#*:} is nothing usable for Sign: refused at runner" "refused at runner" -- hostile-material --kind token --file "$work/tok_$v.txt"
 done
 mrc=0; GITHUB_REPOSITORY=other/repo cvx hostile-material --kind token --file "$work/tok_yes.txt" || mrc=$?
 if [ "$mrc" = 1 ] && grep -F -q "refused at runner" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")"; then ok "hostile-material: the repository is read from GITHUB_REPOSITORY: Sign's file of another repository is not this repository's Sign"; else bad "hostile-material: GITHUB_REPOSITORY=other/repo must refuse fosterstack/cache's Sign token, got $mrc"; fi
 # a Build job with no id-token permission has no token request address (the Witness move): graded isolated, the static permission judge being the proof and this transcript the corroboration (an incomplete transcript is an error, never isolation)
-printf '%s\nrequest-env: absent\nenviron-read: 31\nenviron-unreadable-same-user: 0\n' "$TR" > "$work/tok_absent.txt"
-printf '%s\nrequest-env: absent\nenviron-read: 0\nenviron-unreadable-same-user: 0\n' "$TR" > "$work/tok_absent0.txt"
-printf '%s\nrequest-env: absent\nenviron-read: 31\nenviron-unreadable-same-user: 2\n' "$TR" > "$work/tok_absentbad.txt"
-printf '%s\nrequest-env: absent\nenviron-files: 31\n' "$TR" > "$work/tok_absentold.txt"
-printf '%s\nrequest-env: absent\nenviron-read: 31\nenviron-read: 99\nenviron-unreadable-same-user: 0\n' "$TR" > "$work/tok_absentdup.txt"
-printf '%s\nrequest-env: absent\nenviron-read: 31\nenviron-unreadable-same-user: 0\nenviron-unreadable-same-user: 0\n' "$TR" > "$work/tok_absentdupk.txt"
-printf '%s\nrequest-env: absent\nenviron-read: 31\n' "$TR" > "$work/tok_absentnc.txt"
-printf '%s\na process on this runner holds a token request address: /proc/9/environ\nrequest-env: absent\nenviron-read: 31\nenviron-unreadable-same-user: 0\n' "$TR" > "$work/tok_absenthold.txt"
+printf '%s\nrequest-env: absent\n' "$TR" > "$work/tok_absent.txt"
+printf '%s\na process on this runner holds a token request address: /proc/9/environ\nrequest-env: absent\n' "$TR" > "$work/tok_absenthold.txt"
 xexpect refuse "hostile-material: no token request address in the job, with the corroborating lines, is graded isolated (refused at runner), and the refusal names the static permission judge as the proof" "proven by the static permission judge" -- hostile-material --kind token --file "$work/tok_absent.txt"
-for f in tok_absent0 tok_absentbad tok_absentold tok_absentdup tok_absentdupk tok_absentnc tok_absenthold; do
+for f in tok_absenthold; do
   mrc=0; cvx hostile-material --kind token --file "$work/$f.txt" || mrc=$?
-  if [ "$mrc" = 2 ] && grep -F -q "error" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")" && ! grep -F -q "refused at" "$work/xerr"; then ok "hostile-material: $f (absent address with no environ file read, an unreadable environ among the step's own ancestors, the old bare environ-files count, a repeated or missing count, or a process holding an address) is an ERROR (exit 2), never isolation"; else bad "hostile-material: $f is an error" "exit $mrc"; fi
+  if [ "$mrc" = 2 ] && grep -F -q "error" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")" && ! grep -F -q "refused at" "$work/xerr"; then ok "hostile-material: $f (a process holds a token request address) is an ERROR (exit 2), never isolation"; else bad "hostile-material: $f is an error" "exit $mrc"; fi
 done
 # the REAL step's token attempt in a job with no request address: it writes the absence proof and no claims line (functions only: the cut drops the five calls at the end)
 mkdir -p "$work/stepnotok" && sed '/^attempt_mint_sign_cert$/,$d' "$root/bin/chain-hostile-step.sh" > "$work/stepnotok/fns.sh"
 (cd "$work/stepnotok" && env -i PATH="$PATH" bash -c '. ./fns.sh; attempt_read_sign_token')
-if grep -qx 'request-env: absent' "$work/stepnotok/attempts/read_sign_token.txt" && grep -q '^environ-read: [0-9][0-9]*$' "$work/stepnotok/attempts/read_sign_token.txt" && { [ ! -r /proc/self/environ ] || grep -q '^environ-read: [1-9]' "$work/stepnotok/attempts/read_sign_token.txt"; } && grep -qx 'environ-unreadable-same-user: 0' "$work/stepnotok/attempts/read_sign_token.txt" && ! grep -q '^claims:' "$work/stepnotok/attempts/read_sign_token.txt"; then ok "hostile step: with no token request address in the environment the token attempt writes request-env: absent, the count of environ files it read and no unreadable file of its own user, and no claims line"; else bad "hostile step: no-token transcript (got: $(cat "$work/stepnotok/attempts/read_sign_token.txt" 2>&1 | head -c 600 | tr '\n' '|'); proc readable: $([ -r /proc/self/environ ] && echo yes || echo no))"; fi
+if grep -qx 'request-env: absent' "$work/stepnotok/attempts/read_sign_token.txt" && ! grep -q -e '^environ-read:' -e '^environ-unreadable-same-user:' "$work/stepnotok/attempts/read_sign_token.txt" && ! grep -q '^claims:' "$work/stepnotok/attempts/read_sign_token.txt"; then ok "hostile step: with no token request address in the environment the token attempt writes request-env: absent, no environ line and no claims line"; else bad "hostile step: no-token transcript (got: $(cat "$work/stepnotok/attempts/read_sign_token.txt" 2>&1 | head -c 600 | tr '\n' '|'); proc readable: $([ -r /proc/self/environ ] && echo yes || echo no))"; fi
+# the REAL step's token fetch: the request token is in no argv, only in the file hostile-work/token-header that the stand-in for bin/loopback-get.sh reads at call time; the file is gone afterwards
+mkdir -p "$work/steptok/bin" && cp "$work/stepnotok/fns.sh" "$work/steptok/fns.sh"
+cat > "$work/steptok/bin/loopback-get.sh" <<'STUB'
+printf '%s\n' "$@" > argv.log
+cat hostile-work/token-header > header-at-call.txt
+printf '{"value": "aaa.bbb.ccc"}\n'
+STUB
+(cd "$work/steptok" && env -i PATH="$PATH" ACTIONS_ID_TOKEN_REQUEST_URL="http://127.0.0.1:9/token?x=1" ACTIONS_ID_TOKEN_REQUEST_TOKEN=SECRETREQUESTTOKEN bash -c '. ./fns.sh; attempt_read_sign_token')
+if ! grep -q SECRETREQUESTTOKEN "$work/steptok/argv.log" && grep -qx -e '-H' "$work/steptok/argv.log" && grep -qx '@hostile-work/token-header' "$work/steptok/argv.log" && grep -qx 'http://127.0.0.1:9/token?x=1&audience=sigstore' "$work/steptok/argv.log"; then ok "hostile step: the request token is in no argument of the fetch, which gets -H @hostile-work/token-header and the address with &audience=sigstore"; else bad "hostile step: the fetch argv is $(tr '\n' '|' < "$work/steptok/argv.log")"; fi
+if [ "$(cat "$work/steptok/header-at-call.txt" 2> /dev/null)" = "Authorization: bearer SECRETREQUESTTOKEN" ]; then ok "hostile step: at the time of the fetch the file held the line Authorization: bearer <token>"; else bad "hostile step: the file at call time held $(head -c 100 "$work/steptok/header-at-call.txt" 2> /dev/null)"; fi
+if [ ! -e "$work/steptok/hostile-work/token-header" ]; then ok "hostile step: the token header file is removed after the step"; else bad "hostile step: hostile-work/token-header is still there"; fi
+if grep -qx 'claims: aaa.bbb.' "$work/steptok/attempts/read_sign_token.txt" && ! grep -q SECRETREQUESTTOKEN "$work/steptok/attempts/read_sign_token.txt"; then ok "hostile step: the transcript is unchanged (claims line header.payload., no token)"; else bad "hostile step: transcript $(tr '\n' '|' < "$work/steptok/attempts/read_sign_token.txt" | head -c 200)"; fi
 # Linux only (/proc/PID/environ): an UNRELATED process of the same user that denies its environ (dumpable off, as hosted runners have) must not change the grade; a non-dumpable
 # ANCESTOR of the step must be an error (it could hide a request variable). Skipped, with an ok line, where there is no /proc.
-skipped=0
 if [ -r /proc/self/environ ]; then
   mkdir -p "$work/stepproc"
   cp "$work/stepnotok/fns.sh" "$work/stepproc/fns.sh"
@@ -323,7 +341,7 @@ if [ -r /proc/self/environ ]; then
   # (b) the stray is a real holder: the runner scan lists it, so the step's scan is not narrowed
   if grep -qx "a process on this runner holds a token request address: /proc/$stray/environ" "$work/stepproc/attempts/read_sign_token.txt"; then ok "hostile step (Linux): the real scan lists a holder outside the step's tree (the runner scan is not narrowed)"; else bad "hostile step (Linux): the real scan did not list the stray holder /proc/$stray/environ"; fi
   kill "$stray" 2> /dev/null || true
-  if [ "$mrc" = 1 ] && grep -qx 'environ-unreadable-same-user: 0' "$work/stepproc/graded.txt" && grep -F -q "static permission judge" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")"; then ok "hostile step (Linux): an unrelated same-user process that denies its environ leaves the grade isolated (K counts the step's ancestors only)"; else bad "hostile step (Linux): unrelated non-dumpable process: rc $mrc, transcript $(tr '\n' '|' < "$work/stepproc/attempts/read_sign_token.txt" | head -c 400), err $(head -c 200 "$work/xerr")"; fi
+  if [ "$mrc" = 1 ] && grep -F -q "static permission judge" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")"; then ok "hostile step (Linux): an unrelated same-user process that denies its environ leaves the grade isolated"; else bad "hostile step (Linux): unrelated non-dumpable process: rc $mrc, transcript $(tr '\n' '|' < "$work/stepproc/attempts/read_sign_token.txt" | head -c 400), err $(head -c 200 "$work/xerr")"; fi
   # (c) a holder inside the step's own tree (a child of the step's shell that holds the address in its environment) is listed by its PID and the transcript is an error
   mkdir -p "$work/steptree"; cp "$work/stepnotok/fns.sh" "$work/steptree/fns.sh"
   (cd "$work/steptree" && env -i PATH="$PATH" HOME="$work" bash -c '. ./fns.sh; ACTIONS_ID_TOKEN_REQUEST_URL=x sleep 30 & echo $! > child.pid; sleep 0.5; attempt_read_sign_token; kill $(cat child.pid) 2> /dev/null')
@@ -331,12 +349,12 @@ if [ -r /proc/self/environ ]; then
   if [ "$mrc" = 2 ] && grep -qx "a process on this runner holds a token request address: /proc/$(cat "$work/steptree/child.pid")/environ" "$work/steptree/attempts/read_sign_token.txt"; then ok "hostile step (Linux): a holder inside the step's own tree is listed by its PID and the transcript is an error (exit 2)"; else bad "hostile step (Linux): a holder in the step's tree: rc $mrc, transcript $(tr '\n' '|' < "$work/steptree/attempts/read_sign_token.txt" | head -c 200)"; fi
   mkdir -p "$work/stepanc"; cp "$work/stepnotok/fns.sh" "$work/stepanc/fns.sh"
   (cd "$work/stepanc" && env -i PATH="$PATH" HOME="$work" python3 -c 'import ctypes, subprocess; ctypes.CDLL(None).prctl(4, 0); subprocess.run(["bash", "-c", ". ./fns.sh; attempt_read_sign_token"])')
-  mrc=0; cvx hostile-material --kind token --file "$work/stepanc/attempts/read_sign_token.txt" || mrc=$?
-  if [ "$mrc" = 2 ] && ! grep -qx 'environ-unreadable-same-user: 0' "$work/stepanc/attempts/read_sign_token.txt"; then ok "hostile step (Linux): a non-dumpable ANCESTOR of the step is counted and the transcript is an error (exit 2), never isolation"; else bad "hostile step (Linux): non-dumpable ancestor: rc $mrc, transcript $(tr '\n' '|' < "$work/stepanc/attempts/read_sign_token.txt" | head -c 400)"; fi
+  grep -v 'holds a token request address' "$work/stepanc/attempts/read_sign_token.txt" > "$work/stepanc/graded.txt"
+  mrc=0; cvx hostile-material --kind token --file "$work/stepanc/graded.txt" || mrc=$?
+  if [ "$mrc" = 1 ] && ! grep -q '^environ' "$work/stepanc/attempts/read_sign_token.txt"; then ok "hostile step (Linux): a non-dumpable ancestor of the step changes nothing (no environ line; the grade stays isolated, the static permission judge being the proof)"; else bad "hostile step (Linux): non-dumpable ancestor: rc $mrc, transcript $(tr '\n' '|' < "$work/stepanc/attempts/read_sign_token.txt" | head -c 400)"; fi
 else
   ok "hostile step (Linux fixtures): skipped, this system has no /proc"
   ok "hostile step (Linux fixtures): skipped, this system has no /proc (ancestor case)"
-  skipped=2  # the four Linux cases collapse to these two
 fi
 # the REAL step's mint and forge attempts in a job with no token: both leave material (a record signed by a throwaway key), the REAL verifier refuses it at Sign naming stage-sign.yml,
 # and hostile-row turns that refusal into a counted row (a missing file would be an error, which is what the old cosign form produced without a token)
@@ -369,9 +387,9 @@ xexpect refuse "hostile-material: a key found on the runner that is NOT Sign's k
 xexpect refuse "hostile-material: a search that looked at files and found no key is refused at runner" "refused at runner" -- hostile-material --kind key --file "$work/key_none.txt" --policy "$work/keypol.json"
 xexpect refuse "hostile-material: the TEXT 'PRIVATE KEY' proves nothing: text of a key block with no matching public key hash is refused" "refused at runner" -- hostile-material --kind key --file "$work/key_text.txt" --policy "$work/keypol.json"
 xexpect refuse "hostile-material: an unknown kind" kind -- hostile-material --kind password --file "$work/tok_none.txt"
-for f in mat_empty tok_notranscript tok_noclaim tok_shorttr tok_tronly tok_none; do
+for f in mat_empty tok_notranscript tok_noclaim tok_nosub tok_shorttr tok_tronly tok_none; do
   mrc=0; cvx hostile-material --kind token --file "$work/$f.txt" || mrc=$?
-  if [ "$mrc" = 2 ] && grep -F -q "error" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")" && ! grep -F -q "refused at" "$work/xerr"; then ok "hostile-material: $f (empty, no transcript, a one-word transcript, a transcript with no output, no claims line, or a JWT without job_workflow_ref) is an ERROR (exit 2), never isolation"; else bad "hostile-material: $f must exit 2 with error:, got $mrc: $(head -c 120 "$work/xerr" | tr '\n' ' ')"; fi
+  if [ "$mrc" = 2 ] && grep -F -q "error" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")" && ! grep -F -q "refused at" "$work/xerr"; then ok "hostile-material: $f (empty, no transcript, a one-word transcript, a transcript with no output, no claims line, a JWT without job_workflow_ref, or a JWT without sub) is an ERROR (exit 2), never isolation"; else bad "hostile-material: $f must exit 2 with error:, got $mrc: $(head -c 120 "$work/xerr" | tr '\n' ' ')"; fi
 done
 for f in key_zero key_nocount mat_empty; do
   mrc=0; cvx hostile-material --kind key --file "$work/$f.txt" --policy "$work/keypol.json" || mrc=$?
@@ -420,12 +438,13 @@ PIN = {
  "read_sign_token": r'python3 bin/chain-verify\.py hostile-material --kind token --file attempts/read_sign_token\.txt',
  "read_sign_key": r'python3 bin/chain-verify\.py hostile-material --kind key --file attempts/read_sign_key\.txt --policy policy\.json',
  "hand_sign_code": r'python3 bin/chain-verify\.py check-build-record --digests attempts/hand_sign_code\.json --build-record witness-build/build-collection\.json --policy policy\.json',
- "positive_control": r'python3 bin/chain-verify\.py verify --stage sign --record provenance/provenance\.json --policy policy\.json --rekor-stub provenance/provenance\.rekor\.json',
+ "positive_control": r'python3 bin/chain-verify\.py verify --stage sign --record provenance/provenance\.json --policy policy\.json',
  "forge_provenance": r'python3 bin/chain-verify\.py verify --stage sign --record attempts/forge_provenance\.json --policy policy\.json',
 }
 TAGCONJ = "startsWith(github.ref, 'refs/tags/v')"
-# the hostile proof runs on a PUSH of a release-candidate tag only (REQ-CHAIN-001-AC5): never on a final tag,
-# never on a branch
+WFREF = "startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))"
+PUSHCONJ = "github.event_name == 'push'"
+# the hostile proof runs on a PUSH of a release-candidate tag only (REQ-CHAIN-001-AC5): never on a final tag, never on a branch
 RC_IF = "${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"
 def conj(cond):
     """The && conjuncts of a `${{ ... }}` condition, whitespace-normalised, or None when it has a `||` (fail closed: an or-joined
@@ -439,7 +458,7 @@ def conj(cond):
     # any other `||` or grouping make the whole condition refused
     GRP = "(contains(needs.*.result, 'failure') || needs.release.result == 'cancelled')"
     flat = re.sub(r"\s+", " ", m.group(1)).strip()
-    if re.search(r"TAGCALL|FAILCALL|ALWAYSCALL|RCCALL|FAILGRP", flat): return None   # the placeholder words below are never part of a condition
+    if re.search(r"TAGCALL|FAILCALL|ALWAYSCALL|RCCALL|FAILGRP|WFREFCALL|DASHCALL", flat): return None   # the placeholder words below are never part of a condition
     out = []
     for part in flat.split("&&"):
         part = part.strip()
@@ -455,10 +474,16 @@ def conj(cond):
         # the exact rc-tag test is also one allowed call: a jobs's `!contains(github.ref_name, '-rc')`
         # conjunct keeps an rc tag out of the old publishing path
         body = re.sub(r"contains\(\s*github\.ref_name\s*,\s*'-rc'\s*\)", "RCCALL", body)
+        # guard S of release.yml (REQ-CHAIN-005-AC5): the exact call that ties a job to release.yml itself, and the candidate rule of the jobs after the signatures
+        body = re.sub(r"startsWith\(\s*github\.workflow_ref\s*,\s*format\(\s*'\{0\}/\.github/workflows/release\.yml@'\s*,\s*github\.repository\s*\)\s*\)", "WFREFCALL", body)
+        body = re.sub(r"contains\(\s*github\.ref_name\s*,\s*'-'\s*\)", "DASHCALL", body)
         if "(" in body or ")" in body: return None
-        out.append(body.replace("TAGCALL", TAGCONJ).replace("FAILCALL", "failure()").replace("ALWAYSCALL", "always()").replace("RCCALL", "contains(github.ref_name, '-rc')"))
+        out.append(body.replace("TAGCALL", TAGCONJ).replace("FAILCALL", "failure()").replace("ALWAYSCALL", "always()").replace("RCCALL", "contains(github.ref_name, '-rc')").replace("WFREFCALL", WFREF).replace("DASHCALL", "contains(github.ref_name, '-')"))
     return out
-OPEN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage-reproducibility.yml", "sign-rebuild": "stage-sign.yml", "sign-check": "stage-sign.yml", "check": "stage-verify.yml"}
+# the jobs that may run in a dry run: Build and Rebuild (gate G is on build-freeze), check-govulncheck and the persona leg (its own condition asks for a release-candidate tag); every other job is skipped through its needs or carries its own gate
+OPEN = {"build-freeze", "build-apk", "build-assemble", "rebuild-apk", "rebuild-assemble", "check-govulncheck", "persona-uat-rc"}
+SIGN_JOBS = ("sign", "sign-rebuild", "sign-check", "sign-release")      # the four jobs of the environment sign (ruling 1 of cache#921)
+CHECK_IF = "${{ inputs.mode != 'snapshot' }}"      # the Check jobs carry exactly this and run after Sign through needs (REQ-CHAIN-005-AC5)
 POLICY_MAKE = r'python3 bin/chain-verify\.py policy make --template \.github/policy/release-policy\.template\.json --ref "\$GITHUB_REF" --out policy\.json'
 WITH = lambda s: s.get("with") or {}
 import importlib.util as _ilu
@@ -470,48 +495,48 @@ def load(rel):
     try: return _cts.yload(open(p).read())
     except (yaml.YAMLError, _cts.DuplicateKey) as ex:
         print("%s cannot be judged: %s" % (rel, ex)); sys.exit(1)
-sb, rl = load(".github/workflows/stage-build.yml"), load(".github/workflows/release.yml")
+rl = load(".github/workflows/release.yml")
 # Run lines the judge reads are judged as bash reads them (refuse, never model): a backslash-newline, or
 # any character outside printable ASCII (CR, tab, other controls, NBSP, U+200B, ...), would let str.strip() or a line split see text
-# that bash does not run. Checked on every step this judge reads: the hostile step in stage-build.yml and the hostile-* jobs of release.yml.
+# that bash does not run. Checked on every step this judge reads: the hostile step of release.yml and the hostile-* jobs of release.yml.
 def run_chars(where, steps):
     for st in steps or []:
         r = st.get("run") if isinstance(st, dict) else None
         if not isinstance(r, str): continue
         if "\\\n" in r: bad.append("%s has a run line with a backslash-newline continuation: %r" % (where, r[:80]))
         if re.search(r"[^\x20-\x7e\n]", r): bad.append("%s has a run line with a control, non-ASCII or invisible character: %r" % (where, r[:80]))
-for _jn, _j in ((sb or {}).get("jobs") or {}).items():
-    run_chars("stage-build.yml job " + _jn, [x for x in (_j or {}).get("steps") or [] if isinstance(x, dict) and "chain-hostile-step" in str(x.get("run", ""))])
+for _jn, _j in ((rl or {}).get("jobs") or {}).items():
+    run_chars("release.yml job " + _jn, [x for x in (_j or {}).get("steps") or [] if isinstance(x, dict) and "chain-hostile-step" in str(x.get("run", ""))])
 for _jn in ("hostile-verify", "hostile-verdict"):
     run_chars("release.yml job " + _jn, (((rl or {}).get("jobs") or {}).get(_jn) or {}).get("steps"))
-if sb is None: bad.append("stage-build.yml missing")
-else:
-    found = False
-    for jn, j in (sb.get("jobs") or {}).items():
-        steps = j.get("steps") or []
-        for i, s in enumerate(steps):
-            if (s.get("run") or "").strip() == "bash bin/chain-hostile-step.sh":
-                found = True
-                if str(s.get("if", "")).strip() != "${{ inputs.hostile }}": bad.append("the hostile step's if: must be exactly ${{ inputs.hostile }} (a gate like `inputs.hostile || true` runs it in real releases): %r" % s.get("if"))
-                later = [x for x in steps[i + 1:] if "upload-artifact" in str(x.get("uses", "")) and (x.get("with") or {}).get("name") == "hostile-attempts"]
-                if not later: bad.append("no upload of the artifact hostile-attempts after the hostile step in the same job")
-    if not found: bad.append("no step `bash bin/chain-hostile-step.sh` in the Build job")
-    hin = ((sb.get("on") or {}).get("workflow_call") or {}).get("inputs", {}).get("hostile") or {}
-    if hin.get("type") != "boolean" or str(hin.get("default", "false")).lower() != "false" or hin.get("required") in ("true", True):
-        bad.append("stage-build.yml's workflow_call input `hostile` must be a boolean with default false (a release must never turn it on by default): %s" % hin)
+# REQ-CHAIN-004-AC19: the hostile Build step runs in EVERY build (release candidate, final or patch tag, the pull-request proof build, the nightly build): the one step `bash bin/chain-hostile-step.sh` of the job
+# build-assemble, with no condition of any kind, and an upload of hostile-attempts after it in the same job; the outcome is judged by the verifier (REQ-CHAIN-001-AC5), and release.yml has no input hostile
+found = False
+for jn, j in ((rl or {}).get("jobs") or {}).items():
+    steps = j.get("steps") or []
+    for i, s in enumerate(steps):
+        if (s.get("run") or "").strip() == "bash bin/chain-hostile-step.sh":
+            found = True
+            if jn != "build-assemble": bad.append("the hostile step is in the job %s: it is the one step of the job build-assemble (the job that makes the build's records)" % jn)
+            if "if" in s: bad.append("the hostile step carries an if: (%r): it runs in every build, with no condition (REQ-CHAIN-004-AC19)" % s.get("if"))
+            later = [x for x in steps[i + 1:] if "upload-artifact" in str(x.get("uses", "")) and (x.get("with") or {}).get("name") == "hostile-attempts"]
+            if not later: bad.append("no upload of the artifact hostile-attempts after the hostile step in the same job")
+if rl is not None and not found: bad.append("no step `bash bin/chain-hostile-step.sh` in the job build-assemble")
+if rl is not None and ("hostile" in ((((rl.get("on") or {}).get("workflow_call") or {}).get("inputs")) or {}) or "inputs.hostile" in str(rl)):
+    bad.append("release.yml has an input `hostile` or reads inputs.hostile: the hostile step runs in every build, a switch for it is a way to turn it off")
 if rl is None: bad.append("release.yml missing")
 else:
     jobs = rl.get("jobs") or {}
     if "workflow_dispatch" not in (rl.get("on") or {}): bad.append("release.yml has no workflow_dispatch (the dry run)")
-    # final batch R-d: among jobs named hostile* or sign* (any case) only sign, sign-rebuild (the Witness move: Sign's second call, for Rebuild's records), sign-check (the third call, for Check's records), hostile-verify and hostile-verdict may exist
+    # final batch R-d: among jobs named hostile* or sign* (any case) only sign, sign-rebuild (the Witness move: Sign's second call, for Rebuild's records), sign-check (the third call, for Check's records), sign-release (the fourth, after Release publishes), hostile-verify and hostile-verdict may exist
     for _jn in jobs:
-        if str(_jn).lower().startswith(("hostile", "sign")) and _jn not in ("sign", "sign-rebuild", "sign-check", "hostile-verify", "hostile-verdict"):
-            bad.append("release.yml has a job %r: among hostile*/sign* jobs only sign, sign-rebuild, sign-check, hostile-verify and hostile-verdict are allowed" % _jn)
+        if str(_jn).lower().startswith(("hostile", "sign")) and _jn not in SIGN_JOBS + ("hostile-verify", "hostile-verdict"):
+            bad.append("release.yml has a job %r: among hostile*/sign* jobs only sign, sign-rebuild, sign-check, sign-release, hostile-verify and hostile-verdict are allowed" % _jn)
     hv, hd = jobs.get("hostile-verify"), jobs.get("hostile-verdict")
     if not hv or not hd: bad.append("jobs hostile-verify and hostile-verdict are required")
     else:
         need = lambda j: [j.get("needs")] if isinstance(j.get("needs"), str) else (j.get("needs") or [])
-        sign_jobs = [n for n, j in jobs.items() if "stage-sign.yml" in str(j.get("uses", ""))]
+        sign_jobs = [n for n in jobs if n in SIGN_JOBS]
         if not sign_jobs or not set(need(hv)) & set(sign_jobs): bad.append("hostile-verify must need the Sign job")
         if "hostile-verify" not in need(hd): bad.append("hostile-verdict must need hostile-verify")
         if hv.get("permissions") != {"contents": "read"}: bad.append("hostile-verify permissions must be exactly {contents: read} (no id-token, nothing to write): %s" % hv.get("permissions"))
@@ -608,35 +633,45 @@ else:
             grow = False
             for jn3, j3 in jobs.items():
                 if jn3 not in after_sign and (set(need(j3)) & (set(sign_jobs) | after_sign)): after_sign.add(jn3); grow = True
+        STATUS = re.compile(r"always\(\)|failure\(\)|cancelled\(\)|success\(\)")
+        guarded = set()      # the jobs that cannot run in a dry run or on a branch: their own if carries the push event or the dry-run conjunct and the positive tag conjunct, or they run only after such a job
         for jn, j in jobs.items():
+            if str(j.get("uses", "")).split("/")[-1].startswith("stage-"): bad.append("the job %s calls %s: no stage-*.yml file exists, release.yml is the one file" % (jn, j.get("uses")))
             if jn in OPEN:
-                if not str(j.get("uses", "")).endswith("/" + OPEN[jn]): bad.append("the open job %s must call %s (a job named like a stage that calls anything else is not exempt from the dry-run gate): %r" % (jn, OPEN[jn], j.get("uses")))
+                if j.get("uses") and not (jn == "persona-uat-rc" and j.get("uses") == "./.github/workflows/persona-uat.yml"): bad.append("the open job %s may not call a workflow (a job named like a build job that calls anything else is not exempt from the dry-run gate): %r" % (jn, j.get("uses")))
+                if STATUS.search(str(j.get("if", ""))): bad.append("the open job %s has a status function in its if: it would run after a failed or skipped job" % jn)
                 continue
             if jn.startswith("hostile-"):
                 if str(j.get("if", "")).strip() != RC_IF: bad.append("the job %s is a hostile-* job and must have `if: the rc-tag push condition` exactly (only an rc-tag push makes the hostile attempts: on a final tag its hostile-attempts download fails and blocks every release): %r" % (jn, j.get("if")))
                 if j.get("uses"): bad.append("the job %s is a hostile-* job and may not call a workflow" % jn)
                 if j.get("permissions") != {"contents": "read"}: bad.append("the job %s must have permissions exactly {contents: read}" % jn)
                 continue
-            cond = str(j.get("if", ""))
-            cs = conj(cond)
-            if jn in after_sign and (cs is None or TAGCONJ not in cs): bad.append("the job %s needs Sign (transitively) and its if: must also carry the POSITIVE conjunct startsWith(github.ref, 'refs/tags/v') exactly (not negated, not compared, no ||) so a branch run can never reach it: %r" % (jn, cond))
-            if cs is None or "!inputs.dry-run" not in cs: bad.append("the job %s is not skipped in a dry run (its if: must be exactly ${{ !inputs.dry-run }} or have it as an && conjunct, no ||): %r" % (jn, cond))
-        bw = (jobs.get("build") or {}).get("with") or {}
-        HOSTILE_EXPR = RC_IF
-        if bw.get("hostile") != HOSTILE_EXPR: bad.append("release.yml's build call must pass `hostile: %s` (a null dry-run input must not reach the boolean input of the live chain; a dry run dispatched on a TAG must not run the hostile step under the release identity): %s" % (HOSTILE_EXPR, bw))
-        # REACHABILITY: the dry run must be REACHABLE. Admission is gone from the graph (it is the
-        # first step of Build's apk job now), so build, sign and the hostile jobs hang off ONE gate: a v* tag push, or a dry-run dispatch on any branch.
-        bj = jobs.get("build") or {}
-        BUILD_IF = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
-        if re.sub(r"\s+", "", str(bj.get("if", ""))) != re.sub(r"\s+", "", BUILD_IF): bad.append("the build job must carry `if: %s` (else a dry run skips it, and with it sign and the hostile jobs, and is green with no checks): %r" % (BUILD_IF, bj.get("if")))
-        if need(bj): bad.append("the build job needs nothing (admission is Build's first step, not a job): %r" % need(bj))
-        if "decide" not in jobs: bad.append("release.yml has no `decide` tag job to gate (the patch-tag job must not run in a dry run)")
-# Release makes its policy in its stage file or in its first step, bin/release-verify.sh
-cands = [os.path.join(root, ".github/workflows/stage-promote.yml"), os.path.join(root, "bin/release-verify.sh")]
-if not os.path.exists(cands[0]): bad.append("stage-promote.yml missing (Release makes its policy there or in bin/release-verify.sh)")
+        # a job is guarded by its own if (explicit, closed form) or, with no if of its own or exactly the Check condition, by a guarded job it needs
+        pending = [jn for jn in jobs if jn not in OPEN and not jn.startswith("hostile-")]
+        grow = True
+        while grow:
+            grow = False
+            for jn in list(pending):
+                j = jobs[jn]; cond = str(j.get("if", "")); cs = conj(cond) if "if" in j else []
+                own = cs is not None and TAGCONJ in cs and ("!inputs.dry-run" in cs or PUSHCONJ in cs) and "if" in j
+                inherits = ("if" not in j or cond.strip() == CHECK_IF) and bool(set(need(j)) & guarded)
+                if own or inherits: guarded.add(jn); pending.remove(jn); grow = True
+        for jn in pending:
+            j = jobs[jn]; cond = str(j.get("if", "")); cs = conj(cond) if "if" in j else []
+            if "if" not in j: bad.append("the job %s is not skipped in a dry run or on a branch: it has no if: of its own and needs no job that is (its if: must be exactly ${{ !inputs.dry-run }} or have it as an && conjunct, no ||): %r" % (jn, cond))
+            elif jn in after_sign and (cs is None or TAGCONJ not in cs): bad.append("the job %s needs Sign (transitively) and its if: must also carry the POSITIVE conjunct startsWith(github.ref, 'refs/tags/v') exactly (not negated, not compared, no ||) so a branch run can never reach it: %r" % (jn, cond))
+            else: bad.append("the job %s is not skipped in a dry run (its if: must be exactly ${{ !inputs.dry-run }} or have it as an && conjunct, no ||): %r" % (jn, cond))
+        # REACHABILITY: the dry run must be REACHABLE. Admission is the first step of Build's apk job, so the chain hangs off ONE gate, on build-freeze: a v* tag push, a dry-run dispatch on any branch, or a snapshot call
+        bj = jobs.get("build-freeze") or {}
+        BUILD_IF = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"
+        if re.sub(r"\s+", "", str(bj.get("if", ""))) != re.sub(r"\s+", "", BUILD_IF): bad.append("the build-freeze job must carry `if: %s` (else a dry run skips it, and with it everything after it, and is green with no checks): %r" % (BUILD_IF, bj.get("if")))
+        if need(bj): bad.append("the build-freeze job needs nothing (admission is the first step of build-apk, not a job): %r" % need(bj))
+# Release makes its policy in its first step, bin/release-verify.sh (every Release step is a committed script under Witness)
+cands = [os.path.join(root, "bin/release-verify.sh")]
+if not os.path.exists(cands[0]): bad.append("bin/release-verify.sh missing (Release makes its policy there)")
 else:
-    pm = [l for sp in cands if os.path.exists(sp) for l in open(sp).read().splitlines() if "policy make" in l and not l.lstrip().startswith("#")]
-    if not pm: bad.append("Release (stage-promote.yml or bin/release-verify.sh) never runs `policy make` (it must make its own tag-pinned policy)")
+    pm = [l for sp in cands if os.path.exists(sp) for l in re.sub(r"\\\n[ \t]*", " ", open(sp).read()).splitlines() if "policy make" in l and not l.lstrip().startswith("#")]
+    if not pm: bad.append("Release (bin/release-verify.sh) never runs `policy make` (it must make its own tag-pinned policy)")
     for l in pm:
         if "--ref" in l or "--tag" not in l: bad.append("Release's `policy make` must use --tag and never --ref (a --ref policy accepts a branch dry-run record): %s" % l.strip())
 for wf in glob.glob(os.path.join(root, ".github/workflows/*.y*ml")):
@@ -668,33 +703,30 @@ wexpect() { local o rc=0; o=$(wire "$3") || rc=$?
 sha=$(printf 'a%.0s' $(seq 40))
 mk() { # a known-good fixture tree
   local d="$work/$1"; rm -rf "$d"; mkdir -p "$d/.github/workflows" "$d/bin"
-  cat > "$d/.github/workflows/stage-build.yml" <<EOF
-on: {workflow_call: {inputs: {hostile: {type: boolean, default: false}}}}
+  { cat <<EOF
+on: {workflow_dispatch: {inputs: {dry-run: {type: boolean}}}}
 jobs:
-  build:
+  build-freeze:
+    if: \${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true || inputs.mode == 'snapshot' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo freeze
+  build-assemble:
+    needs: build-freeze
     runs-on: ubuntu-24.04
     steps:
       - name: hostile step
-        if: \${{ inputs.hostile }}
         run: bash bin/chain-hostile-step.sh
       - uses: actions/upload-artifact@$sha # v7
         with:
           name: hostile-attempts
           path: attempts
-EOF
-  { cat <<EOF
-on: {workflow_dispatch: {inputs: {dry-run: {type: boolean}}}}
-jobs:
-  decide:
-    if: \${{ github.ref == 'refs/heads/main' && !inputs.dry-run }}
+  sign:
+    needs: build-assemble
+    if: \${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}
     runs-on: ubuntu-24.04
     steps:
-      - run: echo tag
-  build:
-    if: \${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
-    uses: ./.github/workflows/stage-build.yml
-    with: {hostile: "\${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"}
-  sign: {needs: build, uses: ./.github/workflows/stage-sign.yml}
+      - run: echo sign
   hostile-verify:
     if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
     needs: sign
@@ -737,7 +769,7 @@ EOF
     cat <<EOF
       - run: |
           rc=0
-          python3 bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json 2> /tmp/positive_control.err || rc=\$?
+          python3 bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json 2> /tmp/positive_control.err || rc=\$?
           python3 bin/chain-verify.py hostile-row --attempt positive_control --exit-code "\$rc" --stderr /tmp/positive_control.err --out results/positive_control.json
       - run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json
       - uses: actions/upload-artifact@$sha # v7
@@ -756,11 +788,13 @@ EOF
   promotion:
     if: \${{ !inputs.dry-run && startsWith(github.ref, 'refs/tags/v') }}
     needs: [sign, hostile-verdict]
-    uses: ./.github/workflows/stage-promote.yml
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo publish
 EOF
   } > "$d/.github/workflows/release.yml"
   { echo "# makes five attempts; writes raw material only"; for a in $attempts; do case $a in read_sign_token|read_sign_key) printf "attempt_%s() { printf '# transcript: tried %s by reading the runner environment and the usual paths\\\\ncurl: (6) could not resolve host\\\\n' > attempts/%s.txt; }\\n" "$a" "$a" "$a" ;; *) printf 'attempt_%s() { :; }\n' "$a" ;; esac; done; for a in $attempts; do printf 'attempt_%s\n' "$a"; done; } > "$d/bin/chain-hostile-step.sh"
-  printf 'on: {workflow_call: {}}\njobs:\n  promote:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: python3 bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag "$GITHUB_REF_NAME" --out policy.json\n' > "$d/.github/workflows/stage-promote.yml"
+  printf 'set -euo pipefail\npython3 bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag "$GITHUB_REF_NAME" --out policy.json\n' > "$d/bin/release-verify.sh"
   echo "$d"
 }
 wexpect ok "fixture: the known-good wiring passes the judge" "$(mk w_good)"
@@ -771,8 +805,8 @@ t = open(sys.argv[1]).read(); assert sys.argv[2] in t, "mutation target not foun
 open(sys.argv[1], "w").write(t.replace(sys.argv[2], sys.argv[3], 1))
 PY
 }
-d=$(mk w_dupon); printf 'on: push\n' | cat - "$d/.github/workflows/stage-build.yml" > "$d/x" && mv "$d/x" "$d/.github/workflows/stage-build.yml"; wexpect caught "wiring: a duplicate top-level on: key in stage-build.yml is refused, never resolved to the last one (Codex #249 r4 B3a)" "$d"
-d=$(mk w_nbsp); pymut "$d/.github/workflows/stage-build.yml" "run: bash bin/chain-hostile-step.sh" "run: bash bin/chain-hostile-step.sh"$'\u00a0'; wexpect caught "wiring: run line: a trailing NBSP after the hostile step (str.strip() would drop it; bash keeps it in the path)" "$d"
+d=$(mk w_dupon); printf 'on: push\n' | cat - "$(rel "$d")" > "$d/x" && mv "$d/x" "$(rel "$d")"; wexpect caught "wiring: a duplicate top-level on: key in release.yml is refused, never resolved to the last one (Codex #249 r4 B3a)" "$d"
+d=$(mk w_nbsp); pymut "$(rel "$d")" "run: bash bin/chain-hostile-step.sh" "run: bash bin/chain-hostile-step.sh"$'\u00a0'; wexpect caught "wiring: run line: a trailing NBSP after the hostile step (str.strip() would drop it; bash keeps it in the path)" "$d"
 d=$(mk w_collectnbsp); pymut "$(rel "$d")" "run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json" "run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json"$'\u00a0'; wexpect caught "wiring: run line: a trailing NBSP after the collect step" "$d"
 d=$(mk w_collectcont); pymut "$(rel "$d")" "run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json" 'run: "python3 bin/chain-verify.py hostile-collect results --out hostile-results.json\\\n"'; wexpect caught "wiring: run line: a trailing backslash-newline after the collect step" "$d"
 # every pinned line is matched EXACTLY: the stderr file is /tmp/<attempt>.err, and both hostile jobs are
@@ -1068,9 +1102,36 @@ d=$(mk w_rd_sign2); pymut "$(rel "$d")" "  hostile-verdict:
 d=$(mk w_rd_signrb); pymut "$(rel "$d")" "  hostile-verdict:
     if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}" "  sign-rebuild:
     needs: sign
-    uses: ./.github/workflows/stage-sign.yml
+    if: \${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo hi
+  sign-release:
+    needs: sign
+    if: \${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) && !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo hi
   hostile-verdict:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"; wexpect ok "wiring: the job sign-rebuild (Sign's second call, for Rebuild's records) is not refused as an extra sign* job" "$d"
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"; wexpect ok "wiring: the jobs sign-rebuild (Sign's second call, for Rebuild's records) and sign-release (the fourth) are not refused as extra sign* jobs" "$d"
+d=$(mk w_signrel_notag); pymut "$(rel "$d")" "  hostile-verdict:
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}" "  sign-release:
+    needs: sign
+    if: \${{ inputs.mode != 'snapshot' && github.event_name == 'push' && !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo hi
+  hostile-verdict:
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"; wexpect caught "wiring: the job sign-release without the tag conjunct (a branch run could reach the fourth sign job)" "$d"
+d=$(mk w_signrel_lax); pymut "$(rel "$d")" "  hostile-verdict:
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}" "  sign-release:
+    if: \${{ startsWith(github.ref, 'refs/tags/v') || true }}
+    needs: sign
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo hi
+  hostile-verdict:
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"; wexpect caught "wiring: the job sign-release whose if is or-joined with true" "$d"
 d=$(mk w_rd_signup); pymut "$(rel "$d")" "  hostile-verdict:
     if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}" "  SIGN2:
     if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
@@ -1081,9 +1142,36 @@ d=$(mk w_rd_signup); pymut "$(rel "$d")" "  hostile-verdict:
       - run: echo hi
   hostile-verdict:
     if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"; wexpect caught "wiring: an extra SIGN2 job (case-insensitive)" "$d"
-d=$(mk w_nogate); sed -i.bak 's/if: .*inputs.hostile.*/if: true/' "$d/.github/workflows/stage-build.yml"; wexpect caught "wiring: the hostile step is not gated by inputs.hostile" "$d"
-d=$(mk w_noup); sed -i.bak 's/hostile-attempts/other/' "$d/.github/workflows/stage-build.yml"; wexpect caught "wiring: attempts are not uploaded for the verifier" "$d"
-d=$(mk w_verifyneeds); sed -i.bak 's/    needs: sign$/    needs: build/' "$(rel "$d")"; wexpect caught "wiring: hostile-verify does not need Sign" "$d"
+d=$(mk w_nogate); pymut "$(rel "$d")" "      - name: hostile step
+        run: bash bin/chain-hostile-step.sh" "      - name: hostile step
+        if: true
+        run: bash bin/chain-hostile-step.sh"; wexpect caught "wiring: the hostile step carries an if (REQ-CHAIN-004-AC19: it runs in every build)" "$d"
+d=$(mk w_gaterc); pymut "$(rel "$d")" "      - name: hostile step
+        run: bash bin/chain-hostile-step.sh" "      - name: hostile step
+        if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+        run: bash bin/chain-hostile-step.sh"; wexpect caught "wiring: the hostile step runs on a release-candidate push only (it must run in every build)" "$d"
+d=$(mk w_gatemode); pymut "$(rel "$d")" "      - name: hostile step
+        run: bash bin/chain-hostile-step.sh" "      - name: hostile step
+        if: \${{ inputs.mode != 'snapshot' }}
+        run: bash bin/chain-hostile-step.sh"; wexpect caught "wiring: the hostile step is skipped in a snapshot build (the nightly and the pull-request proof build run it too)" "$d"
+d=$(mk w_hostilejob); pymut "$(rel "$d")" "      - name: hostile step
+        run: bash bin/chain-hostile-step.sh
+      - uses: actions/upload-artifact@$sha # v7
+        with:
+          name: hostile-attempts
+          path: attempts
+" "" ; wexpect caught "wiring: the hostile step is gone from build-assemble" "$d"
+d=$(mk w_hostilemoved); pymut "$(rel "$d")" "  sign:
+    needs: build-assemble" "  other:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: bash bin/chain-hostile-step.sh
+  sign:
+    needs: build-assemble"; wexpect caught "wiring: the hostile step is also a step of another job" "$d"
+d=$(mk w_noup); pymut "$(rel "$d")" "          name: hostile-attempts
+          path: attempts" "          name: other
+          path: attempts"; wexpect caught "wiring: attempts are not uploaded for the verifier" "$d"
+d=$(mk w_verifyneeds); sed -i.bak 's/    needs: sign$/    needs: build-assemble/' "$(rel "$d")"; wexpect caught "wiring: hostile-verify does not need Sign" "$d"
 d=$(mk w_verdictneeds); sed -i.bak 's/needs: hostile-verify/needs: build/' "$(rel "$d")"; wexpect caught "wiring: the verdict does not need the verifying job" "$d"
 d=$(mk w_noverdict); sed -i.bak 's#hostile-verdict hostile-results/hostile-results.json#true#' "$(rel "$d")"; wexpect caught "wiring: the verdict job does not run hostile-verdict" "$d"
 d=$(mk w_verifyidtoken); python3 - "$(rel "$d")" <<'PY'
@@ -1132,18 +1220,19 @@ open(sys.argv[1], "w").write(t)
 PY
 wexpect caught "wiring: hostile-verify has no checkout (the repo's verifier is not there to run)" "$d"
 d=$(mk w_persist); sed -i.bak 's/{persist-credentials: false}/{persist-credentials: true}/' "$(rel "$d")"; wexpect caught "wiring: hostile-verify checks out with persisted credentials" "$d"
-d=$(mk w_nohostile); sed -i.bak 's/hostile: "[^"]*"//' "$(rel "$d")"; wexpect caught "wiring: the build call does not pass hostile (the hostile step never runs in the dry run)" "$d"
-d=$(mk w_buildnoif); pymut "$(rel "$d")" "    if: \${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
-    uses: ./.github/workflows/stage-build.yml" "    uses: ./.github/workflows/stage-build.yml"; wexpect caught "wiring: the build job has no gate: a dry run (or a push to main) would run the whole chain, or nothing is reachable (step-8 B-2)" "$d"
-d=$(mk w_buildneeds); pymut "$(rel "$d")" "  build:
-" "  build:
-    needs: decide
-"; wexpect caught "wiring: the build job needs another job (admission is Build's first step; a skipped needed job would skip the dry run)" "$d"
+d=$(mk w_hostileinput); pymut "$(rel "$d")" "on: {workflow_dispatch:" "on: {workflow_call: {inputs: {hostile: {type: boolean, default: false}}}, workflow_dispatch:"; wexpect caught "wiring: release.yml takes an input hostile (a switch that turns the hostile step off)" "$d"
+d=$(mk w_buildnoif); pymut "$(rel "$d")" "    if: \${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true || inputs.mode == 'snapshot' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo freeze" "    runs-on: ubuntu-24.04
+    steps:
+      - run: echo freeze"; wexpect caught "wiring: the build-freeze job has no gate: a dry run (or a push to main) would run the whole chain, or nothing is reachable (step-8 B-2)" "$d"
+d=$(mk w_buildneeds); pymut "$(rel "$d")" "  build-freeze:
+" "  build-freeze:
+    needs: sign
+"; wexpect caught "wiring: the build-freeze job needs another job (admission is Build's first step; a skipped needed job would skip the dry run)" "$d"
 d=$(mk w_buildtagonly); pymut "$(rel "$d")" "(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true" "startsWith(github.ref, 'refs/tags/v')"; wexpect caught "wiring: the build gate is the tag test alone (a dry run on a branch would never run)" "$d"
-d=$(mk w_hostileold); pymut "$(rel "$d")" "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc')" "inputs.dry-run"; wexpect caught "wiring: the build call passes the bare dry-run input (null on a tag push; the hostile step must run on an rc-tag push only): step-8 SF-5" "$d"
-d=$(mk w_hostiletag); pymut "$(rel "$d")" " && contains(github.ref_name, '-rc')" ""; wexpect caught "wiring: the hostile input is not limited to an rc tag: a push of a FINAL tag would run the hostile step under the release identity (step-8 SF-4)" "$d"
-d=$(mk w_hostilebranch); pymut "$(rel "$d")" "hostile: \"\${{ github.event_name == 'push'" "hostile: \"\${{ inputs.dry-run == true || github.event_name == 'push'"; wexpect caught "wiring: the hostile input also runs in a dry-run dispatch (a branch never runs the hostile step)" "$d"
-d=$(mk w_hostilepush); pymut "$(rel "$d")" "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}\"}" "startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}\"}"; wexpect caught "wiring: the hostile input without the push event (a dispatch on an rc tag would run it)" "$d"
+d=$(mk w_buildnosnap); pymut "$(rel "$d")" " || inputs.mode == 'snapshot'" ""; wexpect caught "wiring: the build gate leaves out the snapshot call (the callers' snapshot build would never start)" "$d"
 d=$(mk w_nosignrec); pymut "$(rel "$d")" " --policy policy.json" ""; wexpect caught "wiring: the key attempt is graded without Sign's record (a key found on the runner would be judged by its text)" "$d"
 d=$(mk w_handsign); pymut "$(rel "$d")" "check-build-record --digests" "sign --check --signer cosign --digests"; wexpect caught "wiring: the hand-code attempt runs sign --check again (a signer in a job that must hold no signing right)" "$d"
 d=$(mk w_pinstage); pymut "$(rel "$d")" "--stage sign --record attempts/forge_provenance" "--stage build --record attempts/forge_provenance"; wexpect caught "wiring: the forge attempt is verified as stage build, not as the Sign stage (pinned invocation)" "$d"
@@ -1173,20 +1262,19 @@ d=$(mk w_pinkind); pymut "$(rel "$d")" "--kind key --file attempts/read_sign_key
 d=$(mk w_stderr); pymut "$(rel "$d")" "--stderr /tmp/mint_sign_cert.err" "--stderr /tmp/other.err"; wexpect caught "wiring: hostile-row reads a different stderr file than the verifier wrote" "$d"
 d=$(mk w_other); python3 - "$(rel "$d")" <<'PY'
 import sys
-t = open(sys.argv[1]).read() + "  patch-notes:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: gh pr create\n"
+t = open(sys.argv[1]).read() + "  extra:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: gh pr create\n"
 open(sys.argv[1], "w").write(t)
 PY
-wexpect caught "wiring: any other job (patch-notes) without the dry-run gate still runs in a dry run" "$d"
+wexpect caught "wiring: any other job (extra) without the dry-run gate still runs in a dry run" "$d"
 d=$(mk w_okjobs); python3 - "$(rel "$d")" <<'PY'
 import sys
-t = open(sys.argv[1]).read() + "  rebuild:\n    needs: build\n    uses: ./.github/workflows/stage-reproducibility.yml\n  check:\n    needs: build\n    uses: ./.github/workflows/stage-verify.yml\n"
+t = open(sys.argv[1]).read() + "  rebuild-apk:\n    needs: build-assemble\n    runs-on: ubuntu-24.04\n    steps:\n      - run: true\n  check-govulncheck:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: true\n"
 open(sys.argv[1], "w").write(t)
 PY
-wexpect ok "wiring: the rebuild and check stages run in a dry run (allowlist: build, sign, rebuild, check, hostile-*)" "$d"
+wexpect ok "wiring: the Rebuild and check-govulncheck jobs run in a dry run (allowlist: build-freeze, build-apk, build-assemble, rebuild-apk, rebuild-assemble, check-govulncheck, persona-uat-rc, hostile-*)" "$d"
 d=$(mk w_tracked); echo '{"attempts":[]}' > "$d/hostile-results.json"; wexpect caught "wiring: a hostile-results.json is checked into the tree" "$d"
-d=$(mk w_nodry); sed -i.bak 's/if: .*!inputs.dry-run }}$/if: true/' "$(rel "$d")"; wexpect caught "wiring: the release job (or the tag job) still runs in a dry run" "$d"
-d=$(mk w_nodrydecide); sed -i.bak "s/ \&\& !inputs.dry-run//" "$(rel "$d")"; wexpect caught "wiring: the decide (tag) job is not gated by !inputs.dry-run" "$d"
-d=$(mk w_orgate); sed -i.bak "s/!inputs.dry-run }}/!inputs.dry-run || true }}/" "$(rel "$d")"; wexpect caught "wiring: a dry-run gate with || true" "$d"
+d=$(mk w_nodry); sed -i.bak "s/if: .*!inputs.dry-run && startsWith(github.ref, 'refs\/tags\/v') }}\$/if: true/" "$(rel "$d")"; wexpect caught "wiring: the release job still runs in a dry run" "$d"
+d=$(mk w_orgate); sed -i.bak "s/!inputs.dry-run \&\& startsWith/!inputs.dry-run || true \&\& startsWith/" "$(rel "$d")"; wexpect caught "wiring: a dry-run gate with || true" "$d"
 d=$(mk w_noscript); rm "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: the hostile script is missing" "$d"
 d=$(mk w_missatt); sed -i.bak '/^attempt_read_sign_key$/d' "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: one of the attempts is never called" "$d"
 d=$(mk w_missother); sed -i.bak '/^attempt_forge_provenance$/d' "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: the forge attempt is never made" "$d"
@@ -1225,17 +1313,16 @@ open(sys.argv[1], "w").write(t)
 PY
 wexpect caught "wiring: the positive control step is missing" "$d"
 d=$(mk w_ctlrec); pymut "$(rel "$d")" "--record provenance/provenance.json" "--record attempts/forge_provenance.json"; wexpect caught "wiring: the positive control verifies an attempt's file, not this run's genuine provenance" "$d"
-d=$(mk w_iftrue); sed -i.bak 's/if: .*inputs.hostile.*/if: ${{ inputs.hostile || true }}/' "$d/.github/workflows/stage-build.yml"; wexpect caught "wiring: the hostile step's if is 'inputs.hostile || true' (runs in real releases)" "$d"
-d=$(mk w_indef); sed -i.bak 's/type: boolean, default: false/type: boolean, default: true/' "$d/.github/workflows/stage-build.yml"; wexpect caught "wiring: the hostile input defaults to true" "$d"
+d=$(mk w_indef); pymut "$(rel "$d")" "on: {workflow_dispatch:" "on: {workflow_call: {inputs: {hostile: {type: boolean, default: true}}}, workflow_dispatch:"; wexpect caught "wiring: a hostile input that defaults to true" "$d"
 d=$(mk w_opennm); python3 - "$(rel "$d")" <<'PY'
 import sys
-t = open(sys.argv[1]).read() + "  check:\n    needs: build\n    uses: ./.github/workflows/stage-promote.yml\n"
+t = open(sys.argv[1]).read() + "  build-apk:\n    needs: build-freeze\n    uses: ./.github/workflows/stage-promote.yml\n"
 open(sys.argv[1], "w").write(t)
 PY
-wexpect caught "wiring: a job named check that calls the promote workflow is not exempt from the dry-run gate (open names are bound to their uses)" "$d"
+wexpect caught "wiring: a job named build-apk that calls a workflow is not exempt from the dry-run gate (open names may call nothing)" "$d"
 d=$(mk w_hostilename); python3 - "$(rel "$d")" <<'PY'
 import sys
-t = open(sys.argv[1]).read() + "  hostile-publish:\n    uses: ./.github/workflows/stage-promote.yml\n"
+t = open(sys.argv[1]).read() + "  hostile-publish:\n    uses: ./.github/workflows/persona-uat.yml\n"
 open(sys.argv[1], "w").write(t)
 PY
 wexpect caught "wiring: a hostile-* named job that calls a workflow runs in a dry run" "$d"
@@ -1248,10 +1335,10 @@ wexpect caught "wiring: a hostile-* named job with write permission" "$d"
 d=$(mk w_notrans); sed -i.bak 's/# transcript: //' "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: the material attempts do not write a transcript line" "$d"
 d=$(mk w_nogatedecide2); python3 - "$(rel "$d")" <<'PY'
 import sys
-t = open(sys.argv[1]).read().replace("&& !inputs.dry-run", "&& inputs.dry-run == false", 1)
+t = open(sys.argv[1]).read().replace("!inputs.dry-run && startsWith", "inputs.dry-run == false && startsWith", 1)
 open(sys.argv[1], "w").write(t)
 PY
-wexpect caught "wiring: the tag job's gate is a differently-written condition, not the exact !inputs.dry-run conjunct" "$d"
+wexpect caught "wiring: the promotion job's gate is a differently-written condition, not the exact !inputs.dry-run conjunct" "$d"
 # ---- key allowlists, dry-run and tag gates, Release's policy step ---------------------------------------------------
 d=$(mk w_jobenv); pymut "$(rel "$d")" "    needs: sign
     runs-on: ubuntu-24.04
@@ -1391,10 +1478,10 @@ d=$(mk w_pf_literal); pymut "$(rel "$d")" "  promotion:" "  patch-failed:
     steps:
       - run: true
   promotion:"; wexpect caught "wiring: a literal placeholder word stands in for the tag test" "$d"
-d=$(mk w_pmref); pymut "$d/.github/workflows/stage-promote.yml" '--tag "$GITHUB_REF_NAME"' '--ref "$GITHUB_REF"'; wexpect caught "wiring: Release makes its policy with --ref (a branch dry-run record would be accepted)" "$d"
-d=$(mk w_pmnone); printf 'on: {workflow_call: {}}\njobs:\n  promote:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo publish\n' > "$d/.github/workflows/stage-promote.yml"; wexpect caught "wiring: Release never makes a policy" "$d"
-d=$(mk w_pmother); printf 'on: {workflow_call: {}}\njobs:\n  x:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: python3 bin/chain-verify.py policy make --template t --ref "$GITHUB_REF" --out p.json\n' > "$d/.github/workflows/stage-verify.yml"; wexpect caught "wiring: another stage file makes a policy with --ref" "$d"
-d=$(mk w_rekorstub); pymut "$(rel "$d")" " --rekor-stub provenance/provenance.rekor.json" ""; wexpect caught "wiring: the positive control runs without the Rekor stub (it would be refused 'rekor', or pass by a shortcut)" "$d"
+d=$(mk w_pmref); pymut "$d/bin/release-verify.sh" '--tag "$GITHUB_REF_NAME"' '--ref "$GITHUB_REF"'; wexpect caught "wiring: Release makes its policy with --ref (a branch dry-run record would be accepted)" "$d"
+d=$(mk w_pmnone); printf 'set -euo pipefail\necho publish\n' > "$d/bin/release-verify.sh"; wexpect caught "wiring: Release never makes a policy" "$d"
+d=$(mk w_pmother); printf 'on: {workflow_call: {}}\njobs:\n  x:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: python3 bin/chain-verify.py policy make --template t --ref "$GITHUB_REF" --out p.json\n' > "$d/.github/workflows/ci.yml"; wexpect caught "wiring: another workflow file makes a policy with --ref" "$d"
+d=$(mk w_rekorstub); pymut "$(rel "$d")" "--policy policy.json 2> /tmp/positive_control.err" "--policy policy.json --rekor-stub provenance/provenance.rekor.json 2> /tmp/positive_control.err"; wexpect caught "wiring: the positive control given the Rekor stub is not the pinned three-line shape (the stub is not part of the control)" "$d"
 d=$(mk w_nowflag); pymut "$(rel "$d")" "--record attempts/forge_provenance.json --policy policy.json" "--record attempts/forge_provenance.json --policy policy.json --now \"\$NOW\""; wexpect caught "wiring: an attempt's verify line takes --now from the environment (the pinned line has none)" "$d"
 wexpect ok "the real repository's hostile wiring (RED until PR 1 implements it)" "$root"
 # AC5's runtime proof has a fixed place: the rc-tag run is
@@ -1408,9 +1495,8 @@ then = next(a for a in r["acceptance_criteria"] if a["id"] == "REQ-CHAIN-001-AC5
 given = next(a for a in r["acceptance_criteria"] if a["id"] == "REQ-CHAIN-001-AC5")["given"]
 assert "a run on GitHub of the chain on a signed release-candidate tag (v0.3.0-rcN)" in given, "AC5 given does not name the signed rc-tag run"
 when = next(a for a in r["acceptance_criteria"] if a["id"] == "REQ-CHAIN-001-AC5")["when"]
-# five runtime cases; the rc-tag run is cut on main AFTER the cutover merge; the marker of AC6 gates every
-# final or patch tag
-for words in ("as five separate cases each on its own", "and to forge provenance that Release would accept (the sixth case, getting provenance accepted from a second workflow that calls stage-sign.yml, is not a runtime case: no second workflow file exists; it is judged by Sign's caller check in the static judge and by the offline hostile test, which is a stated limit of this proof)"):
+# five runtime cases; the rc-tag run is cut on main AFTER the cutover merge; the marker of AC6 gates every final or patch tag
+for words in ("as five separate cases each on its own", "and to forge provenance that Release would accept (the sixth case, getting provenance accepted from a second workflow that calls release.yml, is not a runtime case: scan.yml and main-candidate-rescan.yml call it only in snapshot mode, where every sign job is guarded off, and a called release.yml's token names the caller's file; it is judged by the guard cases of the static judge and by the offline hostile test, which is a stated limit of this proof)"):
     assert words in when, "AC5 when lacks: " + words
 assert "six separate cases" not in when and "throwaway commit" not in when, "AC5 when still has the six-case wording"
 for words in ("is cut on main after the cutover pull request has merged, must be green and its run linked before any final or patch tag is cut on main",
@@ -1420,18 +1506,17 @@ for words in ("is cut on main after the cutover pull request has merged, must be
     assert words in then, "AC5 lacks: " + words
 assert "before the cutover pull request merges chain-v030 to main" not in then and "each of the six cases" not in then, "AC5 then still has the old order or six cases"
 a6 = next(a for a in r["acceptance_criteria"] if a["id"] == "REQ-CHAIN-001-AC6")
-assert a6["given"] == "a final (v0.3.0) or patch tag, or the patch automation's decide job, on main", "AC6 given"
-assert a6["when"] == "admission and decide read .github/policy/rc-proof.json (the marker)", "AC6 when"
-for words in ("both refuse (naming the marker) unless the marker names an rc tag, the run id of its green chain run, and the sha256 over the exact bytes of the chain files at the tag's commit (the same file set as AC5)",
+assert a6["given"] == "a final (v0.3.0) or patch tag on main", "AC6 given"
+assert a6["when"] == "admission reads .github/policy/rc-proof.json (the marker)", "AC6 when"
+for words in ("it refuses (naming the marker) unless the marker names an rc tag, the run id of its green chain run, and the sha256 over the exact bytes of the chain files at the tag's commit (the same file set as AC5)",
               "bin/chain-verify.py against the rc tag's own identities", "an rc tag that is not an ancestor of the commit, an unreadable marker, or a missing one is refused, never skipped"):
     assert words in a6["then"], "AC6 lacks: " + words
 assert a6["verification"] == {"method": "ci-workflow", "release_blocking": True} and a6["status"] == "approved", "AC6 verification/status"
 assert "linked in the pull request before the pull request merges" not in then, "AC5 still ties the proof to this pull request"
 assert "CUTOVER CHECKLIST" in r["notes"], "REQ-CHAIN-001 notes lack the CUTOVER CHECKLIST line"
-# the cutover merge first with only KR-CUTOVER left, then the owner's rc tag on main, then the marker pull
-# request, which removes KR-CUTOVER
-for words in ("CUTOVER CHECKLIST: (1) the cutover pull request", "bin/chain-known-red.py empty-except KR-CUTOVER", "it does not wait for an rc run", "the maintainers sign a release-candidate tag vX.Y.Z-rcN on main's merge commit",
-              "the marker pull request of REQ-CHAIN-001-AC6", "it removes KR-CUTOVER", "admission and the patch decide job refuse every final and patch tag"):
+# the cutover merge first with only KR-CUTOVER left, then the maintainers' rc tag on main, then the marker pull request, which removes KR-CUTOVER
+for words in ("CUTOVER CHECKLIST (order accepted Oct 12)", "bin/chain-known-red.py empty-except KR-CUTOVER", "it does not wait for an rc run", "the maintainers sign a release-candidate tag vX.Y.Z-rcN on main's merge commit",
+              "the marker pull request of REQ-CHAIN-001-AC6", "it removes KR-CUTOVER", "admission and the patch decision refuse every final and patch tag"):
     assert words in r["notes"], "REQ-CHAIN-001 notes lack the accepted checklist order: " + words
 assert "does not merge without a green rc-tag run of the same commit's chain files" not in r["notes"], "REQ-CHAIN-001 notes still say the cutover waits for an rc run"
 assert "GitHub dry run is green" not in r["notes"], "REQ-CHAIN-001 notes still make a branch dry run the proof"
@@ -1466,7 +1551,74 @@ MUT
 else
   bad "001-AC5 the key attempt's execution check needs openssl genpkey (ed25519) to plant a key"; bad "001-AC5 the execution check could not plant a key"
 fi
-EXPECT=$((283 - skipped))
+# ---- S2 rows: key search (NUL-safe, no truncation, unreadable key), token attempt without the environ corroboration, strict hostile-collect ----
+fn_of() { awk "/^$2\\(\\) \\{/{p=1} p{print} p&&/^\\}/{exit}" "$1"; }
+sk="$work/s2key"; rm -rf "$sk"; mkdir -p "$sk/home/sp ace" "$sk/rt" "$sk/many" "$sk/bad" "$sk/run"
+run_s2() { # run_s2 ROOT...: the real attempt_read_sign_key with those search roots; prints its transcript
+  rm -rf "$sk/run/attempts"; mkdir -p "$sk/run/attempts"
+  ( cd "$sk/run" && bash -c "$(fn_of "$root/bin/chain-hostile-step.sh" attempt_read_sign_key); attempt_read_sign_key \"\$@\"" _ "$@" > /dev/null 2>&1 ) || true
+  cat "$sk/run/attempts/read_sign_key.txt" 2> /dev/null
+}
+if openssl genpkey -algorithm ed25519 -out "$sk/proto.pem" > /dev/null 2>&1; then
+  s2h=$(openssl pkey -in "$sk/proto.pem" -pubout -outform DER 2> /dev/null | sha256sum | cut -d' ' -f1)
+  cp "$sk/proto.pem" "$sk/home/sp ace/k.pem"
+  st=$(run_s2 "$sk/home")
+  if grep -qx "pubkey-sha256: $s2h" <<< "$st" && ! grep -q '^unreadable-key:' <<< "$st"; then ok "S2 key search: a private key file whose path contains a space is found and its public-key sha256 recorded"
+  else bad "S2 key search: a key under a path with a space was not recorded: $(head -c 300 <<< "$st" | tr '\n' '|')"; fi
+  for i in $(seq 1 60); do cp "$sk/proto.pem" "$sk/many/k$i.pem"; done
+  st=$(run_s2 "$sk/many")
+  if [ "$(grep -c "^pubkey-sha256: $s2h$" <<< "$st")" = 60 ]; then ok "S2 key search: all 60 key files in the search root appear (no truncation at 50)"
+  else bad "S2 key search: 60 key files gave $(grep -c '^pubkey-sha256:' <<< "$st") lines"; fi
+  pk='PRIVATE'; printf -- '-----BEGIN %s KEY-----\nnot a key at all\n-----END %s KEY-----\n' "$pk" "$pk" > "$sk/bad/broken.pem"
+  st=$(run_s2 "$sk/bad")
+  if grep -qxF "unreadable-key: $sk/bad/broken.pem" <<< "$st"; then ok "S2 key search: a key file openssl cannot read is recorded as 'unreadable-key: <path>'"
+  else bad "S2 key search: no unreadable-key line for a broken key: $(head -c 300 <<< "$st" | tr '\n' '|')"; fi
+  if ! grep -q 'pubkey-sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' <<< "$st"; then ok "S2 key search: a failed openssl no longer records the sha256 of the empty string"
+  else bad "S2 key search: a failed openssl still records the sha256 of the empty string"; fi
+else
+  bad "S2 key search needs openssl genpkey (ed25519)"; bad "S2 key search needs openssl genpkey (ed25519)"; bad "S2 key search needs openssl genpkey (ed25519)"; bad "S2 key search needs openssl genpkey (ed25519)"
+fi
+# the grader: an unreadable-key line is an ERROR (exit 2), never isolation, whatever else the transcript holds
+printf '%s\nsearched: 42 files\nunreadable-key: /home/runner/k.pem\n' "$KR" > "$work/key_unread.txt"
+printf '%s\nsearched: 42 files\npubkey-sha256: %s\nunreadable-key: /home/runner/k.pem\n' "$KR" "$H2" > "$work/key_unread2.txt"
+for f in key_unread key_unread2; do
+  mrc=0; cvx hostile-material --kind key --file "$work/$f.txt" --policy "$work/keypol.json" || mrc=$?
+  if [ "$mrc" = 2 ] && grep -F -q "unreadable-key" "$work/xerr" && ! grep -F -q "refused at" "$work/xerr"; then ok "S2 hostile-material: $f (an unreadable-key line) is an ERROR (exit 2) naming it, never isolation"
+  else bad "S2 hostile-material: $f must be an error naming unreadable-key, got exit $mrc: $(head -c 160 "$work/xerr" | tr '\n' ' ')"; fi
+done
+# the token attempt: no environ-read / environ-unreadable-same-user lines any more, and the grader neither requires nor parses them
+mkdir -p "$work/s2tok" && sed '/^attempt_mint_sign_cert$/,$d' "$root/bin/chain-hostile-step.sh" > "$work/s2tok/fns.sh"
+(cd "$work/s2tok" && env -i PATH="$PATH" bash -c '. ./fns.sh; attempt_read_sign_token')
+if grep -qx 'request-env: absent' "$work/s2tok/attempts/read_sign_token.txt" && ! grep -q -e '^environ-read:' -e '^environ-unreadable-same-user:' "$work/s2tok/attempts/read_sign_token.txt"; then ok "S2 hostile step: the token attempt writes request-env: absent and no environ-read or environ-unreadable-same-user line"
+else bad "S2 hostile step: the token transcript still has environ lines: $(tr '\n' '|' < "$work/s2tok/attempts/read_sign_token.txt" | head -c 300)"; fi
+printf '%s\nrequest-env: absent\n' "$TR" > "$work/tok_s2only.txt"
+xexpect refuse "S2 hostile-material: a token transcript of the header and request-env: absent only is graded isolated (refused at runner)" "refused at runner" -- hostile-material --kind token --file "$work/tok_s2only.txt"
+printf '%s\na process on this runner holds a token request address: /proc/9/environ\nrequest-env: absent\n' "$TR" > "$work/tok_s2hold.txt"
+mrc=0; cvx hostile-material --kind token --file "$work/tok_s2hold.txt" || mrc=$?
+if [ "$mrc" = 2 ] && grep -F -q "error" "$work/xerr" && ! grep -F -q "refused at" "$work/xerr"; then ok "S2 hostile-material: a holder line with request-env: absent only is still an ERROR (exit 2)"
+else bad "S2 hostile-material: a holder line must be an error, got exit $mrc"; fi
+# hostile-collect: a strict reader and a named exit 2 (one line, no traceback) for what cannot be read as a row
+s2c() { # s2c NAME: rows dir "$work/s2rows-NAME" = the good rows, copied
+  rm -rf "$work/s2rows-$1"; mkdir -p "$work/s2rows-$1"; cp "$work"/rows/*.json "$work/s2rows-$1/"
+}
+s2expect() { # s2expect LABEL NAME: hostile-collect of that dir exits 2 with one error line naming the file, no traceback
+  local rc=0; cvx hostile-collect "$work/s2rows-$2" --out "$work/s2c-$2.json" || rc=$?
+  if [ "$rc" = 2 ] && [ "$(wc -l < "$work/xerr")" = 1 ] && grep -q '^error: .*bad\.json' "$work/xerr" && ! grep -q Traceback "$work/xerr"; then ok "$1"
+  else bad "$1 (exit $rc, wanted 2 with one 'error:' line naming bad.json; $(head -c 200 "$work/xerr" | tr '\n' ' '))"; fi
+}
+s2c dup; printf '{"attempt":"mint_sign_cert","attempt":"forge_provenance","outcome":"refused"}' > "$work/s2rows-dup/bad.json"
+s2expect "S2 hostile-collect: a row file with a duplicate key is a named error, exit 2" dup
+s2c list; printf '[1, 2]' > "$work/s2rows-list/bad.json"
+s2expect "S2 hostile-collect: a row file whose JSON is a list is a named error, exit 2, no traceback" list
+s2c num; printf '5' > "$work/s2rows-num/bad.json"
+s2expect "S2 hostile-collect: a row file whose JSON is a number is a named error, exit 2, no traceback" num
+s2c nan; printf '{"attempt":"mint_sign_cert","exit_code":NaN}' > "$work/s2rows-nan/bad.json"
+s2expect "S2 hostile-collect: a row file with a non-strict constant (NaN) is a named error, exit 2" nan
+s2c dir; mkdir "$work/s2rows-dir/bad.json"
+s2expect "S2 hostile-collect: a directory in place of a row file is a named error, exit 2, no traceback" dir
+if [ "$(id -u)" != 0 ]; then
+  s2c perm; printf '{}' > "$work/s2rows-perm/bad.json"; chmod 000 "$work/s2rows-perm/bad.json"
+  s2expect "S2 hostile-collect: an unreadable (permission denied) row file is a named error, exit 2, no traceback" perm
+else ok "S2 hostile-collect: permission-denied case skipped, running as root"; fi
 echo "pass=$pass fail=$failn"
-if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

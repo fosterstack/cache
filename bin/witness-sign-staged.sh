@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# bin/witness-sign-staged.sh STAGED SIGNED  --  Sign's signing step for the records of the jobs that hold no identity token: Build's and Rebuild's (REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC4) and Check's four steps (REQ-REL-011-AC1).
+# bin/witness-sign-staged.sh STAGED SIGNED  --  Sign's signing step for the records of the jobs that hold no identity token: Build's and Rebuild's (REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC4) and Check's three steps on each runner (REQ-REL-011-AC1).
 # the records step of the verifier (its sign-records subcommand) has already checked every local record against the artifacts Sign received and staged, under STAGED/<record-dir>/, each
 # record's payload bytes (STEP-collection.payload) and its data files; it printed nothing to sign on any refusal; STAGED/plan.txt is that printed list (one line per record: staged payload path, TAB, signed record path). This helper signs exactly the payloads on that list, and refuses before any token request when the staged tree holds anything else or a PLAN line is not of the fixed form. It signs each payload
 # with the release KMS key (handoff 0713) by the one signing function (bin/chain-verify.py sign-record: the key named by RELEASE_KMS_KEY_REF, checked there, signs through the cloud key service (KMS Sign), the Rekor
 # entry kept beside the record, one try and six retries while Rekor does not answer). Each call runs through bin/with-aws-token.sh, Sign's one copy of the token fetch: a fresh identity token
 # (audience sts.amazonaws.com), fetched immediately before the record is signed, goes to a file of mode 0600 in a private directory under RUNNER_TEMP, outside the repository tree;
-# AWS_WEB_IDENTITY_TOKEN_FILE points the AWS SDK at it for that one call (AWS_ROLE_ARN and AWS_REGION come from the job's step environment), nothing goes to GITHUB_ENV, and the directory is
+# AWS_WEB_IDENTITY_TOKEN_FILE points the AWS SDK at it for that one call (AWS_ROLE_ARN and AWS_REGION come from the job's step environment), nothing goes to the runner's environment file, and the directory is
 # removed the moment the call ends, so no token is on disk while the signed record is checked or the next record is signed. The request variables stay with that script, never exported. Each signed record goes into SIGNED/<record-dir>/STEP-collection.json (its Rekor entries in STEP-collection.rekor.json) with the data files copied unchanged, and
 # the self-check `bin/chain-verify.py verify` then runs on every signed record (the release key, the policy made for GITHUB_REF), so a signing that
 # did not produce a record signed by the manifest key stops the job. It builds nothing and runs no stage script.
@@ -14,8 +14,13 @@ staged="$1"
 signed="$2"
 plan="$staged/plan.txt"
 [ -f "$plan" ] && [ ! -L "$plan" ] || { echo "witness-sign-staged: no plan.txt in $staged" >&2; exit 1; }
-n=0
-while read -r line; do
+mapfile -t plan_lines < "$plan"   # read once: what is checked below is what is signed
+count=${#plan_lines[@]}
+[ "$count" -gt 0 ] || { echo "witness-sign-staged: the plan is empty" >&2; exit 1; }
+plan_payloads=$(printf '%s\n' "${plan_lines[@]}" | cut -f1)
+plan_dirs=
+payloads=() finals=()
+for line in "${plan_lines[@]}"; do
   payload=$(printf '%s' "$line" | cut -f1)
   final=$(printf '%s' "$line" | cut -f2 -s)
   extra=$(printf '%s' "$line" | cut -f3- -s)
@@ -24,29 +29,29 @@ while read -r line; do
   name=${rest%%/*}
   file=${rest#*/}
   step=${file%-collection.payload}
-  printf '%s' "$name" | grep -Eq '^witness-[A-Za-z0-9.-]+$' || { echo "witness-sign-staged: bad record directory name in the plan: $payload" >&2; exit 1; }
+  [[ "$name" =~ ^witness-[A-Za-z0-9.-]+$ ]] || { echo "witness-sign-staged: bad record directory name in the plan: $payload" >&2; exit 1; }
   case "$file" in *[/]*) echo "witness-sign-staged: plan line is not a staged payload: $payload" >&2; exit 1 ;; esac
-  case "$step" in apk|build|rapk|rebuild|scanners|acceptance|runtime|arm64) ;; *) echo "witness-sign-staged: unknown step in the plan: $payload" >&2; exit 1 ;; esac
+  case "$step" in apk|build|rapk|rebuild|scanners|acceptance|runtime) ;; *) echo "witness-sign-staged: unknown step in the plan: $payload" >&2; exit 1 ;; esac
   if [ -n "$extra" ] || [ "$final" != "$signed/$name/$step-collection.json" ] || [ ! -f "$payload" ] || [ -L "$payload" ]; then
     echo "witness-sign-staged: plan line does not match the staged tree: $payload" >&2; exit 1
   fi
-  n=$((n + 1))
-done < "$plan"
-[ "$n" -gt 0 ] || { echo "witness-sign-staged: the plan is empty" >&2; exit 1; }
-uniq_n=$(cut -f1 "$plan" | sort -u | wc -l | tr -d ' ')
-[ "$uniq_n" -eq "$n" ] || { echo "witness-sign-staged: the plan lists a payload twice" >&2; exit 1; }
+  payloads+=("$payload") finals+=("$final")
+  plan_dirs+="${payload%/*}"$'\n'
+done
+dup=$(printf '%s\n' "$plan_payloads" | sort | uniq -d)
+[ -z "$dup" ] || { echo "witness-sign-staged: the plan lists a payload twice" >&2; exit 1; }
 seen=0
 dirs=0
 for d in "$staged"/*; do
   [ "$d" = "$plan" ] && continue
   [ -d "$d" ] && [ ! -L "$d" ] || { echo "witness-sign-staged: staged tree holds a non-directory: $d" >&2; exit 1; }
-  cut -f1 "$plan" | grep -Fq -- "$d/" || { echo "witness-sign-staged: staged directory not on the plan: $d" >&2; exit 1; }
+  grep -Fxq -- "$d" <<< "$plan_dirs" || { echo "witness-sign-staged: staged directory not on the plan: $d" >&2; exit 1; }
   dirs=$((dirs + 1))
   files=0
   for f in "$d"/*; do
     [ -f "$f" ] && [ ! -L "$f" ] || { echo "witness-sign-staged: staged tree holds a non-file: $f" >&2; exit 1; }
     files=$((files + 1))
-    case "$f" in *.payload) cut -f1 "$plan" | grep -Fxq -- "$f" || { echo "witness-sign-staged: staged payload not on the plan: $f" >&2; exit 1; }; seen=$((seen + 1)) ;; esac
+    case "$f" in *.payload) grep -Fxq -- "$f" <<< "$plan_payloads" || { echo "witness-sign-staged: staged payload not on the plan: $f" >&2; exit 1; }; seen=$((seen + 1)) ;; esac
   done
   listed=$(ls -A "$d" | wc -l | tr -d ' ')
   [ "$listed" -eq "$files" ] || { echo "witness-sign-staged: staged directory holds a hidden entry: $d" >&2; exit 1; }
@@ -54,7 +59,7 @@ done
 top=$(ls -A "$staged" | wc -l | tr -d ' ')
 want=$((dirs + 1))
 [ "$top" -eq "$want" ] || { echo "witness-sign-staged: the staged root holds an entry that is neither a planned directory nor plan.txt" >&2; exit 1; }
-[ "$seen" -eq "$n" ] || { echo "witness-sign-staged: the plan names a payload the staged tree lacks" >&2; exit 1; }
+[ "$seen" -eq "$count" ] || { echo "witness-sign-staged: the plan names a payload the staged tree lacks" >&2; exit 1; }
 # the AWS role, region and key reference come from the job's step environment; a job that lacks one stops here, before any token is asked for
 : "${AWS_ROLE_ARN:?witness-sign-staged: AWS_ROLE_ARN is missing}"
 : "${AWS_REGION:?witness-sign-staged: AWS_REGION is missing}"
@@ -63,9 +68,8 @@ umask 077
 req_tok=$ACTIONS_ID_TOKEN_REQUEST_TOKEN req_url=$ACTIONS_ID_TOKEN_REQUEST_URL
 unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL
 python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --ref "$GITHUB_REF" --out policy.json
-while read -r line; do
-  payload=$(printf '%s' "$line" | cut -f1)
-  final=$(printf '%s' "$line" | cut -f2 -s)
+for i in "${!payloads[@]}"; do
+  payload=${payloads[$i]} final=${finals[$i]}
   dir=$(dirname "$payload")
   name=$(basename "$dir")
   base=$(basename "$payload" .payload)
@@ -73,6 +77,6 @@ while read -r line; do
   mkdir -p "$signed/$name"
   for f in "$dir"/*; do case "$f" in *.payload) ;; *) cat "$f" > "$signed/$name/$(basename "$f")" ;; esac; done
   ACTIONS_ID_TOKEN_REQUEST_TOKEN=$req_tok ACTIONS_ID_TOKEN_REQUEST_URL=$req_url bash bin/with-aws-token.sh sign-record --payload "$payload" --out "$final" --template .github/policy/release-policy.template.json
-  case "$step" in apk|build) stage=build ;; rapk|rebuild) stage=rebuild ;; scanners|acceptance|runtime|arm64) stage=check ;; *) echo "witness-sign-staged: unknown step $step" >&2; exit 1 ;; esac
+  case "$step" in apk|build) stage=build ;; rapk|rebuild) stage=rebuild ;; scanners|acceptance|runtime) stage=check ;; *) echo "witness-sign-staged: unknown step $step" >&2; exit 1 ;; esac
   python3 -I -B bin/chain-verify.py verify --policy policy.json --stage "$stage" --record "$final"
-done < "$plan"
+done

@@ -58,7 +58,7 @@
 #       is never run through docker by the driver. The sandbox directories are mode 0777 (the tool images run as other non-root uids and must be
 #       able to create files); the docs files stay 0644 (read-only for others).
 #   (3) the answer's optional `commands` list is where the driver derives each report's single line `Hosts named in its commands (read from the command text only; what was contacted is under 'Hosts observed on the network'): a, b`
-#       (or `none`). CLAIM, narrowed: "hosts NAMED in the persona's commands" (URLs, and the host argument of curl/wget/kubectl --server style
+#       (or 'none'). CLAIM, narrowed: "hosts NAMED in the persona's commands" (URLs, and the host argument of curl/wget/kubectl --server style
 #       commands); redirects, Maven repository configuration and tool-internal contacts are NOT observed (documented limitation). A host is listed
 #       unless it is a host of a URL in the public docs (README.md and docs/*.md), 127.0.0.1, localhost, or the registry host of an image in the
 #       tools file. A URL only on a shell comment line is ignored. The line is information only: it never changes a verdict, and it sits INSIDE the encrypted
@@ -115,7 +115,7 @@ set -euo pipefail
 SEG_SHARDS=3
 # The cases each shard must pass: counted from the unsharded suite (624 in all) and checked by the gate, so a case that is skipped, run twice, moved out of its section or
 # made by another shard fails the step. A case added or removed changes a shard's number: the gate names it, and this line is updated with the case.
-SEG_CASES="201 171 273"
+SEG_CASES="201 174 273"
 SEG_DEADLINE=${PERSONA_UAT_SHARD_DEADLINE:-3000}   # seconds one shard may run; a hung shard is killed (its whole process group) and counts as failed (exit 124)
 # SHARDS. Run plain, this script runs the driver suite as SEG_SHARDS shards at once (PERSONA_UAT_SHARD=I/N each, below), prints their outputs one after the other and
 # fails unless every shard passed and the shards together ran every section of this file exactly once (the gate). PERSONA_UAT_SHARD=I/N runs one shard;
@@ -283,6 +283,7 @@ repo="$work/repo"; mkdir -p "$repo/docs/quality" "$repo/internal" "$repo/cmd"
 printf '# fscache README\nSee https://docs.example.org/guide/install and [releases](https://github.com/example/cache/releases).\n' >"$repo/README.md"
 printf 'install steps\nSee https://docs-only.example.net/guide (a link that occurs ONLY in a docs page, not in the README)\n' >"$repo/docs/install.md"
 echo "gradle steps"     >"$repo/docs/gradle.md"
+mkdir -p "$repo/build/keys"; printf 'RELEASE-KEY-BYTES\n' >"$repo/build/keys/release.rsa.pub"   # the key the reviewer's file must equal
 echo "INTERNAL TRACE"   >"$repo/docs/quality/traceability.md"
 echo "UNRELEASED NOTES" >"$repo/docs/next-release-notes.md"
 echo "package internal // SECRET-SOURCE" >"$repo/internal/x.go"
@@ -460,6 +461,8 @@ if p.get("leak"):
     if os.path.exists(kc):      # the persona's own ServiceAccount token, as a pasted kubeconfig line
         ans["transcript"] += open(kc).read() + "\n"
 ans["transcript"] += p.get("transcript_extra", "")
+if "keyfile" in p:      # the key file the reviewer fetched into its working folder (its sandbox)
+    open("release.rsa.pub", "w").write(p["keyfile"])
 cmds = list(p.get("commands", []))
 acts = [dict(x) for x in p["actions"]] if "actions" in p else [{"tool": "shell", "argv": ["sh", "-c", c], "exit": 0} for c in cmds]
 if "actions" in p and not cmds:
@@ -1409,6 +1412,9 @@ need = {"gradle-platform-engineer": ("first-time", "gradle", "proxy"), "maven-je
 for p, words in need.items():
     for w in words:
         assert w in rows[p].lower(), (p, w)
+low = rows["compliance-reviewer"].lower()
+assert "--key" in low and "release.rsa.pub" in low, "the reviewer must be told the --key form of the guide"
+assert "certificate identity" not in low and "certificate-identity" not in low, "no verifying by certificate identity"
 for p, text in rows.items():          # every persona is told how to classify what it finds, and what a doc step is
     for w in ("broken behavior", "friction", "as written"):
         assert w in text.lower(), (p, w)
@@ -2470,7 +2476,7 @@ PY
 seg_begin 11
 seg_on
 # --- the local decryption script (bin/persona-uat-decrypt.sh <run id> [key path]) with a FAITHFUL fake gh and the test key -------------------------------
-# The fake `gh run download` behaves like the real one: it needs a repository (-R owner/repo, or a git clone as the working directory), a numeric run id and only
+# The fake gh run download behaves like the real one: it needs a repository (-R owner/repo, or a git clone as the working directory), a numeric run id and only
 # known flags; WITHOUT -n it downloads EVERY artifact of the run into DIR/<artifact name>/; with exactly ONE -n NAME it downloads just that artifact FLAT into DIR; an
 # unknown name fails; several -n nest again. The run holds the persona artifact AND an unrelated one (with a decoy .cms encrypted for someone else).
 dsh="$root/bin/persona-uat-decrypt.sh"
@@ -3330,7 +3336,7 @@ python3 - >"$work/hostsplan.json" <<'PY'
 import json
 print(json.dumps({
  "gradle-platform-engineer": {"commands": ["curl -s https://docs.example.org/guide/install -o /dev/null", "curl http://127.0.0.1:18080/healthz", "curl -s http://localhost:18080/x",
-                                           "curl https://github.com/example/cache/releases/" "download/v1/x", "curl http://127.0.0.1:18081/login",   # (the URL is split in the source only so the pin-age scan does not read this fixture as a release download of example/cache; the string is whole at run time)
+                                           "curl https://github.com/example/cache/releases/" "download/v1/x", "curl http://127.0.0.1:18081/login",   # (the URL is split in the text only so the pin-age scan does not read this fixture as a release download of example/cache; the string is whole at run time)
                                            "curl -o out.txt http://127.0.0.1:18080/a", "wget -O file.zip https://docs.example.org/a", "curl -s -o report.json https://docs.example.org/y",
                                            "# https://commentonly.example/x\necho hi", "# see http://another-comment.example\n# and wget https://third-comment.example/z", "curl -s http://127.0.0.1:18080/x # https://inline-only.example/y",
                                            "curl -s https://docs-only.example.net/guide", "curl -L https://github.com/example/cache/releases/latest"]},
@@ -3558,7 +3564,7 @@ CASE="compliance proof: the digest inside a flag's value (not an image argument)
 check test "$(head -1 "$(out cmp11)/compliance-reviewer.report.md")" = "VERDICT: blocking"
 # the release key file: `cosign verify --key release.rsa.pub` (fetched from build/keys/ at the tag) is proof of FosterStack's signature when it is the ONLY key and no certificate identity or issuer is beside it; any other --key value is not (orchestrator ruling, as the cache#828 judge)
 kcase() { # <name> <verify arguments before the image, as JSON words> <pass|blocking> <exit> <label> [image]
-  cmpcase "$1" "{\"noverify\":true,\"actions\":[{\"tool\":\"cosign\",\"argv\":[\"verify\",$2,\"${6:-$RCD}\"],\"exit\":$4}]}"
+  cmpcase "$1" "{\"noverify\":true,\"keyfile\":\"RELEASE-KEY-BYTES\\n\",\"actions\":[{\"tool\":\"cosign\",\"argv\":[\"verify\",$2,\"${6:-$RCD}\"],\"exit\":$4}]}"
   CASE="compliance proof: $5: $3"
   check test "$(head -1 "$(out "$1")/compliance-reviewer.report.md")" = "VERDICT: $3"
 }
@@ -3585,6 +3591,17 @@ kcase cmpk20 '"--key","release.rsa.pub","--insecure-ignore-tlog"' blocking 0 "th
 cmpcase cmpk21 "{\"noverify\":true,\"actions\":[{\"tool\":\"cosign\",\"argv\":[\"verify-blob\",\"--key\",\"release.rsa.pub\",\"$RCD\"],\"exit\":0}]}"
 CASE="compliance proof: verify-blob with the release key is not judged as proof of the image (only cosign verify of the image counts): blocking"
 check test "$(head -1 "$(out cmpk21)/compliance-reviewer.report.md")" = "VERDICT: blocking"
+# the --key proof compares the BYTES of the reviewer's release.rsa.pub with build/keys/release.rsa.pub: the name alone is no proof
+KARGS='{"tool":"cosign","argv":["verify","--key","release.rsa.pub","'$RCD'"],"exit":0}'
+cmpcase cmpk22 "{\"noverify\":true,\"keyfile\":\"OTHER-BYTES\\n\",\"actions\":[$KARGS]}"
+CASE="compliance proof: a file named release.rsa.pub with other bytes than build/keys/release.rsa.pub is no proof: blocking"
+check test "$(head -1 "$(out cmpk22)/compliance-reviewer.report.md")" = "VERDICT: blocking"
+cmpcase cmpk23 "{\"noverify\":true,\"keyfile\":\"RELEASE-KEY-BYTES\",\"actions\":[$KARGS]}"
+CASE="compliance proof: the key file without its final newline differs in bytes from build/keys/release.rsa.pub: blocking"
+check test "$(head -1 "$(out cmpk23)/compliance-reviewer.report.md")" = "VERDICT: blocking"
+cmpcase cmpk24 "{\"noverify\":true,\"actions\":[$KARGS]}"
+CASE="compliance proof: no release.rsa.pub in the reviewer's folder is no proof: blocking"
+check test "$(head -1 "$(out cmpk24)/compliance-reviewer.report.md")" = "VERDICT: blocking"
 run proofreset '{"gradle-platform-engineer":{"requests":3},"maven-jenkins-ci":{"requests":3},"readme-evaluator":{"reset":true,"requests":1}}' weekly
 CASE="proof: a counter that went BACKWARDS during the window (the server restarted: fewer samples after than before) is no proof: that persona, with no findings, is blocking; the others pass"
 check test "$(head -1 "$(out proofreset)/readme-evaluator.report.md")" = "VERDICT: blocking" -a "$(head -1 "$(out proofreset)/gradle-platform-engineer.report.md")" = "VERDICT: pass"
@@ -3950,7 +3967,7 @@ for scn in return crash timeout; do
   case $scn in
     return) plan='{"maven-jenkins-ci":{"daemon":true,"requests":1,"sleep":0.3},"compliance-reviewer":{"sleep":0.8},"readme-evaluator":{"sleep":0.8}}'; at="";;
     crash) plan='{"maven-jenkins-ci":{"daemon":"crash","requests":1},"compliance-reviewer":{"sleep":0.8},"readme-evaluator":{"sleep":0.8}}'; at="";;
-    timeout) plan='{"maven-jenkins-ci":{"daemon":true,"sleep":30},"compliance-reviewer":{"sleep":0.8},"readme-evaluator":{"sleep":0.8}}'; at=1;;
+    timeout) plan='{"maven-jenkins-ci":{"daemon":true,"sleep":30},"compliance-reviewer":{"sleep":0.8},"readme-evaluator":{"sleep":0.8}}'; at=5;;   # the timeout covers every persona: 5s keeps the 0.8s ones clear on a loaded box
   esac
   AGENT_TIMEOUT=$at run "daemon-$scn" "$plan" weekly
   live=$(reapd)
@@ -4513,7 +4530,7 @@ print(json.dumps({
  "gradle-platform-engineer": {"commands": ["if curl -x outside-a.example:8080 localhost; then echo ok; fi", "curl \\\n  --proxy http://outside-b.example:80 \\\n  localhost",
                                            "curl ftp://ftp-c.example/file", "wget sftp://sftp-d.example/x", "curl socks5h://socks-e.example:1080", "curl evil-f.zip", "wget run-g.sh", "curl h-h.py",
                                            "sh -c 'curl -x outside-i.example:1 localhost'", "bash -c \"wget outside-j.example\"", "true && (curl outside-k.example) | cat",
-                                           "$(curl outside-l.example)", "for u in a; do curl outside-m.example; done", "eval 'curl outside-n.example'", "curl ws://ws-t.example/socket",
+                                           "\x24(curl outside-l.example)", "for u in a; do curl outside-m.example; done", "\x65val 'curl outside-n.example'", "curl ws://ws-t.example/socket",
                                            "bash -lc 'curl outside-u.example'", "sh -c 'curl outside-r.example\n  wget outside-s.example'"]},
  "maven-jenkins-ci": {"commands": ["curl 'unbalanced http://outside-o.example/x", "nc outside-p.example 80 'oops", "curl --proxy \"http://outside-q.example\n(multi-line unbalanced"]}}))
 PY
@@ -4543,7 +4560,7 @@ check publiclog hosts9
 python3 - >"$work/hostsplan10.json" <<'PY'
 import json
 print(json.dumps({
- "gradle-platform-engineer": {"commands": ["H=outside-a.example; curl \"$H\"", "curl ${H}/x", "curl $(cat url)", "curl `cat url`", "curl {a,b}.example", "curl a*.example", "sh -c 'curl \"$H\"'", "sudo -n curl $H",
+ "gradle-platform-engineer": {"commands": ["H=outside-a.example; curl \"$H\"", "curl ${H}/x", "curl \x24(cat url)", "curl \x60cat url\x60", "curl {a,b}.example", "curl a*.example", "sh -c 'curl \"$H\"'", "sudo -n curl $H",
                                            "http_proxy=$P curl localhost", "ssh $H uptime", "nc $H 80", "git clone $REPO", "echo $HOME", "curl -o \"$OUT\" localhost", "curl -H \"X: $T\" localhost"]},
  "maven-jenkins-ci": {"commands": ["busybox wget http://bb-a.example/x", "busybox nc bb-b.example 80", "toybox wget tb-c.example/x", "python3 -c \"import urllib.request as u; u.urlopen(U)\"",
                                    "python3 -c \"import urllib.request as u; u.urlopen('http://py-d.example/')\"", "perl -e 'use LWP::UserAgent; LWP::UserAgent->new->get($u)'",
@@ -4583,8 +4600,8 @@ import json, sys
 G = "gradle-platform-engineer"
 open(sys.argv[1] + "/hostsplan11.json", "w").write(json.dumps({G: {"commands": [
     "echo see http://echo-only.example/docs", "printf '%s\\n' https://printf-only.example/x; echo done",
-    "echo http://piped.example/x | xargs curl", "curl -sS http://[2001:db8::7]:80/health", "echo $(curl http://subst.example/x)",
-    "x=$(echo http://assigned.example/x); curl $x"]}}))
+    "echo http://piped.example/x | xargs curl", "curl -sS http://[2001:db8::7]:80/health", "echo \x24(curl http://subst.example/x)",
+    "x=\x24(echo http://assigned.example/x); curl $x"]}}))
 PY
 run hosts11 "$(cat "$work/hostsplan11.json")" weekly
 CASE="hosts (false positives): an echoed or printf'd URL is not a host, an echoed URL piped on to a program still is, a bracketed IPv6 URL literal is a host and not a run-time destination, and a destination built from a variable is still flagged"

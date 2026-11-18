@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC5, REQ-SUP-001-AC7, REQ-SUP-001-AC8, REQ-SUP-001-AC9, REQ-SUP-001-AC10
+# proves: REQ-SUP-001-AC5, REQ-SUP-001-AC6, REQ-SUP-001-AC7, REQ-SUP-001-AC8, REQ-SUP-001-AC9, REQ-SUP-001-AC10, REQ-SUP-001-AC34
 # The daily supply-chain audit (owner ratified Oct 5, rules 2, 3 and 5; advisor 0172, 0175, 0177), proved offline against a fixtures file that stands in for the
 # advisory databases, the actions' own repositories and the registries, with a recording `gh`:
 #   python3 bin/pin-audit.py --root REPO --fixtures FILE --now ISO --gh CMD [--exceptions FILE]
 #   exit 0: no hit and no unexcepted dispute; exit 1: a hit or a disputed hit (the issue says so); exit 2: it could not do its job (a failed gh, unreadable input).
 #   Fixtures: {"lists": {ITEM: {"github": [ADV], "osv": [ADV]}}, "upstream": {"owner/repo@sha": {"reachable": bool}}, "nested": {"owner/repo@sha": [REF]},
-#              "versions": {"owner/repo": [{"version", "sha", "published", "lists": {...}}]}}   with ADV = {"id",
-#              "incident", "affected": bool, "modified": ISO, "malicious"?: bool}
-#   gh calls it may make: issue list / issue create / issue edit / label create, NEVER anything about runs,
-#   environments or secrets: the private details are produced on the Mac, not by this workflow (advisor 0175
-#   amendment 5).
+#              "versions": {"owner/repo": [{"version", "sha", "published", "lists": {...}}]}, "prs": [{"number", "title", "run_id", "moved": [ITEM]}]}   with ADV = {"id", "incident", "affected": bool, "modified": ISO, "malicious"?: bool}
+#   gh calls it may make: issue list / issue create / issue edit / label create. The audit re-runs nothing (REQ-SUP-001-AC6: no pull request waits for a version to age) and has no
+#   --rerun-held and no --observations-out; the rollback it names is the newest clean version, whatever its age. NEVER anything about runs, environments or
+#   secrets: the private details are produced on the Mac, not by this workflow (advisor 0175 amendment 5).
 set -euo pipefail
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@x GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@x   # CI runners have no git identity
 here=$(cd "$(dirname "$0")" && pwd)
@@ -176,20 +175,14 @@ assert "actions/checkout" in title and "GHSA-aaaa-bbbb-cccc" in title, title
 body = open(sys.argv[2]).read()
 assert "v4.1.0" in body and "GHSA-aaaa-bbbb-cccc" in body, body
 PY
-run newest "$(python3 - "$HIT_GH" <<'PY'
-import json, sys
-d = json.loads(sys.argv[1]); v = d["versions"]["actions/checkout"]; v[0]["lists"] = v[1]["lists"]; print(json.dumps(d))
-PY
-)" "$work/r-cur"
-CASE="the rollback is the NEWEST CLEAN version: with v4.3.0 and v4.2.0 both affected it is v4.1.1, whatever its age"
-check grep -qx 'Rollback: pin the newest clean version: v4.1.1.*' "$work/newest.gh.bodies"
-check bash -c "! grep '^Rollback:' '$work/newest.gh.bodies' | grep -q 'v4\.[23]\.0'"
+CASE="the rollback is the NEWEST CLEAN version, whatever its age: v4.3.0 (published 2 days ago) with its commit and date, not the older clean v4.1.1, not the affected v4.2.0"
+check grep -qF "Rollback: pin the newest clean version: v4.3.0 (commit $(printf '3%.0s' $(seq 40))), published $(dago 2)." "$work/hit.gh.bodies"
+check bash -c "! grep -q 'newest clean version: v4.1.1\|newest clean version: v4.2.0' '$work/hit.gh.bodies'"
 CASE="a hit on a PR's NEW pin (present in its head, absent from its base: it has not run) with a clean rollback available is NOT labelled owner-decision"
 run hitpr "$HIT_GH" "$work/r-pr" --base HEAD~1
-check test "$rc" -eq 1; check grep -q 'supply-chain-hit' "$work/hitpr.gh"
-check none_match 'owner-decision' "$work/hitpr.gh"; check grep -q 'v4.3.0' "$work/hitpr.gh.bodies"
+check test "$rc" -eq 1; check grep -q 'supply-chain-hit' "$work/hitpr.gh"; check none_match 'owner-decision' "$work/hitpr.gh"; check grep -q 'newest clean version: v4.3.0' "$work/hitpr.gh.bodies"
 CASE="a hit on a pin that is on main today is labelled owner-decision (the workflows ran it), and still names the rollback"
-check grep -q 'owner-decision' "$work/hit.gh"; check grep -q 'v4.3.0' "$work/hit.gh.bodies"
+check grep -q 'owner-decision' "$work/hit.gh"; check grep -q 'newest clean version: v4.3.0' "$work/hit.gh.bodies"
 GH_LIST='[{"number": 31, "title": "supply-chain: actions/checkout@v4.1.0 (GHSA-aaaa-bbbb-cccc)"}]' run hit2 "$HIT_GH" "$work/r-cur"
 CASE="the next day, with that issue already open: it is UPDATED (issue edit), never a second issue"
 check test "$rc" -eq 1; check test "$(creates "$work/hit2.gh")" -eq 0
@@ -210,13 +203,10 @@ check test "$rc" -eq 1; check grep -q 'MAL-2026-1234' "$work/mal.gh.bodies"
 
 # --- AC8: no clean old version, or we RAN the bad one: owner-decision -----------------------------------------------------------------------------
 ONLYBAD="{\"lists\": {\"$ITEM_CO\": {\"github\": [{\"id\": \"GHSA-aaaa-bbbb-cccc\", \"incident\": \"INC-1\", \"affected\": true, \"modified\": \"$(dago 20)\"}], \"osv\": []}}, \"upstream\": {}, \"nested\": {}, \"prs\": [],
- \"versions\": {\"actions/checkout\": [{\"version\": \"v4.1.0\", \"sha\": \"$SHA1\", \"published\": \"$(dago 90)\", \
-\"lists\": {\"github\": [{\"id\": \"GHSA-aaaa-bbbb-cccc\", \"incident\": \"INC-1\", \"affected\": true, \
-\"modified\": \"$(dago 20)\"}]}}]}}"
+ \"versions\": {\"actions/checkout\": [{\"version\": \"v4.1.0\", \"sha\": \"$SHA1\", \"published\": \"$(dago 90)\", \"lists\": {\"github\": [{\"id\": \"GHSA-aaaa-bbbb-cccc\", \"incident\": \"INC-1\", \"affected\": true, \"modified\": \"$(dago 20)\"}]}}]}}"
 run noclean "$ONLYBAD" "$work/r-pr" --base HEAD~1
-CASE="no clean version exists (only the affected one): the issue says to DROP the action, and is labelled \
-owner-decision as well as supply-chain-hit (even for a PR's not-yet-run pin)"
-check grep -qi 'drop' "$work/noclean.gh.bodies"; check grep -q 'owner-decision' "$work/noclean.gh"; check grep -q 'supply-chain-hit' "$work/noclean.gh"
+CASE="no clean version exists (the only version is the affected one): the issue says to DROP the action, and is labelled owner-decision as well as supply-chain-hit (even for a PR's not-yet-run pin)"
+check grep -qF 'No clean version exists: drop it (remove its use) until one does.' "$work/noclean.gh.bodies"; check grep -q 'owner-decision' "$work/noclean.gh"; check grep -q 'supply-chain-hit' "$work/noclean.gh"
 run ranpast "$HIT_GH" "$work/r-ranpast"
 CASE="the bad version was replaced 20 days ago: the audit reads the workflow git history of the last 90 days, finds that we RAN it, and reports it with owner-decision (though today's tree is clean)"
 check test "$rc" -eq 1; check grep -q 'owner-decision' "$work/ranpast.gh"; check grep -q 'GHSA-aaaa-bbbb-cccc' "$work/ranpast.gh.bodies"
@@ -232,8 +222,7 @@ import glob, json, sys
 for p in glob.glob(sys.argv[1] + "/*.gh"):
     for l in open(p):
         c = json.loads(l)
-        assert c[:2] in (["issue", "list"], ["issue", "create"], ["issue", "edit"], ["issue", "reopen"],
-                         ["label", "create"]), (p, c)
+        assert c[:2] in (["issue", "list"], ["issue", "create"], ["issue", "edit"], ["issue", "reopen"], ["label", "create"]), (p, c)
 PY
 
 # --- AC5: upstream reachability and nested references -----------------------------------------------------------------------------------------------
@@ -369,6 +358,16 @@ run twin "$(cat "$work/twin.json")" "$work/r-twin" --exceptions "$work/no-except
 CASE="the same dispute on two versions of one package (0.73.0 in the history, 0.74.0 today) is ONE issue that names both versions"
 check test "$rc" -eq 1; check test "$(creates "$work/twin.gh")" -eq 1; check grep -q '0.73.0' "$work/twin.gh.bodies"; check grep -q '0.74.0' "$work/twin.gh.bodies"
 
+# --- AC6: the audit re-runs nothing; no pull request waits for a version to age (the release-age hold is removed) ---
+CASE="AC6: there is no --rerun-held mode and no --observations-out: each is an unknown argument (exit 2) and no gh call is made, not even a run rerun"
+rc=0; : >"$work/gone1.gh"; ( cd "$work" && GH_LOG="$work/gone1.gh" python3 "$aud" --root "$work/r-clean" --fixtures "$work/clean.fx.json" --now "$NOW" --gh "$work/gh" --rerun-held >/dev/null 2>"$work/gone1.err" ) || rc=$?
+check test "$rc" -eq 2; check test ! -s "$work/gone1.gh"; check grep -q 'rerun-held' "$work/gone1.err"
+rc=0; : >"$work/gone2.gh"; ( cd "$work" && GH_LOG="$work/gone2.gh" python3 "$aud" --root "$work/r-clean" --fixtures "$work/clean.fx.json" --now "$NOW" --gh "$work/gh" --observations-out "$work/gone2-out" >/dev/null 2>"$work/gone2.err" ) || rc=$?
+check test "$rc" -eq 2; check test ! -s "$work/gone2.gh"; check grep -q 'observations-out' "$work/gone2.err"; check test ! -e "$work/gone2-out"
+CASE="AC6: a pull request in the fixtures that moved a version (held before) is never re-run: a normal run makes no run rerun call"
+run heldoff "{\"lists\": {}, \"upstream\": {}, \"nested\": {}, \"versions\": {}, \"prs\": [{\"number\": 7, \"title\": \"bump checkout\", \"run_id\": 99, \"moved\": [\"$ITEM_CO\"]}], \"times\": {\"$ITEM_CO\": {\"time\": \"$(dago 8)\", \"source\": \"observer\"}}}" "$work/r-clean"
+check test "$rc" -eq 0; check bash -c "! grep -q 'rerun' '$work/heldoff.gh'"
+
 # --- the live source's own logic, with no network: how a database record is read -----------------------------------------------------------------------------
 CASE="OSV's affected entries are judged range by range and OR-ed (a merged event list once marked codeql-action 4.x affected by a stale 2.x range), GitHub's comparator ranges too, and a ref that is not a commit is never upstream-checked"
 check python3 - "$aud" <<'PY'
@@ -477,8 +476,8 @@ spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib
 now = dt.datetime(2026, 10, 5, 12, tzinfo=dt.timezone.utc)
 old = lambda d: (now - dt.timedelta(days=d)).strftime("%Y-%m-%dT%H:%M:%SZ")
 disp = {"github": [{"id": "G", "incident": "I", "affected": False}], "osv": [{"id": "O", "incident": "I", "affected": True}]}
-fx = pa.FixtureNet({"versions": {"o/r": [{"version": "v3", "sha": None, "published": old(20), "lists": disp},
-                                         {"version": "v2", "sha": None, "published": old(40), "lists": {}}, {"version": "v1", "sha": None, "published": old(80), "lists": {}}]}})
+fx = pa.FixtureNet({"versions": {"o/r": [{"version": "v3", "sha": "2222222222222222222222222222222222222222", "published": old(20), "lists": disp},
+                                         {"version": "v2", "sha": "3333333333333333333333333333333333333333", "published": old(1), "lists": {}}, {"version": "v1", "sha": "4444444444444444444444444444444444444444", "published": old(80), "lists": {}}]}})
 assert pa.rollback(pa.inv.Item("action", "o/r", "x" * 40, "v4"), fx)["version"] == "v2"
 net = pa.LiveNet(["false"], ".")
 assert pa.rollback(pa.inv.Item("gotool", "golang.org/x/vuln/cmd/govulncheck", "v1.0.0"), net) == pa.UNKNOWN
@@ -522,7 +521,7 @@ for n in ("pin-inventory", "pin-age-check", "pin-audit"):
         ms = [m.name for m in c.body if isinstance(m, ast.FunctionDef)]
         assert len(ms) == len(set(ms)), (n, c.name, sorted(x for x in ms if ms.count(x) > 1))
         if c.name == "LiveNet":
-            assert {"lists", "covered", "live_ranges", "upstream", "nested", "versions"} <= set(ms), ms
+            assert {"lists", "covered", "live_ranges", "upstream", "nested", "versions", "open_pr_items"} <= set(ms), ms
 PY
 
 CASE="a version this check cannot order, and a record with only commit ranges, are read as AFFECTED (never as safe); post-releases sort after the final"
@@ -559,22 +558,19 @@ import json, sys
 calls = [json.loads(l) for l in open(sys.argv[1])]
 assert any(c[:3] == ["issue", "reopen", "50"] for c in calls) and any(c[:3] == ["issue", "edit", "50"] for c in calls), calls
 PY
-CASE="a rollback candidate must itself be an exact pin: a candidate whose _item is a tag-form action is skipped, the \
-next older clean one is chosen"
+CASE="a rollback candidate must itself be an exact pin (the pin scan's judgement): a newer clean version that is named by a tag, not a commit, is no rollback target; the next clean version with a commit is chosen, however young it is"
 check python3 - "$aud" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
 class N:
     def versions(self, item):
-        return [{"version": "v3", "sha": None, "published": "2026-09-01T00:00:00Z",
-                 "_item": pa.inv.Item("action", "o/r", "v3", "v3")},
-                {"version": "v2", "sha": "2" * 40, "published": "2026-08-01T00:00:00Z",
-                 "_item": pa.inv.Item("action", "o/r", "2" * 40, "v2")}]
+        return [{"version": "v3", "sha": "v3", "published": "2026-10-04T00:00:00Z", "_item": pa.inv.Item("action", "o/r", "v3", "v3")},
+                {"version": "v2", "sha": "2" * 40, "published": "2026-10-03T00:00:00Z", "_item": pa.inv.Item("action", "o/r", "2" * 40, "v2")},
+                {"version": "v1", "sha": "1" * 40, "published": "2026-06-01T00:00:00Z", "_item": pa.inv.Item("action", "o/r", "1" * 40, "v1")}]
     def lists(self, item): return [], []
-r = pa.rollback(pa.inv.Item("action", "o/r", "x" * 40, "v4"), N())
-assert r["version"] == "v2" and r["sha"] == "2" * 40, r
+    def nested(self, item): return []
+assert pa.rollback(pa.inv.Item("action", "o/r", "x" * 40, "v4"), N())["version"] == "v2"
 PY
-
 GH_LIST='[{"number": 60, "state": "OPEN", "title": "supply-chain: actions/checkout@v4.1.0 (GHSA-aaaa-bbbb-cccc)"}]' run alias "$(python3 - "$HIT_GH" <<'PY'
 import json, sys
 d = json.loads(sys.argv[1]); d["lists"]["action:actions/checkout@" + "1" * 40]["osv"] = [{"id": "GO-2026-0001", "incident": "INC-1", "affected": True, "modified": "2026-01-01T00:00:00Z"}]
@@ -809,8 +805,8 @@ import datetime as dt, importlib.util, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
 now = dt.datetime(2026, 10, 5, 12, tzinfo=dt.timezone.utc)
 old = lambda d: (now - dt.timedelta(days=d)).strftime("%Y-%m-%dT%H:%M:%SZ")
-fx = pa.FixtureNet({"versions": {"o/r": [{"version": "2.0.0", "sha": None, "published": old(60), "lists": {}}, {"version": "1.2.9", "sha": None, "published": old(10), "lists": {}},
-                                          {"version": "3.0.0rc1", "sha": None, "published": old(20), "lists": {}}]}})
+fx = pa.FixtureNet({"versions": {"o/r": [{"version": "2.0.0", "sha": "5555555555555555555555555555555555555555", "published": old(60), "lists": {}}, {"version": "1.2.9", "sha": "6666666666666666666666666666666666666666", "published": old(10), "lists": {}},
+                                          {"version": "3.0.0rc1", "sha": "7777777777777777777777777777777777777777", "published": old(20), "lists": {}}]}})
 assert pa.rollback(pa.inv.Item("action", "o/r", "x" * 40, "v4"), fx)["version"] == "2.0.0"
 assert pa._norm_name("Jaraco.Context") == pa._norm_name("jaraco_context") == "jaraco-context"
 PY
@@ -1458,8 +1454,6 @@ run oversizeshared "$CLEAN" "$work/r-toolarge-shared"
 CASE="too-large history, shared tree: revisions that share an unreadable tree make the audit incomplete too: exit 2, no 'no known-compromised versions'"
 check test "$rc" -eq 2; check none_match 'no known-compromised' "$work/oversizeshared.out"
 
-
-# --- one ls-tree -r per revision is all the history reader asks git for ---
 CASE="history reader: git ls-tree -r runs once per revision (the listing that makes the tree key is the listing the files are read from)"
 check python3 - "$aud" "$work/r-histmemo" <<'PY'
 import collections, datetime as dt, importlib.util, sys
@@ -1599,8 +1593,8 @@ def must_refuse(label, fn):
 class R(io.BytesIO):
     def __enter__(self): return self
     def __exit__(self, *a): return False
+# the advisory tool's PyPI info (published name) and release list
 pkg = pa.inv.Item("package", "pypi/p", "1.0")
-# 4. the advisory tool's PyPI info (published name) and release list
 net = pa.LiveNet(["false"], ".")
 for ans in ([], {"info": []}, {"info": 5}):
     urllib.request.urlopen = lambda *a, _b=json.dumps(ans).encode(), **k: R(_b)
@@ -1674,7 +1668,7 @@ for word in ("cannot do its job", "::warning::x", "too large to read safely"):
     assert word in lines[0], err.getvalue()
 assert "\x1b" not in lines[0] and "##[" not in lines[0], err.getvalue()
 PY
-CASE="structural closure (Fable ruling, round 6): every reader takes a mandatory need/rows with no default, and EVERY site that reads an answer (AST-enumerated in both programs: _http_dict, _gh_pages, _gh_json, _fetch_json, json.load/loads) has a {} / [{}] / null case that is refused; the optional keys are named (OSV vulns and next_page_token, a PyPI file upload time) and accepted when absent; local policy and fixture files are covered too"
+CASE="structural closure (Fable ruling, round 6): every reader takes a mandatory need/rows with no default, and EVERY site that reads an answer (AST-enumerated in both programs: _http_dict, _gh_pages, _gh_json, _fetch_json, json.load/loads) has a {} / [{}] / null case that is refused; the optional keys are named (OSV vulns and next_page_token, a commit committer date, a PyPI file upload time) and accepted when absent; local policy and fixture files are covered too"
 check python3 - "$aud" <<'PY'
 import ast, collections, importlib.util, inspect, io, json, os, subprocess, sys, tempfile, urllib.request
 aud = sys.argv[1]
@@ -1770,15 +1764,14 @@ def c_go_module():
     for body in (b"{}", b"null", b"[{}]"):
         http(body); refuse(("go", body), lambda: age._go_module("github.com/o/r/cmd/x", "v1.0.0"))
 def c_main_fixtures():
-    # --fixtures is the tests' own input, not an answer: a file that is not a JSON object ends both programs in exit 2 (cannot run), before any work
+    # --fixtures is the tests' own input, not an answer: a file that is not a JSON object ends the audit in exit 2 (cannot run), before any work
     import contextlib
     for body in ("not json", "null", "[]"):
         fx = os.path.join(tmp, "fx.json"); open(fx, "w").write(body)
-        for main, args in ((pa.main, ["--root", tmp, "--fixtures", fx, "--now", "2026-10-05T12:00:00Z"]),):
-            out = io.StringIO()
-            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
-                rc = main(args)
-            assert rc == 2 and "cannot" in out.getvalue(), (main.__module__, body, rc, out.getvalue()[:160])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            rc = pa.main(["--root", tmp, "--fixtures", fx, "--now", "2026-10-05T12:00:00Z"])
+        assert rc == 2 and "cannot" in out.getvalue(), (pa.main.__module__, body, rc, out.getvalue()[:160])
 def c_local_files():
     f = os.path.join(tmp, "x.json"); open(f, "w").write("{}")
     refuse("base inputs {}", lambda: (_ for _ in ()).throw(age.CouldNotLook("x")) if False else _runtime(lambda: age.load_base_inputs(f, True)))
@@ -1790,19 +1783,17 @@ def _runtime(fn):
     except RuntimeError as e:
         raise age.CouldNotLook(str(e))
 def c_reviewed_files():
-    # reviewed_files (REQ-SUP-001-AC16): an absent list is no rows (nothing is ruled); anything else malformed is refused (RuntimeError): a file that is not an object, invalid JSON, a list that is not a list, a bad row or field, a bad hash, a repeated file, a repeated JSON key
+    # reviewed_files (REQ-SUP-001-AC16): an absent list is no rows (nothing is ruled); anything else malformed is refused (RuntimeError): a file that is not an object, invalid JSON, a list that is not a list, a bad row or field, a repeated file, a repeated JSON key
     load = lambda f, req=True: _runtime(lambda: age.load_reviewed_files(f, req))
     f = os.path.join(tmp, "rf.json"); open(f, "w").write("{}")
     assert accepts("reviewed_files {} (no rows)", lambda: age.load_reviewed_files(f, True) == {}) is True
     open(f, "w").write('{"reviewed_files": [{}]}')
     refuse("reviewed_files [{}] (a row with no field)", lambda: load(f))
-    h = "a" * 64
-    ok = {"file": "bin/x.sh", "ruling": "reviewed", "body-sha256": h}
+    ok = {"file": "bin/x.sh", "ruling": "reviewed"}
     for body in ("[]", "null", "5", "not json", '{"reviewed_files": 5}', '{"reviewed_files": {}}', '{"reviewed_files": null}', '{"reviewed_files": [5]}', '{"reviewed_files": [[]]}',
-                 json.dumps({"reviewed_files": [dict(ok, key="x")]}), json.dumps({"reviewed_files": [{"file": "bin/x.sh", "ruling": "r"}]}),
+                 json.dumps({"reviewed_files": [dict(ok, key="x")]}), json.dumps({"reviewed_files": [dict(ok, **{"body-sha256": "a" * 64})]}),
                  json.dumps({"reviewed_files": [dict(ok, ruling="")]}), json.dumps({"reviewed_files": [dict(ok, file="")]}),
                  json.dumps({"reviewed_files": [dict(ok, file=7)]}), json.dumps({"reviewed_files": [dict(ok, ruling=7)]}),
-                 json.dumps({"reviewed_files": [dict(ok, **{"body-sha256": "A" * 64})]}), json.dumps({"reviewed_files": [dict(ok, **{"body-sha256": "a" * 63})]}),
                  json.dumps({"reviewed_files": [ok, dict(ok, ruling="again")]}),
                  '{"reviewed_files": [], "reviewed_files": []}'):
         open(f, "w").write(body); refuse(("reviewed_files", body), lambda: load(f))
@@ -1879,10 +1870,6 @@ def c_versions():
 def c_open_pr_items():
     for body in ("{}\n", '{"number": 1, "base": {}, "head": {}}\n', '{"number": 1, "base": {"ref": "main"}, "head": {}}\n'):
         gh({"pulls?": body}); refuse(("pulls", body), net.open_pr_items)
-def c_modified():
-    gh({"advisories/": "{}"}); refuse("modified ghsa {}", lambda: net.modified("GHSA-x"))
-    for body in (b"{}", b"[]"):
-        http(body); refuse(("modified osv", body), lambda: net.modified("GO-x"))
 def c_file_issues():
     class G:
         def run(self, *a, **k): return P("[{}]" if a[:2] == ("issue", "list") else "")
@@ -1904,11 +1891,10 @@ def c_json_file():
     assert accepts(("json_file", "good"), lambda: age._json_file(good)) == {"k": 1}
 CASES = {
     ("pin-age-check.py", "_json_file", "load"): c_json_file,
-    ("pin-age-check.py", "_gh_pages", "loads"): c_gh_pages,
+    ("pin-age-check.py", "_gh_pages", "loads"): c_gh_pages, 
     ("pin-age-check.py", "_fetch_json", "load"): c_fetch_and_dict, ("pin-age-check.py", "_http_dict", "_fetch_json"): c_fetch_and_dict,
     ("pin-age-check.py", "_go_module", "_http_dict"): c_go_module,
-    ("pin-age-check.py", "load_ruled_text", "load"): c_local_files, ("pin-age-check.py", "load_reviewed_files", "load"): c_reviewed_files,
-    ("pin-age-check.py", "load_base_inputs", "load"): c_local_files,
+        ("pin-age-check.py", "load_ruled_text", "load"): c_local_files, ("pin-age-check.py", "load_reviewed_files", "load"): c_reviewed_files, ("pin-age-check.py", "load_base_inputs", "load"): c_local_files,
     ("pin-audit.py", "_gh_json_raw", "loads"): c_gh_json_raw, ("pin-audit.py", "_gh_json", "_gh_json_raw"): c_gh_json_raw, ("pin-audit.py", "_osv_post", "load"): c_osv_post, ("pin-audit.py", "_osv_get", "load"): c_osv_get,
     ("pin-audit.py", "resolve_ref", "_gh_json"): c_resolve_ref, ("pin-audit.py", "live_ranges", "_gh_json"): c_live_ranges,
     ("pin-audit.py", "_lists_for", "_gh_json"): c_lists_for, ("pin-audit.py", "_lists_for", "_http_dict"): c_lists_for,
@@ -2106,7 +2092,7 @@ def slow_callback(seconds):
     time.sleep(0.5)       # the callback is mid-way when main reaches its end
     original(seconds)
 pa._deadline_passed = slow_callback
-pa.history_items = lambda *a, **k: (started.wait(10), {})[1]   # the run finishes only after the callback has started
+pa.FixtureNet.open_pr_items = lambda self: (started.wait(10), [])[1]   # the run finishes only after the callback has started
 sys.exit(pa.main(["--root", repo, "--fixtures", fx, "--now", now, "--gh", gh, "--deadline", "1"]))
 PY
 check test "$rc" -eq 2; check grep -q 'audit: could not finish: still in' "$work/cbrun.err"
@@ -2247,7 +2233,7 @@ PY
 run phclean "$CLEAN" "$work/r-clean"
 CASE="markers: a clean daily run prints history, judging, open pull requests, open pull request pins, nested references, exceptions, in that order; exit 0 as before"
 check test "$rc" -eq 0 -a "$(phases "$work/phclean.out")" = "history,judging,open pull requests,open pull request pins,nested references,exceptions"
-# a history read that stalls: the deadline must name the history
+# a history read that stalls on a daily run: the deadline must name the history
 mkdir -p "$work/shim-log"
 printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = ls-remote ] && exit 0; [ "$a" = log ] && exec sleep 60; done\nexec %s "$@"\n' "$REALGIT" >"$work/shim-log/git"; chmod +x "$work/shim-log/git"
 echo "$CLEAN" >"$work/phstall.fx.json"; rc=0
@@ -2285,7 +2271,7 @@ check test "$rc" -eq 1 -a "$(phases "$work/phhit.out")" = "history,judging,open 
 run phbase "$CLEAN" "$work/r-pr" --base HEAD~1 --head HEAD --report-only
 CASE="markers: pull request mode (--base) prints history, judging, nested references and exceptions, never the daily-only phases"
 check test "$(phases "$work/phbase.out")" = "history,judging,nested references,exceptions"
-# one line per pull request in the live walk: the PR walk is the lead suspect of the hang
+# one line per pull request in both live walks: the PR walk is the lead suspect of the hang
 CASE="markers: the live open-pull-request walk prints 'audit: phase: pull request #N' for every PR before they fetch it"
 check python3 - "$aud" <<'PY'
 import importlib.util, io, subprocess, sys, contextlib, os
@@ -2306,6 +2292,114 @@ for walk in (net.open_pr_items,):
     got = [l for l in buf.getvalue().splitlines() if l.startswith("audit: phase: pull request")]
     assert got == ["audit: phase: pull request #7", "audit: phase: pull request #9"], (walk.__name__, got)
 PY
+
+# --- AC34: a `go install` of a tool at no exact version is a finding in the daily audit: a line naming it, exit 1, and no issue ---------------------------
+# gofind <name> <wf|sh> <go install command text>: a tree whose only go install is that command, audited in the daily mode (no --base) against CLEAN fixtures
+gofind() {
+  local n=$1 kind=$2 cmd=$3 r="$work/r-go-$1"
+  mkrepo "$r" "5:$CLEANSHA"
+  if [ "$kind" = wf ]; then
+    printf 'on: pull_request\njobs:\n  g:\n    runs-on: ubuntu-latest\n    steps:\n      - run: %s\n' "$cmd" >"$r/.github/workflows/go.yml"
+  else
+    printf '#!/usr/bin/env bash\nset -e\n%s\n' "$cmd" >"$r/bin/get-tool.sh"
+  fi
+  git -C "$r" add -A; git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "go install"
+  run "$n" "$CLEAN" "$r"
+}
+no_issue_call() { none_match '"issue", "(create|edit)"' "$work/$1.gh"; }
+UNPINNED_GO=(
+  "latest|go install example.com/x@latest"
+  "main|go install example.com/x@main"
+  "branch|go install example.com/x@release-branch"
+  "v1|go install example.com/x@v1"
+  "v12|go install example.com/x@v1.2"
+  "short|go install example.com/x@abc1234"
+  "vsuffix|go install example.com/x@v1.2.3branch"
+  "shasuffix|go install example.com/x@${SHA4}branch"
+  "sqlatest|go install 'example.com/x@latest'"
+  "dqlatest|go install \"example.com/x@latest\""
+  "sqrange|go install 'example.com/x@>=1.0.0'"
+  "dqrange|go install \"example.com/x@>=1.0.0\""
+  "bare|go install example.com/x"
+  "var|go install \"\$TOOL\""
+  "varat|go install example.com/x@\$TOOL_VERSION"
+  "qvarat|go install 'example.com/x@'\"\$V\""
+  "dqvarat|go install \"example.com/x@\$V\""
+  "cmdsub|go install \"\$(cat tool.txt)\""
+  "bsn1|go install example.com/x@v1.2.\\3\\next"
+  "bsn2|go install example.com/x@v\"1.2.3\"\\nightly"
+  "bst|go install example.com/x@\\test"
+  "bsn3|go install example.com/x@v1.2.3\\nightly"
+  "btick1|go install example.com/x@v1.2.\\3\`printf next\`"
+  "btick2|go install \"example.com/x@\`cat v\`\""
+  "qsq|go install \"example.com/x@v1'.2.3'\""
+  "qdq|go install 'example.com/x@v1.2\".\"3'"
+  "dqbranch|go install example.com/x@v1.2.3\"branch\""
+  "dqvar|go install example.com/x@v1.2.3\"\$S\""
+  "bsbranch|go install example.com/x@v1.2.3\\branch"
+  "bsnn|go install example.com/x@v1.2.3\\n\\n      - name y"
+)
+for kind in wf sh; do
+  for spec in "${UNPINNED_GO[@]}"; do
+    form=${spec%%|*}; cmd=${spec#*|}; n="go-$kind-$form"
+    gofind "$n" "$kind" "$cmd"
+    if [ "$form" = var ] || [ "$form" = qvarat ] || [ "$form" = dqvarat ] || [ "$form" = cmdsub ] || [ "$form" = btick1 ] || [ "$form" = btick2 ] || [ "$form" = dqvar ]; then
+      CASE="AC34: daily audit, $kind file, '$cmd' (a variable or substitution names no version, an unmeasured item): exit 1, a line is printed, no issue create/edit call"
+      check test "$rc" -eq 1; check test -s "$work/$n.out"; check no_issue_call "$n"
+    else
+      CASE="AC34: daily audit, $kind file, '$cmd' (not an exact version): exit 1, the line names example.com/x, no issue create/edit call"
+      check test "$rc" -eq 1; check bash -c "grep -v '^  gotool:' '$work/$n.out' | grep -q 'example\.com/x'"; check no_issue_call "$n"
+    fi
+  done
+  for spec in "exact|go install example.com/x@v1.2.3" "rc|go install example.com/x@v1.2.3-rc.1" "sha|go install example.com/x@$SHA4" \
+    "sqexact|go install 'example.com/x@v1.2.3'" "dqexact|go install \"example.com/x@v1.2.3\"" "sqsha|go install 'example.com/x@$SHA4'" "dqsha|go install \"example.com/x@$SHA4\"" \
+    "sqrc|go install 'example.com/x@v1.2.3-rc.1'" "bsexact|go install example.com/x@v1.2.\\3" \
+    "and|go install example.com/x@v1.2.3 && echo ok" "or|go install example.com/x@v1.2.3 || true" "pipe|go install example.com/x@v1.2.3 | cat"; do
+    form=${spec%%|*}; cmd=${spec#*|}; n="go-$kind-ok-$form"
+    gofind "$n" "$kind" "$cmd"
+    CASE="AC34: daily audit, $kind file, '$cmd' (an exact version) is no finding: exit 0, example.com/x not flagged, no issue call"
+    check test "$rc" -eq 0; check bash -c "! grep -v '^  gotool:' '$work/$n.out' | grep -q 'example\.com/x'"; check no_issue_call "$n"
+  done
+done
+# gofblock <name> <wf|sh> <exit code wanted> <multi-line shell text>: like gofind, the text being a whole `run: |` block (wf) or script body (sh)
+gofblock() {
+  local n=$1 kind=$2 want=$3 text=$4 r="$work/r-go-$1"
+  mkrepo "$r" "5:$CLEANSHA"
+  if [ "$kind" = wf ]; then
+    { printf 'on: pull_request\njobs:\n  g:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n'; printf '%s\n' "$text" | sed 's/^/          /'; } >"$r/.github/workflows/go.yml"
+  else
+    printf '#!/usr/bin/env bash\nset -e\n%s\n' "$text" >"$r/bin/get-tool.sh"
+  fi
+  git -C "$r" add -A; git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "go install"
+  run "$n" "$CLEAN" "$r"
+  CASE="AC34: daily audit, $kind file, block '${text//$'\n'/ / }': exit $want"
+  check test "$rc" -eq "$want"
+}
+for kind in wf sh; do
+  gofblock "go-$kind-nl1" "$kind" 0 $'GOTOOLCHAIN=local go install example.com/x@v1.2.3\necho done\necho more'
+  gofblock "go-$kind-nl2" "$kind" 0 $'if GOBIN=/tmp go install example.com/x@v1.2.3; then\n  echo ok\nelse\n  echo no\nfi'
+done
+CASE="AC34: the repository's own files give no unpinned go tool (every gotool item matches pin-audit's GO_EXACT)"
+check test -z "$(python3 - "$root" <<'PY'
+import sys, importlib.util, os, re
+d = os.path.join(sys.argv[1], ".github/agent/supply-chain")
+sys.path.insert(0, d)
+def load(n):
+    s = importlib.util.spec_from_file_location(n.replace("-", "_"), os.path.join(d, n + ".py")); m = importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
+inv = load("pin-inventory")
+src = open(os.path.join(d, "pin-audit.py")).read()
+exact = re.compile(re.search(r'^GO_EXACT = re\.compile\(r"(.*)"\)', src, re.M).group(1))
+for k, i in sorted(inv.load_at(sys.argv[1], None).items()):
+    if i.kind == "gotool" and not exact.fullmatch(i.version):
+        print(k)
+PY
+)"
+mkrepo "$work/r-go-mix" "5:$CLEANSHA"
+printf 'on: pull_request\njobs:\n  g:\n    runs-on: ubuntu-latest\n    steps:\n      - run: go install example.com/loose@latest\n      - run: go install example.com/tight@v1.2.3\n' >"$work/r-go-mix/.github/workflows/go.yml"
+git -C "$work/r-go-mix" add -A; git -C "$work/r-go-mix" -c user.name=t -c user.email=t@x commit -q -m "go install"
+run go-mix "$CLEAN" "$work/r-go-mix"
+CASE="AC34: one unpinned and one pinned go install in one tree: exit 1, only the unpinned module path (example.com/loose) is named, no issue call"
+check test "$rc" -eq 1; check bash -c "grep -v '^  gotool:' '$work/go-mix.out' | grep -q 'example\.com/loose'"; check bash -c "! grep -v '^  gotool:' '$work/go-mix.out' | grep -q 'example\.com/tight'"; check no_issue_call go-mix
 
 echo "pin-audit: $pass passed, $failn failed"
 test "$failn" -eq 0

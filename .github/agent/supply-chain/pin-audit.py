@@ -47,6 +47,9 @@ inv = _load("pin-inventory")
 age = _load("pin-age-check")
 
 
+GO_EXACT = re.compile(r"v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?|[0-9a-f]{40}")
+
+
 class Fail(Exception):
     """The audit could not do its job (exit 2)."""
 
@@ -226,8 +229,6 @@ class FixtureNet:
 
     def versions(self, item):
         return (self.fx.get("versions") or {}).get(item.name) or []
-
-
 
 GO_TOOLS = {"trivy": "github.com/aquasecurity/trivy", "grype": "github.com/anchore/grype",
             "syft": "github.com/anchore/syft",
@@ -898,9 +899,6 @@ class LiveNet:
         return _run(["git", "-C", self.root, "fetch", "-q", "origin", f"pull/{number}/head", base_ref],
                     capture_output=True, text=True)
 
-
-
-
 def _is_text_list(x):
     return isinstance(x, list) and bool(x) and all(isinstance(i, str) for i in x)
 
@@ -1433,9 +1431,11 @@ def main(argv=None):
                 raise Fail(f"unreadable fixtures: {e}")
             if not isinstance(fx, dict):
                 raise Fail("unreadable fixtures: not a JSON object")
-        now = age.parse_time(a.now, True) if a.now else dt.datetime.now(dt.timezone.utc)
-        if now is None:
-            raise Fail("--now is not an ISO time")
+        try:
+            now = dt.datetime.strptime(a.now, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc) if a.now \
+                else dt.datetime.now(dt.timezone.utc)
+        except ValueError:
+            raise Fail("--now is not a UTC time like 2026-10-05T12:00:00Z")
         gh = Gh(a.gh)
         net = FixtureNet(fx) if fx is not None else LiveNet(gh.cmd, a.root)
         default_ex = os.path.join(a.root, ".github", "supply-chain-exceptions.json")
@@ -1624,8 +1624,11 @@ def main(argv=None):
         for e in dead:
             print(f"audit: DEAD EXCEPTION: {dead_message(e, held, net)}")
         for e in dormant:
-            print(f"information: dormant exception: the ruling for {_ruling_label(e)} waits for its pin; nobody holds "
-                  f"it")
+            print(f"information: dormant exception: the ruling for {_ruling_label(e)} waits for its pin; nobody holds it")
+        # REQ-SUP-001-AC34: a go install whose version is not exact is a finding of the daily run (the pull-request scan that judged it is deleted)
+        unpinned = [] if a.base else sorted(k for k, i in head.items() if i.kind == "gotool" and not GO_EXACT.fullmatch(i.version))
+        for k in unpinned:
+            print(f"audit: UNPINNED GO TOOL: {clean(k)} is not an exact version (vMAJOR.MINOR.PATCH or a full commit)")
         plan, disputes, per_item, pending = [], {}, {}, []
         for f in findings:
             print(f"audit: {'DISPUTED' if f.disputed else 'HIT'}: {clean(f.item.key)} ({clean(', '.join(f.ids))}): "
@@ -1682,7 +1685,7 @@ def main(argv=None):
             print("audit: INCOMPLETE: some open pull request pins could not be checked (above): no clean claim is made "
                   "today", file=sys.stderr)
             return 1
-        if lapsed or dead:
+        if lapsed or dead or unpinned:
             return 1
         print(f"audit: no known-compromised versions as of {today}"
               + (f" ({excepted_n} disputed hit(s) covered by a checked-in exception)" if excepted_n else "")

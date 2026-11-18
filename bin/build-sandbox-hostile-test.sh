@@ -82,10 +82,15 @@ mkprobe() { # mkprobe OUT [sed expression]
     -e "s#^UNSHARE=[^ ]*#UNSHARE=$work/bin/unshare#" \
     -e "s#^MELANGE=[^ ]*#MELANGE=$work/bin/melange#; s#^REPO=[^ ]*#REPO=$co/archive#" \
     -e "s#^KEYRING=[^ ]*#KEYRING=$co/archive/keys/wolfi-signing.rsa.pub#" \
-    -e "s#^RECORD=[^ ]*#RECORD=$co/witness-apk/apk-collection.local.json#" \
     ${2:+-e "$2"} "$PROBE" > "$1" && chmod +x "$1"
 }
-runprobe() { # runprobe COPY : from the fixture checkout, tmp folders under $work, a sentinel token in the environment
+# runprobe COPY [RECORD-NAME]: from the fixture checkout, tmp folders under $work, a sentinel token in the environment;
+# the probe gets the record's file name as its one argument (default apk-collection.local.json)
+runprobe() {
+  (cd "$co" && TMPDIR="$work/tmp" RUNNER_TEMP="$work/rt" GH_TOKEN="$SENT_TOKEN" \
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN="$SENT_TOKEN" bash "$1" "${2:-apk-collection.local.json}")
+}
+runprobe_noarg() {
   (cd "$co" && TMPDIR="$work/tmp" RUNNER_TEMP="$work/rt" GH_TOKEN="$SENT_TOKEN" \
     ACTIONS_ID_TOKEN_REQUEST_TOKEN="$SENT_TOKEN" bash "$1")
 }
@@ -126,9 +131,9 @@ t "AC5" "each attempt names its wall: the record (host path, copy), key folder, 
   python3 - "$root" << 'PY'
 import sys
 d = sys.argv[1] + "/build/probe/"
-want = {"read-record": ["cat @RECORD@", "/home/build/witness-apk/apk-collection.local.json"],
-        "write-record": [">> @RECORD@"],
-        "read-keydir": ["@KEYDIR@/dummy"],
+want = {"read-record": ['cat "@RECORD@"', "/home/build/witness-apk/apk-collection.local.json"],
+        "write-record": ['>> "@RECORD@"'],
+        "read-keydir": ['cat "@KEYDIR@/dummy"'],
         "read-token": ["ACTIONS_ID_TOKEN_REQUEST|ACTIONS_RUNTIME_TOKEN|GH_TOKEN|GITHUB_TOKEN", "AWS_", "cut -d = -f 1"],
         "network": ["/proc/net/route", "ipv6"]}
 for k, v in want.items():
@@ -139,9 +144,9 @@ t "AC5" "the control reads the route table the network wall depends on" \
 # the six templates are bound by hash: a template-only change must change a hash here (the hashes are data, no
 # template text)
 HASHES="4001dd1ab79625d0cd0cb6973ff669f0d6804a0ac91e544e3cf93480e9146970  build/probe/control.yaml.tmpl
-9f9ea91f8921a00001aaaead09c6bdf0c4ef18734a6c7a6827c5ff60bb689223  build/probe/read-record.yaml.tmpl
-df707bfb928110a6e64a8e59348518ea7b1059d028a91f7cb708891170177cca  build/probe/write-record.yaml.tmpl
-12cfdd0158eb21599faa6e61195fcc907c1b324b596dfb43720178571db46eb5  build/probe/read-keydir.yaml.tmpl
+86a5d1e0abb517719aec4f29953e4b8f8f3a93480dfc0c4c66e44d05870c0601  build/probe/read-record.yaml.tmpl
+0dabe69d25d60139d78d088bf3e6f2e628bbf703eb49fe98eaf12bee0f110e55  build/probe/write-record.yaml.tmpl
+49004320540eb84f7e212250f320daf66d009500fafe4fe21c2ad670a565d77e  build/probe/read-keydir.yaml.tmpl
 82f2ebf932271a9d691cef7da932c0a84f4e2ab59624adc4cec14589af468501  build/probe/read-token.yaml.tmpl
 e1793239e22eedbdf02b1b955293223e788a9ead4de20807a8e4881f1a3cec9c  build/probe/network.yaml.tmpl"
 t "AC5" "the six templates equal the hashes bound in this test" \
@@ -187,7 +192,27 @@ setrc 0; echo 126 > "$work/rc/network"
 exits "AC5" "melange not executable (exit 126) is a probe error (exit 1)" 1 runprobe "$work/probe.sh"
 setrc 0; mv "$co/witness-apk/apk-collection.local.json" "$work/rec.saved"
 exits "AC5" "a missing Witness record is a refusal (exit 2)" 2 runprobe "$work/probe.sh"
+t "AC5" "...naming the record" grep -q "apk-collection.local.json" "$work/o"
+# the record is the file the argument names, read from witness-apk/, with no fallback to another name (SCF rule 8)
+SNAP=snapshot-apk-collection.local.json
+printf '{"record": "snapshot"}\n' > "$co/witness-apk/$SNAP"
+setrc 0
+exits "AC5" "snapshot record argument, only that record present: the walls are judged (exit 0)" \
+  0 runprobe "$work/probe.sh" "$SNAP"
+t "AC5" "...and melange ran the control and five walls" \
+  bash -c "[ \$(grep -c '^melange build probe-' '$work/calls') = 6 ]"
+rm "$co/witness-apk/$SNAP"
 mv "$work/rec.saved" "$co/witness-apk/apk-collection.local.json"
+setrc 0
+exits "AC5" "snapshot record argument with only the ordinary record present is a refusal (exit 2), no fallback" \
+  2 runprobe "$work/probe.sh" "$SNAP"
+t "AC5" "...naming the missing snapshot record" grep -q "$SNAP" "$work/o"
+t "AC5" "...and melange never ran (no fallback)" bash -c "[ ! -s '$work/calls' ]"
+setrc 0
+exits "AC5" "no argument is a refusal (exit 2), the ordinary record present" 2 runprobe_noarg "$work/probe.sh"
+t "AC5" "...and melange never ran (no argument)" bash -c "[ ! -s '$work/calls' ]"
+exits "AC5" "the ordinary record argument with the ordinary record present: the walls are judged (exit 0)" \
+  0 runprobe "$work/probe.sh" apk-collection.local.json
 
 # the sealed shape, judged by the pinned helper before melange runs: each mutant is refused (exit 2) and melange never
 # runs
@@ -221,6 +246,47 @@ t "AC5" "...and the temporary folder is empty" bash -c "[ -z \"\$(ls -A '$work/t
 # the repository was not written to: bin/ and build/ show what they showed before the run
 t "AC5" "the run left bin/ and build/ of the repository as they were (git status unchanged)" \
   bash -c "[ \"\$(git -C '$root' status --porcelain -- bin build 2>&1)\" = \"\$0\" ]" "$git_before"
+
+# the paths pasted into a recipe's shell line: a path with a space, &, | or a quote is refused (exit 2, the message
+# names it) before any melange call; a plain path still runs
+withrec() { # withrec OUT PATH : the probe copy with its RECORD line naming PATH (quoted for the shell)
+  python3 - "$work/probe.sh" "$1" "$2" << 'PY'
+import re, shlex, sys
+t = open(sys.argv[1]).read()
+t = re.sub(r"(?m)^RECORD=\S*", lambda m: "RECORD=" + shlex.quote(sys.argv[3]), t)
+open(sys.argv[2], "w").write(t)
+PY
+}
+hostile_names=("sp ace" "am&per" "pi|pe" "sin'gle" 'dou"ble')
+setrc 0
+for hn in "${hostile_names[@]}"; do
+  rd="$work/rec $hn"; mkdir -p "$rd"; cp "$co/witness-apk/apk-collection.local.json" "$rd/r.json"
+  withrec "$work/probe-rec.sh" "$rd/r.json"; : > "$work/calls"
+  exits "AC5" "a RECORD path containing [$hn] is refused (exit 2)" 2 runprobe "$work/probe-rec.sh"
+  t "AC5" "...the message names the record path ([$hn])" grep -qF -e "$rd/r.json" "$work/o"
+  t "AC5" "...and melange never ran ([$hn])" bash -c "[ ! -s '$work/calls' ]"
+  kr="$work/rtk $hn"; mkdir -p "$kr"; : > "$work/calls"
+  exits "AC5" "a RUNNER_TEMP (key folder) path containing [$hn] is refused (exit 2)" 2 \
+    bash -c 'cd "$1" && TMPDIR="$2" RUNNER_TEMP="$3" bash "$4"' _ "$co" "$work/tmp" "$kr" "$work/probe.sh"
+  t "AC5" "...the message names the key folder path ([$hn])" grep -qF -e "$kr" "$work/o"
+  t "AC5" "...and melange never ran for the key folder ([$hn])" bash -c "[ ! -s '$work/calls' ]"
+done
+# a $ or a backtick in a pasted path would be expanded by the recipe's shell: refused too, before any melange call
+for hn in 'dol$lar' 'back`tick'; do
+  rd="$work/rec-$hn"; mkdir -p "$rd"; cp "$co/witness-apk/apk-collection.local.json" "$rd/r.json"
+  withrec "$work/probe-rec.sh" "$rd/r.json"; setrc 0
+  exits "AC5" "a RECORD path containing [$hn] is refused (exit 2)" 2 runprobe "$work/probe-rec.sh"
+  t "AC5" "...the message names the record path ([$hn])" grep -qF -e "$rd/r.json" "$work/o"
+  t "AC5" "...and melange never ran ([$hn])" bash -c "[ ! -s '$work/calls' ]"
+  kr="$work/rtk-$hn"; mkdir -p "$kr"; : > "$work/calls"
+  exits "AC5" "a RUNNER_TEMP (key folder) path containing [$hn] is refused (exit 2)" 2 \
+    bash -c 'cd "$1" && TMPDIR="$2" RUNNER_TEMP="$3" bash "$4"' _ "$co" "$work/tmp" "$kr" "$work/probe.sh"
+  t "AC5" "...the message names the key folder path ([$hn])" grep -qF -e "$kr" "$work/o"
+  t "AC5" "...and melange never ran for the key folder ([$hn])" bash -c "[ ! -s '$work/calls' ]"
+done
+mkdir -p "$work/rec-plain"; cp "$co/witness-apk/apk-collection.local.json" "$work/rec-plain/r.json"
+withrec "$work/probe-plain.sh" "$work/rec-plain/r.json"; setrc 0
+exits "AC5" "a plain RECORD path in another folder still runs (exit 0)" 0 runprobe "$work/probe-plain.sh"
 
 echo "build-sandbox-hostile-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

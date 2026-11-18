@@ -50,20 +50,10 @@ run_case() {
   mkdir -p "$work/bin"; local log="$work/calls"; : > "$log"
   # the installer's Go pin (Codex B r4 F2): GO_VER and both per-arch checksums, bumped together with the go directives
   printf '#!/usr/bin/env bash\nGO_VER=1.26.6\ncase x in\n  go:x86_64|go:amd64) SUM=%s ;;\n  go:aarch64|go:arm64) SUM=%s ;;\nesac\n' "$(printf 'a%.0s' $(seq 64))" "$(printf 'b%.0s' $(seq 64))" > "$work/bin/install-scanner.sh"
-  # the policy row of the installer (.github/policy/chain-scripts.json): its sha256 must follow the installer's bytes in the same commit (Codex A r5 #3)
-  mkdir -p "$work/.github/policy"
-  python3 - "$work" <<'PY'
-import hashlib, json, os, sys
-w = sys.argv[1]
-h = hashlib.sha256(open(w + "/bin/install-scanner.sh", "rb").read()).hexdigest()
-rows = [{"path": "bin/other.sh", "sha256": "0" * 64}, {"path": "bin/install-scanner.sh", "sha256": h, "tools": ["go"]}]
-if os.environ.get("BUMP_POLICYPAD") == "1":      # the real policy is 150 KB: its base64 is over Linux's 128 KiB limit for ONE argument, so the request must not pass it through argv
-    rows += [{"path": "bin/pad%d.sh" % n, "sha256": "%064x" % n, "reason": "x" * 400} for n in range(400)]
-json.dump({"scripts": rows}, open(w + "/.github/policy/chain-scripts.json", "w"), indent=2)
-open(w + "/.github/policy/chain-scripts.json", "a").write("\n")
-PY
-  # the recipe template, its generator and the two generated recipes (rc-3 item 6): copies of the real files with the Go pin moved back to 1.26.6, the template's
-  # pin and the recipes regenerated, so the work tree is self-consistent before the bump; BUMP_TMPL=drift leaves the template at another Go version
+  if [ "${BUMP_PAD:-}" = 1 ]; then      # a 200 KB installer: its base64 is over Linux's 128 KiB limit for ONE argument, so the request must not pass it through argv
+    for n in $(seq 400); do printf '# pad %d %s\n' "$n" "$(printf 'x%.0s' $(seq 400))"; done >> "$work/bin/install-scanner.sh"
+  fi
+  # the recipe template, its generator and the two generated recipes (rc-3 item 6): copies of the real files with the Go pin moved back to 1.26.6 and the recipes regenerated, so the work tree is self-consistent before the bump; BUMP_TMPL=drift leaves the template at another Go version
   root_real="$(cd "$here/.." && pwd)"
   mkdir -p "$work/build/locks"; cp "$root_real"/build/locks/* "$work/build/locks/"; cp "$root_real/bin/gen-recipes.py" "$work/bin/"
   cp "$root_real/build/melange-baselayout.yaml.tmpl" "$root_real/build/melange-baselayout.yaml" "$work/build/"   # the generator reads the base-layout template too (0710)
@@ -74,15 +64,7 @@ import re, sys
 t = open(sys.argv[1]).read()
 open(sys.argv[1], "w").write(re.sub(r"(uri: https://go\.dev/dl/go1\.26\.6\.linux-amd64\.tar\.gz\n)", r"\1      # the checksum follows\n", t, count=1))
 PY
-  python3 - "$work" <<'PY'
-import hashlib, re, sys
-w = sys.argv[1]
-h = hashlib.sha256(open(w + "/build/melange.yaml.tmpl", "rb").read()).hexdigest()
-g = open(w + "/bin/gen-recipes.py").read()
-open(w + "/bin/gen-recipes.py", "w").write(re.sub(r'^TEMPLATE_SHA256 = "[0-9a-f]{64}"', 'TEMPLATE_SHA256 = "' + h + '"', g, count=1, flags=re.M))
-PY
   ( cd "$work" && python3 bin/gen-recipes.py --write >/dev/null 2>&1 )
-  [ "${BUMP_TMPL:-ok}" = pinbad ] && sed -i.bak "s/^TEMPLATE_SHA256 = \"[0-9a-f]\{64\}\"/TEMPLATE_SHA256 = \"$(printf 'f%.0s' $(seq 64))\"/" "$work/bin/gen-recipes.py" && rm -f "$work/bin/gen-recipes.py.bak"
   # go.dev, over HTTPS: the published list (mode=json) and the two linux tarballs, served by a mock download program; BUMP_CURL=down|mismatch|nolist|badhex breaks it
   local amd arm; amd=$(printf 'go1.27.0 amd64 tarball' | sha256sum | cut -d' ' -f1); arm=$(printf 'go1.27.0 arm64 tarball' | sha256sum | cut -d' ' -f1)
   [ "${BUMP_CURL:-ok}" = mismatch ] && amd=$(printf 'c%.0s' $(seq 64))
@@ -152,10 +134,6 @@ GIT
   want_amd=$(printf 'go1.27.0 amd64 tarball' | sha256sum | cut -d' ' -f1); want_arm=$(printf 'go1.27.0 arm64 tarball' | sha256sum | cut -d' ' -f1)
   have_ver=$(sed -n 's/^GO_VER=//p' "$work/bin/install-scanner.sh")
   have_amd=$(sed -n 's/.*go:x86_64|go:amd64) SUM=\([0-9a-f]*\) ;;/\1/p' "$work/bin/install-scanner.sh"); have_arm=$(sed -n 's/.*go:aarch64|go:arm64) SUM=\([0-9a-f]*\) ;;/\1/p' "$work/bin/install-scanner.sh")
-  local want_row have_row
-  want_row=$(sha256sum "$work/bin/install-scanner.sh" | cut -d' ' -f1)
-  have_row=$(python3 -c 'import json,sys; print([r["sha256"] for r in json.load(open(sys.argv[1]))["scripts"] if r["path"]=="bin/install-scanner.sh"][0])' "$work/.github/policy/chain-scripts.json")
-  [ "$have_row" = "$want_row" ] || why+=" the installer's row in chain-scripts.json is ${have_row:0:8}, the installer's sha256 is ${want_row:0:8} (they move together, in the same commit);"
   if [ "$want_dir" = new ]; then
     [ "$have_ver" = 1.27.0 ] && [ "$have_amd" = "$want_amd" ] && [ "$have_arm" = "$want_arm" ] || why+=" installer pin ${have_ver}/${have_amd:0:8}/${have_arm:0:8} not the bumped version and the sha256 of the downloaded tarballs;"
   elif [ "$want_dir" != skip ]; then
@@ -168,14 +146,12 @@ GIT
   [ "$want_dir" = skip ] || { [ "$dir_root" = "$wd" ] && [ "$dir_tools" = "$wd" ] || why+=" go directives $dir_root/$dir_tools want $wd;"; }
   [ -z "$must" ] || grep -qF -- "$must" <<<"$out" || why+=" the output lacks '${must}';"
   if [ "$want_dir" != skip ]; then
-  # rc-3 item 6: the recipe template's two go.dev pins move with the bump, TEMPLATE_SHA256 follows the template's bytes, the generated recipes are regenerated
-  local t_uri_a t_uri_r t_sum_a t_sum_r t_pin t_real
+  # rc-3 item 6: the recipe template's two go.dev pins move with the bump, the generated recipes are regenerated
+  local t_uri_a t_uri_r t_sum_a t_sum_r
   t_uri_a=$(grep -c "go.dev/dl/go${wd}.linux-amd64.tar.gz" "$work/build/melange.yaml.tmpl"); t_uri_r=$(grep -c "go.dev/dl/go${wd}.linux-arm64.tar.gz" "$work/build/melange.yaml.tmpl")
   t_sum_a=$(grep -c "expected-sha256: ${want_amd}" "$work/build/melange.yaml.tmpl"); t_sum_r=$(grep -c "expected-sha256: ${want_arm}" "$work/build/melange.yaml.tmpl")
-  t_pin=$(sed -n 's/^TEMPLATE_SHA256 = "\([0-9a-f]*\)".*/\1/p' "$work/bin/gen-recipes.py"); t_real=$(sha256sum "$work/build/melange.yaml.tmpl" | cut -d' ' -f1)
   if [ "$want_dir" = new ]; then
     [ "$t_uri_a" = 1 ] && [ "$t_uri_r" = 1 ] && [ "$t_sum_a" = 1 ] && [ "$t_sum_r" = 1 ] || why+=" the template's go.dev pins are not the bumped uri and the downloaded sha256 ($t_uri_a/$t_uri_r/$t_sum_a/$t_sum_r);"
-    [ "$t_pin" = "$t_real" ] || why+=" TEMPLATE_SHA256 ${t_pin:0:8} is not the template's sha256 ${t_real:0:8};"
     ( cd "$work" && python3 bin/gen-recipes.py --check >/dev/null 2>&1 ) || why+=" gen-recipes.py --check fails after the bump (the recipes are not regenerated);"
     grep -q "go${wd}.linux-amd64" "$work/build/melange.yaml" && grep -q "go${wd}.linux-arm64" "$work/build/melange-fips.yaml" || why+=" a generated recipe still pins the old Go;"
   else
@@ -184,7 +160,7 @@ GIT
   fi
   # the body names every step this change does not do itself (the archive push) and the files that moved
   if [ -f "$log.body" ]; then
-    for need in build/melange.yaml.tmpl TEMPLATE_SHA256 bin/gen-recipes.py build/melange.yaml build/melange-fips.yaml build/archive.json "go/go1.27.0.linux-amd64.tar.gz" "go/go1.27.0.linux-arm64.tar.gz" "not part of this pull request"; do
+    for need in build/melange.yaml.tmpl bin/gen-recipes.py build/melange.yaml build/melange-fips.yaml build/archive.json "go/go1.27.0.linux-amd64.tar.gz" "go/go1.27.0.linux-arm64.tar.gz" "not part of this pull request"; do
       grep -qF -- "$need" "$log.body" || why+=" the PR body does not name '$need';"
     done
     # bot public text round 2: the body is plain public text, at most 10 non-blank lines, no requirement id and no release history,
@@ -195,22 +171,22 @@ GIT
       python3 -I "$(dirname "$SUT")/check-customer-words.py" </dev/null >/dev/null 2>&1 || why+=" the PR body fails bin/check-customer-words.py;"
   fi
   if [ "$chk" = 1 ]; then
-    # the request the API receives: this branch, this base, no deletions, exactly the eight bumped files' bytes (the two go.mod files, the installer and its policy row), a headline, no author override
-    # the expected encodings go to files and into jq by --rawfile: a padded policy file is far over one argument's size limit on Linux
+    # the request the API receives: this branch, this base, no deletions, exactly the six bumped files' bytes (the two go.mod files, the installer), a headline, no author override
+    # the expected encodings go to files and into jq by --rawfile: a padded installer is far over one argument's size limit on Linux
     mkdir -p "$work/exp"
     base64 < "$work/go.mod" | tr -d '\n' > "$work/exp/r"; base64 < "$work/tools/requirements/go.mod" | tr -d '\n' > "$work/exp/t"
-    base64 < "$work/bin/install-scanner.sh" | tr -d '\n' > "$work/exp/ins"; base64 < "$work/.github/policy/chain-scripts.json" | tr -d '\n' > "$work/exp/pol"
-    base64 < "$work/build/melange.yaml.tmpl" | tr -d '\n' > "$work/exp/mm"; base64 < "$work/bin/gen-recipes.py" | tr -d '\n' > "$work/exp/gg"
+    base64 < "$work/bin/install-scanner.sh" | tr -d '\n' > "$work/exp/ins";
+    base64 < "$work/build/melange.yaml.tmpl" | tr -d '\n' > "$work/exp/mm"; 
     base64 < "$work/build/melange.yaml" | tr -d '\n' > "$work/exp/yy"; base64 < "$work/build/melange-fips.yaml" | tr -d '\n' > "$work/exp/zz"
-    jq -e --arg b "$B" --arg base "$BASE" --rawfile r "$work/exp/r" --rawfile t "$work/exp/t" --rawfile ins "$work/exp/ins" --rawfile pol "$work/exp/pol" \
-          --rawfile mm "$work/exp/mm" --rawfile gg "$work/exp/gg" --rawfile yy "$work/exp/yy" --rawfile zz "$work/exp/zz" '
+    jq -e --arg b "$B" --arg base "$BASE" --rawfile r "$work/exp/r" --rawfile t "$work/exp/t" --rawfile ins "$work/exp/ins" \
+          --rawfile mm "$work/exp/mm" --rawfile yy "$work/exp/yy" --rawfile zz "$work/exp/zz" '
       .variables.input as $i
       | $i.branch.branchName == $b and $i.expectedHeadOid == $base
         and ($i.message.headline | startswith("chore(go): bump toolchain 1.26.6 -> 1.27.0"))
         and (($i.fileChanges | keys) == ["additions"])
-        and ($i.fileChanges.additions | map(.path) | sort) == [".github/policy/chain-scripts.json", "bin/gen-recipes.py", "bin/install-scanner.sh", "build/melange-fips.yaml", "build/melange.yaml", "build/melange.yaml.tmpl", "go.mod", "tools/requirements/go.mod"]
-        and ($i.fileChanges.additions | map({(.path): .contents}) | add) == {"go.mod": $r, "tools/requirements/go.mod": $t, "bin/install-scanner.sh": $ins, ".github/policy/chain-scripts.json": $pol, "build/melange.yaml.tmpl": $mm, "bin/gen-recipes.py": $gg, "build/melange.yaml": $yy, "build/melange-fips.yaml": $zz}
-        and ($i | has("author") | not)' "$work/input.json" >/dev/null 2>&1 || why+=" the commit request is not exactly the eight bumped files (the two go.mod files, the installer, its policy row, the recipe template, its generator and the two generated recipes);"
+        and ($i.fileChanges.additions | map(.path) | sort) == ["bin/install-scanner.sh", "build/melange-fips.yaml", "build/melange.yaml", "build/melange.yaml.tmpl", "go.mod", "tools/requirements/go.mod"]
+        and ($i.fileChanges.additions | map({(.path): .contents}) | add) == {"go.mod": $r, "tools/requirements/go.mod": $t, "bin/install-scanner.sh": $ins, "build/melange.yaml.tmpl": $mm, "build/melange.yaml": $yy, "build/melange-fips.yaml": $zz}
+        and ($i | has("author") | not)' "$work/input.json" >/dev/null 2>&1 || why+=" the commit request is not exactly the six bumped files (the two go.mod files, the installer, the recipe template, its generator and the two generated recipes);"
   fi
   rm -rf "$work"
   if [ -z "$why" ]; then echo "ok: ${name}"; pass=$((pass+1)); return 0; fi
@@ -296,7 +272,6 @@ BUMP_CURL=nolist run_case "a version go.dev does not publish -> fails closed" "$
 BUMP_CURL=badhex run_case "a published checksum that is not 64 hex -> fails closed" "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR" old
 BUMP_TMPL=drift run_case "a template not pinned at the current Go -> fails closed, nothing changed or pushed" "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR" old
 BUMP_TMPL=split run_case "a template whose uri and sha256 lines are apart -> fails closed before any file changes" "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR" old
-BUMP_TMPL=pinbad run_case "a template that no longer equals its pin -> fails closed (a bump re-pins reviewed bytes only)" "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR" old
 # the Go versions are plain release numbers: anything else is refused before a single call (they go into file names, a pattern and the template)
 vout=$(cd "$(mktemp -d)" && bash "$SUT" '1.26.6' '1.27.0; rm -rf x' 2>&1); vrc=$?
 if [ "$vrc" = 2 ] && grep -q 'must look like' <<<"$vout"; then echo "ok: a Go version that is not a plain release number is refused (exit 2) before any call"; pass=$((pass+1)); else echo "FAIL: a malformed version was not refused (rc=$vrc): ${vout:0:200}"; fail=$((fail+1)); fi
@@ -318,7 +293,7 @@ if grep -q 'bin/install-scanner.sh' "$SUT" && grep -q 'GO_VER' "$SUT" && grep -q
 else echo "FAIL: the bump script does not describe the installer pin in the PR body"; fail=$((fail+1)); fi
 
 # END TO END (Codex A r5 #3, B F2): a proposed bump, made by the script's real code path in a copy of the REAL files with a fake go.dev, leaves every
-# check that reads the pin green: the policy validator (load_scripts), the installer test and the go-freshness wiring test
+# check that reads the pin green: the installer test and the go-freshness wiring test
 e2e="$(mktemp -d)"; rm -rf "$e2e"; mkdir -p "$e2e/bin" "$e2e/tools/requirements" "$e2e/tools/govulncheck" "$e2e/.github/policy" "$e2e/.github/workflows" "$e2e/fake"
 root="$(cd "$here/.." && pwd)"
 cp "$root/go.mod" "$e2e/go.mod"; cp "$root/tools/requirements/go.mod" "$e2e/tools/requirements/go.mod"
@@ -347,13 +322,7 @@ chmod +x "$e2e/fake/"*
 e2e_check() { # e2e_check LABEL CMD...
   local label=$1; shift; local o rc=0; o=$( cd "$e2e" && "$@" 2>&1 ) || rc=$?
   if [ "$rc" = 0 ]; then echo "ok: e2e bump ${cur} -> ${new}: ${label}"; pass=$((pass+1)); else echo "FAIL: e2e bump: ${label}: ${o:0:300}"; fail=$((fail+1)); fi; }
-e2e_check "the policy validator (load_scripts) accepts the bumped installer's row" python3 -c '
-import importlib.util, sys
-s = importlib.util.spec_from_file_location("cts", "bin/chain-test-signers.py"); m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
-rows, errs, names = m.load_scripts(".")
-bad = [e for e in errs if "install-scanner" in e]
-sys.exit(1 if bad else 0) if not bad else (print(bad), sys.exit(1))'
-e2e_check "the template's pins moved, TEMPLATE_SHA256 follows it and the recipes are regenerated (gen-recipes.py --check)" python3 bin/gen-recipes.py --check
+e2e_check "the template's pins moved and the recipes are regenerated (gen-recipes.py --check)" python3 bin/gen-recipes.py --check
 e2e_check "the template pins the new tarballs" bash -c 'grep -q "go.dev/dl/go'"${new}"'.linux-amd64.tar.gz" build/melange.yaml.tmpl && grep -q "expected-sha256: '"${t_arm}"'" build/melange.yaml.tmpl'
 e2e_check "bin/chain-install-witness-test.sh passes on the bumped tree" bash bin/chain-install-witness-test.sh
 e2e_check "bin/go-freshness-wiring-test.sh passes on the bumped tree" bash bin/go-freshness-wiring-test.sh
@@ -368,9 +337,9 @@ mutant() {
   else echo "ok: mutant caught: $name"; pass=$((pass+1)); fail=$((fail-1)); fi
 }
 FRESH_CASE=('[]' 0 0 0 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$CREATE"$'\n'"$PRVIEW" new ok true 1)
-# round 1 of take 30 (Codex sol B1/B2): the request is built from FILES (jq --rawfile), never from an argument (the real policy's base64 is over Linux's 128 KiB limit for one argument), and an encoder
+# round 1 of take 30 (Codex sol B1/B2): the request is built from FILES (jq --rawfile), never from an argument (a large file's base64 is over Linux's 128 KiB limit for one argument), and an encoder
 # that fails stops the bump before anything is pushed (no empty installer in a signed commit)
-BUMP_POLICYPAD=1 run_case "a 200 KB policy file -> the request still carries the eight files exactly (built from files, not arguments)" "$SUT" "${FRESH_CASE[@]}"
+BUMP_PAD=1 run_case "a 200 KB installer -> the request still carries the six files exactly (built from files, not arguments)" "$SUT" "${FRESH_CASE[@]}"
 BUMP_B64=fail run_case "an encoder that fails -> nothing pushed, no API commit, no PR, exit 1" "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP" skip
 if grep -Eq -- '--arg +[A-Za-z_]+ +"\$\((base64|cat)' "$SUT"; then echo "FAIL: the bump script passes file contents through jq --arg"; fail=$((fail+1)); else echo "ok: the bump script passes no file contents through jq --arg"; pass=$((pass+1)); fi
 { cat "$SUT"; printf '\ngh pr ready "$branch"\ngh pr merge --squash --auto "$branch"\n'; } > "$mut"
@@ -418,10 +387,10 @@ mutant "an orphan tip that is not a bump commit is taken" "an orphan tip that is
 # action or script outside the tests runs git commit, git commit-tree or git merge, written out as a shell command (options allowed, quoted or after ;
 # and &&) or as a Python argument list ("git", "commit"). A deliberately disguised form (an alias, --config-env, split or concatenated words, escaped
 # quotes, redirections spread through the command, git fast-import) is information, not a blocker: main's signed-commits rule stops an unsigned commit
-# from merging whatever wrote it, and the bump path itself is proved by the cases above. An exception is the sha256 of the file and the WHOLE line, so
+# from merging whatever wrote it, and the bump path itself is proved by the cases above. An exception is the file and the WHOLE line, so
 # nothing else on that line can run: a test fixture inside a library the tests source, a ledger string the harness reads, error messages and prose.
 GUARD_PY='
-import hashlib, os, re, subprocess, sys
+import os, re, subprocess, sys
 CMDS = "(?:commit|commit-tree|merge)"
 WORD = r"""(?:"[^"]*"|\x27[^\x27]*\x27|[^\s"\x27]+)"""      # an ordinary shell word, quoted or not (quotes around the whole word)
 OPT = r"""["\x27]?-[^\s"\x27]*["\x27]?(?:\s+""" + WORD + r""")?"""     # an option and, when it has one, its value: -c "user.name=Build Bot"
@@ -430,7 +399,7 @@ LIST_RE = re.compile(r"""["\x27](?:[^"\x27]*/)?git["\x27]\s*,\s*(?:["\x27][^"\x2
 # every tracked file is read except the tests, the prose and the data (docs, markdown, json, the evidence and the root requirements)
 SKIP = re.compile(r"(^|/)(tests?|testdata|fixtures)/|^(docs|test-evidence|requirements)/|-test\.(sh|py)$|_test\.(py|go)$|(^|/)test_[^/]*\.py$|\.(md|json|txt|sum|mod|png|svg|gz|lock|pub)$")
 mode, root = sys.argv[1:3]       # "scan" lists the offending lines, "dead" the allowed hashes that match no line
-ALLOWED = set(sys.argv[3:])      # sha256 of "file\nwhole line, stripped"
+ALLOWED = set(sys.argv[3:])      # "file<TAB>whole line, stripped"
 used, found = set(), []
 files = subprocess.run(["git", "ls-files", "-z"], cwd=root, capture_output=True, text=True, check=True).stdout.split("\0")
 for f in files:
@@ -445,9 +414,9 @@ for f in files:
         s = line.strip()
         if s.startswith("#") or not (SHELL_RE.search(s) or LIST_RE.search(s)):
             continue
-        digest = hashlib.sha256((f + "\n" + s).encode()).hexdigest()
-        if digest in ALLOWED:
-            used.add(digest)
+        key = f + "\t" + s
+        if key in ALLOWED:
+            used.add(key)
             continue
         found.append("%s:%d:%s" % (f, n, s[:160]))
     for m in LIST_RE.finditer(whole):           # an argument list spread over lines
@@ -457,28 +426,28 @@ lines = found if mode == "scan" else sorted(ALLOWED - used)
 if lines:
     print("\n".join(lines))
 '
-guard_scan() { python3 -I -c "$GUARD_PY" scan "$@"; }   # guard_scan <repo root> [allowed sha256 ...]
-guard_dead() { python3 -I -c "$GUARD_PY" dead "$@"; }   # guard_dead <repo root> [allowed sha256 ...]: the ones that match no line
-# each hash covers one line, named here by its file and the start of the line
-ALLOW=(
-  93abf67cf317408498df34dd65e1f7af0ddef77dc3be75c3e22107424f6575b9  # auditor-open-pr.py: shim("git commit -m auditor:%s" % change)
-  7c3e3df9b151afb150c82b8a64eb67d69d60c0c2ccbf0b9ac97f54624218f818  # bin/melange-apko-lib.sh: GIT_COMMITTER_EMAIL=t@example.test GIT_COMMITTER_DATE=... git co
-  933049755c9dd2e918eccd8dd86a093de078ec3c7d82a817b3e5aef6bb6c36e6  # bin/chain-verify.py: refuse(stage, "commit: the record's git commit %s is not the run's commit %s" ...
-  983018d69395400814caa6f3599d037b91deafc7be3d33db32e712225ac90290  # auditor-signed-commit.py: main requires signed commits; `git commit` in a runner is unsigned. ...
-  a8d65fd5764e2010f75f86de97cdd4e74d1e5aa88c45bd0c97954b2d3b6fe992  # auditorlib/signed_commit.py: main's ruleset requires signed commits, and a commit made by `git commit` ...
-  bd19eca3ff27b1131b153768cb7e7bc3f980ecb72c093736b85673c9f0256bcd  # auditorlib/signed_commit.py: "the commit cannot be made through the API (and a git commit would be unsigned)"
-)
+guard_scan() { python3 -I -c "$GUARD_PY" scan "$@"; }   # guard_scan <repo root> [allowed "file<TAB>whole line" ...]
+guard_dead() { python3 -I -c "$GUARD_PY" dead "$@"; }   # guard_dead <repo root> [allowed "file<TAB>whole line" ...]: the ones that match no line
+# each row is one line, named by its file and the whole line, stripped (a tab between them)
+mapfile -t ALLOW <<'ROWS'
+.github/agent/bin/auditor-open-pr.py	shim("git commit -m auditor:%s" % change)
+.github/agent/bin/auditor-signed-commit.py	main requires signed commits; `git commit` in a runner is unsigned. This makes ONE commit on --branch through createCommitOnBranch with the
+.github/agent/bin/auditorlib/signed_commit.py	main's ruleset requires signed commits. A commit made by `git commit` in the runner is not signed, so the PR it
+.github/agent/bin/auditorlib/signed_commit.py	raise CommitError("signed commit: %s is %d bytes, over the %d-byte limit of createCommitOnBranch; the commit cannot be made through the API (and a git commit would be unsigned)"
+bin/chain-verify.py	refuse(stage, "commit: the record's git commit %s is not the run's commit %s" % (", ".join(commits) or "(none)", commit))
+bin/melange-apko-lib.sh	GIT_COMMITTER_EMAIL=t@example.test GIT_COMMITTER_DATE="$ISO" GIT_AUTHOR_DATE="$ISO" git commit -q -m fixture ) >/dev/null 2>&1
+ROWS
 bad_lines="$(guard_scan "$root" "${ALLOW[@]}")" || bad_lines="the guard itself failed"
 if [ -z "$bad_lines" ]; then echo "ok: no workflow or script outside the tests makes a commit with git (AC9, plain forms)"; pass=$((pass+1))
 else echo "FAIL: a commit-making git call outside the tests:"; printf '%s\n' "$bad_lines" | sed 's/^/    /'; fail=$((fail+1)); fi
-# an allowed hash whose line is gone or changed is a dead entry: it must be removed, not left to excuse a later line
+# an allowed row whose line is gone or changed is a dead entry: it must be removed, not left to excuse a later line
 dead="$(guard_dead "$root" "${ALLOW[@]}")" || dead="the guard itself failed"
-if [ -z "$dead" ]; then echo "ok: every allowed hash matches a live line (no dead entry)"; pass=$((pass+1))
-else echo "FAIL: an allowed hash matches no line any more:"; printf '%s\n' "$dead" | sed 's/^/    /'; fail=$((fail+1)); fi
-fake="$(printf 'no such file\nno such line' | sha256sum | cut -d' ' -f1)"
+if [ -z "$dead" ]; then echo "ok: every allowed row matches a live line (no dead entry)"; pass=$((pass+1))
+else echo "FAIL: an allowed row matches no line any more:"; printf '%s\n' "$dead" | sed 's/^/    /'; fail=$((fail+1)); fi
+fake="$(printf 'no such file\tno such line')"
 dead="$(guard_dead "$root" "${ALLOW[@]}" "$fake")"
-if [ "$dead" = "$fake" ]; then echo "ok: a dead allowed hash is reported (and only it)"; pass=$((pass+1))
-else echo "FAIL: a dead allowed hash was not reported exactly: '$dead'"; fail=$((fail+1)); fi
+if [ "$dead" = "$fake" ]; then echo "ok: a dead allowed row is reported (and only it)"; pass=$((pass+1))
+else echo "FAIL: a dead allowed row was not reported exactly: '$dead'"; fail=$((fail+1)); fi
 # the guard must catch each plain form on its own, in a throwaway repository
 g="$(mktemp -d)"; ( cd "$g" && git init -q && mkdir -p bin .github/workflows .githooks tools/requirements ) >/dev/null 2>&1
 guard_in() {   # guard_in <file> <content>: the number of hits when the repository holds only that file
@@ -509,7 +478,7 @@ guard_passes  "a comment and other git calls"     bin/a.sh '# git commit is not 
 guard_passes  "a word that only contains the name" bin/a.sh 'echo digit commit; mygit commit\n'
 # an exception is the exact whole line: the same line with anything executable around it is still caught
 L='raise CommitError("signed commit: %s is %d bytes, over the %d-byte limit of createCommitOnBranch; the commit cannot be made through the API (and a git commit would be unsigned)"'   # a copy of the one excepted line (the repo-wide scan below still reads the real file)
-sig="$(printf '%s\n%s' "bin/a.py" "$L" | sha256sum | cut -d' ' -f1)"
+sig="bin/a.py"$'\t'"$L"
 n="$(guard_in bin/a.py "${L//\\/\\\\}"'\n' "$sig")"; [ "$n" = 0 ] && { echo "ok: an exception row passes exactly its own line"; pass=$((pass+1)); } || { echo "FAIL: an exception row does not pass its own line ($n)"; fail=$((fail+1)); }
 n="$(guard_in bin/a.py "subprocess.run(['git','commit']); ${L//\\/\\\\}"'\n' "$sig")"; [ "$n" -ge 1 ] && { echo "ok: an executable prefix on an excepted line is caught"; pass=$((pass+1)); } || { echo "FAIL: an executable prefix on an excepted line passes"; fail=$((fail+1)); }
 n="$(guard_in bin/a.py "${L//\\/\\\\}"'; git commit -m x\n' "$sig")"; [ "$n" -ge 1 ] && { echo "ok: an executable suffix on an excepted line is caught"; pass=$((pass+1)); } || { echo "FAIL: an executable suffix on an excepted line passes"; fail=$((fail+1)); }

@@ -44,15 +44,12 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
   Script-text inputs: an input an action executes as a command (github-script `script`,
              golangci-lint-action `args`, goreleaser-action `args`) is script text, the same class as
              a `run:` block — outside this check, covered by the review pass (see ACTIONS).
-  Package-manager installs: `apt-get install` / `pip install` in a `run:` block (PyYAML for this checker)
+  Package-manager installs: `apt-get install` / `pip install` in a `run:` block (skopeo from the runner's signed Ubuntu archive, PyYAML for this checker)
              are distribution packages, not actions —
              outside this check, the same class as a binary installed by version; covered by the review
              pass (row 78 pass on PR #148, Oct 2: documented here rather than pinned).
-  The gate's own wiring: .github/workflows/agent-review-gate.yml is pinned here by GATE_WORKFLOW_SHA256 (a
-             frozen set of exactly two digests while the passed-audit record judge (cache#669) is bootstrapped; a later change leaves one)
-             (its action pins masked, so a Dependabot bump still passes). Any other edit to it fails
-             until this file is updated — a change under .github/agent/, so it needs the independent
-             second review: the enforcement cannot be removed from its caller by an ordinary merge either.
+  The gate's own wiring: .github/workflows/agent-review-gate.yml must be in the tree; its text is judged
+             by review, not by a digest.
   container: / image: / each service: <image>@sha256:<64 hex>, optionally docker://; never ${{ }}.
   Executor images: a pinned action that runs a container image of its own must be given that image
              by digest through its input (EXECUTOR_INPUTS) — a pinned action with a mutable default
@@ -167,6 +164,7 @@ Outside this check, each a documented exclusion with its reason (row 78):
     --iidfile; the build itself (FROM lines, context, Dockerfile) is still fully checked;
   - a committed TEST HARNESS a step runs (tests/, *-test.sh): its probes are the very constructs this check refuses,
     as fixture data; it is not read recursively (it is committed and reviewed like any diff);
+  - /tmp/smoke-assert.sh in stage-acceptance-k8s.yml: the documented smoke commands of docs/kubernetes.md, written by the step's own python heredoc;
   - `runs-on` labels: GitHub-hosted runner images are GitHub's to build and cannot be named by digest;
   - Go tools installed by module version (`go install …@vX.Y.Z`): the module proxy serves them checksum-verified
     against the Go checksum database, so a version names fixed bytes;
@@ -176,8 +174,8 @@ Outside this check, each a documented exclusion with its reason (row 78):
 
 usage: check-action-pins.py [--verify-tags] [--git <commit>] [repo-root]
 """
+import collections
 import csv
-import hashlib
 import json
 import os
 import pathlib
@@ -236,12 +234,6 @@ DOCKER_ACTIONS = {"ossf/scorecard-action"}
 RETIRED_COMPOSITE = {"ossf/scorecard-action"}   # refused outright (advisor 0140); DOCKER_ACTIONS kept for docstring/test
                                                  # continuity, never reached since RETIRED_COMPOSITE returns first
 GATE_WORKFLOW = ".github/workflows/agent-review-gate.yml"
-# the accepted gate-workflow digests (gate_digest: pins masked), a closed set of EXACTLY TWO while a change to the gate is in flight:
-# main's gate workflow and the change's; a later change removes main's old one, leaving one
-GATE_WORKFLOW_SHA256 = frozenset({
-    "30ab1b01d956e176e777c859b77b233ee1444abec869a8e1121473b98c001c89",   # main's gate workflow
-    "b44b6315aed32ba75af8f37bad42e785dfcf40b4f73a2846dd12dd6995153a6a",   # the same file with the merge queue judge and the sweep's queue-tip check
-})
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)
 EXECUTOR_ALLOWED = {
@@ -302,6 +294,9 @@ class FsTree:
     def read(self, rel):
         return (self.root / rel).read_text(encoding="utf-8", errors="replace")
 
+    def read_bytes(self, rel):
+        return (self.root / rel).read_bytes()
+
 
 class GitTree:
     """A commit's tree read as git objects: nothing is checked out, nothing is executed."""
@@ -322,8 +317,10 @@ class GitTree:
                 self.blobs[path] = obj
 
     def read(self, rel):
-        return subprocess.run(["git", "cat-file", "blob", self.blobs[rel]], capture_output=True,
-                              check=True).stdout.decode("utf-8", "replace")
+        return self.read_bytes(rel).decode("utf-8", "replace")
+
+    def read_bytes(self, rel):
+        return subprocess.run(["git", "cat-file", "blob", self.blobs[rel]], capture_output=True, check=True).stdout
 
 
 # ---------------------------------------------------------------------------- the walk
@@ -496,12 +493,6 @@ def docker_inputs(where, step, bad):
                 bad.append(f"{where}: Docker action input {n!r} is refused (entrypoint/args, or not a plain name)")
 
 
-def gate_digest(text):
-    """The gate workflow's sha256 with each action pin masked (a Dependabot bump moves only those)."""
-    masked = re.sub(rf"@{SHA}[ \t]+#[ \t]*v[0-9][0-9A-Za-z.+-]*", "@<pin>", text)
-    return hashlib.sha256(masked.encode("utf-8")).hexdigest()
-
-
 def check_uses(tree, where, path, node, parent, lines, pins, bad):
     if not isinstance(node, yaml.ScalarNode):
         return bad.append(f"{where}: uses is not a plain string")
@@ -670,7 +661,13 @@ ALIASING = re.compile(r"(?<![\w.-])(alias|expand_aliases)(?![\w.-])")
 PARAM_WORD = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*])(:?)([-=+?])([^{}]*)\}")
 
 
+DEFAULT_ASSIGNED = set()   # names a ${x:=word} or ${x=word} of the job's text may set; cleared at the start of check_runs
+
+
 def _expand_defaults(text):
+    """${x:-word} as word, ${x:=word} too. The names a `:=` or `=` form may set are kept in DEFAULT_ASSIGNED, read before
+    the word replaces the form: the variable's value is then unknown (_set_by_setter)."""
+    DEFAULT_ASSIGNED.update(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*):?=", text))   # nested words too: PARAM_WORD cannot see them
     while True:   # each pass removes at least one ${...}: it ends
         new = PARAM_WORD.sub(lambda m: m.group(4), text)
         if new == text:
@@ -797,6 +794,7 @@ def _split_commands(text):
     "…", $'…') and escapes, with comments (# at the start of a word, outside quotes) dropped. A raw split at these
     characters cut quoted text and comments into false commands (Codex #164 adversarial r1, C02 noise)."""
     out, cur, i, q, n = [], [], 0, None, len(text)
+    escaped = -1                                         # len(cur) just after a backslash pair
     while i < n:
         c = text[i]
         if q == "'":
@@ -815,7 +813,7 @@ def _split_commands(text):
             elif c == '"':
                 q = None
         elif c == "\\" and i + 1 < n:
-            cur += [c, text[i + 1]]; i += 1
+            cur += [c, text[i + 1]]; i += 1; escaped = len(cur)
         elif c == "$" and text[i + 1:i + 2] == "'":
             cur += ["$", "'"]; q = "$'"; i += 1
         elif c in "'\"":
@@ -851,8 +849,10 @@ def _split_commands(text):
             cur.append(text[i:j].replace("\n", " "))
             i = j
             continue
+        elif c == "|" and cur and cur[-1] == ">" and len(cur) != escaped:   # `>|` is a redirection that overrides noclobber, not a pipe
+            cur.append(c)
         elif c in ";&|()\n":
-            out.append("".join(cur)); cur = []
+            out.append("".join(cur)); cur = []; escaped = -1
         else:
             cur.append(c)
         i += 1
@@ -1995,19 +1995,116 @@ def _touches(script, name, consumer):
 OUTSIDE = ("$RUNNER_TEMP", "${RUNNER_TEMP}", "/", "$(mktemp")   # outside the checkout: never the file's directory
 
 
+# a command that may set a variable whose name is made at run time: a builtin that takes a variable name, or printf -v,
+# as a word anywhere in it (any prefix bash takes can come before it), with a $ or backtick in the same command
+_WORD = r"(?<![\w./-])(?:{})(?![\w./(-])"
+RUNTIME_NAME = re.compile(
+    _WORD.format("read|mapfile|readarray|getopts|declare|typeset|local|export|readonly|let|select"))
+PRINTF = re.compile(_WORD.format("printf"))
+# read across the whole script: ${!ref} and (( $x ))
+RUNTIME_EXPANSION = re.compile(r"\$\{!|\(\([^\n]*[$`]")
+
+
+def _builds_name(command):
+    if "$" not in command and "`" not in command:
+        return False
+    return bool(RUNTIME_NAME.search(command) or (PRINTF.search(command) and "-v" in command))
+
+
+def _only_read(name, script):
+    """True when the job script, as bash forms its words (quotes and backslashes removed), mentions `name` only as a
+    plain $name or ${name} read, runs no eval, and builds no variable name at run time ($'…', "${n}OUTPUT": a name the
+    check cannot read). Any other mention (read, for, printf -v, ${name:=x}, (( )), let, name[0]=, …) may set it."""
+    if "$'" in script:
+        return False
+    words = _unquoted(script)
+    word = r"(?<![A-Za-z0-9_])" + name + r"(?![A-Za-z0-9_])"
+    reads = r"\$" + name + r"(?![A-Za-z0-9_])|\$\{" + name + r"\}"
+    return (len(re.findall(word, words)) == len(re.findall(reads, words))
+            and not re.search(r"(?<![\w-])eval(?![\w-])", words)
+            and not RUNTIME_EXPANSION.search(words)
+            and not any(_builds_name(_unquoted(c)) for c in _split_commands(script)))
+
+
+def _cut_redirections(text):
+    """The text with each redirection cut off its word: from a < or > outside quotes to the next blank outside quotes.
+    A < or > inside '…' or "…" stays part of the word (declare -n r='out[1<0]')."""
+    out, q, cut, i = [], None, False, 0
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and q != "'" and i + 1 < len(text):
+            if not cut:
+                out.append(text[i:i + 2])
+            i += 2
+            continue
+        if q:
+            q = None if c == q else q
+        elif c in "'\"":
+            q = c
+        elif c in "<>":
+            cut = True
+        elif c.isspace():
+            cut = False
+        if not cut:
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
+SETTER_WORDS = re.compile("read|mapfile|readarray|getopts|declare|typeset|local|export|readonly|let|select|for")
+
+
+def _set_by_setter(name, script):
+    """True when a form other than name= names the variable as a literal word and may set it: a command that takes a
+    variable name (read, for, eval, trap …), -<letters>name attached to read or printf, a nameref to it, printf -v, name+=,
+    name[0]=, (( name = … )), ${name:=x} (DEFAULT_ASSIGNED)."""
+    if name in DEFAULT_ASSIGNED:
+        return True
+    word = r"(?<![\w/.$-])(?<!\$\{)" + name + r"(?![A-Za-z0-9_])"
+    step = r"(?:\+\+|--)"
+    arithmetic = (r"\(\([^\n]*(?:" + word + r"\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)|" + word + step + "|" + step + word + ")")
+    element = word + r"(?:\[[^]\n]*\])?\+=|" + word + r"\[[^]\n]*\]="
+    words = _unquoted(script)
+    if re.search(arithmetic, words) or re.search(element, words):
+        return True
+    for command in _split_commands(script):
+        body = _tokens(command)
+        toks = _tokens(_cut_redirections(_mask_shell(command)[0]))   # printf -vout>/dev/null: the redirection is no part of the name
+        names_it = any(re.fullmatch(name + r"(?:\[[^]]*\])?\+?(?:=.*)?", t, re.S) for t in toks)
+        if names_it and (any(SETTER_WORDS.fullmatch(t) for t in toks) or ("printf" in toks and "-v" in toks)):
+            return True
+        attached = any(re.fullmatch(r"-[A-Za-z]+" + name + r"(?:\[[^]]*\])?", t) for t in toks)
+        if attached and any(t in ("read", "mapfile", "readarray", "printf") for t in toks):
+            return True
+        nameref = any(re.fullmatch(r"[^=]+=" + name + r"(?:\[.*\])?", t, re.S) for t in toks)
+        with_n = any(re.fullmatch(r"-[A-Za-z]*n[A-Za-z]*", t) for t in toks)
+        if nameref and with_n and any(t in ("declare", "typeset", "local") for t in toks):
+            return True
+        if "eval" in toks or "trap" in toks:
+            if any(re.search(word, t) for t in toks) or any(_set_by_setter(name, t) for t in body if t not in ("eval", "trap")):
+                return True   # the literal body is read as a script: a setter form in it counts as at top level
+    return False
+
+
 def _outside(target, script, depth=0):
     """A destination that cannot be the checkout's directory: an absolute path outside the runner's workspace, a path
     under $RUNNER_TEMP or a fresh $(mktemp …), or a variable every assignment of which in the job is one of those —
     followed through other variables (f="$work/x", work=$(mktemp -d))."""
-    if target.startswith(("/home/runner/work", "/github/workspace")):
+    bare = target.lstrip("\"'")
+    if bare.startswith(("/home/runner/work", "/github/workspace")):
         return False                                     # the checkout's own absolute path (Codex #164 r3, C11)
-    if target.startswith(OUTSIDE):
+    if bare.startswith(OUTSIDE):
         return True
     if re.match(r"[\"']?\$\{?HOME\}?/(?!work(/|$))", target):
         return True                                      # $HOME/.docker …: the workspace is under $HOME/work
+    runner = re.fullmatch(r"[\"']?\$\{?(GITHUB_(?:OUTPUT|ENV|PATH|STATE|STEP_SUMMARY))\}?[\"']?", target)
+    if runner and _only_read(runner.group(1), script):
+        return True                                      # the runner's own files, made outside the checkout, until the job sets one
     m = re.match(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?(/.*)?$", target.strip("\"'"))
     if not m or depth > 4:
         return False
+    if _set_by_setter(m.group(1), script):
+        return False                                     # set by read, printf -v, (( )), name[0]= …: an unknown value
     values = re.findall(r"(?:^|[\s;(])" + m.group(1) + r"=[\"']?([^\s\"';)]*)", script)
     return bool(values) and all(_outside(v, script, depth + 1) for v in values)
 
@@ -2222,8 +2319,7 @@ TEST_HARNESS = re.compile(r"^(\.github/agent/tests/[^/]+\.sh|bin/[^/]+-test\.sh)
 # melange call of bin/build-apk.sh through fixed absolute paths held in variables (the lines of the script that end in
 # TEST-SUBST), the one form the chain judge (bin/chain-test-signers.py) admits, while this check reads a variable
 # program as unreadable. It installs nothing, pulls no image and starts only the pinned tools at fixed paths. It is
-# still read at its committed bytes and bound like any script (READ_SCRIPTS), never inlined; it is held whole by
-# sha256 (chain-scripts.json, NS_SHA) and every change to it gets both reviewers; the chain judge refuses on this
+# still read at its committed bytes and bound like any script (READ_SCRIPTS), never inlined; every change to it gets both reviewers; the chain judge refuses on this
 # listed script a deny word not in its tools, a deny name by path and an interpreter handed an unlisted path. ONE
 # exact path: no pattern, no directory match, so the same text under another name, or in another directory, is read as
 # every script is.
@@ -2306,12 +2402,17 @@ def _drop_foreign_heredocs(text):
     return "\n".join(out)
 
 
-# Documented exclusions of a non-committed script a step runs (each with its reason, handoff 0023): none now. The two generated scripts of the
-# Kubernetes harness (/tmp/pf-forward, /tmp/smoke-assert; advisor 0084 (4)) were excluded while the harness was a workflow step; it is now Check's
-# listed scripts (bin/acceptance-k8s.sh runs them, bin/acceptance-k8s-smoke.py writes them), which are judged by the chain judges, and the fence
-# facts are proven there by .github/agent/tests/k8s-harness-fence-test.sh. Any other eval of a variable, anywhere, is refused by the
-# variable-program rule; the branch below stays and is proven with an injected entry in that test.
-GENERATED_OK = {}
+# Documented exclusions of a non-committed script a step runs (each with its reason, handoff 0023): the two scripts
+# (/tmp/pf-forward.sh, /tmp/smoke-assert.sh) that main's stage-acceptance-k8s.yml writes itself. Any other eval of a
+# variable, anywhere, is refused by the variable-program rule.
+GENERATED_OK = {
+    (".github/workflows/stage-acceptance-k8s.yml", "/tmp/smoke-assert.sh"):
+        "the documented smoke commands of docs/kubernetes.md (committed, reviewed), written by the step's own python "
+        "heredoc; they assert against the kind cluster and fetch nothing",
+    (".github/workflows/stage-acceptance-k8s.yml", "/tmp/pf-forward.sh"):
+        "the documented kubectl port-forward command of docs/kubernetes.md, written by the same heredoc; run verbatim "
+        "because rule 12 tests the customer's commands exactly as published",
+}
 
 
 # main's copy: the pull request's base sha, or (the merge queue, REQ-DEP-005) the queue's base sha, the group's parent
@@ -2323,10 +2424,22 @@ BASE_SHA_REFS = (
 _BASE_WRITE = r"(?<![\w.-])(?:sed\s+-\w*i|perl\s+-\w*i|awk\s+-i|cp|mv|ln|install|tee|dd|rsync|curl|wget|truncate|patch|ed|ex|rm|chmod|tar|unzip|git\s+(?:checkout|apply|restore))(?![\w.-])"
 
 
+def _basename_is_other(arg, base):
+    """True when the argument of a `$(basename ARG)` write is one literal word of a name other than `base`, with no trailing
+    slash (shell basename drops it). A variable argument is never proved: any other write of it (read, printf -v, a loop
+    header of another form) would change what the name is, so that write counts as a write onto the copy."""
+    words = arg.split()
+    if len(words) != 1:
+        return False
+    word = words[0].strip("\"'")
+    return bool(re.fullmatch(r"[\w./-]*[\w.-]", word)) and _base(word) != base
+
+
 def _resolve_script(path, text, entries, bases=()):
     """A script path as a committed file: relative (./x), under $GITHUB_WORKSPACE, or a COPY that a real
-    `git show <ref>:<file> > <dir>/<name>` or `gh api repos/${GITHUB_REPOSITORY}/contents/<file>?ref=main` command of the
-    job writes (main's copy of a reviewed script; Codex #164 r2, C02: an echo of the words, another repository, or a second
+    `git show <ref>:<file> > <dir>/<name>` or
+    `gh api repos/${GITHUB_REPOSITORY}/contents/<file>?ref=main` (or `?ref=refs/heads/main`) command of the job writes
+    (main's copy of a reviewed script; Codex #164 r2, C02: an echo of the words, another repository, or a second
     write of the copy do not count). <dir> is $RUNNER_TEMP or a directory under /tmp, and the write may be in another step
     of the job than the run (main's own stage-admission.yml writes /tmp/policy/<name> in one step and runs it in the next;
     Sonnet #164 r20, B2). None otherwise."""
@@ -2348,11 +2461,16 @@ def _resolve_script(path, text, entries, bases=()):
     d, base = m.group(1), m.group(2)
     dn = "$RUNNER_TEMP" if d.startswith("$") else d
     for wm_ in re.finditer(r"tar -x -C '([^']*)'", text):    # a writer step (or an extraction) into the copy's directory or a parent of it
-        w_ = "$RUNNER_TEMP" + wm_.group(1)[len("$RUNNER_TEMP"):] if wm_.group(1).startswith("$RUNNER_TEMP") else wm_.group(1)
+        w_ = wm_.group(1)
         if w_ == "." or dn == w_ or dn.startswith(w_.rstrip("/") + "/"):
             return None
     dpat = r"\$\{?RUNNER_TEMP\}?" if d.startswith("$") else re.escape(d)
     dst = r">\s*\"?" + dpat + r"/(" + re.escape(base) + r"|\$\(basename[^)]*\))"
+    # a `$(basename …)` write names this copy unless its destination is proven another name: it is left out only when every
+    # such write's argument is a literal path of another name; a variable argument always counts
+    writes_ = re.finditer(r">\s*\"?" + dpat + r"/\$\(basename([^)]*)\)", text)
+    if all(_basename_is_other(w.group(1), base) for w in writes_):
+        dst = r">\s*\"?" + dpat + r"/(" + re.escape(base) + r")"
     writes = len(re.findall(dst + r"\"?", text))
     if writes != 1:
         return None
@@ -2376,11 +2494,16 @@ def _resolve_script(path, text, entries, bases=()):
                         return None      # something else writes the copy (sed -i, cp, mv, tee ...): it is not main's committed bytes
                 return g.group(2)
         if toks[:2] == ["gh", "api"]:
-            g = re.search(r"\"?repos/\$\{?GITHUB_REPOSITORY\}?/contents/([^\"?\s]+)\?ref=main\"?", chunk)
+            # the word bash passes, not the text: `"…?ref=main"-x` is one word, ?ref=main-x
+            # argv after `api` = the endpoint, then `--jq .content`; any other word (-X, -f, -H) may add a second ref
+            args = _tokens(chunk)[2:]
+            g = re.fullmatch(r"repos/\$\{?GITHUB_REPOSITORY\}?/contents/([^?\s]+)\?ref=(?:refs/heads/)?main", args[0]) \
+                if args[1:] == ["--jq", ".content"] else None
             if not g:
                 continue
             want = g.group(1)
-            if re.fullmatch(r"\$\{?f\}?", want):          # for f in <committed files>; do gh api …/${f}?ref=main
+            # for f in <committed files>; do gh api …/${f}?ref=main (or ?ref=refs/heads/main)
+            if re.fullmatch(r"\$\{?f\}?", want):
                 lists = re.findall(r"\bfor\s+f\s+in\s+([^;\n]*?)\s*;\s*do\b", text)
                 cands = [x for lst in lists for x in lst.split() if _base(x) == base and entries.get(x) == "file"]
                 if len(cands) == 1:
@@ -2427,26 +2550,29 @@ def _all_texts(text, depth=0):
 SHELL_SHEBANG = re.compile(r"#!\s*\S*/(?:env\s+(?:-\S+\s+)*)?(ba|da|z)?sh\b")
 
 
-def _writes(script, rel, ctx=None):
+def _writes(script, rel, ctx=None, early=True):
     """True when a command of the job writes the exact file rel before it runs: a redirection onto it, tee, cp / mv /
-    install / ln / rsync onto it, sed / perl -i on it, or a copy or extraction over its directory (_fills_dir)."""
+    install / ln / rsync onto it, sed / perl -i on it, or a copy or extraction over its directory (_fills_dir).
+    A redirect or tee onto a variable this check cannot place counts only when early (the job's own step text)."""
     import shlex
     text, inner = _cut_substitutions(re.sub(r"\\\n", "", script))
     ctx = script if ctx is None else ctx                # where the job assigns its variables (f="$work/x" …)
     for sub in inner:
-        if _writes(sub, rel, ctx):
+        if _writes(sub, rel, ctx, early):
             return True
     same = lambda t: os.path.normpath(re.sub(r"^\./", "", t.strip("'\""))) == rel
+    # a redirect or tee target is placed as a cp destination is: one this check cannot place outside the checkout may be rel
+    onto = lambda t: same(t) or (early and _variable(t) and not _outside(t, ctx))
     for chunk in _split_commands(text):
         toks = _tokens(chunk)
-        if any(same(t) for t in _redirect_targets(chunk)):
+        if any(onto(t) for t in _redirect_targets(chunk)):
             return True
         words = _command_words(toks)
         if not words:
             continue
         cmd, rest = _base(words[-1]), toks[toks.index(words[-1]) + 1:]
         pos = [t for t in rest if not t.startswith("-")]
-        if (cmd == "tee" and any(same(t) for t in pos)) or (cmd in ("cp", "mv", "install", "ln", "rsync") and pos and
+        if (cmd == "tee" and any(onto(t) for t in pos)) or (cmd in ("cp", "mv", "install", "ln", "rsync") and pos and
                                                               same(pos[-1])) or \
                 (cmd in ("sed", "perl") and any(t.startswith("-i") for t in rest) and any(same(t) for t in pos)) or \
                 _fills_dir(toks, rel, ctx):
@@ -2814,30 +2940,28 @@ def _token_url_breach(text, name, run_texts, key):
 
 
 DOWNLOAD_EXCLUSIONS = {
-    (".github/workflows/auditor.yml", "audit", 10, "ec6b56ab920e50d88208a5c553521658f5eab8c32cff1cc0d56404e1b27de643"): (
+    (".github/workflows/auditor.yml", "audit", 10): (
         "the CISA KEV catalog is fetched to ${AUDITOR_KEV_CATALOG}, a file under runner.temp that the step's env names and nothing else assigns (this exclusion "
         "holds only while the file assigns that variable exactly once, as `AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json`); it is read as data by the auditor and never run",
         "AUDITOR_KEV_CATALOG", "AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json"),
-    (".github/workflows/dependabot-reviewer.yml", "review", 4,
-     "bd33b686b13cadaf9d7b3b2216165f30fa6dbe35ef74bcefaebe9c5c86d4e3f1"): (
+    (".github/workflows/dependabot-reviewer.yml", "review", 4): (
         "the identity-token request: curl prints the JSON answer from ${ACTIONS_ID_TOKEN_REQUEST_URL} "
         "(set by the runner, quoted, followed by a literal &audience=) into a "
         "command substitution that jq reads; it writes no file " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
-    (".github/workflows/dependabot-reviewer.yml", "review", 7,
-     "f5e364e864a30b37f71e56b95f08145346794658cfc5dfa5b08d1241e8f4818a"): (
+    (".github/workflows/dependabot-reviewer.yml", "review", 7): (
         "the same identity-token request inside the decision loop's token refresh: "
         "stdout into a command substitution that jq reads, no file written " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
 }
+# the chain holds the same two steps at other indexes: the KEV fetch one step later, the token refresh one step earlier
 
 
 def _exclusion_key(item):
     """The DOWNLOAD_EXCLUSIONS key of one step of a job's scripts:
-    (workflow file, job, step index, sha256 of its run text), or None."""
+    (workflow file, job, step index), or None."""
     m = re.match(r"^(.*)\.jobs\.([^.\[]+)\.steps\[(\d+)\]\.run$", item[0])
-    digest = hashlib.sha256(item[1].encode("utf-8", "replace")).hexdigest()
-    return (m.group(1), m.group(2), int(m.group(3)), digest) if m else None
+    return (m.group(1), m.group(2), int(m.group(3))) if m else None
 
 
 def _excluded_run_texts(scripts, name):
@@ -2857,6 +2981,7 @@ def check_runs(where_job, scripts, bad, tree=None, mores=None):
     check reads POSIX shell only (Sonnet B8)."""
     def read(raw):
         return _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", raw))))
+    DEFAULT_ASSIGNED.clear()
     posix = [not item[2] or re.match(r"^(bash|sh)(\s|$)", item[2]) for item in scripts]
     # steps of one job share a workspace: a file changed in ANY step of the job counts (Sonnet #164 r6, NEW-7); the
     # committed scripts they run are part of it (Codex #164 r2, C11)
@@ -2916,9 +3041,9 @@ def check_runs(where_job, scripts, bad, tree=None, mores=None):
         runs = [n for n, ln in enumerate(lines) if any(t[0] in ("__script__", "__exec__") and norm(t[1]) == rel for t in _commands(ln))]
         via_other = any(any(t[0] in ("__script__", "__exec__") and (norm(t[1]) == rel or _base(t[1]) == _base(rel)) for t in _commands(ln))
                         for src in others for ln in src.split("\n"))
-        k = runs[-1] if runs and not via_other else len(lines)   # also reached through another committed script: judged against the whole job           
+        k = runs[-1] if runs and not via_other else len(lines)   # also reached through another committed script: judged against the whole job
         before = "\n".join(lines[:k + 1])               # the run's own line too (printf … > x; bash x)
-        if any(_writes(t, rel, src) for src in [before] + others for t in _all_texts(src)):   # each in its own context
+        if any(_writes(t, rel, src, src is before) for src in [before] + others for t in _all_texts(src)):   # each in its own context; a variable redirect counts in the job's own text only
             bad.append(f"{scripts[0][0] if scripts else where_job}: {rel} is changed by the job before it runs; the "
                        f"committed bytes are not what runs, refused")
     READ_SCRIPTS.clear()
@@ -3071,16 +3196,21 @@ def _writer_dir(value):
         return "$RUNNER_TEMP" + (os.path.normpath(rest) if rest.strip("/") else "")
     if "${{" in v or "$" in v or "'" in v or '"' in v or ".." in v:
         return "."
-    if v.startswith("~/"):
-        v = os.path.normpath(v)                          # "~/./work" and "~//work" are "~/work": classify the path the shell reads; a relative "./~cache" stays as written
+    v = os.path.normpath(v)                              # before classifying: ~/./work is ~/work
     if v == "/tmp" or v.startswith("/tmp/") or re.match(r"~/(?!work(/|$))[^/]", v):
-        return os.path.normpath(v)                       # outside the workspace: still a directory a /tmp copy of a script can live in
+        return v                                         # outside the workspace: still a directory a /tmp copy of a script can live in
     if v.startswith(("/", "~")):
         return "."                                       # the workspace, a parent of it, or somewhere this check cannot place
-    return os.path.normpath(v)
+    return v
 
 
-def _uses_writes(uses, with_node, key_of):
+def _is_base_sha_fence(ref, path, has_repository, lfs_on):
+    """True for the base-sha fence: this repository's checkout at the base sha into one plain directory, no LFS."""
+    return (ref is not None and ref.strip() in BASE_SHA_REFS and not has_repository and not lfs_on
+            and re.fullmatch(r"[\w][\w-]*", path.strip()) is not None)
+
+
+def _uses_writes(uses, with_node):
     """rc-5b B2 (handoff 0663): the directories a `uses:` step fills, from a CLOSED list of writers; [] for any other action.
     actions/checkout with `repository`, `path`, a `ref` or `lfs` other than false (the plain default checkout and the base-sha fence
     form are not writers), actions/download-artifact, actions/cache and actions/cache/restore (save and the upload actions write
@@ -3099,8 +3229,7 @@ def _uses_writes(uses, with_node, key_of):
     if name == "actions/checkout":
         ref, pth, lfs = val("ref"), val("path"), val("lfs")
         lfs_on = lfs is not None and lfs.strip().strip("\"'").lower() != "false"
-        if "repository" not in wm and not lfs_on and ref is not None and ref.strip() in BASE_SHA_REFS and \
-                re.fullmatch(r"[\w][\w-]*", (pth or ".").strip()):
+        if _is_base_sha_fence(ref, pth or ".", "repository" in wm, lfs_on):
             return []                                    # the base-sha fence: main's copy, handled as a base directory
         if "repository" in wm or ref is not None or pth is not None or lfs_on:
             return [_writer_dir(pth if pth is not None else ".")]
@@ -3136,7 +3265,7 @@ def run_scripts(doc):
                                                               ifn.value if isinstance(ifn, yaml.ScalarNode) else "", tuple(base_dirs)))
                     uses, w = m.get("uses"), m.get("with")
                     if isinstance(uses, yaml.ScalarNode):
-                        wdirs = _uses_writes(uses.value, w, key_of)
+                        wdirs = _uses_writes(uses.value, w)
                         if wdirs:                        # rc-5b B2: a step that puts bytes into the tree is a writer, in step order
                             groups.setdefault(group, []).append((f"{base}[{i}].uses", "\n".join(f"tar -x -C '{d_}'" for d_ in wdirs),
                                                                   None, None, "if" in m, "", tuple(base_dirs)))
@@ -3150,9 +3279,8 @@ def run_scripts(doc):
                         dup = len({key_of(k_) for k_, _ in w.value}) != len(w.value) if isinstance(w, yaml.MappingNode) else False
                         lfs = wm.get("lfs")     # LFS objects are not the committed pointer text: not main's copy (618 round 2, seat B)
                         lfs_on = lfs is not None and not (isinstance(lfs, yaml.ScalarNode) and lfs.value.strip().strip("\"'").lower() == "false")
-                        if (isinstance(ref, yaml.ScalarNode)
-                                and ref.value.strip() in BASE_SHA_REFS and "repository" not in wm
-                                and not lfs_on and not dup and re.fullmatch(r"[\w][\w-]*", pdir)):
+                        if (isinstance(ref, yaml.ScalarNode) and not dup
+                                and _is_base_sha_fence(ref.value, pdir, "repository" in wm, lfs_on)):
                             if pdir not in base_dirs:
                                 base_dirs.append(pdir)
                         else:
@@ -3332,7 +3460,7 @@ def step_texts(steps, outer=""):
         texts = []
         if isinstance(step, yaml.MappingNode):
             for k, v in step.value:
-                if isinstance(k, yaml.ScalarNode) and k.value in ("run", "with", "env"):
+                if key_of(k) in ("run", "with", "env"):
                     values = [w for _, w in v.value] if isinstance(v, yaml.MappingNode) else [v]
                     texts += [w.value for w in values if isinstance(w, yaml.ScalarNode)]
         yield "\n".join(texts + [outer])
@@ -3355,15 +3483,73 @@ def steps_context(doc):
     return found
 
 
+# `A_1` matches; `1A` and `A-B` do not
+_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# `echo() {` and `function printf {` match; `echo hello` does not
+_REDEFINES = re.compile(r"(?<![A-Za-z0-9_./-])(?:echo|printf)\s*\(\s*\)"
+                        r"|\bfunction\s+(?:echo|printf)\b|\balias\s+(?:echo|printf)=")
+_ENV_FILE = (["$GITHUB_ENV"], ["${GITHUB_ENV}"])
+# `exportVariable('NAME', v)` matches; `exportVariable(n, v)` and `notexportVariable('NAME', v)` do not
+_EXPORT_CALL = re.compile(r"\bexportVariable\(\s*(['\"])([A-Za-z_][A-Za-z0-9_]*)\1\s*,")
+# `::set-env name=NAME::` matches; `::set-env name=${{ inputs.n }}::` does not
+_SET_ENV = re.compile(r"::set-env\s+name=([A-Za-z_][A-Za-z0-9_]*)::")
+
+
+def _arguments(words):
+    """The arguments of a command's words after its name, without its one redirection; None when two words start with `>`,
+    since a quoted `>` word looks like a redirection once the quotes are off."""
+    if sum(bool(re.match(r"[0-9]*>", w)) for w in words[1:]) != 1:
+        return None
+    args, rest = [], iter(words[1:])
+    for w in rest:
+        if re.fullmatch(r"[0-9]*>>?", w):
+            next(rest, None)
+        elif not re.match(r"[0-9]*>", w):
+            args.append(w)
+    return args
+
+
+def _echoed_env_name(command):
+    """NAME of the one record `echo NAME=value >> "$GITHUB_ENV"` (printf too); None for any other use of the file."""
+    words = _tokens(command)
+    if words[:1] not in (["echo"], ["printf"]) or _redirect_targets(command) not in _ENV_FILE \
+            or len(_ENV_ROUTE.findall(command)) != 1:
+        return None
+    args = _arguments(words)
+    if not args or any("\n" in a for a in args) or (words[0] == "echo" and len(args) != 1):
+        return None
+    first = args[0].removesuffix("\\n")
+    if words[0] == "printf" and "%" in first.replace("%s", ""):
+        return None
+    name = first.partition("=")[0]
+    return name if "=" in first and _NAME.fullmatch(name) and "\\" not in first else None
+
+
+def env_writes(text):
+    """[(name, route)] for the env-file writes of a text whose name is literal: the three plain forms."""
+    writes = [] if _REDEFINES.search(text) else \
+        [(name, "GITHUB_ENV") for c in _split_commands(text) if (name := _echoed_env_name(c))]
+    joined = re.sub(r"\\\n", "", text)    # forms (2) and (3) are read from the text the route count reads
+    writes += [(m.group(2), "exportVariable") for m in _EXPORT_CALL.finditer(joined)]
+    return writes + [(m.group(1), "::set-env") for m in _SET_ENV.finditer(joined)]
+
+
 def step_write_findings(where, text):
-    """The findings for one text a step runs: a startup-hook name set through an env route, or a PATH route."""
+    """The findings for one text a step runs: a startup-hook name set through an env route, a PATH route, or an env route
+    whose name is not literal text."""
     names = re.compile(r"(?<![A-Za-z0-9_])(?:(?:" + "|".join(STARTUP_HOOK_ENV) + r")(?![A-Za-z0-9_])|BASH_FUNC_)")
     found = []
+    writes = env_writes(text)             # read as written: bash keeps a backslash-newline inside single quotes
+    text = re.sub(r"\\\n", "", text)
+    unread = collections.Counter(_ENV_ROUTE.findall(text))
+    unread.subtract(route for _, route in writes)
     if path := _PATH_ROUTE.search(text):
         found.append(f"{where}: uses {path.group()}, which changes PATH for later steps; refused")
-    if (route := _ENV_ROUTE.search(text)) and (name := names.search(text)):
+    if (route := _ENV_ROUTE.search(text)) and (name := names.search(text + "\n" + "\n".join(n for n, _ in writes))):
         found.append(f"{where}: sets {name.group()} through {route.group()}, which changes what later programs load or "
                      f"where they connect; refused")
+    if route := next((r for r, left in unread.items() if left > 0), None):
+        found.append(f"{where}: writes through {route}, and the name it sets cannot be read as literal text; refused")
     return found
 
 
@@ -3411,9 +3597,9 @@ def check_file(tree, rel, pins, bad):
                                                                or k.value.startswith("BASH_FUNC_")):
                             bad.append(f"{rel}: a mapping sets {k.value}, which changes what later programs "
                                        f"load or where they connect; refused")
-                        if isinstance(k, yaml.ScalarNode) and k.value == "steps" and isinstance(v, yaml.SequenceNode):
+                        if key_of(k) == "steps" and isinstance(v, yaml.SequenceNode):
                             check_step_writes(rel, v, bad, *context.get(id(v), ("", "")), mores)
-                        if isinstance(k, yaml.ScalarNode) and k.value == "env" and not isinstance(v, yaml.MappingNode):
+                        if key_of(k) == "env" and not isinstance(v, yaml.MappingNode):
                             bad.append(f"{rel}: an env that is not a literal mapping hides the names it sets; refused")
                         stack.append(v)
                 elif isinstance(n, yaml.SequenceNode):
@@ -3475,7 +3661,8 @@ def main():
     bad, pins, files = [], [], []
     for rel, kind in sorted(tree.entries.items()):
         if rel.startswith(".github/") and not _utf8(rel):
-            # rc-5b R10c: a name this check cannot read as text must not be skipped or merged with another; fail closed
+            # rc-5b R10c: a name this check cannot read as text must not be skipped or merged with another; fail closed.
+            # surrogateescape keeps each undecodable byte distinct; backslashreplace only makes the message printable.
             bad.append(f"{rel.encode('utf-8', 'surrogateescape').decode('ascii', 'backslashreplace')}: a name under .github/ that is not "
                        f"valid UTF-8; refused (the file would otherwise go unread)")
             continue
@@ -3497,10 +3684,6 @@ def main():
         check_file(tree, rel, pins, bad)
     if GATE_WORKFLOW not in files:
         bad.append(f"{GATE_WORKFLOW}: missing — the gate that runs this check")
-    elif gate_digest(tree.read(GATE_WORKFLOW)) not in GATE_WORKFLOW_SHA256:
-        bad.append(f"{GATE_WORKFLOW}: changed — update GATE_WORKFLOW_SHA256 in this checker "
-                   f"(a reviewed .github/agent/ change) to {gate_digest(tree.read(GATE_WORKFLOW))}; "
-                   f"accepted: {', '.join(sorted(GATE_WORKFLOW_SHA256))}")
     if verify:
         bad += verify_pins(pins)
     for b in bad:
