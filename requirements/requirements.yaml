@@ -3034,7 +3034,7 @@ requirements:
       - id: REQ-SUP-001-AC37
         given: "the tree the daily audit inventories holds a go install of a tool whose version is not an exact version (@latest, @main, a branch name, a range, no @version, or a variable)"
         when: "the daily audit runs"
-        then: "it prints a line that names the item, exits 1 and files no issue; a go install at an exact version (strict SemVer 2.0 vMAJOR.MINOR.PATCH, with or without a pre-release part or build part, or a full 40-hex commit) is no finding; v1, v1.2, a short commit, a branch, and a version SemVer forbids (a number with a leading zero, a numeric pre-release identifier with a leading zero, an empty identifier: v01.2.3, v1.2.3-01, v1.2.3-main.01) are not exact, because Go reads them as a branch query"
+        then: "it prints a line that names the item, exits 1 and files no issue; a go install at an exact version (strict SemVer 2.0 vMAJOR.MINOR.PATCH, with or without a pre-release part, and with no build part but +incompatible, or a full 40-hex commit) is no finding; v1, v1.2, a short commit, a branch, and a version SemVer forbids (a number with a leading zero, a numeric pre-release identifier with a leading zero, an empty identifier: v01.2.3, v1.2.3-01, v1.2.3-main.01, and any other build part: v1.2.3+moving, v1.2.3+a.b) are not exact, because Go reads them as a branch query"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC38

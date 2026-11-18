@@ -420,6 +420,10 @@ ac37_refused go37-sv5 .github/workflows/g.yml 'go install example.com/x@v1.2.3-'
 ac37_refused go37-sv6 .github/workflows/g.yml 'go install example.com/x@v1.2.3-a..b' 'example\.com/x' "go install example.com/x@v1.2.3-a..b (an empty pre-release identifier)"
 ac37_refused go37-sv7 .github/workflows/g.yml 'go install example.com/x@v1.2.3+' 'example\.com/x' "go install example.com/x@v1.2.3+ (an empty build)"
 ac37_refused go37-sv8 .github/workflows/g.yml 'go install example.com/x@v1.2.3+a..b' 'example\.com/x' "go install example.com/x@v1.2.3+a..b (an empty build identifier)"
+ac37_refused go37-sv9 .github/workflows/g.yml 'go install example.com/x@v1.2.3+moving' 'example\.com/x' "go install example.com/x@v1.2.3+moving (a build part that is not +incompatible, read by Go as a branch query)"
+ac37_refused go37-sv10 .github/workflows/g.yml 'go install example.com/x@v1.2.3+a.b' 'example\.com/x' "go install example.com/x@v1.2.3+a.b (a dotted build part that is not +incompatible)"
+ac37_refused go37-sv11 .github/workflows/g.yml 'go install example.com/x@v2.0.0+incompatible.x' 'example\.com/x' "go install example.com/x@v2.0.0+incompatible.x (a build part that only starts with +incompatible)"
+ac37_refused go37-sv12 .github/workflows/g.yml 'go install example.com/x@v1.2.3-rc.1+moving' 'example\.com/x' "go install example.com/x@v1.2.3-rc.1+moving (a build part on a pre-release)"
 ac37_exact go37-ok5 'go install example.com/x@v2.0.0+incompatible' "go install example.com/x@v2.0.0+incompatible"
 ac37_exact go37-ok6 'go install example.com/x@v1.2.3-0' "go install example.com/x@v1.2.3-0 (a lone 0 pre-release id)"
 ac37_exact go37-ok7 'go install example.com/x@v0.0.0' "go install example.com/x@v0.0.0"
@@ -444,7 +448,12 @@ check test "$rc" -eq 0
 check test "$(grep -c . "$work/go38-ok.out")" -eq 1
 check none_match 'UNPINNED GO TOOL' "$work/go38-ok.out" "$work/go38-ok.err"
 check test ! -s "$work/go38-ok.gh"
-for v in v1.2.3-main.01 v01.2.3 v1.2.3-01; do
+CASE="AC38: --go-exact-only accepts go install example.com/x@v2.0.0+incompatible: exit 0, no UNPINNED GO TOOL line, no gh call"
+gorepo "$work/go38-incompat" .github/workflows/g.yml 'go install example.com/x@v2.0.0+incompatible'; run go38-incompat "$CLEAN" "$work/go38-incompat" --go-exact-only
+check test "$rc" -eq 0
+check none_match 'UNPINNED GO TOOL' "$work/go38-incompat.out" "$work/go38-incompat.err"
+check test ! -s "$work/go38-incompat.gh"
+for v in v1.2.3-main.01 v01.2.3 v1.2.3-01 v1.2.3+moving v1.2.3+a.b; do
   gorepo "$work/go38-$v" .github/workflows/g.yml "go install example.com/x@$v"; run "go38-$v" "$CLEAN" "$work/go38-$v" --go-exact-only
   CASE="AC38: --go-exact-only refuses go install example.com/x@$v: exit 1, UNPINNED GO TOOL names the item, no issue, no gh call"
   check test "$rc" -eq 1

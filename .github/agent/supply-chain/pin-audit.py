@@ -47,10 +47,10 @@ def _load(name):
 inv = _load("pin-inventory")
 age = _load("pin-age-check")
 
-# strict SemVer 2.0 with a leading v (no leading zero in a number or a numeric pre-release identifier, no empty identifier), or a full commit
+# strict SemVer 2.0 with a leading v (no leading zero in a number or a numeric pre-release identifier, no empty identifier; the only build part is +incompatible, any other is read by Go as a branch query), or a full commit
 _NUM = r"(?:0|[1-9][0-9]*)"
 _PRE_ID = r"(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
-GO_EXACT = re.compile(rf"v{_NUM}\.{_NUM}\.{_NUM}(?:-{_PRE_ID}(?:\.{_PRE_ID})*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?|[0-9a-f]{{40}}")
+GO_EXACT = re.compile(rf"v{_NUM}\.{_NUM}\.{_NUM}(?:-{_PRE_ID}(?:\.{_PRE_ID})*)?(?:\+incompatible)?|[0-9a-f]{{40}}")
 
 
 def report_unpinned(keys):
