@@ -1895,9 +1895,19 @@ def _reads():
         _read = _join_full
 
 
+def _in_quoted_brace(stack):
+    """True when the innermost frames are `${ }` expansions and the outermost of them sits inside double quotes."""
+    for kind, outer in reversed(stack):
+        if kind != "{":
+            return False
+        if outer == '"':
+            return True
+    return False
+
+
 def _scan_shell(text):
     """(kinds, nl_in_quote, open_quote): `kinds` has one letter per character of `text`: `c` code, `d` a quote mark, `q`
-    quoted content, `e` a backslash and the character it escapes, `k` a comment, `w` a `#`, `(`, `)`, `<` or `>` of `${ }` word text (no comment, no group).
+    quoted content, `e` a backslash and the character it escapes, `k` a comment, `w` a `#`, `(`, `)`, `<` or `>` of `${ }` word text (no comment, no group; an unquoted `<(` or `>(` is a frame).
     Quote state nests inside `$( )`, `${ }`, backticks and `<( )` / `>( )`, so a quote inside one never changes the quote
     around it. A backtick substitution ends at the next unescaped backtick, scanned on its own. A `#` opens a comment only at
     the start of a word: after a blank, newline, `;`, `&`, `|`, `(`, `)`, `<` or `>`, never after an escaped character, a
@@ -1934,8 +1944,9 @@ def _scan_shell(text):
                 q, prev = None, c
         elif c in "'\"":
             kinds[i], q = "d", c
-        elif stack and stack[-1][0] == "{" and c in "#()<>":
-            kinds[i], prev = "w", c     # inside ${ }: word text, no comment and no group
+        elif stack and stack[-1][0] == "{" and c in "#()<>" and not (
+                c in "<>" and text[i + 1:i + 2] == "(" and not _in_quoted_brace(stack)):
+            kinds[i], prev = "w", c     # inside ${ }: word text, no comment and no group (an unquoted <( or >( runs: a frame)
         elif c in "<>" and text[i + 1:i + 2] == "(":
             stack.append(("(", None))
             prev = "("
