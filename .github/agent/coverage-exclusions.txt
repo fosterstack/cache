@@ -34,6 +34,7 @@
 .github/agent/bin/tests/test_pin_three_holes.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_pin_case_tracker.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_pin_case_tracker_r2.py  unit test (test code — the Go gate does not measure _test.go either)
+.github/agent/bin/tests/test_pin_case_tracker_r3.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_panel_sdk_probe.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_cov_small.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_lr27.py  unit test (test code — the Go gate does not measure _test.go either)

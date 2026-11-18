@@ -1924,22 +1924,12 @@ def _command_start(text, kinds, i):
         j = i
         while j > 0 and text[j - 1] in " \t":
             j -= 1
-        if text[j - 2:j] == "=(" and kinds[j - 1] == "c":
-            return False         # the `(` of an array assignment (`a=(`, `a+=(`) starts no command
         if j == 0 or (text[j - 1] in "\n;&|()" and kinds[j - 1] == "c"):
             return True
         m = _BEFORE_COMMAND.search(text, max(0, j - 5), j)
         if not m or set(kinds[m.start():j]) != {"c"}:
             return False
         i = m.start()
-
-
-def _after_in(text, kinds, i):
-    """True when the word at `i` follows a code `in` (an empty case: `case x in esac`)."""
-    j = i
-    while j > 0 and text[j - 1] in " \t\n":
-        j -= 1
-    return text[j - 2:j] == "in" and j < i and kinds[j - 2:j] == ["c", "c"] and (j == 2 or text[j - 3] in " \t\n;&|()")
 
 
 def _scan_shell(text):
@@ -1951,12 +1941,15 @@ def _scan_shell(text):
     closed quote or a closed expansion (`\\;#x`, `$(x)#y`), and a backslash-newline is no word break. open_quote is True
     when a quote or an expansion is still open at the end (a script like that grants no trust)."""
     n, q, i, prev, nl, unread = len(text), None, 0, None, False, False
-    kinds, stack, cases = ["c"] * n, [], []     # cases: per frame, [open case count, 1 `case` seen and its word awaited, 2 its `in` awaited, a pattern awaited]
+    kinds, stack, cases = ["c"] * n, [], []     # cases: per frame, [open case count, 1 `case` seen and its word awaited, 2 its `in` awaited, a pattern awaited, `in` just read and only blanks and comments since]
     while i < n:
         c = text[i]
         if q is not None and c == "\n":
             nl = True
         subject = False
+        empty = bool(cases) and cases[-1][3]     # only blanks and comments since the `in` of the case now open
+        if empty and c not in " \t\n#":
+            cases[-1][3] = False
         if q is None and stack and stack[-1][0] in "(p" and cases[-1][1] == 1 and c not in " \t\n" and prev in (" ", "\t", "\n"):
             cases[-1][1] = subject = 2       # the word after `case` is its subject, whatever it spells
         if q == "'":
@@ -1982,7 +1975,7 @@ def _scan_shell(text):
             i += 1
         elif c == "$" and text[i + 1:i + 2] in ("(", "{"):
             stack.append((text[i + 1], q))
-            cases.append([0, 0, False])
+            cases.append([0, 0, False, False])
             q, prev = None, text[i + 1]
             i += 1
         elif c == "$" and text[i + 1:i + 2] == "'" and q is None:    # ANSI-C: a backslash escapes the next character
@@ -2005,28 +1998,28 @@ def _scan_shell(text):
             kinds[i], prev = "w", c     # inside ${ }: word text, no comment and no group (a <( or >( bash runs is a frame)
         elif c in "<>" and text[i + 1:i + 2] == "(":
             stack.append(("(", None))
-            cases.append([0, 0, False])
+            cases.append([0, 0, False, False])
             prev = "("
             i += 1
         elif c == "(":
-            stack.append(("p", None))
-            cases.append([0, 0, False])
+            stack.append(("a" if text[i - 1:i] == "=" and kinds[i - 1] == "c" else "p", None))   # `a=(`, `a+=(`: an array, no case word counts in it
+            cases.append([0, 0, False, False])
             prev = c
         elif c == ")" and stack and stack[-1][0] in "(p" and cases[-1][2]:
             cases[-1][2], prev = False, ")"      # a case pattern's `)` closes no frame
-        elif c == ")" and stack and stack[-1][0] in "(p":
+        elif c == ")" and stack and stack[-1][0] in "(pa":
             kind, q = stack.pop()
             cases.pop()
             prev = ")" if kind == "p" else "W"
         elif stack and stack[-1][0] in "(p" and prev in (" ", "\t", "\n", ";", "&", "|", "(", ")") and (
                 m := _CASE_WORD.match(text, i)) and not subject and (
-                    m.group(1) == "in" or _command_start(text, kinds, i) or (m.group(1) == "esac" and _after_in(text, kinds, i))):
+                    m.group(1) == "in" or _command_start(text, kinds, i) or (m.group(1) == "esac" and empty)):
             state, word = cases[-1], m.group(1)
             if word == "case":
                 state[0] += 1
                 state[1] = 1
             elif word == "in" and state[1] == 2:
-                state[1], state[2] = 0, True
+                state[1], state[2], state[3] = 0, True, True
             elif word == "esac" and state[0]:
                 state[0] -= 1
                 state[2] = False
