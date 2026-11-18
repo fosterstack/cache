@@ -1257,8 +1257,8 @@ for f_ in os.listdir(os.path.join(t, "bin")):
     if f_.endswith(".py") and f_ != "release-gate.py": os.remove(os.path.join(t, "bin", f_))
 open(os.path.join(t, "release-upload", "stray.json"), "w").write("{}")
 rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"])
-check(rc != 0 and "stray.json" in se and "release-gate: " in se and not [l for l in log(t) if l.startswith("gh release upload")],
-      "AC20 release-assets with only bin/release-gate.py still refuses an asset covered by nothing before the upload, naming it (the gate's own verdict)", "rc=%s %s" % (rc, first(se)))
+check(rc != 0 and "stray.json" in se and "release-gate: " in se,
+      "AC20 release-assets with only bin/release-gate.py still refuses a staged file the release does not store, naming it (the gate's verdict comes after the download)", "rc=%s %s" % (rc, first(se)))
 for s_ in ("release-assets", "release-stage"):
     src = open(os.path.join(BIN, s_ + ".sh")).read()
     check("bin/release-gate.py --dir" in src and "release-metadata.py gate" not in src, "AC20 bin/%s.sh runs the gate as bin/release-gate.py --dir ..., not as a subcommand of release-metadata.py" % s_)

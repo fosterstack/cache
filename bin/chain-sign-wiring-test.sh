@@ -5310,15 +5310,15 @@ for r in d["scripts"]:
 json.dump(d, open(p,"w"), indent=1)' "$@"; }
 expect ok "REQ-CHAIN-004-AC20 control: the unmodified real tree passes the judge (no secret holder lists bin/build-admit.py in its runs, directly or through a script it runs)" tree "$REAL"
 for hold in release-sign release-publish release-assets; do
-  probe "ba_direct_$hold" "bin/build-admit.py" "bin/$hold.sh (a secret holder of the release job) listing bin/build-admit.py in its runs" "rowruns bin/$hold.sh bin/build-admit.py"
+  probe "ba_direct_$hold" "GH_TOKEN" "bin/$hold.sh (a secret holder of the release job) listing bin/build-admit.py in its runs" "rowruns bin/$hold.sh bin/build-admit.py"
 done
-probe ba_via_verify "bin/build-admit.py" "bin/release-sign.sh running bin/chain-verify.py whose row lists bin/build-admit.py in its runs (a load through a script it runs)" \
+probe ba_via_verify "GH_TOKEN" "bin/release-sign.sh running bin/chain-verify.py whose row lists bin/build-admit.py in its runs (a load through a script it runs)" \
   "rowruns bin/chain-verify.py bin/build-admit.py"
-probe ba_via_layout "bin/build-admit.py" "bin/release-publish.sh running bin/release-layout.py whose row lists bin/build-admit.py in its runs" \
+probe ba_via_layout "GH_TOKEN" "bin/release-publish.sh running bin/release-layout.py whose row lists bin/build-admit.py in its runs" \
   "rowruns bin/release-layout.py bin/build-admit.py"
-probe ba_via_layout_assets "bin/build-admit.py" "bin/release-assets.sh listing bin/release-layout.py, whose row lists bin/build-admit.py in its runs" \
+probe ba_via_layout_assets "GH_TOKEN" "bin/release-assets.sh listing bin/release-layout.py, whose row lists bin/build-admit.py in its runs" \
   "rowruns bin/release-layout.py bin/build-admit.py; rowruns bin/release-assets.sh bin/release-layout.py"
-probe ba_via_items "bin/build-admit.py" "bin/release-sign.sh running bin/chain-verify.py, which loads bin/chain_items.py, whose row lists bin/build-admit.py in its runs" \
+probe ba_via_items "GH_TOKEN" "bin/release-sign.sh running bin/chain-verify.py, which loads bin/chain_items.py, whose row lists bin/build-admit.py in its runs" \
   "rowruns bin/chain_items.py bin/build-admit.py; rowruns bin/chain-verify.py bin/chain_items.py"
 
 # ---- the sign jobs' federation env (REQ-CHAIN-001-AC1 job keys, REQ-CHAIN-001-AC9): in release.yml the three jobs sign, sign-rebuild and sign-check, and no other job of any

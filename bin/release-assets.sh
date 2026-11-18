@@ -19,4 +19,4 @@ fi
 gh release upload "$rel" "${files[@]}"
 rm -rf release-published
 gh release download "$rel" -D release-published
-python3 -I -B bin/release-metadata.py gate --dir release-published --same-as release-upload
+python3 -I -B bin/release-gate.py --dir release-published --same-as release-upload

@@ -81,6 +81,6 @@ for c in "${runners[@]}"; do
     for f in "$n-collection.json" "$n-collection.rekor.json"; do stage "witness-check/$c/witness-$n/$f" "$c-$f"; done
   done
 done
-python3 -I -B bin/release-metadata.py gate --dir release-upload
+python3 -I -B bin/release-gate.py --dir release-upload
 rm -rf release-published
 cp -r release-upload release-published

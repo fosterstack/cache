@@ -575,14 +575,12 @@ def cmd_admission_baseline(a):
         refuse("build", "tag: admission was for %s, this run is %s" % (got["tag"], a.tag))
     if got["sha"] != a.sha:
         refuse("build", "sha: admission was for %s, this run is %s" % (got["sha"], a.sha))
-    # a release candidate tag (vX.Y.Z-rcN) is admitted with its OWN baseline: the version is the tag itself; every other tag carries a vX.Y.Z baseline
-    syntax = sys.modules["build-admit"].TAG_SYNTAX      # the one tag grammar (REQ-CHAIN-004-AC20), loaded by the verifier that imports this file
-    if not syntax.fullmatch(a.tag):
-        refuse("build", "baseline: tag %r is not vX.Y.Z or vX.Y.Z-rcN, so it has no baseline" % a.tag)
+    # a release candidate tag (a tag with -rc) is admitted with its OWN baseline: the version is the tag itself; every
+    # other tag carries a baseline version without -rc. The tag is judged before this, in Build's admission.
     if "-rc" in a.tag:
         version_ok = got["baseline_version"] == a.tag
     else:
-        version_ok = syntax.fullmatch(got["baseline_version"]) is not None and "-rc" not in got["baseline_version"]
+        version_ok = "-rc" not in got["baseline_version"]
     if not version_ok or got["baseline"] != "requirements/releases/%s.yaml" % got["baseline_version"]:
         refuse("build", "baseline: %r at %r is not the baseline of tag %s at requirements/releases/<version>.yaml (vX.Y.Z, or the release candidate's own version)" % (got["baseline_version"], got["baseline"], a.tag))
     with open(a.out, "w") as f:

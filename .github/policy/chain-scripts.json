@@ -1652,6 +1652,7 @@
       ],
       "runs": [
         "bin/build-admit.py",
+        "bin/release-gate.py",
         "bin/release-metadata.py"
       ],
       "signs": false,
@@ -1697,7 +1698,7 @@
         "python3"
       ],
       "runs": [
-        "bin/release-metadata.py"
+        "bin/release-gate.py"
       ],
       "signs": false,
       "reason": "Release, step release-assets: creates the GitHub release after release-postverify has passed, only with --verify-tag, and attaches release-upload/ (REQ-CHAIN-007-AC9)",
@@ -1753,6 +1754,13 @@
       "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports; the judged verify pipes run without a shell (run_pipe); load_verifier compiles and runs (exec) the sha256-checked bytes of bin/chain-verify.py as a module, to call its bundle_certificate_why on the bundles a listed command names"
     },
     {
+      "path": "bin/release-gate.py",
+      "tools": [],
+      "runs": [],
+      "signs": false,
+      "reason": "Release, run by release-stage.sh and release-assets.sh: the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline, stands alone and loads no other file, so the scripts that hold the release secrets run it without bin/build-admit.py (REQ-CHAIN-004-AC20)"
+    },
+    {
       "path": "bin/release-metadata.py",
       "tools": [
         "at"
@@ -1761,7 +1769,7 @@
         "bin/build-admit.py"
       ],
       "signs": false,
-      "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files and the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
+      "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
       "exceptions": [
         {
           "rule": "script-name",
