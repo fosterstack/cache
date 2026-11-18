@@ -723,7 +723,7 @@ else
   bad "AC2 the real release.yml check job's if: is not exactly the snapshot condition, found: $found"
 fi
 sed "s/^  check:\$/  check:\n    if: \${{ always() }}/" "$work/release.yml" > "$work/release-if2.yml"
-if [ "$(job_if "$work/release-if2.yml" check)" != "$SNAP_IF" ]; then ok "AC2 a check job with another if: (always()) is told from the snapshot guard"; else bad "AC2 the snapshot-guard probe takes always() for the snapshot guard"; fi
+if [ "$(job_if "$work/release-if2.yml" check)" != "$snap" ]; then ok "AC2 a check job with another if: (always()) is told from the snapshot guard"; else bad "AC2 the snapshot-guard probe takes always() for the snapshot guard"; fi
 expect ok "the real check scripts are plain (check-phase.sh is judged by script alone, Q3)" "" plain "$root"/bin/check-scan.sh "$root"/bin/check-govulncheck.py "$root"/bin/check-fips.sh "$root"/bin/check-artifacts.sh "$root"/bin/check-acceptance.sh "$root"/bin/check-guide.sh
 expect ok "the real check scripts are listed in chain-scripts.json" "" listed "$root/.github/policy/chain-scripts.json" "$root"
 expect ok "the old acceptance stages are gone from the real repository and release.yml" "" removed "$root"
