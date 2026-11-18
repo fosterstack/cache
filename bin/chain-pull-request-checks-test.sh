@@ -121,8 +121,7 @@ res(set(triggers(wf["acceptance.yml"])) == {"workflow_call"}, "AC1: acceptance.y
 # ---- jobs that run on push to main only: their job-level if is the one string, so they cannot run on a pull request
 PUSH_IF = {("ci.yml", "allowlist"): "github.event_name == 'push'",
            ("ci.yml", "requirements"): "github.event_name == 'push'",
-           ("ci.yml", "go-exact-pins"): "github.event_name == 'push'",
-           ("scan.yml", "reproducibility"): "always() && github.event_name == 'push'"}
+           ("ci.yml", "go-exact-pins"): "github.event_name == 'push'"}
 for (f, j), want in sorted(PUSH_IF.items()):
     jb = (wf[f].get("jobs") or {}).get(j)
     res(jb is not None, "AC1: %s has the job %s" % (f, j))
@@ -131,6 +130,15 @@ for (f, j), want in sorted(PUSH_IF.items()):
     res(not runs_on(jb.get("if"), "pull_request") and not runs_on(jb.get("if"), "merge_group"),
         "AC1: %s %s does not run on pull_request or merge_group" % (f, j))
     res(runs_on(jb.get("if"), "push") and "push" in triggers(wf[f]), "AC1: %s %s runs on push" % (f, j))
+
+# ---- scan.yml's reproducibility runs on push, schedule and workflow_dispatch, never on a pull request, and is not skipped on a schedule run (release admission takes only a schedule or dispatch run of it)
+REPRO = (wf["scan.yml"].get("jobs") or {}).get("reproducibility") or {}
+res(cond("scan.yml", "reproducibility") == "always() && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')",
+    "AC1: scan.yml reproducibility has the job-level if always() && (push || schedule || workflow_dispatch) (%r)" % cond("scan.yml", "reproducibility"))
+res(not runs_on(REPRO.get("if"), "pull_request") and not runs_on(REPRO.get("if"), "merge_group"),
+    "AC1: scan.yml reproducibility does not run on pull_request or merge_group")
+for ev in ("push", "schedule", "workflow_dispatch"):
+    res(runs_on(REPRO.get("if"), ev) and ev in triggers(wf["scan.yml"]), "AC1: scan.yml reproducibility runs on %s" % ev)
 
 # ---- the suites moved to full-suite.yml (REQ-CI-007-AC2, AC4): schedule and workflow_dispatch only, never push or a pull request, and ci.yml holds none of them
 FS = wf["full-suite.yml"]
@@ -167,12 +175,13 @@ res("pin-age" not in scopes, "AC2: required-checks.json has no pin-age entry")
 res("acceptance" not in scopes, "AC3: required-checks.json has no acceptance entry")
 WANT = {"test": "push", "lint": "push", "govulncheck": "push", "analyze (go)": "push", "allowlist": "push",
         "fips140-only": "push", "requirements": "push", "reproducibility": "push",
-        "scan": "push", "go-exact-pins": "push",
-        "auditor-review-gate": "pull_request"}
-res(scopes == WANT, "AC3: required-checks.json holds exactly the eleven remaining contexts with their scopes (diff: %s)"
+        "scan": "push", "go-exact-pins": "push"}
+res(scopes == WANT, "AC3: required-checks.json holds exactly the ten remaining contexts with their scopes (diff: %s)"
     % sorted(k for k in set(scopes) | set(WANT) if scopes.get(k) != WANT.get(k)))
 ro = json.load(open(root + "/.github/policy/release-only-checks.json"))["required_checks"]
 res({c["context"]: c["scope"] for c in ro}.get("allowlist-chain") == "push", "AC3: release-only-checks.json holds allowlist-chain, scope push")
+res(not ({c["context"] for c in checks} & {c["context"] for c in ro}),
+    "AC3: no context is in both required-checks.json and release-only-checks.json (%s)" % sorted({c["context"] for c in checks} & {c["context"] for c in ro}))
 res("allowlist-chain" not in scopes, "AC3: required-checks.json has no allowlist-chain entry")
 res([c for c in checks if c["context"] == "go-exact-pins"] == [{"context": "go-exact-pins", "integration_id": 15368, "scope": "push"}],
     "AC3: required-checks.json has exactly one go-exact-pins entry, integration_id 15368, scope push")

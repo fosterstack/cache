@@ -352,7 +352,7 @@ case_acc dispatch-added        bad "d['on']['workflow_dispatch'] = ''"
 # name stays unique); the required check `reproducibility` stays a top-level job with its exact name (since PR 2: `if: always()`, see below) and no
 # token beyond contents read; release.yml's own Rebuild jobs are the ones the release relies on (the one build path: scan.yml calls release.yml in snapshot mode).
 judge_scan() { python3 - "$1" "$root" <<'PY'
-import os, subprocess, sys, yaml
+import os, re, subprocess, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
@@ -383,10 +383,18 @@ CEILING = {"contents": "write", "packages": "write", "id-token": "write", "issue
 if (jobs.get("build") or {}).get("permissions") != CEILING:
     bad.append("the build call's permissions are not exactly the called file's set (the ceiling): %s" % (jobs.get("build") or {}).get("permissions"))
 r = jobs.get("reproducibility") or {}
-# `if: always() && github.event_name == 'push'` and nothing else: when `rebuild` FAILS, GitHub SKIPS a job that needs it, and branch protection counts a skipped required check as passing, so
+REPRO_IF = "always() && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')"
+# `if: REPRO_IF` and nothing else: when `rebuild` FAILS, GitHub SKIPS a job that needs it, and branch protection counts a skipped required check as passing, so
 # the required check must run in every case and fail unless rebuild succeeded (the pattern of the `scan` aggregate below; step-8 B1, Opus)
-if r.get("name") != "reproducibility" or r.get("if") != "always() && github.event_name == 'push'" or r.get("needs") != "build":
-    bad.append("reproducibility must be named reproducibility, need build (the one call that holds Build and Rebuild) and carry exactly `if: always() && github.event_name == 'push'` (it runs on push to main only, REQ-REL-014-AC1): %s" % {k: r.get(k) for k in ("name", "if", "needs")})
+if r.get("name") != "reproducibility" or r.get("if") != REPRO_IF or r.get("needs") != "build":
+    bad.append("reproducibility must be named reproducibility, need build (the one call that holds Build and Rebuild) and carry exactly `if: %s` (it runs on push, schedule and workflow_dispatch, never on a pull request, REQ-REL-014-AC1): %s" % (REPRO_IF, {k: r.get(k) for k in ("name", "if", "needs")}))
+# the committed if is evaluated per event name (always() is true on a finished run, so the event test decides): push, schedule and workflow_dispatch run it, a pull request does not
+def runs_on(cond, event):
+    names = re.findall(r"github\.event_name == '([a-z_]+)'", str(cond))
+    return bool(re.fullmatch(r"always\(\) && \((github\.event_name == '[a-z_]+'( \|\| )?)+\)", str(cond))) and event in names
+for ev, want in (("schedule", True), ("workflow_dispatch", True), ("push", True), ("pull_request", False)):
+    if runs_on(r.get("if"), ev) != want:
+        bad.append("reproducibility's if %s on a %s run (schedule, workflow_dispatch and push run it, pull_request does not): %r" % ("does not run" if want else "runs", ev, r.get("if")))
 if r.get("permissions") not in (None, {"contents": "read"}):
     bad.append("reproducibility's token is wider than contents read: %s" % r.get("permissions"))
 # fail closed (continue-on-error also hides a failure): the jobs the check rests on carry exactly the keys reviewed here
@@ -466,6 +474,8 @@ case_scan build-has-needs        bad "d['jobs']['build']['needs'] = 'reproducibi
 case_scan repro-if-always-only   bad "d['jobs']['reproducibility']['if'] = 'always()'"
 case_scan repro-if-push-only     bad "d['jobs']['reproducibility']['if'] = \"github.event_name == 'push'\""
 case_scan repro-if-always-pr     bad "d['jobs']['reproducibility']['if'] = \"always() && github.event_name == 'pull_request'\""
+case_scan repro-if-pull-request-allowed bad "d['jobs']['reproducibility']['if'] = \"always() && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')\""
+case_scan repro-runs-on-schedule bad "d['jobs']['reproducibility']['if'] = \"always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')\""
 case_scan repro-if-removed       bad "d['jobs']['reproducibility'].pop('if')"
 case_scan repro-if-success       bad "d['jobs']['reproducibility']['if'] = \"\${{ success() }}\""
 case_scan repro-only-echoes      bad "d['jobs']['reproducibility']['steps'][0]['run'] = 'echo identical'"
