@@ -10,7 +10,7 @@ from test_pin_read_joins import SAFE, BUILD, hand_repo, run
 
 RUN = ['echo " # "; img=alpine:latest', 'docker run "$img"']
 KIND = ['echo " # "; img=alpine:latest', 'kind create cluster --image "$img"']
-OPS = [":-", ":=", ":+", "-", "+", "="]
+OPS = [":-", ":=", ":+", ":?", "-", "+", "=", "?"]
 
 
 def n1(op, word=""):

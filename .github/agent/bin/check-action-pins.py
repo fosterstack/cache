@@ -663,12 +663,21 @@ _BRACE_FRAME = re.compile(r"\$\{[^}]*[<>]\(")
 
 def _blank_brace_comments(text):
     """`"${x:-<(cmd # } "` newline `)}"`: bash's parser opens a frame at the <( even in a word it prints, so the # comments out the
-    rest of its line and the `}` after it belongs to the frame. A text with such a word, whole and closed, is read with every
-    comment blanked; one left open is a syntax error and stays as written."""
+    rest of its line and the `}` after it belongs to the frame. Each such `${` word, read from its own `${` to where it closes,
+    has the comments inside it blanked (a comment outside every such word, a heredoc body's included, stays as it is); one that
+    never closes is a syntax error and stays as written, whatever else the text holds."""
     if not _BRACE_FRAME.search(text):
         return text
-    kinds, _, open_quote = _scan_shell(text, frames=True)
-    return text if open_quote else "".join(" " if k == "k" else c for c, k in zip(text, kinds))
+    real = _scan_shell(text, frames=True)[0]
+    out = list(text)
+    for m in _BRACE_FRAME.finditer(text):
+        if real[m.start()] != "c":      # not a `${` bash expands: quoted, escaped or in a comment
+            continue
+        kinds, _, open_frame = _scan_shell(text[m.start():], frames=True, one_frame=True)
+        for i, k in enumerate(kinds):
+            if k == "k" and not open_frame:
+                out[m.start() + i] = " "
+    return "".join(out)
 
 
 def _expand_defaults(text):
@@ -1947,17 +1956,20 @@ def _command_start(text, kinds, i):
         i = m.start()
 
 
-def _scan_shell(text, frames=False):
+def _scan_shell(text, frames=False, one_frame=False):
     """(kinds, nl_in_quote, open_quote): `kinds` has one letter per character of `text`: `c` code, `d` a quote mark, `q`
     quoted content, `e` a backslash and the character it escapes, `k` a comment, `w` a `#`, `(`, `)`, `<` or `>` of `${ }` word text (no comment, no group; an unquoted `<(` or `>(` is a frame).
     Quote state nests inside `$( )`, `${ }`, backticks and `<( )` / `>( )`, so a quote inside one never changes the quote
     around it. A backtick substitution ends at the next unescaped backtick, scanned on its own. A `#` opens a comment only at
     the start of a word: after a blank, newline, `;`, `&`, `|`, `(`, `)`, `<` or `>`, never after an escaped character, a
     closed quote or a closed expansion (`\\;#x`, `$(x)#y`), and a backslash-newline is no word break. open_quote is True
-    when a quote or an expansion is still open at the end (a script like that grants no trust)."""
+    when a quote or an expansion is still open at the end (a script like that grants no trust). one_frame: `text` starts
+    with a `${` or `$(` and the scan ends where it closes, so open_quote says whether that one frame closes."""
     n, q, i, prev, nl, unread = len(text), None, 0, None, False, False
     kinds, stack, cases = ["c"] * n, [], []     # cases: per frame, [open case count, 1 `case` seen and its word awaited, 2 its `in` awaited, a pattern awaited, `in` just read and only blanks and comments since]
     while i < n:
+        if one_frame and i and not stack:
+            break
         c = text[i]
         if q is not None and c == "\n":
             nl = True
