@@ -23,6 +23,7 @@ this repository's history.
 
 A release is built only by the workflow [release.yml](../.github/workflows/release.yml), started by a pushed release
 tag. Each job runs on a fresh GitHub-hosted runner, and every job asks only for the permissions it needs.
+The Build stage refuses a tag whose signature does not verify against the maintainers' signing key.
 
 | Stage | Jobs | What it does |
 |---|---|---|
