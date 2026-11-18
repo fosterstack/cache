@@ -1997,7 +1997,7 @@ def _setter_values(name, script):
 
 def _loose_values(name, script):
     """Every `name=value` the text spells, quotes and comments ignored: the fail-closed view."""
-    return re.findall(r"(?:^|[\s;&|(])" + name + r"=[\"']?([^\s\"';)&|]*)", script)
+    return re.findall(r"(?:^|[\s;&|(])" + name + r"=[\"']?([^\s\"';)]*)", script)
 
 
 def _outside(target, script, depth=0):
