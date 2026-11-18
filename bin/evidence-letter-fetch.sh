@@ -35,7 +35,7 @@ verify_signed() { # verify_signed TAG DIR: the release's release-files.sha256 ve
   # the time the list was signed: only the inclusionPromise signs integratedTime, and the verification that follows covers it
   jq -e '.verificationMaterial.tlogEntries | length == 1' "$dir/release-files.sha256.bundle" > /dev/null 2>&1 ||
     die "$tag: the bundle does not hold exactly one Rekor entry: no one signed time"
-  jq -e '.verificationMaterial.tlogEntries[0].inclusionPromise | type == "object"' "$dir/release-files.sha256.bundle" > /dev/null 2>&1 ||
+  jq -e '.verificationMaterial.tlogEntries[0].inclusionPromise.signedEntryTimestamp | type == "string" and length > 0' "$dir/release-files.sha256.bundle" > /dev/null 2>&1 ||
     die "$tag: the bundle holds no inclusionPromise: its Rekor time is not signed"
   signed=$(jq -r '.verificationMaterial.tlogEntries[0].integratedTime // empty' "$dir/release-files.sha256.bundle")
   [[ "$signed" =~ ^[0-9]+$ ]] || die "$tag: the bundle holds no readable Rekor time: no signed date"

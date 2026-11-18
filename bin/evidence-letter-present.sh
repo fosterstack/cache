@@ -40,7 +40,7 @@ key_policy() {
   # without one has no signed date; the verification of the bundle that follows covers the time read here, and a failure there ends the run.
   jq -e '.verificationMaterial.tlogEntries | length == 1' "$dir/$md.bundle" > /dev/null 2>&1 ||
     { echo "the bundle does not hold exactly one Rekor entry: no one signed time"; return 1; }
-  jq -e '.verificationMaterial.tlogEntries[0].inclusionPromise | type == "object"' "$dir/$md.bundle" > /dev/null 2>&1 ||
+  jq -e '.verificationMaterial.tlogEntries[0].inclusionPromise.signedEntryTimestamp | type == "string" and length > 0' "$dir/$md.bundle" > /dev/null 2>&1 ||
     { echo "the bundle holds no inclusionPromise: its Rekor time is not signed"; return 1; }
   signed=$(jq -r '.verificationMaterial.tlogEntries[0].integratedTime // empty' "$dir/$md.bundle" 2> /dev/null) || signed=
   [[ "$signed" =~ ^[0-9]+$ ]] || { echo "the bundle holds no readable Rekor time: no signed date"; return 1; }

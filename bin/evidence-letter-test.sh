@@ -649,6 +649,9 @@ check("AC10: a release without one of the needed assets ends the fetch, in one l
 SIGNED_DEC3 = calendar.timegm((2026, 12, 3, 12, 0, 0))
 
 
+GOOD_PROMISE = {"signedEntryTimestamp": "c2V0"}
+
+
 def present(pages, today="2026-12-10", old_manifest=None, without=None, signed=SIGNED_DEC3, published=None, promise=True, current=None, entries=None, **extra):
     """pages: [[(tag, draft, [asset name, or (name, 'norekor')])]]; every asset gets an id from 500 and a body.
     A release with a letter bundle also gets the key manifest and its signature (today's, or old_manifest's),
@@ -667,7 +670,7 @@ def present(pages, today="2026-12-10", old_manifest=None, without=None, signed=S
                 name, kind = (a, "ok") if isinstance(a, str) else a
                 # a Rekor entry as the log returns it: the inclusionPromise (the signed entry timestamp) is what signs integratedTime; the inclusionProof alone does not
                 entry = '{"integratedTime":"%s"%s,"inclusionProof":{"logIndex":"1"}}' % (
-                    signed, ',"inclusionPromise":{"signedEntryTimestamp":"c2V0"}' if promise else "")
+                    signed, ',"inclusionPromise":%s' % json.dumps(GOOD_PROMISE if promise is True else promise) if promise is not False else "")
                 tlog = "[]" if kind == "norekor" else "[{}]" if signed is None else "[%s]" % entry
                 if entries is not None and kind != "norekor":     # entries: the integratedTimes of several Rekor entries
                     tlog = "[%s]" % ",".join(entry.replace('"integratedTime":"%s"' % signed, '"integratedTime":"%s"' % t) for t in entries)
@@ -957,6 +960,11 @@ check("S2 row 6a: a manifest with a field outside the closed list is refused in 
 pr, lr = present([[V4]], promise=False)
 check("S2 row 6b: a bundle with an inclusion proof but no inclusionPromise is refused in one line, nothing verified",
       one_line(pr) and "inclusionPromise" in pr.stderr and verifies(lr) == 0, (pr.returncode, pr.stderr, lr))
+# R2-F1: the inclusionPromise must hold a nonempty signedEntryTimestamp
+for label, bad in (("an empty inclusionPromise", {}), ("an empty signedEntryTimestamp", {"signedEntryTimestamp": ""})):
+    pr, lr = present([[V4]], promise=bad)
+    check("R2-F1 present: a bundle with %s is refused in one line, nothing verified" % label,
+          pr.returncode != 0 and one_line(pr) and "inclusionPromise" in pr.stderr and verifies(lr) == 0, (pr.returncode, pr.stderr, lr))
 pr, lr = present([[V4]])
 check("S2 row 6b: the control, a bundle with the inclusionPromise passes", pr.returncode == 0 and verifies(lr) == 1, (pr.stderr, lr))
 
@@ -1048,7 +1056,7 @@ def rekor(*times, promise=True):
     """A release-files bundle holding one Rekor entry for each given unix time."""
     return json.dumps({"verificationMaterial": {"tlogEntries": [
         dict({"integratedTime": str(t), "inclusionProof": {"logIndex": "1"}},
-             **({"inclusionPromise": {"signedEntryTimestamp": "c2V0"}} if promise else {})) for t in times]}}).encode()
+             **({"inclusionPromise": GOOD_PROMISE if promise is True else promise} if promise is not False else {})) for t in times]}}).encode()
 
 
 def asset_ids(fix, tag):
@@ -1117,6 +1125,11 @@ for label, raw, word in (("two Rekor entries", rekor(T20, T20), "Rekor"),
     check("r1 fix 4: a release-files bundle with %s ends the fetch in one line, before the list is verified" % label,
           one_line(pb_) and (word is None or word in pb_.stderr) and not list_verifies(lb_, "v0.4.0"),
           (pb_.returncode, pb_.stderr, lb_))
+for label, bad in (("an empty inclusionPromise", {}), ("an empty signedEntryTimestamp", {"signedEntryTimestamp": ""})):
+    pb_, gb_, lb_, _o, _f = fetch("2026-11", release_list=ONE, bundles={"v0.4.0": rekor(unix(NOV20), promise=bad)})
+    check("R2-F1 fetch: a release-files bundle with %s ends the fetch in one line, before the list is verified" % label,
+          pb_.returncode != 0 and one_line(pb_) and "inclusionPromise" in pb_.stderr and not list_verifies(lb_, "v0.4.0"),
+          (pb_.returncode, pb_.stderr, lb_))
 # fix 5: every release carrying the month's .md is a copy and must carry and verify its bundle
 for label, order in (("after", [("v0.4.0", False, pair("2026-11")), ("v0.4.1", False, ["evidence-letter-2026-11.md"])]),
                      ("before", [("v0.4.1", False, ["evidence-letter-2026-11.md"]), ("v0.4.0", False, pair("2026-11"))])):
@@ -1126,7 +1139,7 @@ for label, order in (("after", [("v0.4.0", False, pair("2026-11")), ("v0.4.1", F
           one_line(pr) and "2026-11" in pr.stderr and "v0.4.1" in pr.stderr, (pr.returncode, pr.stderr, lr))
 
 # the number of cases this file runs: a case that silently stops running must turn the file red
-EXPECT = 154
+EXPECT = 158
 print("%d passed, %d failed (expected %d)" % (passed, failed, EXPECT))
 sys.exit(1 if failed or passed != EXPECT else 0)
 PY
