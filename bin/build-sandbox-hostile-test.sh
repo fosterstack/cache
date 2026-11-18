@@ -241,7 +241,8 @@ t "AC5" "the folders are also gone after a run with open walls" \
   bash -c "[ -z \"\$(ls -A '$work/tmp')\" ] && [ -z \"\$(ls -A '$work/rt')\" ]"
 setrc 0
 exits "AC5" "RUNNER_TEMP unset is a refusal (exit 2) that leaves no temporary folder" \
-  2 bash -c "cd '$co' && env -u RUNNER_TEMP TMPDIR='$work/tmp' bash '$work/probe.sh'"
+  2 bash -c "cd '$co' && env -u RUNNER_TEMP TMPDIR='$work/tmp' bash '$work/probe.sh' apk-collection.local.json"
+t "AC5" "...the message says RUNNER_TEMP is missing" grep -qF "RUNNER_TEMP is missing" "$work/o"
 t "AC5" "...and the temporary folder is empty" bash -c "[ -z \"\$(ls -A '$work/tmp')\" ]"
 # the repository was not written to: bin/ and build/ show what they showed before the run
 t "AC5" "the run left bin/ and build/ of the repository as they were (git status unchanged)" \
