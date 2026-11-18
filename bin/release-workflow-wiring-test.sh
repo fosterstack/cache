@@ -7,7 +7,8 @@
 #   REQ-CHAIN-005-AC5  the job graph: the chain jobs and their needs, the gate G on build-freeze, the guard S on sign, sign-rebuild, sign-check and (followed by && !contains(github.ref_name, '-')) release, the Check jobs'
 #                      condition, no if on the Rebuild jobs, workflow-level permissions {}, the allowed other jobs, the dry-run input a boolean
 #   REQ-CHAIN-001-AC9  the four sign jobs: environment sign, exactly contents read and id-token write, the three KMS federation literals as job env, the only jobs that run a signing
-#                      command; the release job holds no AWS role and no id-token; no other file's job names the key role
+#                      command; the release job holds no AWS role and no id-token; no other file's job names the key role, except the one publish step of
+#                      evidence-letter.yml (environment evidence-letter, the three names as that step's env only; any other job or step there stays refused)
 #   REQ-CHAIN-004-AC1  Build: build-freeze, build-apk (matrix over both chips), build-assemble, their permissions, steps and shape
 #   REQ-CHAIN-004-AC12 the one input `mode` on workflow_call, the guard step after the checkout, one Witness step per mode with its closed step name
 #   REQ-CHAIN-004-AC19 the hostile Build step runs in every build: no condition, no token
@@ -246,9 +247,35 @@ if isinstance(rel.get("permissions"), dict) and "id-token" in rel["permissions"]
     bad.append("the release job holds an identity token (id-token): it holds no key role")
 if rel.get("permissions") == "write-all":
     bad.append("the release job holds write-all")
+# the one other holder: the publish step of evidence-letter.yml (REQ-REL-013), in the environment evidence-letter, the three names as that step's env only
+LETTER = "evidence-letter.yml"
+KEY_NAME = re.compile(r"\b(?:%s)\b|fosterstack-cache-release-signing|environment:\s*sign\s*$" % "|".join(KMS_ENV), re.M)
+def judge_letter(f):
+    holders = []
+    for jn, j in (load(f).get("jobs") or {}).items():
+        if KEY_NAME.search(text_of({k: v for k, v in j.items() if k != "steps"})) or j.get("environment") == "sign":
+            bad.append("%s job %s names the key role or the environment sign at job level: only the publish step carries the KMS federation" % (LETTER, jn))
+        for s in steps_of(j):
+            if KEY_NAME.search(text_of(s)):
+                holders.append((jn, j, s))
+    if len(holders) != 1:
+        bad.append("%s has %d steps that name the key role, it has exactly one, the publish step" % (LETTER, len(holders)))
+        return
+    jn, j, s = holders[0]
+    env = s.get("env") or {}
+    if j.get("environment") != "evidence-letter":
+        bad.append("the publish step of %s is not in the environment evidence-letter: %s" % (LETTER, j.get("environment")))
+    if not re.fullmatch(r"bash bin/evidence-letter-publish\.sh \S+", (s.get("run") or "").strip()):
+        bad.append("the step of %s that names the key role is not the publish step (bash bin/evidence-letter-publish.sh LETTER)" % LETTER)
+    if any(k not in env or not str(env[k]).strip() or "${{" in str(env[k]) for k in KMS_ENV):
+        bad.append("the publish step of %s does not carry the three KMS federation literals %s as its own env: %s" % (LETTER, KMS_ENV, sorted(env)))
+
 # no other file's job names the key role (persona-uat.yml, the live tests, every other workflow)
 for f in sorted(glob.glob(os.path.join(WF, "*.y*ml"))):
     b = os.path.basename(f)
+    if b == LETTER:
+        judge_letter(f)
+        continue
     if b == "release.yml" or b == os.path.basename(path):
         continue
     t = open(f).read()
@@ -706,6 +733,23 @@ caller_case ci-step-calls-release bad "calls release.yml" ci.yml "d['jobs']['tes
 caller_case scan-calls-stage      bad "calls a stage-*.yml file" scan.yml "d['jobs']['build']['uses'] = './.github/workflows/stage-build.yml'"
 caller_case scan-calls-missing    bad "which does not exist" scan.yml "d['jobs']['extra'] = {'uses': './.github/workflows/nothing.yml'}"
 caller_case other-job-calls-stage bad "calls a stage-*.yml file" scan.yml "d['jobs']['artifact-acceptance'] = {'needs': 'build', 'uses': './.github/workflows/stage-acceptance-artifacts.yml'}"
+
+# the one other holder of the KMS federation, the publish step of evidence-letter.yml (REQ-CHAIN-001-AC9): any other job or step, here or in another workflow, is refused
+L=evidence-letter.yml
+caller_case letter-draft-step-names-role   bad "$L has 2 steps that name the key role" $L "d['jobs']['draft']['steps'].append({'run': 'true', 'env': {'AWS_ROLE_ARN': 'arn:aws:iam::1:role/x'}})"
+caller_case letter-sign-step-names-key-ref bad "$L has 2 steps that name the key role" $L "d['jobs']['sign']['steps'].insert(0, {'run': 'echo \"\$RELEASE_KMS_KEY_REF\"'})"
+caller_case letter-second-publish-step     bad "$L has 2 steps that name the key role" $L "d['jobs']['draft']['steps'].append(d['jobs']['sign']['steps'][-1])"
+caller_case letter-draft-job-env-names-key bad "$L job draft names the key role" $L "d['jobs']['draft']['env'] = {'RELEASE_KMS_KEY_REF': 'awskms:///alias/x'}"
+caller_case letter-sign-job-env-carries-region bad "$L job sign names the key role" $L "d['jobs']['sign']['env'] = {'AWS_REGION': 'us-east-1'}"
+caller_case letter-environment-sign        bad "$L job sign names the key role or the environment sign" $L "d['jobs']['sign']['environment'] = 'sign'"
+caller_case letter-environment-release     bad "is not in the environment evidence-letter" $L "d['jobs']['sign']['environment'] = 'release'"
+caller_case letter-no-environment          bad "is not in the environment evidence-letter" $L "d['jobs']['sign'].pop('environment')"
+caller_case letter-publish-step-no-region  bad "does not carry the three KMS federation literals" $L "d['jobs']['sign']['steps'][-1]['env'].pop('AWS_REGION')"
+caller_case letter-publish-step-role-input bad "does not carry the three KMS federation literals" $L "d['jobs']['sign']['steps'][-1]['env']['AWS_ROLE_ARN'] = '\${{ inputs.role }}'"
+caller_case letter-publish-step-other-run  bad "is not the publish step" $L "d['jobs']['sign']['steps'][-1]['run'] = 'bash bin/other.sh x'"
+caller_case ci-job-names-key-ref           bad "ci.yml names the key role or the environment sign" ci.yml "d['jobs']['extra'] = {'runs-on': 'ubuntu-24.04', 'env': {'RELEASE_KMS_KEY_REF': 'awskms:///alias/x'}, 'steps': []}"
+caller_case scan-job-in-environment-sign   bad "scan.yml names the key role or the environment sign" scan.yml "d['jobs']['extra'] = {'runs-on': 'ubuntu-24.04', 'environment': 'sign', 'steps': []}"
+caller_case supply-chain-names-role        bad "supply-chain.yml names the key role or the environment sign" supply-chain.yml "d['jobs']['extra'] = {'runs-on': 'ubuntu-24.04', 'steps': [{'run': 'echo fosterstack-cache-release-signing'}]}"
 
 echo "release-workflow-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
