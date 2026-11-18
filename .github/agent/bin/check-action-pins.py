@@ -2155,6 +2155,20 @@ def _set_by_setter(name, script):
     return False
 
 
+def _setter_values(name, script):
+    """The value of every `name=value` setter the shell reads in `script`: a value ends at a blank, `;`, `)` or an
+    unquoted `&` / `|`. Skipped: a comment (`#` opening a word), quoted text, and every other word whole, so a
+    backslash escape or `${...}` inside a word hides nothing and opens nothing."""
+    pat = re.compile(r"(?<![^\s;&|(])" + name + r"=(?:\"((?:\\.|[^\"\\])*)\"|'([^']*)'|((?:\\.|[^\s\"';)&|\\])*))"
+                     r"|(?<![^\s;&|(])#[^\n]*|\"(?:\\.|[^\"\\])*\"|'[^']*'|(?:\\.|\$\{[^}]*\}|[^\s;&|()\"'\\])+")
+    return [m.group(m.lastindex) for m in pat.finditer(script) if m.lastindex]
+
+
+def _loose_values(name, script):
+    """Every `name=value` the text spells, quotes and comments ignored: the fail-closed view."""
+    return re.findall(r"(?:^|[\s;&|(])" + name + r"=[\"']?([^\s\"';)]*)", script)
+
+
 def _outside(target, script, depth=0):
     """A destination that cannot be the checkout's directory: an absolute path outside the runner's workspace, a path
     under $RUNNER_TEMP or a fresh $(mktemp …), or a variable every assignment of which in the job is one of those —
@@ -2173,8 +2187,8 @@ def _outside(target, script, depth=0):
         return False
     if _set_by_setter(m.group(1), script):
         return False                                     # set by read, printf -v, (( )), name[0]= …: an unknown value
-    values = re.findall(r"(?:^|[\s;(])" + m.group(1) + r"=[\"']?([^\s\"';)]*)", script)
-    return bool(values) and all(_outside(v, script, depth + 1) for v in values)
+    values = _setter_values(m.group(1), script)
+    return bool(values) and all(_outside(v, script, depth + 1) for v in values + _loose_values(m.group(1), script))
 
 
 def _redirect_targets(chunk):
