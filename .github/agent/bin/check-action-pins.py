@@ -1870,8 +1870,18 @@ def _operands(args, val, boolean):
 
 
 def _join_lines(text):
-    """`text` with each backslash-newline joined, except inside a comment: a comment ends at its newline, so the line
-    after `#comment\\` is a real line. A `#` opens a comment only at the start of a word, outside quotes and unescaped."""
+    """`text` read two ways, so that no read is weaker than main's: main's join of every backslash-newline, and, when it
+    differs, the comment-aware join after it (a comment ends at its newline, so the line after `#comment\\` is a real
+    line). A caller scans the whole result: a setter, write or env route either read shows is found. The comment-aware
+    join drops the backslash that ends a comment, so no backslash-newline is left and a second call changes nothing."""
+    full = re.sub(r"\\\n", "", text)
+    aware = _join_outside_comments(text)
+    return full if aware == full else full + "\n" + aware
+
+
+def _join_outside_comments(text):
+    """`text` with each backslash-newline joined except one that ends a comment. A `#` opens a comment only at the start
+    of a word, outside quotes and unescaped."""
     out, q, i = [], None, 0
     while i < len(text):
         c = text[i]
@@ -1884,7 +1894,7 @@ def _join_lines(text):
             if q is None and c == "#" and (not out or out[-1][-1] in " \t\n;&|()<>"):
                 j = text.find("\n", i)
                 j = len(text) if j < 0 else j
-                out.append(text[i:j])
+                out.append(text[i:j].rstrip("\\"))
                 i = j
                 continue
             if c in "'\"" and q in (None, c):
