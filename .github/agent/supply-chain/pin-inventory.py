@@ -41,7 +41,7 @@ INSTALLER_INPUTS = {
 }
 # NOT here, on purpose (rule 1, amendment 2): actions/setup-go's go-version and go.mod's toolchain line; the standard library ships in our binary.
 _GO_INSTALL = re.compile(r"\bgo\s+install\b([^\n;&|]*)")
-_GO_TARGET = re.compile(r"(?<![\w.\-/@])((?:\$\{var\}|[\w.\-/])+)@((?:\$\{\{expression\}\}|\$\{var\}|[\w.\-+()]|\$(?!\{\{))+)")
+_GO_TARGET = re.compile(r"(?<![\w.\-/@])((?:\$\{var\}|[\w.\-/])+)@(.+)", re.S)    # the version is the whole word after @: a leftover character makes it not exact
 _GH_DOWNLOAD = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/download/(v?)((?:\$\{\{expression\}\}|\$\{var\}|[\w.+()-]|\$(?!\{\{))+)/([^\s/'\x22?#;|&]+)")
 _GH_LATEST = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/latest/download/")
 _GO_RUN_GET = re.compile(r"\bgo\s+(?:run|get)\b([^\n;&|]*)")
@@ -607,6 +607,14 @@ def _step(node, out, labels):
                 it.step = legacy_tag # a placeholder (variable, @latest, @main, unpinned; a release asset's NAME that holds a variable or expression) is identified by the step it sits in, so a NEW or EDITED one is a new key and is refused: _hide() folds two spellings of the name into one
 
 
+def _shell_words(text):
+    """The words the shell makes of `text`, quotes removed by its quote state; an unbalanced quote stays in the words, so it fails closed."""
+    try:
+        return shlex.split(text)
+    except ValueError:
+        return text.split()
+
+
 _STEP_MEMO = {}     # (the step as a script line, the context it reads) -> the items _step made for it
 
 
@@ -639,13 +647,14 @@ def _step_items(node, out, labels):
     if isinstance(run, str):
         run = _cap(_hide(re.sub(r"\\\n\s*", " ", run)))  # a backslash continuation is one command; an expression becomes a placeholder before any pattern can cut it
         for m in list(_GO_INSTALL.finditer(run)) + list(_GO_RUN_GET.finditer(run)):
-            for t in _GO_TARGET.finditer(m.group(1)):
-                out.append(Item("gotool", t.group(1), t.group(2)))
-            for tok in m.group(1).split():
-                tok = tok.strip("'\"")
+            words = _shell_words(m.group(1))
+            for word in words:
+                for t in _GO_TARGET.finditer(word):
+                    out.append(Item("gotool", t.group(1), t.group(2)))
+            for tok in words:
                 if not tok.startswith("-") and "@" not in tok and re.fullmatch(r"[\w.\-]+\.[\w.\-]+/[\w.\-/]+", tok):
                     out.append(Item("gotool", tok, "(unversioned)"))     # go install with no @version: a placeholder, refused when added
-                elif not tok.startswith("-") and "$" in tok:
+                elif not tok.startswith("-") and ("$" in tok or "`" in tok):
                     out.append(Item("gotool", "(variable)", "(unversioned)"))   # go install "$TOOL": the target is a variable, so it cannot be proven
         for m in _GH_LATEST.finditer(run):  # "latest" is not a pin: an item that cannot be proven, so adding one fails closed
             it = Item("tool", m.group(1), "latest")
