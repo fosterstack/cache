@@ -3034,7 +3034,13 @@ requirements:
       - id: REQ-SUP-001-AC37
         given: "the tree the daily audit inventories holds a go install of a tool whose version is not an exact version (@latest, @main, a branch name, a range, no @version, or a variable)"
         when: "the daily audit runs"
-        then: "it prints a line that names the item, exits 1 and files no issue; a go install at an exact version (vMAJOR.MINOR.PATCH, with or without a pre-release part, or a full 40-hex commit) is no finding; v1, v1.2, a short commit and a branch are not exact"
+        then: "it prints a line that names the item, exits 1 and files no issue; a go install at an exact version (strict SemVer 2.0 vMAJOR.MINOR.PATCH, with or without a pre-release part or build part, or a full 40-hex commit) is no finding; v1, v1.2, a short commit, a branch, and a version SemVer forbids (a number with a leading zero, a numeric pre-release identifier with a leading zero, an empty identifier: v01.2.3, v1.2.3-01, v1.2.3-main.01) are not exact, because Go reads them as a branch query"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-SUP-001-AC38
+        given: "a push to main, and a release tag whose commit is admitted by the source admission of the Build stage"
+        when: "ci.yml runs its job go-exact-pins (python3 .github/agent/supply-chain/pin-audit.py --go-exact-only, which reads the tree with no network and no token and files no issue)"
+        then: "the job prints the line of AC37 for every go install that is not at an exact version and exits 1, or exits 0 when every one is exact; required-checks.json names go-exact-pins with scope push, so the source admission (bin/build-admit.py, the required-checks check) refuses a tag whose commit has no success of it; the job never runs on a pull request"
         verification: { method: unit, release_blocking: false }
         status: approved
   - id: REQ-UAT-001

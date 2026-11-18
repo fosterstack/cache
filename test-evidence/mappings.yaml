@@ -935,6 +935,9 @@ mappings:
   - ac: REQ-SUP-001-AC37
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
+  - ac: REQ-SUP-001-AC38
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
   - ac: REQ-REL-014-AC1
     evidence:
       - { type: shell-test, ref: "bin/chain-pull-request-checks-test.sh" }

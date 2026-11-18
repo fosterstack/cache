@@ -399,6 +399,19 @@ jobs:
           gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" --jq '.[] | .filename | @json' > changed.txt
           python3 -I -B base/bin/marker-pr-gate.py --base-dir base --head-dir head --files changed.txt --repository "$GITHUB_REPOSITORY"
 
+  # REQ-SUP-001-AC38: the pull-request pin scan is gone, so the exact-version rule for `go install` is judged here, on push to main, and release admission
+  # (required-checks.json) refuses a tag whose commit has no success of it. No network, no token.
+  go-exact-pins:
+    name: go-exact-pins
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: every go install is at an exact version
+        run: python3 .github/agent/supply-chain/pin-audit.py --go-exact-only
+
   requirements:
     name: requirements
     if: github.event_name == 'push'

@@ -42,6 +42,11 @@
       "scope": "push"
     },
     {
+      "context": "go-exact-pins",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
       "context": "reproducibility",
       "integration_id": 15368,
       "scope": "push"

@@ -124,6 +124,7 @@ PUSH_IF = {("ci.yml", "allowlist"): "github.event_name == 'push'",
            ("ci.yml", "suites"): "github.event_name == 'push'",
            ("ci.yml", "allowlist-chain"): "always() && github.event_name == 'push'",
            ("ci.yml", "requirements"): "github.event_name == 'push'",
+           ("ci.yml", "go-exact-pins"): "github.event_name == 'push'",
            ("scan.yml", "reproducibility"): "always() && github.event_name == 'push'"}
 for (f, j), want in sorted(PUSH_IF.items()):
     jb = (wf[f].get("jobs") or {}).get(j)
@@ -154,9 +155,19 @@ res("pin-age" not in scopes, "AC2: required-checks.json has no pin-age entry")
 # ---- REQ-REL-014-AC3: a push-scoped check is produced by a job that runs on push; acceptance is no entry
 res("acceptance" not in scopes, "AC3: required-checks.json has no acceptance entry")
 WANT = {"test": "push", "lint": "push", "govulncheck": "push", "allowlist": "push", "allowlist-chain": "push",
-        "requirements": "push", "reproducibility": "push", "scan": "push", "auditor-review-gate": "pull_request"}
-res(scopes == WANT, "AC3: required-checks.json holds exactly the nine remaining contexts with their scopes (diff: %s)"
+        "requirements": "push", "reproducibility": "push", "scan": "push", "go-exact-pins": "push",
+        "auditor-review-gate": "pull_request"}
+res(scopes == WANT, "AC3: required-checks.json holds exactly the ten remaining contexts with their scopes (diff: %s)"
     % sorted(k for k in set(scopes) | set(WANT) if scopes.get(k) != WANT.get(k)))
+res([c for c in checks if c["context"] == "go-exact-pins"] == [{"context": "go-exact-pins", "integration_id": 15368, "scope": "push"}],
+    "AC3: required-checks.json has exactly one go-exact-pins entry, integration_id 15368, scope push")
+gj = (wf["ci.yml"].get("jobs") or {}).get("go-exact-pins") or {}
+gsteps = gj.get("steps") or []
+res(gj.get("name", "go-exact-pins") == "go-exact-pins", "AC3: the ci.yml job go-exact-pins has the check name go-exact-pins")
+res(any("actions/checkout" in str(st.get("uses")) and (st.get("with") or {}).get("persist-credentials") is False for st in gsteps),
+    "AC3: go-exact-pins checks out the repo with persist-credentials: false")
+res(any(str(st.get("run", "")).strip() == "python3 .github/agent/supply-chain/pin-audit.py --go-exact-only" for st in gsteps),
+    "AC3: go-exact-pins runs python3 .github/agent/supply-chain/pin-audit.py --go-exact-only")
 on_push = jobs_on("push")
 produced = {}
 for key in on_push:

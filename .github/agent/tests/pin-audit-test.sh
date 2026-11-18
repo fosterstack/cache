@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC5, REQ-SUP-001-AC6, REQ-SUP-001-AC7, REQ-SUP-001-AC8, REQ-SUP-001-AC9, REQ-SUP-001-AC10, REQ-SUP-001-AC37
+# proves: REQ-SUP-001-AC5, REQ-SUP-001-AC6, REQ-SUP-001-AC7, REQ-SUP-001-AC8, REQ-SUP-001-AC9, REQ-SUP-001-AC10, REQ-SUP-001-AC37, REQ-SUP-001-AC38
 # The daily supply-chain audit (owner ratified Oct 5, rules 2, 3 and 5; advisor 0172, 0175, 0177), proved offline against a fixtures file that stands in for the
 # advisory databases, the actions' own repositories and the registries, with a recording `gh`:
 #   python3 bin/pin-audit.py --root REPO --fixtures FILE --now ISO --gh CMD [--exceptions FILE]
@@ -411,6 +411,18 @@ ac37_exact go37-ok1 'go install example.com/x@v1.2.3' "go install example.com/x@
 ac37_exact go37-ok2 'go install example.com/x@v1.2.3-rc.1' "go install example.com/x@v1.2.3-rc.1 (a pre-release part)"
 ac37_exact go37-ok3 'go install example.com/x@v0.0.0-20240101000000-abcdef123456' "a pseudo-version (a pre-release part)"
 ac37_exact go37-ok4 "go install example.com/x@$H40" "go install example.com/x@ a full 40-hex commit"
+ac37_refused go37-sv0 .github/workflows/g.yml 'go install example.com/x@v1.2.3-main.01' 'example\.com/x' "go install example.com/x@v1.2.3-main.01 (a leading-zero numeric pre-release id)"
+ac37_refused go37-sv1 .github/workflows/g.yml 'go install example.com/x@v01.2.3' 'example\.com/x' "go install example.com/x@v01.2.3 (a leading-zero major)"
+ac37_refused go37-sv2 .github/workflows/g.yml 'go install example.com/x@v1.2.3-01' 'example\.com/x' "go install example.com/x@v1.2.3-01 (a leading-zero numeric pre-release id)"
+ac37_refused go37-sv3 .github/workflows/g.yml 'go install example.com/x@v1.01.3' 'example\.com/x' "go install example.com/x@v1.01.3 (a leading-zero minor)"
+ac37_refused go37-sv4 .github/workflows/g.yml 'go install example.com/x@v1.2.03' 'example\.com/x' "go install example.com/x@v1.2.03 (a leading-zero patch)"
+ac37_refused go37-sv5 .github/workflows/g.yml 'go install example.com/x@v1.2.3-' 'example\.com/x' "go install example.com/x@v1.2.3- (an empty pre-release)"
+ac37_refused go37-sv6 .github/workflows/g.yml 'go install example.com/x@v1.2.3-a..b' 'example\.com/x' "go install example.com/x@v1.2.3-a..b (an empty pre-release identifier)"
+ac37_refused go37-sv7 .github/workflows/g.yml 'go install example.com/x@v1.2.3+' 'example\.com/x' "go install example.com/x@v1.2.3+ (an empty build)"
+ac37_refused go37-sv8 .github/workflows/g.yml 'go install example.com/x@v1.2.3+a..b' 'example\.com/x' "go install example.com/x@v1.2.3+a..b (an empty build identifier)"
+ac37_exact go37-ok5 'go install example.com/x@v2.0.0+incompatible' "go install example.com/x@v2.0.0+incompatible"
+ac37_exact go37-ok6 'go install example.com/x@v1.2.3-0' "go install example.com/x@v1.2.3-0 (a lone 0 pre-release id)"
+ac37_exact go37-ok7 'go install example.com/x@v0.0.0' "go install example.com/x@v0.0.0"
 # a refused item beside a good one: the good one is not the finding, and the daily audit still does its other work
 gorepo "$work/go37-mix" .github/workflows/g.yml 'go install example.com/good@v1.2.3 && go install example.com/bad@latest'; run go37-mix "$CLEAN" "$work/go37-mix"
 CASE="AC37: of two go installs in one step only the one that is not exact is named: exit 1, UNPINNED GO TOOL names example.com/bad and not example.com/good"
@@ -418,6 +430,32 @@ check test "$rc" -eq 1
 check grep -Eq 'UNPINNED GO TOOL.*example\.com/bad|example\.com/bad.*UNPINNED GO TOOL' "$work/go37-mix.out"
 check none_match 'UNPINNED GO TOOL.*example\.com/good|example\.com/good.*UNPINNED GO TOOL' "$work/go37-mix.out"
 check no_issue go37-mix
+
+# --- REQ-SUP-001-AC38: --go-exact-only judges only the exact-pin rule over the tree: no network, no gh call, no issue; exit 0 all exact, 1 any not, 2 inventory unreadable ---
+CASE="AC38: --go-exact-only on a tree with go install @latest: exit 1, UNPINNED GO TOOL names the item, no issue and no gh call"
+gorepo "$work/go38-bad" .github/workflows/g.yml 'go install example.com/x@latest'; run go38-bad "$CLEAN" "$work/go38-bad" --go-exact-only
+check test "$rc" -eq 1
+check grep -Eq 'UNPINNED GO TOOL.*example\.com/x|example\.com/x.*UNPINNED GO TOOL' "$work/go38-bad.out"
+check no_issue go38-bad
+check test ! -s "$work/go38-bad.gh"
+CASE="AC38: --go-exact-only on a tree of only exact pins: exit 0, one line saying so, no UNPINNED GO TOOL line, no gh call"
+gorepo "$work/go38-ok" .github/workflows/g.yml 'go install example.com/x@v1.2.3'; run go38-ok "$CLEAN" "$work/go38-ok" --go-exact-only
+check test "$rc" -eq 0
+check test "$(grep -c . "$work/go38-ok.out")" -eq 1
+check none_match 'UNPINNED GO TOOL' "$work/go38-ok.out" "$work/go38-ok.err"
+check test ! -s "$work/go38-ok.gh"
+for v in v1.2.3-main.01 v01.2.3 v1.2.3-01; do
+  gorepo "$work/go38-$v" .github/workflows/g.yml "go install example.com/x@$v"; run "go38-$v" "$CLEAN" "$work/go38-$v" --go-exact-only
+  CASE="AC38: --go-exact-only refuses go install example.com/x@$v: exit 1, UNPINNED GO TOOL names the item, no issue, no gh call"
+  check test "$rc" -eq 1
+  check grep -Eq 'UNPINNED GO TOOL.*example\.com/x|example\.com/x.*UNPINNED GO TOOL' "$work/go38-$v.out"
+  check no_issue "go38-$v"
+  check test ! -s "$work/go38-$v.gh"
+done
+CASE="AC38: --go-exact-only needs no fixtures and no gh: a bad tree still exits 1 with the line when run without --fixtures and --gh"
+( cd "$work" && python3 "$aud" --root "$work/go38-bad" --go-exact-only >"$work/go38-nf.out" 2>"$work/go38-nf.err" ) && nfrc=0 || nfrc=$?
+check test "$nfrc" -eq 1
+check grep -q 'UNPINNED GO TOOL' "$work/go38-nf.out"
 
 # --- the live source's own logic, with no network: how a database record is read -----------------------------------------------------------------------------
 CASE="OSV's affected entries are judged range by range and OR-ed (a merged event list once marked codeql-action 4.x affected by a stale 2.x range), GitHub's comparator ranges too, and a ref that is not a commit is never upstream-checked"
