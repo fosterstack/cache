@@ -1,7 +1,7 @@
 """Tests for check-action-pins.py `_join_lines` and its one-pass parenthesis collapse: a backslash-newline joins lines except after a real comment."""
-import re, time, unittest
+import re, shutil, time, unittest
 
-from test_pin_setter_quotes import M, Base, run
+from test_pin_setter_quotes import M, Base, run, repo, GATE_PROGRAMS
 
 COPY = 'cp -R evil/. "$out"'
 SAFE = "out=$RUNNER_TEMP/x"
@@ -90,6 +90,62 @@ class ReadJoinsEndToEnd(Base):
         for name, lines in CLEAN.items():
             with self.subTest(name):
                 self.clean("\n          ".join(lines[:-1]))
+
+
+def hand_repo(case, lines, env="", style="|"):
+    """A tree whose one step runs `lines` exactly as given (no helper lines added); `env` follows the run block."""
+    text = "\n".join("          " + ln for ln in lines) + ("\n" if style == "|" else "")
+    wf = ("on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: " + style + "\n" + text + "\n" + env)
+    d = repo({".github/workflows/w.yml": wf, "Dockerfile": "FROM scratch\n", **GATE_PROGRAMS})
+    case.addCleanup(shutil.rmtree, d)
+    return d
+
+
+ENV_DOT = "        env:\n          out: .\n"
+BUILD = [COPY, "docker build -t img ."]
+
+
+class ReadsStayApart(unittest.TestCase):
+    """Round 3 cases; the RED-FIRST ones fail on the round-2 checker (8c1fabc3)."""
+
+    def end_to_end(self, lines, code, env="", style="|"):
+        out = run([hand_repo(self, lines, env, style)])
+        self.assertEqual(out[0], code, out[1])
+        self.assertEqual(" 0 finding(s)" in out[1], code == 0, out[1])
+
+    def test_red_first_open_quote_in_full_read_is_flagged(self):
+        lines = ["echo '", "out=$RUNNER_TEMP/x", "echo '", *BUILD, "#c\\", "echo '", "foo", "'"]
+        self.end_to_end(lines, 1, ENV_DOT)
+
+    def test_red_first_trailing_comment_backslash_is_clean(self):
+        self.end_to_end(["echo FOO=bar >> $GITHUB_ENV", "#c\\"], 0, style="|-")
+
+    def test_red_first_trailing_comment_backslash_then_echo_is_clean(self):
+        self.end_to_end(["echo FOO=bar >> $GITHUB_ENV", "#c\\", "echo ok"], 0, style="|-")
+
+    def test_red_first_trailing_comment_backslash_unit(self):
+        self.assertEqual(M.step_write_findings("w", "echo FOO=bar >> $GITHUB_ENV\n#c\\"), [])
+
+    def test_trailing_comment_backslash_then_echo_unit(self):
+        self.assertEqual(M.step_write_findings("w", "echo FOO=bar >> $GITHUB_ENV\n#c\\\necho ok"), [])
+
+    def test_red_first_join_is_idempotent(self):
+        texts = {"double_backslash": "echo \\\\\necho ok", "comment_backslash": "#c\\\necho ok",
+                 "quoted_hash": 'echo " #"; ou\\\nt=.'}
+        for name, t in texts.items():
+            with self.subTest(name):
+                self.assertEqual(joined(joined(t)), joined(t))
+
+    def test_red_first_many_lines_then_double_backslash_is_fast(self):
+        lines = [SAFE] * 500 + ["echo \\\\", "echo ok", *BUILD]
+        d = hand_repo(self, lines)
+        start = time.perf_counter()
+        code, out = run([d])
+        self.assertLess(time.perf_counter() - start, 4.0)
+        self.assertEqual(code, 0, out)
+
+    def test_quoted_default_hash_then_split_setter_is_flagged(self):
+        self.end_to_end(["echo ${x:- #x}; ou\\", "t=.", *BUILD], 1)
 
 
 if __name__ == "__main__":

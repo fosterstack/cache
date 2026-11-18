@@ -1869,14 +1869,30 @@ def _operands(args, val, boolean):
     return pos, None
 
 
+def _join_full(text):
+    """`text` with every backslash-newline joined, as main reads it."""
+    return re.sub(r"\\\n", "", text)
+
+
+_read = _join_full     # the join of the read now running (_reads sets it)
+
+
 def _join_lines(text):
-    """`text` read two ways, so that no read is weaker than main's: main's join of every backslash-newline, and, when it
-    differs, the comment-aware join after it (a comment ends at its newline, so the line after `#comment\\` is a real
-    line). A caller scans the whole result: a setter, write or env route either read shows is found. The comment-aware
-    join drops the backslash that ends a comment, so no backslash-newline is left and a second call changes nothing."""
-    full = re.sub(r"\\\n", "", text)
-    aware = _join_outside_comments(text)
-    return full if aware == full else full + "\n" + aware
+    """`text` joined as the read now running joins it: one text, never both reads, and a second call changes nothing."""
+    return _read(text)
+
+
+def _reads():
+    """Yields once per read of a script: main's full join, then the comment-aware join (a comment ends at its newline, so
+    the line after `#comment\\` is a real line), with `_join_lines` joining as that read does. A caller runs its whole check
+    in the loop body, so each read is scanned on its own text and no quote, comment or route state passes from one to
+    the other, and it combines the answers: a finding either read shows counts, and a trust holds only when each grants it."""
+    global _read
+    try:
+        for _read in (_join_full, _join_outside_comments):
+            yield
+    finally:
+        _read = _join_full
 
 
 def _join_outside_comments(text):
@@ -2935,6 +2951,20 @@ def _excluded_run_texts(scripts, name):
 
 
 def check_runs(where_job, scripts, bad, tree=None, mores=None):
+    """_check_runs under each read of the scripts: a finding either read shows is in `bad` once, and `mores` holds the
+    committed scripts either read runs."""
+    reported = []
+    for _ in _reads():
+        found, own = [], {}
+        _check_runs(where_job, scripts, found, tree, own)
+        bad += [f for f in found if f not in reported]
+        reported += found
+        for where, more in own.items():
+            if mores is not None and more not in mores.get(where, ""):
+                mores[where] = f"{mores[where]}\n{more}" if where in mores else more
+
+
+def _check_runs(where_job, scripts, bad, tree, mores):
     """scripts: [(where, text, shell)] of ONE job (or one composite action), in order. No image name this job built or tagged is
     trusted (the owner's rule, Oct 3: every image is pinned by digest; reference a build you made by its image id, e.g. --iidfile, or
     a digest). A step in a non-POSIX shell that names a container or package tool is a finding: this
@@ -3494,6 +3524,14 @@ def env_writes(text):
 
 
 def step_write_findings(where, text):
+    """_step_write_findings under each read of the text, each finding once."""
+    found = []
+    for _ in _reads():
+        found += [f for f in _step_write_findings(where, text) if f not in found]
+    return found
+
+
+def _step_write_findings(where, text):
     """The findings for one text a step runs: a startup-hook name set through an env route, a PATH route, or an env route
     whose name is not literal text."""
     names = re.compile(r"(?<![A-Za-z0-9_])(?:(?:" + "|".join(STARTUP_HOOK_ENV) + r")(?![A-Za-z0-9_])|BASH_FUNC_)")
