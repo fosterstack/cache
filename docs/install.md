@@ -126,7 +126,7 @@ The signature proves that we signed the checksums file with our release key. The
 
 To check that this key is the one the release names, follow [Check the release key](verify-key.md).
 
-Releases before v0.3.0 carry a short-lived certificate instead of a key: <!-- pinned: historical -->
+Releases v0.2.x carry a short-lived certificate instead of a key, made for the `stage-promote.yml` workflow at the release tag: <!-- pinned: historical -->
 
 ```sh
 cosign verify-blob \
