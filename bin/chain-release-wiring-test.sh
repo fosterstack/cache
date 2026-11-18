@@ -893,9 +893,9 @@ for pth in sys.argv[1:]:
             print("%s:%s" % (os.path.basename(pth), job))
 JOBSPY
 }
-ALLOWED_AWS_JOBS=$'release.yml:sign\nrelease.yml:sign-check\nrelease.yml:sign-rebuild'
+ALLOWED_AWS_JOBS=$'evidence-letter.yml:sign\nrelease.yml:sign\nrelease.yml:sign-check\nrelease.yml:sign-rebuild'
 mapfile -t aw_files < <(awsfiles "$root"); aj=$(awsjobs "${aw_files[@]}" | sort)
-if [ "$aj" = "$ALLOWED_AWS_JOBS" ]; then ok "KA-2 p4 r2 1b' R1 the aws CLI is installed in exactly the three signing jobs (release.yml sign, sign-rebuild, sign-check) and in no other job of any workflow, the Release job holds none"; else bad "KA-2 p4 r2 1b' the aws CLI install runs in: $(tr '\n' ' ' <<< "$aj")"; fi
+if [ "$aj" = "$ALLOWED_AWS_JOBS" ]; then ok "KA-2 p4 r2 1b' R1 the aws CLI is installed in exactly the four signing jobs (release.yml sign, sign-rebuild, sign-check; evidence-letter.yml sign) and in no other job of any workflow, the Release job holds none"; else bad "KA-2 p4 r2 1b' the aws CLI install runs in: $(tr '\n' ' ' <<< "$aj")"; fi
 mkdir -p "$work/awsjobs"; python3 - "$root/.github/workflows/release.yml" "$work/awsjobs/release.yml" <<'JOBMUT'
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
