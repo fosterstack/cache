@@ -10,11 +10,15 @@ CLEAN = {
     "assignment_after": "out=$RUNNER_TEMP/x other=1",
     "redirect_after": "out=$RUNNER_TEMP/x >/dev/null",
     "assignment_before": "a=1 out=$RUNNER_TEMP/x",
+    "expansion_pipe_arith": "a=$((1 | (b=2))) out=$RUNNER_TEMP/x",
+    "expansion_pipe_substitution": "a=$(printf x | >/dev/null) out=$RUNNER_TEMP/x",
 }
 # a command word after the setter, or a pipe before the assignments that lead it: it does not count
 FLAGGED = {
     "pipe_then_assignments": "cat|a=1 out=$RUNNER_TEMP/x >/dev/null",
     "redirect_then_command": "out=$RUNNER_TEMP/x >/dev/null true",
+    "pipe_then_substitution_assignment": "cat | a=$(x) out=$RUNNER_TEMP/x",
+    "pipe_then_arith_assignment": "cat | a=$((1|2)) out=$RUNNER_TEMP/x",
 }
 SLOW = "echo x | " + "a=" * 40 + "!\necho hi\nout=$RUNNER_TEMP/x"
 
