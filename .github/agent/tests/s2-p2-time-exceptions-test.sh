@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC3, REQ-SUP-001-AC15
+# proves: REQ-SUP-001-AC15
 # cache#359 round 5, section 2, group P2, row "load_exceptions: explicit failure, duplicate-key guard" (the time
 # rows went with the release-age hold):
 #   pin-audit load_exceptions raises Fail (never an AssertionError, and never a silent pass when assertions are

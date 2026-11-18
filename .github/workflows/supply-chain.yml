@@ -1,15 +1,12 @@
 name: supply-chain
 
 # REQ-SUP-001: the actions supply-chain checks.
-#   pin-age        every pull request: the scan names every version the PR moves and passes only a pin it can read (AC2). It runs the base branch's
-#                  checker against the PR's tree, on pull_request (never pull_request_target), with a read-only token and nothing secret.
 #   daily-audit    once a day: the inventory, advisories, malicious-package reports, upstream reachability, disputed hits (AC5, AC7-AC10).
 #   evidence-letter-present  once a day: from the 3rd of the month, last month's evidence letter must be on a
 #                  published release and verify (REQ-REL-013). Read-only.
 # It never produces a run, environment or secret name (AC8): the private details are written on a maintainer's machine, not here.
 
 on:
-  pull_request: {}
   schedule:
     - cron: '53 3 * * *'    # off-peak, clear of the auditor, rescan and freshness crons (the 1,000/hour token limit is shared by the repo)
   workflow_dispatch: {}
@@ -24,47 +21,6 @@ concurrency:
 permissions: {}
 
 jobs:
-  pin-age:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: read
-    steps:
-      - name: Trusted checker (the base branch)
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          path: trusted
-          persist-credentials: false
-      - name: The pull request's tree
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          path: pr
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Every moved version, and what advisories say about it
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -uo pipefail
-          status=0
-          # 540 s, then pin-audit.py's 600 s --base deadline (deadline_for): fits the 20-minute job; -v names a stop
-          timeout -v 540 python3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base "$BASE_SHA" \
-            --head "$HEAD_SHA" || status=1
-          # the reviewers' rulings come from the base branch too: a pull request must not bring its own
-          exceptions=trusted/.github/supply-chain-exceptions.json
-          if [ ! -f "$exceptions" ]; then
-            exceptions="$RUNNER_TEMP/no-exceptions.json"
-            echo '{"exceptions": []}' > "$exceptions"
-          fi
-          python3 trusted/.github/agent/supply-chain/pin-audit.py --root pr --base "$BASE_SHA" --head "$HEAD_SHA" \
-            --exceptions "$exceptions" --report-only || status=1
-          exit $status
-
   daily-audit:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     concurrency:

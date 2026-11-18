@@ -1,13 +1,8 @@
 #!/usr/bin/env python3
-"""The pin scan (REQ-SUP-001-AC2, AC3): every version a pull request moves is named, and a moved version passes only as a pin the scan can read.
+"""The pin-reading functions the daily pin audit loads (pin-audit.py): how a pin is read, and how a version is looked up at its source.
 
-  pin-age-check.py --root REPO --base REV --head REV [--json FILE] [--base-inputs FILE] [--exceptions FILE]
-
-Exit 0: nothing moved, or every moved version is a readable pin (an exact version, a commit or a digest) or ruled. Exit 1: a moved version that is not a pin
-the scan can read and has no ruling. Exit 2: the scan could not run (unreadable input, a tree that does not parse).
-The scan measures no time: it reads the two trees and the base branch's rulings.
+Used as a module only. The pull-request scan that was its command line is deleted (REQ-REL-014-AC2); a moved version is no longer judged on a pull request.
 """
-import argparse
 import hashlib
 import http.client
 import importlib.util
@@ -15,7 +10,6 @@ import json
 import os
 import re
 import subprocess
-import sys
 import urllib.parse
 import urllib.error
 import urllib.request
@@ -33,9 +27,6 @@ def _load(name):
 inv = _load("pin-inventory")
 
 
-# the one predicate lives in pin-inventory.py (its kernel-lock reader needs it); the names stay here for every caller
-# and test
-_PIN = inv._PIN
 is_pin = inv.is_pin
 
 
@@ -304,44 +295,8 @@ def _publisher_entry(name, pins=None):
     return pins.get(f"{host}/{path}")
 
 
-def _one_line(error):
-    """An error as one line. Its text can hold a pull request's file path, and a path may contain newlines;
-    a log line that starts with :: is an Actions command, and the runner reads ##[command] anywhere in a line."""
-    text = " ".join("".join(c if c.isprintable() else " " for c in str(error)).split())
-    return text.replace("##[", "## [")
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--root", default=".")
-    ap.add_argument("--base", required=True)
-    ap.add_argument("--head", required=True)
-    ap.add_argument("--json")
-    ap.add_argument("--base-inputs",
-        help="the base-inputs list (default: .github/policy/base-inputs.json beside this script's own checkout, the "
-            "base branch in CI)")
-    ap.add_argument("--exceptions",
-        help="the rulings file (default: the one beside this script's own checkout, the base branch in CI)")
-    a = ap.parse_args(argv)
-    try:
-        base_items = inv.load_at(a.root, a.base)
-        head_items = inv.load_at(a.root, a.head)
-    except (OSError, ValueError, RuntimeError) as e:
-        print(f"pin-age: cannot run: {_one_line(e)}", file=sys.stderr)
-        return 2
-    moved = inv.moved(base_items, head_items)
-    try:
-        return _run(a, moved)
-    except RuntimeError as e:
-        print(f"pin-age: cannot run: {_one_line(e)} (not a pass)", file=sys.stderr)
-        return 2
-    # an answer of a shape nobody guarded: the check cannot run, it is never a pass and never a traceback
-    except (AttributeError, KeyError, TypeError, IndexError, ValueError) as e:
-        print(f"pin-age: cannot run: an answer could not be read ({type(e).__name__}) (not a pass)", file=sys.stderr)
-        return 2
-    except CouldNotLook as e:
-        print(f"pin-age: cannot run: {_one_line(e)} (not a pass: re-run the check)", file=sys.stderr)
-        return 2
 
 
 def _line_hash(flat):
@@ -377,11 +332,6 @@ def _unmeasured_counts(root, base, head):
     return added
 
 
-# keys are (file, form, the normalised command): an in-place swap or an edit of the line around it is an ADDITION
-def _added_unmeasured(root, base, head):
-    """Install forms this check cannot measure that the head has MORE of than the base (per file, form and whole
-    line): a PR that adds one is refused."""
-    return sorted(_unmeasured_counts(root, base, head))
 
 
 # REQ-SUP-001-AC16: the advisor's rulings on lines that only MENTION a download tool (a comment, an echo string, a stub
@@ -391,193 +341,19 @@ def _added_unmeasured(root, base, head):
 DEFAULT_EXCEPTIONS = os.path.normpath(os.path.join(HERE, "..", "..", "supply-chain-exceptions.json"))
 _RULED_FIELDS = ("file", "form", "key", "line", "ruling")
 TEXT_RULING = "text, not a command: "      # the convention: a line that only MENTIONS a download tool
-# a real fetch, honored only for https on packages.wolfi.dev (see _live_fetch_line_ok)
-LIVE_RULING = "live fetch, owner ratified (Oct 9 rule 48 / Oct 15 exception 2): "
-# the Go toolchain tarball (REQ-SUP-001-AC23): honored only for https://go.dev/dl/ plus one variable
-GO_RULING = "pinned toolchain fetch, advisor reading Oct 16 (rule 12, the recipe pin is verified before storing): "
-DOWNLOAD_FORM = "a download"
-_LIVE_URL = re.compile(r"https://packages\.wolfi\.dev(?:/[A-Za-z0-9._+~/-]*)?")
-# the per-package fetch (advisor, Oct 15, owner rule 48): the literal https://packages.wolfi.dev/os/ (trailing slash
-# included, so the host cannot change) followed by
-# exactly ONE variable and nothing else
-_LIVE_URL_VAR = re.compile(r"https://packages\.wolfi\.dev/os/\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)")
-_GO_OUT = re.compile(r"(?:[A-Za-z0-9_./-]|\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})+")
-_GO_URL_VAR = re.compile(r"https://go\.dev/dl/\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)")
 _LINE_TEXT = {}                              # whole-line hash -> the flattened line, filled by _occurrences
 
 
-_LIVE_FLAG_PLAIN = {"-f", "-s", "-S", "-L", "-fsSL", "-fsS", "-fSL", "-sSL", "-g", "--globoff", "--fail", "--silent",
-    "--show-error", "--location", "--tlsv1.2"}
-_LIVE_FLAG_VALUE = {"--max-filesize": r"[0-9]+", "--max-time": r"[0-9]+", "--proto": r"=https",
-    "-o": r"[A-Za-z0-9_./${}-]+", "--output": r"[A-Za-z0-9_./${}-]+"}
 
 
-def _live_fetch_line_ok(flat, toolchain=False):
-    """The bound line is exactly ONE curl command: curl or /usr/bin/curl, then only flags from a fixed list (with a
-    plain value where one is taken), then exactly one
-    URL operand that is https on the host packages.wolfi.dev (with toolchain=True instead: exactly https://go.dev/dl/
-    followed by ONE variable, REQ-SUP-001-AC23); optionally followed by `|| die "plain text" [digit]` or `|| exit N`.
-    The line is split into shell words,
-    so quote concatenation cannot change a word after the check; a variable may appear only as part of the -o file name;
-    no second command, pipe, redirection,
-    substitution, other operand or schemeless host is accepted."""
-    import shlex
-    left, sep, right = flat.partition("||")
-    if sep and not re.fullmatch(r'\s*(?:die(?: "[^"$`\\]*")?(?: [0-9]+)?|exit [1-9][0-9]*)\s*', right):
-        return False
-    if re.search(r"[;&|<>`]|\$\(", left):
-        return False
-    try:
-        w = shlex.split(left, posix=True)
-    except ValueError:
-        return False
-    if len(w) < 3 or w[0] not in ("curl", "/usr/bin/curl") or w[1] not in (("-q",) if toolchain
-            else ("-q", "--disable")):
-        # -q first: no default .curlrc (CURL_HOME) can add a URL or an option (the Go shape takes only the spelling -q)
-        return False
-    raw = re.findall(r"""(?:"[^"]*"|'[^']*'|[^\s"']+)+""", left)
-    if len(raw) != len(w):
-        return False
-    if toolchain and "'" in left:
-        # the Go shape has no single quote anywhere: a single-quoted $name is a literal dollar sign, never a variable
-        return False
-    for rt in raw:
-        # an expansion, brace, glob or tilde may appear only inside double quotes: unquoted, the shell splits it into
-        # several words
-        if re.search(r"[$`{}*?\[\]~]", re.sub(r'"[^"]*"|\'[^\']*\'', "", rt)):
-            return False
-    i, operands, globoff, op_raw = 2, [], False, []
-    while i < len(w):
-        t = w[i]
-        if t in _LIVE_FLAG_PLAIN:
-            globoff = globoff or t in (("-g",) if toolchain else ("-g", "--globoff"))
-            i += 1
-        elif t in _LIVE_FLAG_VALUE:
-            if i + 1 >= len(w) or not re.fullmatch(_LIVE_FLAG_VALUE[t], w[i + 1]) or (t not in ("-o", "--output")
-                    and "$" in w[i + 1]):
-                return False
-            if toolchain and t in ("-o", "--output") and not _GO_OUT.fullmatch(w[i + 1]):
-                # the Go shape: an output value is literal characters and plain $name / ${name} references only
-                return False
-            i += 2
-        elif t.startswith("-"):
-            # an option outside the list (-x, -K, --resolve, --url, an attached value, a cluster not listed)
-            return False
-        else:
-            operands.append(t)
-            op_raw.append(raw[i])
-            i += 1
-    if len(operands) != 1:
-        return False
-    if toolchain:
-        # the variable form only, only with -g, and the operand must be double-quoted or bare: a single-quoted $f is a
-        # literal dollar sign, not a variable
-        return globoff and "'" not in op_raw[0] and _GO_URL_VAR.fullmatch(operands[0]) is not None
-    if _LIVE_URL_VAR.fullmatch(operands[0]) is not None:
-        # curl itself expands {a,b} and [1-2] in a URL: a variable operand is one transfer only with -g
-        return globoff
-    return _LIVE_URL.fullmatch(operands[0]) is not None
 
 
-# the pinned script lines, each honored for its file and its whole-line sha256 only (see PINNED_FETCH)
-PINNED_FETCH_RULING = "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): "
-# file -> the raw text of each pinned line, byte for byte (no trailing space, no carriage return); the head file must
-# hold each exactly once
-PINNED_FETCH = {
-    "bin/loopback-get.sh": [
-        """curl -q -g --noproxy '*' --proto "=$proto" --max-redirs 0 "$@" "$url" || exit $?""",
-    ],
-    'bin/release-assets.sh': [
-        'gh release download "$rel" -D release-published',
-    ],
-    'bin/acceptance-k8s.sh': [
-        'docker pull -q curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69 '
-            '&& docker tag '
-                'curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69 '
-                    '"$CLIENT_LOCAL"',
-    ],
-    'bin/acceptance-gradle.sh': [
-        '  code=$(curl -s -o /dev/null -w \'%{http_code}\' -I "localhost:18095/${key}")',
-        'curl -s localhost:18095/metrics > /tmp/metrics-cold.txt',
-        'curl -s localhost:18095/metrics > /tmp/metrics-warm.txt',
-    ],
-    'bin/acceptance-gradle-capped.sh': [
-        'head_code() { curl -s -o /dev/null -w \'%{http_code}\' -I "localhost:18096/$1"; }',
-        'curl -s localhost:18096/metrics > /tmp/capped-metrics.txt',
-        'hdr=$(curl -s -D - -o /dev/null -X PUT --data-binary @/tmp/oversized-probe.bin '
-            'http://localhost:18096/oversizedprobe)',
-        "code=$(curl -s -o /dev/null -w '%{http_code}' -I http://localhost:18096/oversizedprobe)",
-    ],
-    'bin/acceptance-maven.sh': [
-        'curl -s -u mvn:acceptance-secret localhost:18098/metrics > /tmp/m-cold.txt',
-        'curl -s -u mvn:acceptance-secret localhost:18098/metrics > /tmp/m-warm.txt',
-        'before_puts=$(curl -s -u mvn:acceptance-secret localhost:18098/metrics | awk '
-            '\'/^fscache_http_requests_total\\{method="PUT",status="201"\\}/ {print $2}\')',
-        'after_puts=$(curl -s -u mvn:acceptance-secret localhost:18098/metrics | awk '
-            '\'/^fscache_http_requests_total\\{method="PUT",status="201"\\}/ {print $2}\')',
-    ],
-    'bin/acceptance-maven-capped.sh': [
-        'app_code=$(curl -s -u mvn:acceptance-secret -o /dev/null -w \'%{http_code}\' -I '
-            '"http://localhost:18099/maven/v1.1/com.fosterstack.bench/app/${app_key}/app.jar")',
-        'hdr=$(curl -s -u mvn:acceptance-secret -D - -o /dev/null -X PUT --data-binary @/tmp/mvn-oversized-probe.bin '
-            'http://localhost:18099/maven/oversizedprobe)',
-        "code=$(curl -s -u mvn:acceptance-secret -o /dev/null -w '%{http_code}' -I "
-            "http://localhost:18099/maven/oversizedprobe)",
-    ],
-    'bin/install-scanner.sh': [
-        '    curl -q -fsSL -g -o "$tmp/go.tgz" "https://go.dev/dl/${gofile}" || die "download failed: go toolchain"',
-    ],
-    'bin/go-bump-open-pr.sh': [
-        '  curl -q -fsSL -g --proto =https --tlsv1.2 -o "${dl}/published.json" "https://go.dev/dl/${jsonq}" '
-            '|| die "go.dev is unreachable: cannot read the published checksums" 1',
-        '    curl -q -fsSL -g --proto =https --tlsv1.2 -o "${dl}/${tarball}" "https://go.dev/dl/${tarball}" '
-            '|| die "cannot download the Go tarball from go.dev" 1',
-    ],
-}
-_PINNED_FETCH_SHA = {f: {hashlib.sha256(" ".join(l.split()).encode("utf-8", "replace")).hexdigest(): l for l in ls}
-    for f, ls in PINNED_FETCH.items()}
-_PINNED_OK = {}
 
 
-def _held_once(root, head, f, line):
-    """True only when the head file f (a regular file, not a link) holds `line` byte for byte exactly once, has no
-    carriage return, and holds no other line that differs
-    from it only in whitespace (the scan hashes with whitespace collapsed, so the raw text is compared here).
-    Unreadable: False."""
-    raw = _head_file(root, head, f)
-    if raw is None or b"\r" in raw:
-        return False
-    rows = raw.split(b"\n")
-    flat = " ".join(line.split())
-    return rows.count(line.encode()) == 1 and sum(" ".join(r.decode("utf-8", "replace").split()) == flat
-        for r in rows) == 1
 
 
-def _pinned_line_ok(root, head, f, lh):
-    """True only when the pinned line of file f whose whole-line sha256 is lh is held by the head file as _held_once
-    says. A line the checker does not pin: False."""
-    key = (root, head, f, lh)
-    if key not in _PINNED_OK:
-        raw_line = _PINNED_FETCH_SHA.get(f, {}).get(lh)
-        _PINNED_OK[key] = raw_line is not None and _held_once(root, head, f, raw_line)
-    return _PINNED_OK[key]
 
 
-def _head_file(root, rev, f):
-    """The bytes of the regular file f (not a link) in the tree of rev (the working tree when rev is None); None when
-    it is missing, a link or unreadable."""
-    try:
-        if rev is None:
-            path = os.path.join(root, f)
-            return open(path, "rb").read() if os.path.isfile(path) and not os.path.islink(path) else None
-        ent = subprocess.run(["git", "-C", root, "ls-tree", rev, "--", f], capture_output=True, check=True,
-            timeout=120).stdout.decode("utf-8", "replace").split()
-        if len(ent) < 4 or ent[0] not in ("100644", "100755") or ent[1] != "blob":
-            return None
-        return subprocess.run(["git", "-C", root, "show", f"{rev}:{f}"], capture_output=True, check=True,
-            timeout=120).stdout
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        return None
 
 
 WHOLE_FILE = float("inf")      # the count of a reviewed_files ruling: the whole file is reviewed, no count
@@ -718,31 +494,12 @@ def split_base_inputs(moved, paths):
 
 
 UNPINNED_FORM = "an unpinned package install"
-LOCAL_CALL_FORM = "a local reusable workflow call"
 
 
-def _item_hash(item):
-    return hashlib.sha256(item.key.encode("utf-8", "replace")).hexdigest()
 
 
-def unresolved_call_rows(root, rev, exceptions_path):
-    """The local-call rows of the exceptions file that would rule NO item of the tree at rev, judged by the very tuple
-    split_ruled_local_calls() looks up
-    ((file, form, h, h) for an eligible item: kind action, version (local), with an origin file): [] when every row
-    resolves to exactly one item."""
-    rows = [k for k in load_ruled_text(exceptions_path, required=True) if k[1] == LOCAL_CALL_FORM]
-    have = {}
-    for it in inv.load_at(root, rev).values():
-        if it.kind == "action" and it.version == "(local)" and it.src:
-            h = _item_hash(it)
-            have.setdefault((it.src[0], LOCAL_CALL_FORM, h, h), []).append(it.key)
-    return [k for k in rows if len(have.get(k, [])) != 1]
 
 
-def split_ruled_local_calls(moved, rulings):
-    """REQ-SUP-001-AC19: a local action or reusable workflow (a `uses: ./path` line) is a file of the same commit, not a
-    pin: it leaves the list with no version listed and nothing refused. Returns (still moved, [(item, ruling)])."""
-    return [m for m in moved if not (m.kind == "action" and m.version == "(local)")], []
 
 
 def drop_ruled_unpinned(items, ruled_lines):
@@ -770,215 +527,3 @@ def ruled_unpinned_lines(root, base, head, exceptions_path):
         if all(r and n <= r[1] and not in_base.get(k, {}).get(lh) for r, (lh, n) in zip(rs, per.items())):
             out.update((k[0], lh) for lh in per)
     return out
-
-
-GO_EXEMPT_REASON = (
-    "exempt from the 7-day hold: Go's own release, "
-    "downloaded from go.dev and verified against its pinned sha256 "
-    "(owner ratified Oct 21 2026, REQ-SUP-001-AC27); the advisory check still applies")
-_GO_VER_LINE = re.compile(r"^GO_VER=(\d+\.\d+\.\d+)$")
-_GO_FILE = re.compile(r'^[ \t]*gofile="go\$\{GO_VER\}\.\$\{A_GO\}\.tar\.gz"[ \t]*$')
-_GO_CURL = re.compile(r'^[ \t]*curl -q -fsSL -g -o "\$tmp/go\.tgz" "https://go\.dev/dl/\$\{gofile\}" \|\| die '
-    r'"download failed: go toolchain"[ \t]*$')
-_GO_VERIFY = ["verify() { # file", "  local got", "  got=$(sha256sum \"$1\" | cut -d' ' -f1)",
-              '  [ "$got" = "$SUM" ] || pipeline_fail "${TOOL} checksum mismatch (got ${got}, pinned ${SUM}) - '
-                  'refusing to run an unverified scanner"', "}"]
-_GO_EXTRACT = re.compile(r'^[ \t]*mkdir -p "\$tmp/x" && tar -xzf "\$tmp/go\.tgz" -C "\$tmp/x" \|\| pipeline_fail '
-    r'"extract failed for go"[ \t]*$')
-_GO_MSG = r'"(?:[^"$`\\]|\$\{[A-Za-z_]+\})*"'
-_GO_WANT = re.compile(r'^[ \t]*\[ "\$want" = "\$GO_VER" \] \|\| pipeline_fail ' + _GO_MSG + r'[ \t]*$')
-_GO_SHOW = re.compile(
-    r'^[ \t]*"\$\{DEST\}/fscache-go/bin/go" version \| grep -q "go\$\{GO_VER\} " \|\| pipeline_fail '
-    + _GO_MSG + r'[ \t]*$')
-_GO_FAIL = ['pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; '
-    'exit 1; }']
-_SUM_ROW = re.compile(r"^[ \t]*[A-Za-z0-9_.:|-]+\) SUM=[0-9a-f]{64} ;;[ \t]*$")
-# a module pinned by go.sum: its own key, empty sum
-_SUM_MODULE = re.compile(r'^[ \t]*govulncheck:\*\) SUM="" ;;[ \t]*(?:#.*)?$')
-_GO_SUM = {a: re.compile(r"^[ \t]*go:" + a + r"\) SUM=[0-9a-f]{64} ;;[ \t]*$")
-    for a in (r"x86_64\|go:amd64", r"aarch64\|go:arm64")}
-
-
-def go_exemption(root, head):
-    """The pinned Go version when the head's bin/install-scanner.sh fetches Go ONLY from https://go.dev/dl/ at its
-    pinned GO_VER, pins the sha256 of both
-    architectures (64 hex each) and verifies the file right after the download; otherwise None (the 7-day hold applies).
-    Any other line that downloads
-    something Go-shaped (curl or wget naming go.tgz, GO_VER, go.dev or golang) voids it."""
-    try:
-        text = inv.tree_files(root, head).get("bin/install-scanner.sh")
-    except (OSError, ValueError, RuntimeError):
-        return None
-    if not text:
-        return None
-    lines = text.split("\n")
-    # a shell continuation is one command: a download written over two lines is still one
-    joined = re.sub(r"\\[ \t]*\n", " ", text).split("\n")
-    vers = [m.group(1) for m in (_GO_VER_LINE.match(l) for l in lines) if m]
-    if len(vers) != 1 or sum(1 for l in lines if re.match(r"^[ \t]*(?:export[ \t]+)?GO_VER=", l)) != 1:
-        return None
-    fetch = [i for i, l in enumerate(joined) if re.search(r"\b(curl|wget)\b", l)
-        and re.search(r"go\.tgz|GO_VER|gofile|go\.dev|golang|go\$\{|go[0-9]+\.[0-9]", l)]
-    if len(fetch) != 1 or not _GO_CURL.match(joined[fetch[0]]):
-        return None
-    names = [l for l in joined if re.match(r"^[ \t]*(?:export[ \t]+|readonly[ \t]+|local[ \t]+)?gofile=", l)]
-    if len(names) != 1 or not _GO_FILE.match(names[0]):
-        return None
-    nxt = next((l.strip() for l in joined[fetch[0] + 1:] if l.strip()), "")
-    if nxt != 'verify "$tmp/go.tgz"':
-        return None
-    if any(sum(1 for l in lines if rx.match(l)) != 1 for rx in _GO_SUM.values()) or sum(1 for l in lines
-            if re.search(r"\bgo:", l) and re.search(r"\bSUM", l)) != 2:
-        return None
-    # the verifier and the failure helper are the reviewed ones, each defined once in ANY spelling (verify() / verify ()
-    # / function verify)
-    for name, want in (("verify", _GO_VERIFY), ("pipeline_fail", _GO_FAIL)):
-        if len(re.findall(r"\bfunction[ \t]+" + name + r"\b|\b" + name + r"[ \t]*\([ \t]*\)", text)) != 1:
-            return None
-        starts = [i for i, l in enumerate(lines) if re.match(r"^" + name + r"\(\)", l)]
-        if len(starts) != 1 or [l.rstrip() for l in lines[starts[0]:starts[0] + len(want)]] != want:
-            return None
-    # the installer defines only the reviewed helpers (a redefined sha256sum, cut or echo would change what verify()
-    # computes) and aliases nothing
-    defs = set()
-    for l in joined:
-        if not l.lstrip().startswith("#"):
-            q = re.sub(r"'[^']*'|\"[^\"]*\"", '""', l)
-            defs.update(re.findall(r"([A-Za-z_][\w.-]*)[ \t]*\([ \t]*\)", q) + re.findall(r"\bfunction[ \t]+([\w.-]+)",
-                q))
-            if re.search(r"(?:^|[;&|{(]|\bthen|\bdo|\belse)[ \t]*(?:alias|enable|builtin|unalias)\b", q):
-                return None
-    if defs - {"verify", "pipeline_fail", "die"}:
-        return None
-    # the download and its verify call sit at the top level of the go arm of the one tool dispatch: counted from the
-    # START of the file, the only open construct at the
-    # download is that dispatch `case` (a wrapper around it, a group or loop or condition around the arm, an inline `;
-    # (` all raise the depth: refused)
-    arm = [i for i, l in enumerate(joined[:fetch[0]]) if re.match(r"^[ \t]*go\)[ \t]*$", l)]
-    if len(arm) != 1:
-        return None
-    depth = 0
-    for l in joined[:fetch[0]]:
-        t = re.sub(r"'[^']*'|\"[^\"]*\"", '""', l.strip())
-        if t.startswith("#"):
-            continue
-        depth += (len(re.findall(r"(?:^|[;&|)][ \t]*|\bthen[ \t]+|\bdo[ \t]+|\belse[ "
-            r"\t]+)(?:if|while|until|for|select|case)\b", t)) + (1 if t[:1] in "({" else 0)
-                 + len(re.findall(r"[;&|][ \t]*[({]", t)) + (1 if re.search(r"\)[ \t]*\{[ \t]*(?:#.*)?$", t) else 0))
-        depth -= len(re.findall(r"(?:^|[;&|)][ \t]*)(?:fi|done|esac)\b", t)) + (1 if t[:1] in ")}" else 0)
-    if depth != 1:
-        return None
-    # outside the reviewed lines the Go names appear ONLY in the two reviewed read shapes (a version comparison and the
-    # installed-version grep, each ending in a
-    # pipeline_fail whose message holds no command substitution); ANY other mention of GO_VER, gofile, go.tgz, go.dev or
-    # a Go archive name (go<N>.<N>) in a
-    # non-comment line voids the exemption: a write in any form, a second transfer by any command, a URL variable, a
-    # read in another command
-    for i, l in enumerate(joined):
-        if i == fetch[0] or l.lstrip().startswith("#") or _GO_FILE.match(l) or _GO_VER_LINE.match(l) \
-            or l.strip() == 'verify "$tmp/go.tgz"' or _GO_EXTRACT.match(l) \
-                or _GO_WANT.match(l) or _GO_SHOW.match(l):
-            continue
-        if re.search(r"GO_VER|gofile|go\.tgz|go\.dev|\bgo[0-9]+\.[0-9]", l):
-            return None
-    # every SUM assignment, anywhere on any line, is a pinned row: a literal pattern (no glob), `) SUM=<64 hex> ;;`; any
-    # other mention of SUM must only read it
-    for l in joined:
-        rest = re.sub(r"\$\{SUM\}|\$SUM\b", "", l)
-        if re.search(r"\bSUM\b", rest) and not (_SUM_ROW.match(l) or _SUM_MODULE.match(l)):
-            return None
-    return vers[0]
-
-
-def split_go_exempt(moved, root, head):
-    """(the moved items without the exempt Go release, the exempt ones): only `tool:go` at the installer's own pinned
-    version."""
-    ver = go_exemption(root, head) if any(it.kind == "tool" and it.name == "go" for it in moved) else None
-    keep = [it for it in moved if not (ver and it.kind == "tool" and it.name == "go" and it.version == ver)]
-    return keep, [it for it in moved if it not in keep]
-
-
-def _run(a, moved):
-    # before the scan: a malformed list stops the check
-    reviewed = load_reviewed_files(a.exceptions or DEFAULT_EXCEPTIONS, required=bool(a.exceptions))
-    rulings = load_ruled_text(a.exceptions or DEFAULT_EXCEPTIONS, required=bool(a.exceptions))
-    lines = _unmeasured_counts(a.root, a.base, a.head)
-    added, ruled = [], []
-    for k in sorted(lines):
-        # ruled only when EVERY added (key, whole line) is named by a row and its head occurrences are within that row's
-        # count (1 unless it says more):
-        # the same segment inside any other line, an edited line, or one copy too many leaves the item refused
-        rs = [_rule_of(rulings, reviewed, k[0], k[1], k[2].split(":", 1)[0], lh) for lh in lines[k]]
-        if k[1] == DOWNLOAD_FORM and any(r and r[1] != WHOLE_FILE
-                and not r[0].startswith((TEXT_RULING, LIVE_RULING, GO_RULING, PINNED_FETCH_RULING))
-                    for r in rs):
-            # a download row rules a line only with one of the four rulings named above (text, live, Go, pinned)
-            rs = [None]
-        if k[1] == DOWNLOAD_FORM and any(r and r[0].startswith(LIVE_RULING)
-                and not _live_fetch_line_ok(_LINE_TEXT.get(lh, "")) for r, lh in zip(rs, lines[k])):
-            # a live-fetch ruling on a line that is not wholly https on packages.wolfi.dev rules nothing
-            rs = [None]
-        if k[1] == DOWNLOAD_FORM and any(r and r[0].startswith(GO_RULING)
-                and not (k[0].endswith(".sh") and not k[0].startswith(".github/")
-                    and _live_fetch_line_ok(_LINE_TEXT.get(lh, ""), toolchain=True)) for r, lh in zip(rs, lines[k])):
-            # a Go-toolchain ruling on a line that is not exactly the one go.dev/dl/ shape rules nothing (AC23)
-            rs = [None]
-        if any(r and r[0].startswith(PINNED_FETCH_RULING) and not _pinned_line_ok(a.root, a.head, k[0], lh) for r,
-                lh in zip(rs, lines[k])):
-            # the pinned-fetch ruling on any line but one of the pinned lines of its own file rules nothing (AC26)
-            rs = [None]
-        if all(r and n <= r[1] for r, n in zip(rs, lines[k].values())):
-            ruled.append((k, "; ".join(dict.fromkeys(r[0] for r in rs))))
-        else:
-            added.append(k)
-    # REQ-SUP-001-AC20
-    moved = drop_ruled_unpinned(moved, ruled_unpinned_lines(a.root, a.base, a.head, a.exceptions or DEFAULT_EXCEPTIONS))
-    # REQ-SUP-001-AC21
-    moved, base_files = split_base_inputs(
-        moved, load_base_inputs(a.base_inputs or DEFAULT_BASE_INPUTS, required=bool(a.base_inputs)))
-    # REQ-SUP-001-AC19: judged by the ruled row of ITS OWN line, never by another line's
-    moved, ruled_calls = split_ruled_local_calls(moved, rulings)
-    moved, go_free = split_go_exempt(moved, a.root, a.head)
-    if not moved and not added and not go_free:
-        print("pin-age: no pin moved (nothing to measure)")
-        rows = []
-    else:
-        rows = []
-        for it in moved:
-            ok, reason = judge_item(it)
-            rows.append({"item": it.key, "label": it.label, "ok": ok, "reason": reason})
-        print(f"pin-age: {len(rows)} moved version(s), each must be a pin the scan can read:")
-        for r in rows:
-            print(f"  {'ok  ' if r['ok'] else 'FAIL'} {_one_line(r['item'])}: {_one_line(r['reason'])}")
-        for it in go_free:
-            rows.append({"item": it.key, "label": it.label, "ok": True, "reason": GO_EXEMPT_REASON})
-            print(f"  ok   {it.key}: {GO_EXEMPT_REASON}")
-    for path, what, line in added:
-        rows.append({"item": f"unmeasured:{path}", "label": "", "ok": False,
-                     "reason": f"{what} was added to {path} ({line[:100]}): this check cannot measure it, so a "
-                                f"pull request that adds one is refused (use a pinned form it can measure)"})
-        print(f"  FAIL unmeasured:{_one_line(path)}: {what} added: not measurable, refused")
-    for it in base_files:
-        rows.append({"item": it.key, "label": "", "ok": True,
-            "reason": f"base input: {it.name[5:]} is listed in .github/policy/base-inputs.json"})
-        print(f"  ok   {it.key}: base input (REQ-SUP-001-AC21)")
-    for it, ruling in ruled_calls:
-        rows.append({"item": it.key, "label": "", "ok": True,
-            "reason": f"ruled text: a local reusable workflow call in {it.src[0]}: {ruling[:200]}"})
-        print(f"  ok   {_one_line(it.key)}: ruled text (REQ-SUP-001-AC19): {ruling[:200]}")
-    for (path, what, line), ruling in ruled:
-        rows.append({"item": f"unmeasured:{path}", "label": "", "ok": True,
-                     "reason": f"ruled text: {what} in {path} ({line[:100]}) is listed in the base branch's "
-                                f"unmeasured_text: {ruling[:200]}"})
-        print(f"  ok   unmeasured:{path}: {what} ({line[:60]}): ruled text (REQ-SUP-001-AC16): {ruling[:200]}")
-    failing = [r for r in rows if not r["ok"]]
-    if a.json:
-        json.dump({"moved": rows}, open(a.json, "w"), indent=1)
-    if failing:
-        print(f"pin-age: FAIL: {len(failing)} of {len(rows)} moved version(s) not a pin the scan can read or ruled")
-        return 1
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

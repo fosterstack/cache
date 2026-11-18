@@ -2,6 +2,7 @@
 # proves: REQ-CI-001-AC1, REQ-CI-001-AC2, REQ-CI-001-AC3, REQ-CI-001-AC4 — the gate allowlist-chain is accepted only exactly (the gate cases)
 # proves: REQ-CI-005-AC2 — a suite counted by its own step is accepted only as exactly `bash PATH`, and the suites matrix only in its judged structure (the count-step and suites cases)
 # proves: REQ-REL-004-AC1 — the pull-request gate's govulncheck job judges the way Check does: it is accepted only in exactly its form (the govulncheck-gate cases)
+# proves: REQ-REL-014-AC1 — the jobs allowlist, suite-list and suites run on push to main only and the gate allowlist-chain only as `always() && github.event_name == 'push'` (plain or in an expression), accepted only exactly (the push-condition cases)
 # The workflow ci.yml runs a suite by a counting step (`bash PATH`) or by its own leg of the suites matrix, which the job suite-list computes from the tracked files;
 # the required check allowlist-chain is the one gate over the suites job. The judge below takes the pinned actions, permissions and
 # env of every job of ci.yml, the step lists' shape of the jobs allowlist, suite-list, suites and allowlist-chain (not the text of the list and leg steps: ci-suites-matrix-test.sh
@@ -140,10 +141,13 @@ for _jid, _j in (d.get("jobs") or {}).items():
         _u = _st_.get("uses") if isinstance(_st_, dict) else None
         if _u is not None and not (isinstance(_u, str) and re.fullmatch(r"(%s)@[0-9a-f]{40}" % "|".join(map(re.escape, _PINNED_ACTIONS)), _u)):
             bad.append(f"the {_jid} step {_i + 1} ({_st_.get('name') or _u}) uses an action that is not a pinned one of ci.yml")
-# the allowlist job: exactly name / runs-on / steps: no `needs` (a skipped prerequisite skips the whole job), `if`, `timeout-minutes`, `permissions`, `strategy`,
-# `concurrency`, `container`, `services`, `env`, `defaults`, ...
-for k in sorted(set(job) - {"name", "runs-on", "steps"}):
+# the allowlist job: exactly name / runs-on / steps and the one `if` of a push-only check (REQ-REL-014-AC1): no `needs` (a skipped prerequisite skips the whole job),
+# `timeout-minutes`, `permissions`, `strategy`, `concurrency`, `container`, `services`, `env`, `defaults`, ...
+PUSH_IF = "github.event_name == 'push'"
+for k in sorted(set(job) - {"name", "runs-on", "steps", "if"}):
     bad.append(f"the allowlist job has `{k}`")
+if job.get("if") != PUSH_IF:
+    bad.append(f"the allowlist job's `if` is not exactly `{PUSH_IF}` (it runs on push to main only)")
 if job.get("runs-on") != "ubuntu-latest":
     bad.append("the allowlist job does not run on exactly `ubuntu-latest` (GitHub-hosted)")
 if job.get("name") != "allowlist":
@@ -376,11 +380,13 @@ JUDGED = json.loads(r'''{
  "shape": {
   "allowlist": {
    "name": "allowlist",
-   "runs-on": "ubuntu-latest"
+   "runs-on": "ubuntu-latest",
+   "if": "github.event_name == 'push'"
   },
   "suite-list": {
    "name": "suite-list",
    "runs-on": "ubuntu-latest",
+   "if": "github.event_name == 'push'",
    "outputs": {
     "suites": "${{ steps.list.outputs.suites }}"
    }
@@ -389,6 +395,7 @@ JUDGED = json.loads(r'''{
    "name": "suites (${{ matrix.suite }})",
    "needs": "suite-list",
    "runs-on": "ubuntu-latest",
+   "if": "github.event_name == 'push'",
    "strategy": {
     "fail-fast": "false",
     "matrix": {
@@ -402,7 +409,7 @@ JUDGED = json.loads(r'''{
    "needs": [
     "suites"
    ],
-   "if": "${{ always() }}"
+   "if": "always() && github.event_name == 'push'"
   }
  }
 }''')
@@ -412,7 +419,10 @@ for jid, want_steps in JUDGED_STEPS.items():
     if not isinstance(sj, dict):
         bad.append(f"the job {jid} is missing")
         continue
-    if {k: v for k, v in sj.items() if k != "steps"} != JUDGED_SHAPE[jid]:
+    got_shape = {k: v for k, v in sj.items() if k != "steps"}
+    if jid == "allowlist-chain" and got_shape.get("if") == "${{ always() && github.event_name == 'push' }}":
+        got_shape["if"] = "always() && github.event_name == 'push'"      # the same condition, in its expression form
+    if got_shape != JUDGED_SHAPE[jid]:
         bad.append(f"the {jid} job is not exactly {JUDGED_SHAPE[jid]} apart from its steps (REQ-CI-001, REQ-CI-005: name, runs-on, needs, if, strategy and outputs as judged)")
     got = sj.get("steps", [])
     if [_by_shape(st) for st in got] != [_by_shape(st) for st in want_steps]:
@@ -612,6 +622,8 @@ case_ step-if-false         bad "$pick['if'] = 'false'"
 case_ step-continue         bad "$pick['continue-on-error'] = 'true'"
 case_ step-weakened         bad "$pick['run'] = $pick['run'] + ' || true'"
 case_ job-if-false          bad "d['jobs']['allowlist']['if'] = 'false'"
+case_ job-if-gone           bad "d['jobs']['allowlist'].pop('if', None)"
+case_ job-if-always         bad "d['jobs']['allowlist']['if'] = 'always()'"
 case_ no-pull-request       bad "d['on'].pop('pull_request')"
 case_ push-not-main         bad "d['on']['push']['branches'] = ['release']"
 case_ pr-paths-filter       bad "d['on']['pull_request'] = {'paths': ['README.md']}"
@@ -732,6 +744,7 @@ case_ suite-list-id-changed       bad "$LS['id'] = 'other'"
 case_ suite-list-output-gone      bad "$SL.pop('outputs')"
 case_ suite-list-output-other     bad "$SL['outputs']['suites'] = '\${{ steps.other.outputs.suites }}'"
 case_ suite-list-if               bad "$SL['if'] = 'false'"
+case_ suite-list-if-gone          bad "$SL.pop('if', None)"
 case_ suite-list-env              bad "$SL['env'] = {'X': '1'}"
 case_ suite-list-step-if          bad "$LS['if'] = 'false'"
 case_ suite-list-checkout-creds   bad "$SL['steps'][0]['with'].pop('persist-credentials')"
@@ -746,6 +759,7 @@ case_ suites-fail-fast            bad "$SU['strategy']['fail-fast'] = 'true'"
 case_ suites-max-parallel         bad "$SU['strategy']['max-parallel'] = '1'"
 case_ suites-strategy-gone        bad "$SU.pop('strategy')"
 case_ suites-job-if               bad "$SU['if'] = 'false'"
+case_ suites-job-if-gone          bad "$SU.pop('if', None)"
 case_ suites-job-continue         bad "$SU['continue-on-error'] = 'true'"
 case_ suites-job-timeout          bad "$SU['timeout-minutes'] = '1'"
 case_ suites-job-permissions      bad "$SU['permissions'] = {'contents': 'write'}"
@@ -777,6 +791,12 @@ case_ gate-needs-other      bad "$GT['needs'] = ['lint']"
 case_ gate-needs-str        bad "$GT['needs'] = 'suites'"
 case_ gate-needs-suite-list bad "$GT['needs'] = ['suite-list']"
 case_ gate-no-always        bad "$GT.pop('if')"
+case_ gate-if-always-only   bad "$GT['if'] = '\${{ always() }}'"
+case_ gate-if-push-only     bad "$GT['if'] = \"github.event_name == 'push'\""
+case_ gate-if-or-push       bad "$GT['if'] = \"always() || github.event_name == 'push'\""
+case_ gate-if-pull-request  bad "$GT['if'] = \"always() && github.event_name == 'pull_request'\""
+case_ gate-if-plain-form    ok  "$GT['if'] = \"always() && github.event_name == 'push'\""
+case_ gate-if-wrapped-form  ok  "$GT['if'] = \"\${{ always() && github.event_name == 'push' }}\""
 case_ gate-if-false         bad "$GT['if'] = 'false'"
 case_ gate-success          bad "$GT['if'] = '\${{ success() }}'"
 case_ gate-checkout         bad "$GT['steps'].insert(0, $SU['steps'][0])"
