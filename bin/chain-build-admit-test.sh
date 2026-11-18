@@ -924,7 +924,7 @@ fresh; set_policy required-checks.json "$EMPTY"; run_admit
 expect_refuse "AC1 empty list: required-checks.json with an empty required_checks is refused although release-only-checks.json holds entries" required-checks required-checks.json
 fresh; set_policy required-checks.json "$EMPTY"; set_policy release-only-checks.json "$EMPTY"; run_admit
 expect_refuse "AC1 empty list: both files with an empty required_checks are refused" required-checks checks.json
-fresh; set_policy required-checks.json '{"required_checks":[{"context":"ci","integration_id":15368,"scope":"push"}]}'; run_admit
+fresh; set_policy required-checks.json '{"required_checks":[{"context":"ci","integration_id":15368,"scope":"push"}],"promotion_checks":[{"context":"scan","integration_id":15368,"scope":"push"}]}'; run_admit
 expect_ok "AC1 empty list: a non-empty required-checks.json (one context) with a non-empty release-only-checks.json still admits"
 # ---- baseline -------------------------------------------------------------------------------------------------------------------------------
 base_edit() { # base_edit PYCODE : edit requirements/releases/v0.3.0.yaml on main, re-sign, re-tag
