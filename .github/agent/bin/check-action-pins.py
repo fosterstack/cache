@@ -800,6 +800,34 @@ def _tokens(chunk):
         return text.split()
 
 
+def _paren_end(text, i):
+    """The index just past the ) that closes the ( at text[i], read with bash's quotes, escapes and comments."""
+    depth, j, aq, n = 1, i + 1, None, len(text)
+    while j < n and depth:
+        d = text[j]
+        if aq == "'":                              # no escaping at all inside a single quote
+            aq = None if d == "'" else aq
+        elif aq == '"' or d == "\\":                # a backslash escapes the next char, inside a
+            if d == "\\" and j + 1 < n:              # double quote OR outside any quote (Sonnet #164
+                j += 2                                # r14, B1: the classic 'x'\''y' idiom embeds a
+                continue                             # literal apostrophe this way — the backslash is
+            aq = None if d == '"' else aq            # NOT a new quote opening)
+        elif d in "'\"":
+            aq = d
+        elif d == "#" and (j == i + 1 or text[j - 1] in " \t\n"):
+            # a comment inside the array (Codex #164 r13, B1): its own ')' or apostrophe is not real
+            # syntax and must not move depth or open a quote — same rule as the outer loop's own #
+            while j < n and text[j] != "\n":
+                j += 1
+            continue
+        elif d == "(":
+            depth += 1
+        elif d == ")":
+            depth -= 1
+        j += 1
+    return j
+
+
 def _split_commands(text):
     """The simple commands of a shell text, split as bash splits them: at ; & | ( ) and newlines OUTSIDE quotes ('…',
     "…", $'…') and escapes, with comments (# at the start of a word, outside quotes) dropped. A raw split at these
@@ -834,29 +862,13 @@ def _split_commands(text):
                 i += 1
             continue
         elif c == "(" and cur and cur[-1] == "=":         # NAME=( … ): an array's words, not commands
-            depth, j, aq = 1, i + 1, None
-            while j < n and depth:
-                d = text[j]
-                if aq == "'":                              # no escaping at all inside a single quote
-                    aq = None if d == "'" else aq
-                elif aq == '"' or d == "\\":                # a backslash escapes the next char, inside a
-                    if d == "\\" and j + 1 < n:              # double quote OR outside any quote (Sonnet #164
-                        j += 2                                # r14, B1: the classic 'x'\''y' idiom embeds a
-                        continue                             # literal apostrophe this way — the backslash is
-                    aq = None if d == '"' else aq            # NOT a new quote opening)
-                elif d in "'\"":
-                    aq = d
-                elif d == "#" and (j == i + 1 or text[j - 1] in " \t\n"):
-                    # a comment inside the array (Codex #164 r13, B1): its own ')' or apostrophe is not real
-                    # syntax and must not move depth or open a quote — same rule as the outer loop's own #
-                    while j < n and text[j] != "\n":
-                        j += 1
-                    continue
-                elif d == "(":
-                    depth += 1
-                elif d == ")":
-                    depth -= 1
-                j += 1
+            j = _paren_end(text, i)
+            cur.append(text[i:j].replace("\n", " "))
+            i = j
+            continue
+        elif c in "<>" and text[i + 1:i + 2] == "(":      # <( … ) / >( … ): the command keeps it, its inside is read too
+            j = _paren_end(text, i + 1)
+            out += _split_commands(text[i + 2:j - 1])
             cur.append(text[i:j].replace("\n", " "))
             i = j
             continue
@@ -1248,7 +1260,7 @@ def _stdin_shell(toks):
         i = 0
         while i < len(rest):
             a = rest[i]
-            if a.startswith("<(") or (re.fullmatch(r"[0-9]*<", a) and (i + 1 == len(rest) or rest[i + 1] == "<")):
+            if a.startswith("<(") or (re.fullmatch(r"[0-9]*<", a) and (i + 1 == len(rest) or rest[i + 1].startswith("<("))):
                 return w                                  # the script is a process substitution's output (NEW-34)
             if a.startswith("<"):                          # a redirection or herestring: not an operand
                 i += 1 if re.match(r"^<(<<?|&)?[^<>&]", a) else 2
@@ -2038,9 +2050,10 @@ def _only_read(name, script):
 
 
 def _cut_redirections(text):
-    """The text with each redirection cut off its word: from a < or > outside quotes to the next blank outside quotes.
-    A < or > inside '…' or "…" stays part of the word (declare -n r='out[1<0]')."""
-    out, q, cut, i = [], None, False, 0
+    """The text with each redirection cut off its word: from a < or > outside quotes to the next blank outside quotes;
+    a bare operator (`< file`, `<<< x`) takes the word after it too, and <(…) goes whole. A < or > inside '…' or "…"
+    stays part of the word (declare -n r='out[1<0]')."""
+    out, q, cut, bare, i = [], None, False, False, 0
     while i < len(text):
         c = text[i]
         if c == "\\" and q != "'" and i + 1 < len(text):
@@ -2050,16 +2063,47 @@ def _cut_redirections(text):
             continue
         if q:
             q = None if c == q else q
+        elif c in "<>" and text[i + 1:i + 2] == "(":
+            cut, bare = True, False
+            i = _paren_end(text, i + 1)
+            continue
         elif c in "'\"":
             q = c
+            bare = False
         elif c in "<>":
-            cut = True
+            if not cut and out and out[-1].isdigit() and (len(out) == 1 or out[-2].isspace()):
+                out.pop()                                # the descriptor number of 2>file is part of the redirection
+            cut = bare = True
         elif c.isspace():
-            cut = False
+            cut = cut and bare
+        elif cut:
+            bare = False
         if not cut:
             out.append(c)
         i += 1
     return "".join(out)
+
+
+# the variable a read, mapfile or select sets when the command names none; a select sets REPLY besides its own name
+DEFAULT_TARGET = {"read": "REPLY", "select": "REPLY", "mapfile": "MAPFILE", "readarray": "MAPFILE"}
+READ_OPTIONS = ({"-a", "-d", "-i", "-n", "-N", "-p", "-t", "-u"}, {"-e", "-r", "-s"})   # taking a value, taking none
+MAPFILE_OPTIONS = ({"-d", "-n", "-O", "-s", "-u", "-C", "-c"}, {"-t"})
+OPTIONS = {"read": READ_OPTIONS, "mapfile": MAPFILE_OPTIONS, "readarray": MAPFILE_OPTIONS}
+
+
+def _default_target(toks):
+    """REPLY or MAPFILE when the command's read, select, mapfile or readarray sets it by default: a select always, the
+    others when no variable follows their options (read -a names an array)."""
+    words = _command_words(toks)
+    if not words or words[0] not in DEFAULT_TARGET:
+        return None
+    args = toks[toks.index(words[0]) + 1:]
+    if words[0] == "select":
+        return "REPLY"
+    first, _ = _options(args, *OPTIONS[words[0]])
+    if first < len(args) or any(re.fullmatch(r"-[A-Za-z]*a", a) for a in args):
+        return None
+    return DEFAULT_TARGET[words[0]]
 
 
 SETTER_WORDS = re.compile("read|mapfile|readarray|getopts|declare|typeset|local|export|readonly|let|select|for")
@@ -2081,6 +2125,8 @@ def _set_by_setter(name, script):
     for command in _split_commands(script):
         body = _tokens(command)
         toks = _tokens(_cut_redirections(_mask_shell(command)[0]))   # printf -vout>/dev/null: the redirection is no part of the name
+        if _default_target(toks) == name:
+            return True
         names_it = any(re.fullmatch(name + r"(?:\[[^]]*\])?\+?(?:=.*)?", t, re.S) for t in toks)
         if names_it and (any(SETTER_WORDS.fullmatch(t) for t in toks) or ("printf" in toks and "-v" in toks)):
             return True
