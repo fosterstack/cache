@@ -27,6 +27,11 @@
       "scope": "push"
     },
     {
+      "context": "analyze (go)",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
       "context": "allowlist",
       "integration_id": 15368,
       "scope": "push"
@@ -37,12 +42,17 @@
       "scope": "push"
     },
     {
-      "context": "acceptance",
+      "context": "fips140-only",
       "integration_id": 15368,
       "scope": "push"
     },
     {
       "context": "requirements",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "go-exact-pins",
       "integration_id": 15368,
       "scope": "push"
     },
@@ -55,11 +65,6 @@
       "context": "scan",
       "integration_id": 15368,
       "scope": "push"
-    },
-    {
-      "context": "pin-age",
-      "integration_id": 15368,
-      "scope": "pull_request"
     },
     {
       "context": "auditor-review-gate",

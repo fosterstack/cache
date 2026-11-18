@@ -4,7 +4,7 @@
 # the stage. No credential is bound to this step: it has no environment block and no secret.
 # After this step a release candidate ends: every later step of stage-promote.yml skips a tag with a hyphen.
 set -euo pipefail
-[[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ ]] || \
+python3 -I -B bin/build-admit.py tag-ok "${GITHUB_REF_NAME:-}" || \
   { echo "refused at tag: ${GITHUB_REF_NAME:-} is not vX.Y.Z or vX.Y.Z-rcN" >&2; exit 1; }
 # The signed key manifest, its signature and the offline root key must exist before anything else runs (B-F22): the
 # later steps hold credentials and publish.

@@ -670,7 +670,7 @@ cp "$work/wf-ok"/* "$work/wf-old/"; : > "$work/wf-old/stage-admission.yml"
 cp "$work/wf-ok"/* "$work/wf-cw-new/"; : > "$work/wf-cw-new/sprawl.yml"
 expect ok     "AC1 fixture: a workflow directory of release.yml (one file for the release), persona-uat.yml and customer-words-edited.yml, with no stage-*.yml file, passes" "" workflows "$work/wf-ok"
 expect caught "AC1 a new workflow file other than the two named" "was added" workflows "$work/wf-new"
-expect ok     "AC1 evidence-letter.yml is admitted beside release.yml (REQ-REL-013)" "" workflows "$work/wf-letter"
+expect ok     "AC1 evidence-letter.yml is admitted beside release.yml (REQ-REL-015)" "" workflows "$work/wf-letter"
 expect caught "AC1 persona-uat.yml and customer-words-edited.yml do not admit any other new file" "was added" workflows "$work/wf-cw-new"
 expect caught "AC1 a stage-*.yml file is back (stage-admission.yml)" "stage-admission.yml" workflows "$work/wf-old"
 for st in stage-build.yml stage-sign.yml stage-verify.yml stage-promote.yml stage-reproducibility.yml; do
@@ -2580,7 +2580,7 @@ f1 caught "a download by artifact id outside the panel job is caught" "$root/.gi
 f1 caught "a panel download by artifact id with a name beside it is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's#path: /tmp/panel/panel-scout#name: images#'
 f1 caught "a panel download by artifact id with another key (run-id) in place of the path is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's#path: /tmp/panel/panel-scout#run-id: 123#'
 # Codex A r2 blocker 1 / B4: the release-candidate tag (vX.Y.Z-rcN, advisor 0383) runs the REAL `policy make` of bin/chain-verify.py in both assemble scripts (the
-# harness no longer fakes it for an rc tag): the stage completes and the policy carries the FULL tag; a near-miss tag stops at the policy, before any build
+# harness no longer fakes it for an rc tag): the stage completes and the policy carries the FULL tag; the policy takes a near-miss tag as given (the grammar is judged before), and assemble stops a tag that is not the admission's
 for kind in assemble rebuild-assemble; do
   rd="$work/rcp-$kind"; mk "$rd" "$kind" "$(script_of real "$kind")" real v0.3.0-rc1
   rc=$(run_stage "$rd" "$kind" real v0.3.0-rc1)
@@ -2592,7 +2592,11 @@ for kind in assemble rebuild-assemble; do
   for nm in v0.3.0-rc.1 v0.3.0-RC1 v0.3.0-rc1x; do
     rd="$work/rcn-$kind-$nm"; mk "$rd" "$kind" "$(script_of real "$kind")" real v0.3.0-rc1
     rc=$(REF_NAME=$nm run_stage "$rd" "$kind" real v0.3.0-rc1)
-    if [ "$rc" != 0 ] && [ "$(n_calls '^image ' "$rd")" = 0 ] && grep -q "refused at $([ "$kind" = assemble ] && echo 'build: tag' || echo policy)" "$rd/stage.err"; then ok "AC12/rc $kind: the near-miss tag $nm is refused at the real policy make, before any image is built"
+    if [ "$kind" = rebuild-assemble ]; then
+      # the policy takes the tag as given (REQ-CHAIN-004-AC20): the tag was judged before, in release-verify.sh and in Build's admission; the stage is not stopped at the policy
+      if ! grep -q "refused at policy" "$rd/stage.err" 2> /dev/null; then ok "AC12/rc $kind: the near-miss tag $nm is not refused at the real policy make (the grammar is judged before, not there)"
+      else bad "AC12/rc $kind: near-miss $nm was refused at the policy: $(head -c 120 "$rd/stage.err" | tr '\n' ' ')"; fi
+    elif [ "$rc" != 0 ] && [ "$(n_calls '^image ' "$rd")" = 0 ] && grep -q "refused at build: tag" "$rd/stage.err"; then ok "AC12/rc $kind: the near-miss tag $nm is refused at the admission's tag check (not the run's tag), before any image is built"
     else bad "AC12/rc $kind: near-miss $nm: rc=$rc images=$(n_calls '^image ' "$rd") $(head -c 120 "$rd/stage.err" 2> /dev/null | tr '\n' ' ')"; fi
   done
 done
@@ -2716,12 +2720,12 @@ assert "no stage file or stage script names apko, passes a lock," not in t11
 assert t11.endswith("; apko builds the production and fips images from build/apko.yaml and build/apko-fips.yaml with their lock files"), t11[-200:]
 assert "relative path" not in t11 and "temporary copy" not in t11 and "absolute path" not in t11
 PY
-# REQ-CHAIN-006-AC10, REQ-REL-009-AC1 and REQ-SUP-001-AC1 say what rules 61 and 65 removed and what replaced it (advisor R61 text, Oct 12; the base inputs are one committed list)
-python3 - "$root/requirements/requirements.yaml" <<'PY' && ok "006-AC10, REL-009-AC1, SUP-001-AC1 text: no Dockerfile, buildx, goreleaser or Dependabot docker entry; the base inputs are one committed list" || bad "006-AC10, REL-009-AC1, SUP-001-AC1 text: the rule 61 wording is missing"
+# REQ-CHAIN-006-AC10, REQ-REL-009-AC1 and REQ-SUP-001-AC41 say what rules 61 and 65 removed and what replaced it (advisor R61 text, Oct 12; the base inputs are one committed list)
+python3 - "$root/requirements/requirements.yaml" <<'PY' && ok "006-AC10, REL-009-AC1, SUP-001-AC41 text: no Dockerfile, buildx, goreleaser or Dependabot docker entry; the base inputs are one committed list" || bad "006-AC10, REL-009-AC1, SUP-001-AC41 text: the rule 61 wording is missing"
 import sys, yaml
 R = {r["id"]: r for r in yaml.safe_load(open(sys.argv[1]))["requirements"]}
 def then(rid, n): return next(a for a in R[rid]["acceptance_criteria"] if a["id"] == "%s-AC%d" % (rid, n))["then"]
-t10, t9, ts = then("REQ-CHAIN-006", 10), then("REQ-REL-009", 1), then("REQ-SUP-001", 1)
+t10, t9, ts = then("REQ-CHAIN-006", 10), then("REQ-REL-009", 1), then("REQ-SUP-001", 41)
 assert "and no .goreleaser.yaml, no build/docker directory or file named Dockerfile and no Dependabot docker entry exists" in t10 and "a candidate image is read by crane, by digest" in t10
 assert "a change of a base input listed in .github/policy/base-inputs.json" in t9 and "base-image digest pins" not in t9
 assert "no docker entry exists (the repository has no container build file for it to watch)" in ts and "docker entries are unchanged" not in ts
@@ -3930,7 +3934,7 @@ if [ "$rc" = 0 ] \
 else bad "AC2 witness-sign-staged.sh: exit $rc, sign calls: $(cat "$wss/log" 2> /dev/null), ${out:0:100}"; fi
 # bin/release-publish.sh stops on the first pushed tag whose registry digest is not the attested one
 rp="$work/rp"; mkdir -p "$rp/bin" "$rp/witness-build" "$rp/fake"
-cp "$root/bin/release-publish.sh" "$rp/bin/"; : > "$rp/bin/release-layout.py"
+cp "$root/bin/release-publish.sh" "$root/bin/build-admit.py" "$rp/bin/"; : > "$rp/bin/release-layout.py"
 printf '{"image-production": "%s", "image-fips": "%s"}\n' "$DA" "$DB" > "$rp/witness-build/digests.json"
 for v in production fips; do
   mkdir -p "$rp/images/$v"; : > "$rp/images/$v/oci-layout"; : > "$rp/images/$v/index.json"

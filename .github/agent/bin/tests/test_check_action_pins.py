@@ -25,12 +25,14 @@ TAGOBJ = "2222222222222222222222222222222222222222"
 HEAD = "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n"
 
 
+QJ_REL = ".github/agent/bin/queue-gate-judge.sh"   # the script the chain gate's queue-judge job runs
+QJ_STUB = "#!/usr/bin/env bash\nexit 0\n"
 GATE = os.path.join(BIN, "..", "..", "workflows", "agent-review-gate.yml")
 def repo(files, gate=True):
     """A throwaway tree; it carries the real, pinned gate workflow unless gate=False."""
     if gate:
         with open(GATE) as fh:
-            files = {".github/workflows/agent-review-gate.yml": fh.read(), **files}
+            files = {".github/workflows/agent-review-gate.yml": fh.read(), QJ_REL: QJ_STUB, **files}
     d = tempfile.mkdtemp()
     for rel, text in files.items():
         p = os.path.join(d, rel)
@@ -149,7 +151,7 @@ class Main(unittest.TestCase):
         d = repo({".github/workflows/w.yml": HEAD + f"    steps:\n      - uses: actions/checkout@{SHA} # v7.0.1\n",
                   "README.md": "not read\n", ".git/x.yml": "uses: [\n",
                   ".github/agent/bin/check-action-pins.py": "",
-                  "bin/check-file-allowlist.sh": "",
+                  "bin/check-file-allowlist.sh": "", ".github/agent/tests/pin-wiring-test.sh": "",
                   "bin/scan-no-workflow-call-test.sh": "", "bin/audit-record-judge.sh": "",
                   "bin/audit-record-prepare.sh": "", ".github/agent/bin/auditor-signed-commit.py": ""})
         table = {"/repos/actions/checkout/git/ref/tags/v7.0.1":
@@ -873,262 +875,65 @@ class LiteralRunnerMatrix(unittest.TestCase):
         self.assertNotIn("runs-on", out)
 
 
-# main's gate workflow (the passed-audit record judge)
-GATE_A = "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f"
-# the change's gate workflow: no merge queue judge, one step per check, the record rule's Dependabot exemption
-GATE_B = "3102248f3d2c88b6e5be3751a1fc42635296b5187bc1d10024eaf19b810bf34e"
-# the edits from main's gate workflow to the change's (old text, new text); the repository carries the change's copy,
-# so main's copy is made by undoing them
-GATE_HUNKS = (
-    (
-        (r'''
-# REQ-AUD-18 AC3: the verdict runs main's copies of three checks over the PR head, read as git objects, and
-# judges no review record. Register row 78: every action reference in the PR head must be a full commit digest
-# (.github/agent/bin/check-action-pins.py, main's copy). Here — not in a check of its own — because this check
-'''),
-        (r'''
-# REQ-AUD-18 AC3: the verdict runs main's copies of its checks over the PR head, read as git objects. Register
-# row 78: every action reference in the PR head must be a full commit digest
-# (.github/agent/bin/check-action-pins.py, main's copy). Here — not in a check of its own — because this check
-'''),
-    ),
-    (
-        (r'''#
-# The same verdict also runs main's copies of the allowlist guard (bin/check-file-allowlist.sh, over the head's
-# file list, with ALLOWLIST_HEAD_REV so the head is judged as a commit) and of the pin-wiring judge
-# (.github/agent/tests/pin-wiring-test.sh, PIN_WIRING_JUDGE_GIT, over the head's ci.yml), so a PR cannot
-# disable its own whole-tree guard by editing ci.yml.
-#
-'''),
-        (r'''#
-# The same verdict also runs main's copy of the allowlist guard (bin/check-file-allowlist.sh, over the head's
-# file list, with ALLOWLIST_HEAD_REV so the head is judged as a commit), so a PR cannot disable its own whole-tree
-# guard by editing ci.yml.
-#
-# A head whose every commit is authored by Dependabot or the reviewer's App needs no passed-audit record
-# (bin/audit-record-judge.sh); the checks above still run on it.
-#
-'''),
-    ),
-    (
-        (r'''
-      - name: run the default branch's review gate and pin check over the PR head
-        id: gate
-        env:
-'''),
-        (r'''
-      # Each check is its own step, judged by the checked-out default branch's copies (HEAD), never the PR's; a failed one does not stop the others,
-      # and the last step turns the four outcomes into the verdict.
-      # row 78: every action reference in the head is a commit digest (git objects only)
-      - name: the pin check over the PR head
-        id: pins
-        continue-on-error: true
-        env:
-'''),
-    ),
-    (
-        (r'''          GH_TOKEN: ${{ github.token }}   # read-only: resolves each `# vX` tag to its commit
-          # the PR's identity, as the ci allowlist job sees it, for main's copy of the allowlist guard
-          GITHUB_HEAD_REF: ${{ github.event.pull_request.head.ref }}
-'''),
-        (r'''          GH_TOKEN: ${{ github.token }}   # read-only: resolves each `# vX` tag to its commit
-        run: python3 -I .github/agent/bin/check-action-pins.py --verify-tags --git "$HEAD_SHA"
-
-      # the PR cannot run its own copy of its guard: main's allowlist script judges the head's file list as git objects (nothing of the PR runs)
-      - name: the allowlist guard over the PR head's files
-        id: allowlist
-        continue-on-error: true
-        env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          # the PR's identity, for main's copy of the allowlist guard
-          GITHUB_HEAD_REF: ${{ github.event.pull_request.head.ref }}
-'''),
-    ),
-    (
-        (r'''        run: |
-          set -uo pipefail
-          # judged by the checked-out default branch's copies (HEAD), never the PR's
-          verdict=success
-          # row 78: every action reference in the head is a commit digest (git objects only)
-          python3 -I .github/agent/bin/check-action-pins.py --verify-tags --git "$HEAD_SHA" || verdict=failure
-          # the PR cannot run its own copy of its guard: main's allowlist script judges the head's file list
-          # and main's pin-wiring judge reads the head's ci.yml, both as git objects (nothing of the PR runs)
-          git ls-tree -r -z --name-only "$HEAD_SHA" | ALLOWLIST_NUL=1 ALLOWLIST_HEAD_REV="$HEAD_SHA" bash bin/check-file-allowlist.sh || verdict=failure
-          mkdir -p "$RUNNER_TEMP/yaml-shim" && ln -sfn "$PWD/.github/agent/fixtures/testlib/pyyaml" "$RUNNER_TEMP/yaml-shim/yaml"
-          PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$HEAD_SHA" bash .github/agent/tests/pin-wiring-test.sh || verdict=failure
-          # REQ-SCAN-015: main's scanner guard judges the head's workflows and composite actions as git objects, so a step
-          # of the PR's own CI that overwrites the guard on disk changes nothing
-          PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$HEAD_SHA" bash bin/scan-no-workflow-call-test.sh || verdict=failure
-          # REQ-REL-012 (release process rule 6): a pull request into main carries a passed-audit record for its exact head. Main's judge and main's writers policy read the record
-          # branch audit/<head sha> through the read-only token; the pull request supplies only its head sha and nothing else
-          bash bin/audit-record-judge.sh "$HEAD_SHA" "$GITHUB_BASE_REF" || verdict=failure
-          echo "verdict=${verdict}" >> "$GITHUB_OUTPUT"
-'''),
-        (r'''        run: |
-          set -o pipefail
-          git ls-tree -r -z --name-only "$HEAD_SHA" | ALLOWLIST_NUL=1 ALLOWLIST_HEAD_REV="$HEAD_SHA" bash bin/check-file-allowlist.sh
-
-      - name: the yaml reader the scanner guard below loads
-        run: mkdir -p "$RUNNER_TEMP/yaml-shim" && ln -sfn "$PWD/.github/agent/fixtures/testlib/pyyaml" "$RUNNER_TEMP/yaml-shim/yaml"
-
-      # REQ-SCAN-015: main's scanner guard judges the head's workflows and composite actions as git objects, so a step
-      # of the PR's own CI that overwrites the guard on disk changes nothing
-      - name: the scanner guard over the PR head's workflows
-        id: scan
-        continue-on-error: true
-        env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$HEAD_SHA" bash bin/scan-no-workflow-call-test.sh
-
-      # REQ-REL-012 (release process rule 6): a pull request into main carries a passed-audit record for its exact head. Main's judge and main's writers policy read the record
-      # branch audit/<head sha> through the read-only token; the pull request supplies only its head sha and nothing else
-      - name: the passed-audit record for the PR head
-        id: record
-        continue-on-error: true
-        env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          GITHUB_BASE_REF: ${{ github.event.pull_request.base.ref }}
-          GH_TOKEN: ${{ github.token }}
-        run: bash bin/audit-record-judge.sh "$HEAD_SHA" "$GITHUB_BASE_REF"
-
-      - name: the verdict
-        id: gate
-        env:
-          OUTCOMES: ${{ steps.pins.outcome }} ${{ steps.allowlist.outcome }} ${{ steps.scan.outcome }} ${{ steps.record.outcome }}
-        run: |
-          verdict=failure
-          [ "$OUTCOMES" = "success success success success" ] && verdict=success
-          echo "verdict=${verdict}" >> "$GITHUB_OUTPUT"
-'''),
-    ),
-    (
-        (r'''          set -euo pipefail
-          if [ "$VERDICT" = "success" ]; then conclusion=success; summary="Every action reference is a commit digest, and the allowlist guard, the pin-wiring judge, the scanner guard and the passed-audit record for this head passed."
-          else conclusion=failure; summary="An action reference is not a commit digest, or the allowlist guard, the pin-wiring judge, the scanner guard or the passed-audit record failed (or the judge did not finish) — see the run log."; fi
-          gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate -f head_sha="$HEAD_SHA" \
-'''),
-        (r'''          set -euo pipefail
-          if [ "$VERDICT" = "success" ]; then conclusion=success; summary="Every action reference is a commit digest, and the allowlist guard, the scanner guard and the passed-audit record for this head passed."
-          else conclusion=failure; summary="An action reference is not a commit digest, or the allowlist guard, the scanner guard or the passed-audit record failed (or the judge did not finish) — see the run log."; fi
-          gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate -f head_sha="$HEAD_SHA" \
-'''),
-    ),
-    (
-        (r'''            # re-posted every sweep; an older failure waits for a push or a re-run (API budget)
-            last="$(GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=auditor-review-gate" \
-              --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.completed_at) | last
-'''),
-        (r'''            # re-posted every sweep; an older failure waits for a push or a re-run (API budget)
-            last="$(GH_TOKEN="$APP_TOKEN" gh api \
-              "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=auditor-review-gate" \
-              --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.completed_at) | last
-'''),
-    ),
-    (
-        (r'''                    ALLOWLIST_HEAD_REV="$sha" bash bin/check-file-allowlist.sh \
-               && PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$sha" bash .github/agent/tests/pin-wiring-test.sh \
-               && PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$sha" bash bin/scan-no-workflow-call-test.sh \
-'''),
-        (r'''                    ALLOWLIST_HEAD_REV="$sha" bash bin/check-file-allowlist.sh \
-               && PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$sha" bash bin/scan-no-workflow-call-test.sh \
-'''),
-    ),
-    (
-        (r'''               && GH_TOKEN="$LIST_TOKEN" bash bin/audit-record-judge.sh "$sha" "$DEFAULT"; then
-              conclusion=success   # every action reference a digest (row 78), main's allowlist guard, pin-wiring judge, scanner guard and the passed-audit record (REQ-REL-012)
-            fi
-'''),
-        (r'''               && GH_TOKEN="$LIST_TOKEN" bash bin/audit-record-judge.sh "$sha" "$DEFAULT"; then
-              conclusion=success   # every action reference a digest (row 78), main's allowlist guard, scanner guard and the passed-audit record (REQ-REL-012)
-            fi
-'''),
-    ),
-)
-
-
-def gate_variants():
-    """(main's gate workflow, the change's), from the repository's copy."""
+def gate_tree():
+    """A minimal tree the checker passes, carrying the repository's gate workflow."""
     with open(GATE) as fh:
-        cur = fh.read()
-    assert all(cur.count(new) == 1 for _, new in GATE_HUNKS), "the gate workflow is not the change's copy"
-    main_copy = cur
-    for old, new in GATE_HUNKS:
-        main_copy = main_copy.replace(new, old)
-    return main_copy, cur
-
-
-def gate_tree(gate_text):
-    """A minimal tree the checker passes, carrying `gate_text` as the gate workflow."""
+        gate_text = fh.read()
     return repo({".github/workflows/agent-review-gate.yml": gate_text,
                  ".github/workflows/w.yml": HEAD + f"    steps:\n      - uses: actions/checkout@{SHA} # v7.0.1\n",
                  ".github/agent/bin/auditor-review-gate.py": "", ".github/agent/bin/check-action-pins.py": "",
-                 "bin/check-file-allowlist.sh": "", ".github/agent/tests/pin-wiring-test.sh": "",   # main's gate runs it
+                 "bin/check-file-allowlist.sh": "", ".github/agent/tests/pin-wiring-test.sh": "",
                  "bin/scan-no-workflow-call-test.sh": "", "bin/audit-record-judge.sh": "",
-                 "bin/audit-record-prepare.sh": "", ".github/agent/bin/auditor-signed-commit.py": ""}, gate=False)
+                 "bin/audit-record-prepare.sh": "", ".github/agent/bin/auditor-signed-commit.py": "",
+                 QJ_REL: QJ_STUB}, gate=False)
 
 
-def bump_first_pin(text):
-    """A Dependabot-style bump: the first `@<40 hex> # v<ver>` pin moves to another commit and tag."""
-    out, n = re.subn(r"@[0-9a-f]{40} # v[0-9][0-9A-Za-z.+-]*", f"@{OTHER} # v99.0.0", text, count=1)
-    assert n == 1
-    return out
+class GateWorkflowPresence(unittest.TestCase):
+    """The gate workflow that runs this check must be in the tree."""
 
+    def test_a_tree_with_the_gate_workflow_passes(self):
+        code, out = run([gate_tree()])
+        self.assertEqual(code, 0, out)
 
-class GateWorkflowDigestSet(unittest.TestCase):
-    """While a change to the gate is in flight the pin checker accepts exactly two gate-workflow digests, main's
-    and the change's, both taken by gate_digest (pins masked); a later change removes main's old one."""
-
-    def test_the_constant_is_a_frozen_set_of_exactly_two_digests(self):
-        s = M.GATE_WORKFLOW_SHA256
-        self.assertIsInstance(s, frozenset)      # immutable: no code path can add a digest at run time
-        self.assertEqual(len(s), 2)              # not empty, not one, not three (a frozenset has no duplicates)
-        for d in s:
-            self.assertRegex(d, r"\A[0-9a-f]{64}\Z")
-        self.assertEqual(s, frozenset({GATE_A, GATE_B}))
-        self.assertNotIn("adcfd54fb68814da2b5b87baf0f56c2e32f85416f16800e810545cb1e2a1842d", s)   # the pre-#316 bootstrap digest stays gone (rc-5b B1)
-
-    def test_both_variants_are_taken_by_gate_digest(self):
-        a, b = gate_variants()
-        self.assertEqual(M.gate_digest(a), GATE_A)
-        self.assertEqual(M.gate_digest(b), GATE_B)
-
-    def test_a_tree_with_either_accepted_gate_workflow_passes(self):
-        for name, text in zip(("main", "change"), gate_variants()):
-            with self.subTest(gate=name):
-                code, out = run([gate_tree(text)])
-                self.assertEqual(code, 0, out)
-                self.assertIn(", 0 finding(s)", out)
-
-    def test_a_dependabot_pin_bump_in_either_still_matches(self):
-        for name, text in zip(("main", "change"), gate_variants()):
-            with self.subTest(gate=name):
-                bumped = bump_first_pin(text)
-                self.assertNotEqual(bumped, text)
-                self.assertIn(M.gate_digest(bumped), M.GATE_WORKFLOW_SHA256)
-                code, out = run([gate_tree(bumped)])
-                self.assertEqual(code, 0, out)
-
-    def test_a_third_digest_is_refused_and_the_message_names_the_accepted_set(self):
-        a, _ = gate_variants()
-        third = a.replace("--verify-tags --git", "--git", 1)
-        self.assertNotEqual(third, a)
-        d3 = M.gate_digest(third)
-        self.assertNotIn(d3, (GATE_A, GATE_B))
-        code, out = run([gate_tree(third)])
-        self.assertEqual(code, 1, out)
-        (line,) = [ln for ln in out.splitlines() if ln.startswith(".github/workflows/agent-review-gate.yml:")]
-        self.assertIn("changed — update GATE_WORKFLOW_SHA256 in this checker", line)
-        self.assertIn(d3, line)
-        self.assertIn(GATE_A, line)
-        self.assertIn(GATE_B, line)
-
-    def test_a_missing_gate_workflow_still_fails(self):
-        a, _ = gate_variants()
-        d = gate_tree(a)
+    def test_a_missing_gate_workflow_fails(self):
+        d = gate_tree()
         os.remove(os.path.join(d, ".github/workflows/agent-review-gate.yml"))
         code, out = run([d])
         self.assertEqual(code, 1, out)
         self.assertIn(".github/workflows/agent-review-gate.yml: missing", out)
+
+
+class MainKeepers(unittest.TestCase):
+    """The two generated Kubernetes smoke scripts of main's k8s workflow: no entry excuses them on this tree, so each is refused."""
+    K8S = ".github/workflows/stage-acceptance-k8s.yml"
+
+    def tree_with(self, rel, script):
+        d = gate_tree()
+        self.addCleanup(shutil.rmtree, d)
+        # the step writes the script from a python heredoc, as main's workflow does
+        run = "          python3 - <<'PY'\n          open(%r, 'w').write('x')\n          PY\n          bash %s\n" % (script, script)
+        with open(os.path.join(d, rel), "w") as fh:
+            fh.write(HEAD + "    steps:\n      - run: |\n" + run)
+        return d
+
+    def test_a_shell_writer_of_the_smoke_script_is_refused(self):
+        d = gate_tree()
+        self.addCleanup(shutil.rmtree, d)
+        with open(os.path.join(d, self.K8S), "w") as fh:
+            fh.write(HEAD + "    steps:\n      - run: |\n          printf x > /tmp/smoke-assert.sh; bash /tmp/smoke-assert.sh\n")
+        code, out = run([d])
+        self.assertEqual(code, 1, out)
+        self.assertIn("smoke-assert.sh, which is not a committed file", out)
+
+    def test_the_same_script_names_in_another_workflow_are_refused(self):
+        for script in ("/tmp/smoke-assert.sh", "/tmp/pf-forward.sh"):
+            with self.subTest(script=script):
+                code, out = run([self.tree_with(".github/workflows/other.yml", script)])
+                self.assertEqual(code, 1, out)
+
+    def test_another_generated_script_in_the_k8s_workflow_is_refused(self):
+        code, out = run([self.tree_with(self.K8S, "/tmp/other.sh")])
+        self.assertEqual(code, 1, out)
 
 
 class UsesWriters(unittest.TestCase):
@@ -1139,7 +944,7 @@ class UsesWriters(unittest.TestCase):
 
     def job(self, steps, tool="bin/tool.sh", run="bash bin/tool.sh"):
         body = HEAD + "    steps:\n" + steps + f"      - run: {run}\n"
-        d = gate_tree(gate_variants()[1])           # the accepted gate and its stub scripts, then this workflow beside them
+        d = gate_tree()           # the accepted gate and its stub scripts, then this workflow beside them
         self.addCleanup(shutil.rmtree, d)
         for rel, text in ((".github/workflows/w.yml", body), (tool, self.TOOL)):
             os.makedirs(os.path.dirname(os.path.join(d, rel)), exist_ok=True)
@@ -1193,7 +998,7 @@ class NonUtf8Names(unittest.TestCase):
     file is skipped. The trees are made with git plumbing (the index takes any bytes; a macOS file system would not)."""
 
     def commit_with(self, extra, content=b"x\n"):
-        d = gate_tree(gate_variants()[1])
+        d = gate_tree()
         self.addCleanup(shutil.rmtree, d)
         env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
                "GIT_COMMITTER_EMAIL": "t@t"}
@@ -1259,6 +1064,514 @@ def _index_info(listing):
         mode, sha, _stage = meta.split()
         out += mode + b" " + sha + b"\t" + path + b"\0"
     return out
+
+
+class UsesWriters(unittest.TestCase):
+    """rc-5b item 2 in Python (the coverage gate counts these tests, not the shell ones): a committed script the job runs after a `uses:` step that writes
+    the tree is a finding, and the shapes the 618 fix round added to the lines nothing else reached."""
+    TOOL = "#!/usr/bin/env bash\necho hi\n"
+    BASE = "${{ github.event.pull_request.base.sha }}"
+
+    def job(self, steps, tool="bin/tool.sh", run="bash bin/tool.sh"):
+        body = HEAD + "    steps:\n" + steps + f"      - run: {run}\n"
+        d = gate_tree()           # the accepted gate and its stub scripts, then this workflow beside them
+        self.addCleanup(shutil.rmtree, d)
+        for rel, text in ((".github/workflows/w.yml", body), (tool, self.TOOL)):
+            os.makedirs(os.path.dirname(os.path.join(d, rel)), exist_ok=True)
+            with open(os.path.join(d, rel), "w") as fh:
+                fh.write(text)
+        return d
+
+    def uses(self, action, **with_):
+        w = "".join(f"          {k}: {v}\n" for k, v in with_.items())
+        return f"      - uses: {action}@{SHA} # v7.0.1\n" + (f"        with:\n{w}" if w else "")
+
+    def test_an_empty_path_writes_everywhere(self):
+        d = self.job(self.uses("actions/download-artifact", name="x", path='""'))
+        code, out = run([d])
+        self.assertEqual(code, 1, out)
+        self.assertIn("is changed by the job before it runs", out)
+
+    def test_a_download_into_the_scripts_directory_is_a_finding(self):
+        code, out = run([self.job(self.uses("actions/download-artifact", name="x", path="bin"))])
+        self.assertEqual(code, 1, out)
+        self.assertIn("is changed by the job before it runs", out)
+
+    def test_a_download_elsewhere_is_not(self):
+        code, out = run([self.job(self.uses("actions/download-artifact", name="x", path="out"))])
+        self.assertEqual(code, 0, out)
+
+    def test_a_later_writer_over_the_base_sha_fence_directory_drops_it(self):
+        # a writer whose path does not name the fence directory (here the whole workspace) is the case only the drop loop catches: with the loop the script is a plain
+        # path again ("not a committed file"); without it, it would still resolve as main's copy
+        steps = self.uses("actions/checkout", ref=self.BASE, path="trusted") + self.uses("actions/download-artifact", name="x", path=".")
+        d = self.job(steps, run="bash trusted/bin/tool.sh")
+        code, out = run([d])
+        self.assertEqual(code, 1, out)
+        self.assertIn("runs trusted/bin/tool.sh, which is not a committed file", out)
+        self.assertNotIn("bin/tool.sh is changed by the job before it runs", out)
+
+    def test_a_later_default_checkout_drops_the_fence_directory(self):
+        steps = self.uses("actions/checkout", ref=self.BASE, path="trusted") + self.uses("actions/checkout")   # a default checkout fills the workspace itself
+        code, out = run([self.job(steps, run="bash trusted/bin/tool.sh")])
+        self.assertEqual(code, 1, out)
+
+    def test_the_fence_alone_is_main_s_copy(self):
+        steps = self.uses("actions/checkout", ref=self.BASE, path="trusted")
+        code, out = run([self.job(steps, run="bash trusted/bin/tool.sh")])
+        self.assertEqual(code, 0, out)
+
+
+class NonUtf8Names(unittest.TestCase):
+    """rc-5b R10c: `git ls-tree` output was decoded with "replace", so two workflow names that are not valid UTF-8 became the
+    same entry and one workflow went unread. A name under .github/ that is not valid UTF-8 is refused, each one named, and no
+    file is skipped. The trees are made with git plumbing (the index takes any bytes; a macOS file system would not)."""
+
+    def commit_with(self, extra, content=b"x\n"):
+        d = gate_tree()
+        self.addCleanup(shutil.rmtree, d)
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+               "GIT_COMMITTER_EMAIL": "t@t"}
+        idx = {**env, "GIT_INDEX_FILE": os.path.join(d, ".git", "composed-index")}
+
+        def git(*a, inp=None, e=env):
+            return subprocess.run(["git", *a], cwd=d, env=e, input=inp, capture_output=True, check=True).stdout
+        git("init", "-q")
+        git("add", "-A")
+        info = _index_info(git("ls-files", "-z", "-s"))          # the whole valid tree, then the extra entries as raw bytes
+        blob = git("hash-object", "-w", "--stdin", inp=content).decode().strip().encode()
+        for name in extra:
+            info += b"100644 " + blob + b"\t" + name + b"\0"
+        git("update-index", "-z", "--add", "--index-info", inp=info, e=idx)
+        tree = git("write-tree", e=idx).decode().strip()
+        return d, git("commit-tree", tree, "-m", "t").decode().strip()
+
+    def test_a_tree_without_odd_names_passes(self):
+        d, c = self.commit_with([])
+        code, out = run(["--git", c], cwd=d)
+        self.assertEqual(code, 0, out)
+
+    def test_two_non_utf8_workflow_names_are_refused_and_both_named(self):
+        d, c = self.commit_with([b".github/workflows/\xff.yml", b".github/workflows/\xfe.yml"])
+        code, out = run(["--git", c], cwd=d)
+        self.assertEqual(code, 1, out)
+        lines = [ln for ln in out.splitlines() if "not valid UTF-8" in ln]
+        self.assertEqual(len(lines), 2, out)             # not collapsed into one entry
+        self.assertTrue(any("\\xff" in ln for ln in lines) and any("\\xfe" in ln for ln in lines), out)
+
+    def test_one_non_utf8_name_beside_a_valid_one_is_refused(self):
+        d, c = self.commit_with([b".github/workflows/\xff.yml"])
+        code, out = run(["--git", c], cwd=d)
+        self.assertEqual(code, 1, out)
+        self.assertIn("not valid UTF-8", out)
+
+    def test_a_non_utf8_directory_name_under_github_is_refused(self):
+        d, c = self.commit_with([b".github/\xff/x.yml"])
+        code, out = run(["--git", c], cwd=d)
+        self.assertEqual(code, 1, out)
+        self.assertIn("not valid UTF-8", out)
+
+    def test_a_finding_that_names_a_non_utf8_path_is_printed_escaped_not_a_traceback(self):
+        # rc-5b 618 fix: a name outside .github/ is read (action.yml), and a finding that holds it must print under a strict stdout
+        d, c = self.commit_with([b"x/\xff/action.yml"], b"runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n")
+        p = subprocess.run([sys.executable, SRC, "--git", c], cwd=d, capture_output=True,
+                           env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
+        self.assertNotIn(b"Traceback", p.stderr, p.stderr)
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        self.assertIn(b"\\xff", p.stdout)
+
+    def test_a_non_utf8_name_outside_github_is_not_this_checkers_business(self):
+        d, c = self.commit_with([b"docs/\xff.md"])
+        code, out = run(["--git", c], cwd=d)
+        self.assertEqual(code, 0, out)
+
+
+def _index_info(listing):
+    """`git ls-files -s -z` records ("mode sha stage\tpath\0") as `--index-info` input ("mode sha\tpath\0")."""
+    out = b""
+    for rec in filter(None, listing.split(b"\0")):
+        meta, path = rec.split(b"\t", 1)
+        mode, sha, _stage = meta.split()
+        out += mode + b" " + sha + b"\t" + path + b"\0"
+    return out
+
+
+class ExclusionBreachReasons(unittest.TestCase):
+    def test_two_yaml_documents_are_refused(self):
+        why = M._token_url_breach(HEAD + "---\n" + HEAD, "w", [], ("w", "j", 0))
+        self.assertEqual(why, "the file does not hold exactly one YAML document")
+
+    def test_a_step_past_the_end_of_the_job_cannot_be_found(self):
+        doc = M.yaml.compose(HEAD + "    steps:\n      - run: true\n", Loader=M.StrLoader)
+        self.assertEqual(M._env_breach(doc, ("w", "j", 1)), "the excluded step cannot be found")
+
+
+HOOK_NEW = ["PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "NODE_OPTIONS", "HOME", "PYTHONPATH", "PYTHONSTARTUP",
+            "PYTHONHOME", "PERL5OPT", "RUBYOPT", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy",
+            "https_proxy", "all_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE",
+            "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "GIT_SSL_CAINFO"]
+GATE_PROGRAMS = dict.fromkeys([".github/agent/bin/auditor-review-gate.py", ".github/agent/bin/check-action-pins.py",
+                              "bin/check-file-allowlist.sh", ".github/agent/tests/pin-wiring-test.sh",
+                              "bin/scan-no-workflow-call-test.sh", "bin/audit-record-judge.sh",
+                              "bin/audit-record-prepare.sh", ".github/agent/bin/auditor-signed-commit.py"], "")
+GH_SCRIPT = f"      - uses: actions/github-script@{SHA} # v7.0.1\n        with:\n          script: |\n            %s\n"
+
+
+class StartupHookWrites(unittest.TestCase):
+    """F3b/F3c: a step may not set a startup-hook name by env: or by a write that reaches later steps' environment."""
+
+    def findings(self, workflow, name="w.yml"):
+        d = repo({f".github/workflows/{name}": workflow, **GATE_PROGRAMS})
+        self.addCleanup(shutil.rmtree, d)
+        return run([d])
+
+    def step(self, run_text):
+        return HEAD + "    steps:\n      - run: |\n          " + run_text.replace("\n", "\n          ") + "\n"
+
+    def script(self, js):
+        return HEAD + "    steps:\n" + GH_SCRIPT % js
+
+    def refused(self, workflow, name="w.yml", job="j", step=1, matched=None, says=None):
+        code, out = self.findings(workflow, name)
+        self.assertEqual(code, 1, out)
+        self.assertIn(f".github/workflows/{name}", out)
+        self.assertNotIn(" 0 finding(s)", out)
+        self.assertIn(job, out)
+        self.assertIn(f"step {step}", out)
+        if matched:
+            self.assertIn(matched.lower(), out.lower())
+        if says:
+            self.assertIn(says, out)
+
+    def accepted(self, workflow):
+        code, out = self.findings(workflow)
+        self.assertEqual(code, 0, out)
+        self.assertIn(" 0 finding(s)", out)
+
+    # ---- R1: the shell routes
+    def test_github_env_forms_refuse_a_startup_hook_name(self):
+        for dest in ('>> $GITHUB_ENV', '>> "$GITHUB_ENV"', '>>"$GITHUB_ENV"', '>> ${GITHUB_ENV}'):
+            with self.subTest(dest=dest):
+                self.refused(self.step(f'echo "BASH_ENV=x" {dest}'))
+
+    def test_set_env_command_refuses_a_startup_hook_name(self):
+        self.refused(self.step('echo "::set-env name=BASH_ENV::x"'))
+
+    def test_each_shell_route_refuses_a_name_in_a_job_of_any_workflow_file(self):
+        self.refused(self.step('echo "BASH_FUNC_foo%%=x" >> "$GITHUB_ENV"'), "other-name.yml")
+        self.refused(self.step('echo "CURL_HOME=/x" >> "$GITHUB_ENV"'))
+        self.refused(self.step('echo "ENV=/x" >> "$GITHUB_ENV"'))
+
+    def test_the_name_may_sit_anywhere_in_the_step_text(self):
+        self.refused(self.step('v=BASH_ENV\necho "$v=x" >> "$GITHUB_ENV"'))
+
+    # ---- R1: the JS routes, in a run step and in github-script
+    def test_export_variable_refuses_a_startup_hook_name(self):
+        js = "core.exportVariable('BASH_ENV', 'x')"
+        self.refused(self.script(js))
+        self.refused(self.step(f"node -e \"{js}\""))
+
+    def test_add_path_is_refused_with_any_argument(self):
+        for js in ("core.addPath('/tmp/bin')", "core.addPath(p)", "core.addPath(`${dir}/bin`)"):
+            with self.subTest(js=js):
+                self.refused(self.script(js))
+                self.refused(self.step(f"node -e \"{js}\""))
+
+    def test_the_js_routes_with_an_r2_name_are_refused(self):
+        self.refused(self.script("core.exportVariable('LD_PRELOAD', '/x.so')"))
+        self.refused(self.script("core.exportVariable('PATH', p)"))
+
+    def test_each_r2_name_group_is_refused_through_github_env(self):
+        for name in ("PATH", "LD_PRELOAD", "NODE_OPTIONS", "HOME", "PYTHONPATH", "PERL5OPT", "RUBYOPT", "HTTPS_PROXY",
+                     "no_proxy", "SSL_CERT_FILE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "GIT_SSL_CAINFO"):
+            with self.subTest(name=name):
+                self.refused(self.step(f'echo "{name}=x" >> "$GITHUB_ENV"'))
+
+    # ---- R1: what stays accepted
+    def test_an_unrelated_name_through_the_same_routes_is_accepted(self):
+        self.accepted(self.step('echo "GOTOOLCHAIN=local" >> "$GITHUB_ENV"'))
+        self.accepted(self.step('echo "REF=x" >> "$GITHUB_ENV"'))
+        self.accepted(self.script("core.exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE', p)"))
+        self.accepted(self.step('echo "::set-env name=REF::x"'))
+
+    def test_a_name_without_a_route_is_accepted(self):
+        self.accepted(self.step('echo "BASH_ENV is not set here"'))
+        self.accepted(self.step('echo "PATH=$PATH"'))
+
+    def test_a_name_that_is_only_part_of_another_word_is_accepted(self):
+        for word in ("MYENV", "ENVIRONMENT", "XBASH_ENV", "BASH_ENVX"):
+            with self.subTest(word=word):
+                self.accepted(self.step(f'echo "{word}=x" >> "$GITHUB_ENV"'))
+
+    # ---- R2: env keys
+    def env_at(self, level, name):
+        tail = "    steps:\n      - run: echo hi\n"
+        line = f"          {name}: x\n"
+        if level == "step":
+            return HEAD + tail + "        env:\n" + line
+        if level == "job":
+            return HEAD.replace("    runs-on", "    env:\n      " + name + ": x\n    runs-on") + tail
+        return "env:\n  " + name + ": x\n" + HEAD + tail
+
+    def test_every_new_name_is_refused_as_a_step_env_key(self):
+        for name in HOOK_NEW:
+            with self.subTest(name=name):
+                code, out = self.findings(self.env_at("step", name))
+                self.assertEqual(code, 1, out)
+                self.assertIn(f"sets {name}", out)
+
+    def test_some_new_names_are_refused_at_workflow_and_job_level(self):
+        for level in ("workflow", "job"):
+            for name in ("PATH", "LD_PRELOAD", "HOME", "NODE_OPTIONS", "https_proxy", "SSL_CERT_FILE"):
+                with self.subTest(level=level, name=name):
+                    code, out = self.findings(self.env_at(level, name))
+                    self.assertEqual(code, 1, out)
+                    self.assertIn(f"sets {name}", out)
+
+    def test_the_identity_token_file_name_is_not_an_env_finding(self):
+        for level in ("workflow", "job", "step"):
+            with self.subTest(level=level):
+                self.accepted(self.env_at(level, "ANTHROPIC_IDENTITY_TOKEN_FILE"))
+
+    def test_the_old_env_key_refusals_stand(self):
+        for name in ("BASH_ENV", "ENV", "CURL_HOME", "BASH_FUNC_x%%"):
+            with self.subTest(name=name):
+                code, out = self.findings(self.env_at("step", name))
+                self.assertEqual(code, 1, out)
+
+    def test_the_tuple_holds_every_name(self):
+        for name in HOOK_NEW + ["BASH_ENV", "ENV", "CURL_HOME"]:
+            with self.subTest(name=name):
+                self.assertIn(name, M.STARTUP_HOOK_ENV)
+        self.assertNotIn("ANTHROPIC_IDENTITY_TOKEN_FILE", M.STARTUP_HOOK_ENV)
+
+    # ---- more routes into the env file
+    LOADS = "changes what later programs load or where they connect"
+    PATH_SAYS = "changes PATH for later steps"
+
+    def test_more_forms_of_the_env_file_refuse_a_startup_hook_name(self):
+        forms = {
+            "single redirect": 'echo BASH_ENV=x > "$GITHUB_ENV"',
+            "clobber redirect": 'echo BASH_ENV=x >| "$GITHUB_ENV"',
+            "tee": 'echo BASH_ENV=x | tee -a "$GITHUB_ENV"',
+            "line break": 'echo BASH_ENV=x >> \\\n"$GITHUB_ENV"',
+            "variable": 'f=$GITHUB_ENV; echo BASH_ENV=x >> "$f"',
+            "command substitution": 'echo BASH_ENV=x >> "$(echo "$GITHUB_ENV")"',
+            "python": 'python3 -c \'import os; open(os.environ["GITHUB_ENV"], "a").write("BASH_ENV=x\\n")\'',
+            "node": 'node -e "require(\'fs\').appendFileSync(process.env.GITHUB_ENV, \'BASH_ENV=x\\n\')"',
+        }
+        for label, text in forms.items():
+            with self.subTest(form=label):
+                self.refused(self.step(text), matched="GITHUB_ENV", says=self.LOADS)
+
+    def test_the_github_env_context_in_any_letter_case_refuses_a_startup_hook_name(self):
+        for ctx in ("github.env", "GitHub.ENV"):
+            with self.subTest(ctx=ctx):
+                self.refused(self.step('echo BASH_ENV=x >> ${{ %s }}' % ctx), matched="github.env", says=self.LOADS)
+
+    def test_a_longer_word_that_starts_like_the_env_file_is_not_the_route(self):
+        self.accepted(self.step('echo "REF=x" >> "$GITHUB_ENV_FIXTURE"'))
+        self.accepted(self.step('echo "BASH_ENV GITHUB_ENV_FIXTURE"'))
+        self.accepted(self.step('echo "BASH_ENV=x" >> "$GITHUB_ENV_FIXTURE"'))
+
+    # ---- env values in force for a step
+    def env_value(self, level, value, run_text):
+        step = "      - run: |\n          " + run_text.replace("\n", "\n          ") + "\n"
+        if level == "step":
+            return HEAD + "    steps:\n" + step + "        env:\n          N: " + value + "\n"
+        if level == "job":
+            return HEAD.replace("    runs-on", "    env:\n      N: " + value + "\n    runs-on") + "    steps:\n" + step
+        return "env:\n  N: " + value + "\n" + HEAD + "    steps:\n" + step
+
+    def test_a_name_held_in_an_env_value_at_any_level_is_refused_through_the_env_file(self):
+        for level in ("workflow", "job", "step"):
+            with self.subTest(level=level):
+                self.refused(self.env_value(level, "BASH_ENV", 'echo "$N=x" >> "$GITHUB_ENV"'),
+                             matched="BASH_ENV", says=self.LOADS)
+
+    def test_the_env_file_held_in_an_env_value_is_refused_with_a_name_in_the_step(self):
+        for level in ("workflow", "job", "step"):
+            with self.subTest(level=level):
+                self.refused(self.env_value(level, '"${{ github.env }}"', 'echo "BASH_ENV=x" >> "$N"'),
+                             matched="github.env", says=self.LOADS)
+
+    def test_an_env_value_with_no_route_in_the_text_is_accepted(self):
+        for level in ("workflow", "job", "step"):
+            with self.subTest(level=level):
+                self.accepted(self.env_value(level, "BASH_ENV", 'echo "$N=x"'))
+
+    def test_a_route_put_in_an_env_value_is_refused_whatever_name_the_script_writes(self):
+        for level in ("workflow", "job", "step"):
+            with self.subTest(level=level):
+                self.refused(self.env_value(level, '"${{ github.env }}"', 'echo "REF=x" >> "$N"'), matched="github.env")
+
+    def test_a_name_from_a_variable_written_to_github_env_is_refused_even_when_the_value_is_harmless(self):
+        for level in ("workflow", "job", "step"):
+            with self.subTest(level=level):
+                self.refused(self.env_value(level, "REF", 'echo "$N=x" >> "$GITHUB_ENV"'), matched="GITHUB_ENV")
+
+    # ---- the PATH routes need no name
+    def test_each_path_route_is_refused_on_its_own(self):
+        forms = {
+            "GITHUB_PATH": 'echo /x >> "$GITHUB_PATH"',
+            "github.path": 'echo /x >> ${{ github.path }}',
+            "GitHub.PATH": 'echo /x >> ${{ GitHub.PATH }}',
+            "::add-path": 'echo "::add-path::/x"',
+            "::add-path ": 'echo "::add-path ::x"',
+        }
+        for matched, text in forms.items():
+            with self.subTest(route=matched):
+                self.refused(self.step(text), matched=matched.strip(), says=self.PATH_SAYS)
+
+    def test_a_longer_word_that_starts_like_the_path_file_is_accepted(self):
+        self.accepted(self.step('echo /x >> "$GITHUB_PATH_X"'))
+
+    # ---- more startup-hook names
+    NEW_NAMES = ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT", "GIT_SSH", "GIT_SSH_COMMAND",
+                 "GIT_EXEC_PATH", "GIT_TEMPLATE_DIR", "XDG_CONFIG_HOME", "SHELLOPTS", "BASHOPTS", "PS4", "PERL5LIB",
+                 "RUBYLIB", "NODE_PATH", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "GCONV_PATH", "GOFLAGS", "GOPROXY",
+                 "GOSUMDB", "GONOSUMDB", "PIP_INDEX_URL", "PIP_CONFIG_FILE", "NPM_CONFIG_USERCONFIG",
+                 "npm_config_registry"]
+
+    def test_each_further_name_is_refused_as_an_env_key(self):
+        for name in self.NEW_NAMES:
+            with self.subTest(name=name):
+                code, out = self.findings(self.env_at("step", name))
+                self.assertEqual(code, 1, out)
+                self.assertIn(name, out)
+
+    def test_each_further_name_is_refused_when_written_through_the_env_file(self):
+        for name in self.NEW_NAMES:
+            with self.subTest(name=name):
+                self.refused(self.step(f'echo "{name}=x" >> "$GITHUB_ENV"'), matched=name, says=self.LOADS)
+
+    # ---- what a refusal says
+    def test_a_step_write_refusal_names_the_file_job_step_and_name(self):
+        wf = ("on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+              "      - run: |\n          echo \"BASH_ENV=x\" >> \"$GITHUB_ENV\"\n")
+        self.refused(wf, "other-name.yml", job="build", step=2, matched="BASH_ENV", says=self.LOADS)
+        wf = wf.replace('echo \"BASH_ENV=x\" >> \"$GITHUB_ENV\"', 'echo /x >> \"$GITHUB_PATH\"')
+        self.refused(wf, "other-name.yml", job="build", step=2, matched="GITHUB_PATH", says=self.PATH_SAYS)
+
+    def test_the_env_key_refusal_names_the_key_and_what_it_changes(self):
+        code, out = self.findings(self.env_at("step", "BASH_ENV"))
+        self.assertEqual(code, 1, out)
+        self.assertIn("BASH_ENV", out)
+        self.assertIn(self.LOADS, out)
+        self.assertNotIn("bash or curl read a file or function", out)
+        self.assertNotIn("an env block", out)
+
+    # ---- R3: the repository's own workflows
+    def test_the_real_tree_has_no_finding(self):
+        root = os.path.abspath(os.path.join(BIN, "..", "..", ".."))
+        code, out = run([root])
+        self.assertEqual(code, 0, out)
+        self.assertIn(" 0 finding(s)", out)
+
+
+class BasenameWriteKeepsCounting(unittest.TestCase):     # a `> "$RUNNER_TEMP/$(basename X)"` write counts unless proven another name
+    ENTRIES = {"bin/tool.sh": "file", "bin/other.sh": "file", "bin/a.sh": "file", "bin/b.sh": "file"}
+    FETCH = 'git show origin/main:bin/tool.sh > "$RUNNER_TEMP/tool.sh"\n'
+    GH = 'gh api repos/${GITHUB_REPOSITORY}/contents/bin/tool.sh?ref=main --jq .content | base64 -d > "$RUNNER_TEMP/tool.sh"\n'
+    RUN = 'bash "$RUNNER_TEMP/tool.sh"\n'
+
+    def resolve(self, body):
+        return M._resolve_script("$RUNNER_TEMP/tool.sh", body, self.ENTRIES)
+
+    def test_a_literal_basename_write_of_the_same_name_is_refused(self):
+        body = self.FETCH + 'printf x > "$RUNNER_TEMP/$(basename bin/tool.sh)"\n' + self.RUN
+        self.assertIsNone(self.resolve(body))
+
+    def test_a_literal_basename_write_of_another_name_is_resolved(self):
+        body = self.FETCH + 'printf x > "$RUNNER_TEMP/$(basename bin/other.sh)"\n' + self.RUN
+        self.assertEqual(self.resolve(body), "bin/tool.sh")
+
+    def test_a_variable_set_outside_a_loop_is_refused(self):
+        body = self.FETCH + 'f=bin/tool.sh\nprintf x > "$RUNNER_TEMP/$(basename "$f")"\n' + self.RUN
+        self.assertIsNone(self.resolve(body))
+
+    def test_a_variable_set_outside_a_loop_to_another_name_is_still_refused(self):
+        body = self.FETCH + 'f=bin/other.sh\nprintf x > "$RUNNER_TEMP/$(basename "$f")"\n' + self.RUN
+        self.assertIsNone(self.resolve(body))
+
+    def test_the_repro_with_no_loop_list_is_refused_for_gh_api_and_git_show(self):
+        for fetch in (self.GH, self.FETCH):
+            with self.subTest(fetch=fetch):
+                body = fetch + 'echo evil > "$RUNNER_TEMP/$(basename bin/tool.sh)"\n' + self.RUN
+                self.assertIsNone(self.resolve(body))
+
+    def test_a_loop_whose_list_names_the_file_still_resolves_through_the_loop(self):
+        loop = ('for f in bin/tool.sh bin/b.sh; do\n  gh api repos/${GITHUB_REPOSITORY}/contents/${f}?ref=main --jq .content'
+                ' | base64 -d > "$RUNNER_TEMP/$(basename "$f")"\ndone\n')
+        self.assertEqual(self.resolve(loop + self.RUN), "bin/tool.sh")
+
+
+class BasenameWriteProofFailsClosed(unittest.TestCase):  # the "another name" proof fails closed on any write it cannot see
+    ENTRIES = {"bin/tool.sh": "file", "bin/other.sh": "file", "bin/a.sh": "file", "bin/b.sh": "file"}
+    FETCH = 'git show origin/main:bin/tool.sh > "$RUNNER_TEMP/tool.sh"\n'
+    RUN = 'bash "$RUNNER_TEMP/tool.sh"\n'
+
+    def resolve(self, body):
+        return M._resolve_script("$RUNNER_TEMP/tool.sh", body, self.ENTRIES)
+
+    def test_a_literal_word_of_another_name_without_a_trailing_slash_is_resolved(self):
+        body = self.FETCH + 'printf x > "$RUNNER_TEMP/$(basename bin/other.sh)"\n' + self.RUN
+        self.assertEqual(self.resolve(body), "bin/tool.sh")
+
+    def test_a_trailing_slash_word_is_refused(self):
+        body = self.FETCH + 'printf x > "$RUNNER_TEMP/$(basename bin/tool.sh/)"\n' + self.RUN
+        self.assertIsNone(self.resolve(body))
+
+    def test_a_builtin_writing_the_loop_variable_is_refused(self):
+        body = (self.FETCH + 'for f in bin/a.sh bin/b.sh; do\n'
+                "printf -v f '%s' bin/tool.sh\n"
+                'printf x > "$RUNNER_TEMP/$(basename "$f")"\n'
+                'done\n' + self.RUN)
+        self.assertIsNone(self.resolve(body))
+
+    def test_a_loop_header_the_do_form_does_not_match_is_refused(self):
+        body = (self.FETCH + 'for f in bin/a.sh bin/b.sh; do\n'
+                'for f in bin/tool.sh\n'
+                'do\n'
+                'printf x > "$RUNNER_TEMP/$(basename "$f")"\n'
+                'done\n'
+                'done\n' + self.RUN)
+        self.assertIsNone(self.resolve(body))
+
+    def test_a_builtin_writing_the_loop_variable_with_a_glued_flag_is_refused(self):
+        body = (self.FETCH + 'for f in bin/a.sh bin/b.sh; do\n'
+                "printf -vf '%s' bin/tool.sh\n"
+                'printf x > "$RUNNER_TEMP/$(basename "$f")"\n'
+                'done\n' + self.RUN)
+        self.assertIsNone(self.resolve(body))
+
+    def test_a_plain_loop_over_other_names_still_counts_as_a_write(self):
+        body = (self.FETCH + 'for f in bin/a.sh bin/b.sh; do\n'
+                'printf x > "$RUNNER_TEMP/$(basename "$f")"\n'
+                'done\n' + self.RUN)
+        self.assertIsNone(self.resolve(body))
+
+
+class FsTreeReadBytes(unittest.TestCase):                # check-action-pins.py FsTree.read_bytes, in-process
+    def test_read_bytes_returns_the_raw_bytes_of_a_tree_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "f.bin"), "wb") as fh:
+                fh.write(b"\xff\xfe\x00ok")
+            self.assertEqual(M.FsTree(d).read_bytes("f.bin"), b"\xff\xfe\x00ok")
+
+
+class BasenameIsOtherWordCount(unittest.TestCase):       # check-action-pins.py _basename_is_other, called directly
+    def test_one_literal_word_of_another_name_is_other(self):
+        self.assertTrue(M._basename_is_other("bin/other.sh", "tool.sh"))
+
+    def test_one_literal_word_of_the_same_name_is_not_other(self):
+        self.assertFalse(M._basename_is_other("bin/tool.sh", "tool.sh"))
+
+    def test_more_than_one_word_is_not_proved_other(self):
+        self.assertFalse(M._basename_is_other("bin/other.sh bin/tool.sh", "tool.sh"))
+
+    def test_no_word_is_not_proved_other(self):
+        self.assertFalse(M._basename_is_other("", "tool.sh"))
 
 
 if __name__ == "__main__":       # last: every test class above is defined first (Codex #164 adversarial r1, R02)

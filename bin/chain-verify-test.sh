@@ -32,8 +32,9 @@
 #       T.json {"repository":"owner/repo","stages":["build","sign","rebuild","check","release"]}. The key manifest in D (default: the template's
 #       directory) is checked FIRST, with the root key in D (see bin/chain-manifest-test.sh): `refused at manifest: ...` on any failure.
 #       POLICY.json {"tag","ref","repository","release_key":{"key_id","public_key"},"stages":[...]} and "dry_run": true for a branch ref.
-#       --tag vX.Y.Z[-rcN] and --ref refs/tags/vX.Y.Z[-rcN] make the same policy; a branch ref (the dry run's) makes a dry_run policy;
-#       refs/tags/x, refs/pull/N/merge and the snapshot version v0.0.0 exit 1 ("tag" / "snapshot").
+#       --tag T and --ref refs/tags/T make the same policy; T is taken as given (chain-verify.py holds no tag grammar: the tag is judged before, in
+#       release-verify.sh and in Build's admission, REQ-CHAIN-004-AC20); a branch ref refs/heads/<name> (the dry run's) makes a dry_run policy;
+#       a ref that is not refs/tags/<non-empty> or refs/heads/<non-empty> (refs/tags/, refs/pull/N/merge) and the snapshot version v0.0.0 exit 1 ("tag" / "snapshot").
 #   chain-verify.py verify --policy POLICY.json --stage NAME --record REC.json
 #       Checks, any failure exit 1 with the cause on stderr as `refused at <stage>: <reason>`: the envelope (one signature, no certificate
 #       field, canonical base64, strict JSON, UTF-8 only: "envelope"), the signature by the policy's release key ("signature"; a record signed
@@ -1405,18 +1406,22 @@ TPR() { echo sign --check --items "$work/items.json" --build-record "$work/$1.js
   --digests "$work/digests.json" --out "$work/sd/$2"; }
 CBR() { echo check-build-record --build-record "$work/$1.json" --template "$work/template.json" --digests "$work/digests.json"; }
 for t in v0.3.0-RC1 v0.3.0-rc v0.3.0-rc1x v0.3.0-rc.1 v0.3.0rc1 v0.3.0-rc1-rc1 v0.3.0-1rc1 v0.3.0-rc-1 v0.3-rc1; do
-  GITHUB_REF=refs/tags/$t GITHUB_EVENT_NAME=push expect_refuse "001-AC2/rc: the near-miss ref $t is not a tag of the grammar and is refused by Sign" "tag" $(TPR build_coll tagnm)
-  expect_refuse "002-AC2/rc: policy make --tag $t is refused" "tag" policy make --template "$work/template.json" --tag "$t" --out "$work/policy-bad.json"
-  expect_refuse "002-AC2/rc: policy make --ref refs/tags/$t is refused" "tag" policy make --template "$work/template.json" --ref "refs/tags/$t" --out "$work/policy-bad.json"
+  # the spelling of a tag is not judged here (REQ-CHAIN-004-AC20): the policy takes the tag as given, and Sign refuses it only because Build's record (v0.3.0) is for another ref
+  GITHUB_REF=refs/tags/$t GITHUB_EVENT_NAME=push expect_refuse "001-AC2/rc: the ref $t is not Build's ref: Sign's check of Build's record refuses it (not by a grammar of its own)" "ref" $(TPR build_coll tagnm)
+  expect_ok "002-AC2/rc: policy make --tag $t takes the tag as given (the grammar is judged before, not here)" policy make --template "$work/template.json" --tag "$t" --out "$work/policy-nm.json"
+  python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); sys.exit(0 if p["tag"]==sys.argv[2] and p["ref"]=="refs/tags/"+sys.argv[2] and not p.get("dry_run") else 1)' "$work/policy-nm.json" "$t" && ok "002-AC2/rc: that policy names the tag $t and its ref as given" || bad "002-AC2/rc: the policy for --tag $t does not name it as given"
+  expect_ok "002-AC2/rc: policy make --ref refs/tags/$t takes the tag as given" policy make --template "$work/template.json" --ref "refs/tags/$t" --out "$work/policy-nm.json"
 done
 rc=0; run policy make --template "$work/template.json" --tag v0.3.0-rc1 --out "$work/policy-rc.json" || rc=$?
 [ "$rc" = 0 ] && python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); sys.exit(0 if p["tag"]=="v0.3.0-rc1" and p["ref"]=="refs/tags/v0.3.0-rc1" and not p.get("dry_run") and p["stages"]==["build","sign","rebuild","check","release"] and len(p["release_key"]["key_id"])==64 else 1)' "$work/policy-rc.json" && ok "002-AC2/rc: policy make --tag v0.3.0-rc1 carries the FULL tag and ref, the five stages and the release key" || bad "002-AC2/rc: policy for v0.3.0-rc1 (exit $rc)"
 rc=0; run policy make --template "$work/template.json" --ref refs/tags/v0.3.0-rc1 --out "$work/policy-rc-ref.json" || rc=$?
 [ "$rc" = 0 ] && cmp -s "$work/policy-rc.json" "$work/policy-rc-ref.json" && ok "002-AC2/rc: policy make --ref refs/tags/v0.3.0-rc1 is the same policy as --tag v0.3.0-rc1" || bad "002-AC2/rc: --ref rc differs from --tag rc (exit $rc)"
 expect_refuse "002-AC2/rc: the snapshot version in the rc grammar (v0.0.0-rc1) has no policy" "snapshot" policy make --template "$work/template.json" --tag v0.0.0-rc1 --out "$work/policy-bad.json"
-GITHUB_REF=refs/tags/x GITHUB_EVENT_NAME=push expect_refuse "001-AC2 production: refs/tags/x is refused" "tag" $(TPR build_coll tagx)
+GITHUB_REF=refs/tags/x GITHUB_EVENT_NAME=push expect_refuse "001-AC2 production: refs/tags/x is not Build's ref (v0.3.0): refused by the record binding, not by a grammar" "ref" $(TPR build_coll tagx)
+GITHUB_REF=refs/tags/ GITHUB_EVENT_NAME=push expect_refuse "001-AC2 production: refs/tags/ with no tag after it is refused" "tag" $(TPR build_coll tagempty)
+GITHUB_REF=refs/heads/ GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC2 workflow_dispatch on refs/heads/ with no branch name is refused" "tag" $(TPR build_coll brempty)
 GITHUB_REF=refs/heads/x GITHUB_EVENT_NAME=push expect_refuse "001-AC2 production: a branch on a push event is refused" "tag" $(TPR build_coll branchx)
-GITHUB_REF=refs/tags/x GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC2 a workflow_dispatch on a tag that is not vX.Y.Z is refused (dry run is for branches)" "tag" $(TPR build_coll dispx)
+GITHUB_REF=refs/tags/x GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC2 a workflow_dispatch on a tag (here refs/tags/x) is refused (dry run is for branches)" "tag" $(TPR build_coll dispx)
 for ev in schedule pull_request pull_request_target repository_dispatch; do
   GITHUB_REF=refs/heads/x GITHUB_EVENT_NAME=$ev expect_refuse "001-AC2 event $ev on a branch is neither production nor a dry run: refused, no record" "tag" $(TPR build_coll evb-$ev)
   GITHUB_REF=refs/pull/1/merge GITHUB_EVENT_NAME=$ev expect_refuse "001-AC2 event $ev on refs/pull/1/merge is refused" "tag" $(TPR build_coll evp-$ev)
@@ -1442,7 +1447,7 @@ assert not st["predicate"].get("dryRun"), st["predicate"]
 PY
 rc=0; run policy make --template "$work/template.json" --ref refs/heads/hostile-proof/x --out "$work/policy-br.json" || rc=$?
 [ "$rc" = 0 ] && python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); sys.exit(0 if p.get("dry_run") is True and p["ref"]=="refs/heads/hostile-proof/x" and p["tag"]=="" else 1)' "$work/policy-br.json" && ok "002-AC2 policy make --ref <branch> makes a dry_run policy for that ref and no tag" || bad "002-AC2 policy make --ref <branch> (exit $rc)"
-for r in refs/tags/x refs/pull/1/merge; do
+for r in refs/tags/ refs/heads/ refs/pull/1/merge x; do
   expect_refuse "002-AC2 policy make --ref $r is refused" "tag" policy make --template "$work/template.json" --ref "$r" --out "$work/policy-bad.json"
 done
 rc=0; run policy make --template "$work/template.json" --ref refs/tags/v0.3.0 --out "$work/policy-reftag.json" || rc=$?

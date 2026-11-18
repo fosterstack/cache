@@ -3,6 +3,8 @@
 
     python3 bin/build-admit.py run [--out admission.json]   run from the root of the checkout of the tagged commit
     python3 bin/build-admit.py list-checks                  one check name per line, in the order they run
+    python3 bin/build-admit.py tag-ok [--final] TAG         exit 0 when TAG is a release tag (--final: and not a release candidate), else 1
+    python3 bin/build-admit.py tag-pattern                  print TAG_PATTERN, for a step that matches it itself (jq)
 
 The tag, ref and sha come ONLY from the runner environment (GITHUB_REF, GITHUB_REF_NAME, GITHUB_SHA, GITHUB_REPOSITORY, GITHUB_RUN_ID,
 GITHUB_RUN_ATTEMPT); an argument naming one is a usage error. They are never put in a shell: every command is an argument list.
@@ -64,7 +66,8 @@ SIGNER = "bin/admission-tag-signer.py"
 AUDIT_FILES = ("bin/audit-record-judge.sh", "bin/audit-record.py", ".github/policy/audit-writers.json")
 AUDIT_ITEMS = ".auditor/accepted-items.json"      # the judge also reads it when main has it: an open owner-decision item holds the tag
 RELEASE_SIGNER = ".github/policy/release_tag_signer"    # one ssh-rsa line, the release KMS public key; absent until a human commits it
-POLICY_FILES = (".github/policy/allowed_signers", ".github/policy/github-web-flow.gpg", ".github/policy/required-checks.json", SIGNER,
+POLICY_FILES = (".github/policy/allowed_signers", ".github/policy/github-web-flow.gpg", ".github/policy/required-checks.json",
+    ".github/policy/release-only-checks.json", SIGNER, "bin/build-admit.py",   # the signer loads the tag grammar from the copy beside it
                 RELEASE_SIGNER)
 
 
@@ -392,22 +395,23 @@ def one_green_run(runs, req, sha):
 
 
 def read_required_policy(ctx):
-    """Main's required-checks.json, validated: an unknown scope is a policy error, not a skipped check."""
-    try:
-        with open(os.path.join(ctx.policy, "required-checks.json"), encoding="utf-8") as fh:
-            reqs = json.load(fh)["required_checks"]
-    except (ValueError, KeyError, TypeError, OSError) as e:
-        raise Refusal("required-checks", "main's required-checks.json is unreadable: %s" % one_line(str(e), 100))
-    if not isinstance(reqs, list):
-        raise Refusal("required-checks", "main's required_checks is not a list")
+    """Main's required-checks.json and release-only-checks.json, validated: an unknown scope is a policy error, not a skipped check."""
     out = []
-    for r in reqs:
-        if not isinstance(r, dict) or not isinstance(r.get("context"), str) or not isinstance(r.get("integration_id"), int):
-            raise Refusal("required-checks", "a required check entry in main's policy is malformed: %s" % one_line(json.dumps(r), 100))
-        scope = r.get("scope", "push")
-        if scope not in ("push", "pull_request"):
-            raise Refusal("required-checks", "unknown scope %r for required check %r: policy error" % (scope, r["context"]))
-        out.append({"context": r["context"], "integration_id": r["integration_id"], "scope": scope})
+    for name in ("required-checks.json", "release-only-checks.json"):
+        try:
+            with open(os.path.join(ctx.policy, name), encoding="utf-8") as fh:
+                reqs = json.load(fh)["required_checks"]
+        except (ValueError, KeyError, TypeError, OSError) as e:
+            raise Refusal("required-checks", "main's %s is unreadable: %s" % (name, one_line(str(e), 100)))
+        if not isinstance(reqs, list) or not reqs:
+            raise Refusal("required-checks", "main's %s required_checks is not a non-empty list" % name)
+        for r in reqs:
+            if not isinstance(r, dict) or not isinstance(r.get("context"), str) or not isinstance(r.get("integration_id"), int):
+                raise Refusal("required-checks", "a required check entry in main's policy is malformed: %s" % one_line(json.dumps(r), 100))
+            scope = r.get("scope", "push")
+            if scope not in ("push", "pull_request"):
+                raise Refusal("required-checks", "unknown scope %r for required check %r: policy error" % (scope, r["context"]))
+            out.append({"context": r["context"], "integration_id": r["integration_id"], "scope": scope})
     return out
 
 
@@ -621,6 +625,10 @@ def main(argv):
     sub.add_parser("list-checks")
     r = sub.add_parser("run")
     r.add_argument("--out", default="admission.json")
+    t = sub.add_parser("tag-ok")
+    t.add_argument("--final", action="store_true")
+    t.add_argument("tag")
+    sub.add_parser("tag-pattern")
     args, extra = ap.parse_known_args(argv)
     if extra:
         print("usage error: the tag, ref and sha come only from the environment (GITHUB_REF, GITHUB_REF_NAME, GITHUB_SHA), not from "
@@ -629,6 +637,11 @@ def main(argv):
     if args.cmd == "list-checks":
         print("\n".join(CHECKS))
         return 0
+    if args.cmd == "tag-pattern":
+        print(TAG_PATTERN)
+        return 0
+    if args.cmd == "tag-ok":
+        return 0 if TAG_SYNTAX.fullmatch(args.tag) and not (args.final and "-rc" in args.tag) else 1
     try:
         admit(args.out)
     except Refusal as e:

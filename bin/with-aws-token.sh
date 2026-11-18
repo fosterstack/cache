@@ -3,7 +3,7 @@
 # The caller is a step whose own call signs with the release KMS key through the AWS SDK: Sign's staged-record helper (one call per record) and Sign's provenance signature.
 # The request token goes to the loopback helper through a header file of mode 0600 in the same directory (-H @file), never in the arguments of a process, where any process of the runner could read it. A fresh token (audience sts.amazonaws.com, the audience the AWS trust requires) is fetched now and written to a file of mode 0600 in a private directory under RUNNER_TEMP, outside the
 # repository tree; AWS_WEB_IDENTITY_TOKEN_FILE points the SDK at it for that call and for nothing else (AWS_ROLE_ARN, AWS_REGION and RELEASE_KMS_KEY_REF come from the job's step environment and
-# stay in the call's environment). The request variables are plain shell variables, never exported, so the call cannot ask for another token; nothing goes to GITHUB_ENV. The directory is removed
+# stay in the call's environment). The request variables are plain shell variables, never exported, so the call cannot ask for another token; nothing goes to the runner's environment file. The directory is removed
 # the moment the call ends (success, failure or signal), and its exit status is the exit status of this script. A job that lacks the role, the region or the key reference, a missing
 # RUNNER_TEMP, a failed, empty or null token, or nothing to run stops here, before the call runs.
 set -euo pipefail

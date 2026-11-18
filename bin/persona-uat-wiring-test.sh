@@ -9,7 +9,7 @@
 # driver's output directory (transcripts and reports) even when personas fail; and a persona-uat job in the weekly
 # workflow that runs only on its Monday cron, resolves the LATEST release's image digest, and runs the same driver with
 # --publish. The pinned CI tools file (advisor 0207, delta 2) holds exactly nine entries, each by digest, distinct, and each naming its own OFFICIAL repository:
-# cosign, gitlab-runner, gradle, jenkins, kind, kubectl, maven and the persona shell (the curl image); no driver, agent or provider source may run a
+# cosign, gitlab-runner, gradle, jenkins, kind, kubectl, maven and the persona shell (the curl image); no driver, agent or provider code may run a
 # privileged container (the kind cluster is created by the job's kind binary).
 # MODEL IDS ARE SECRETS (advisor 0233, owner's rule): GitHub prints a step's `env:` values in the step header before its script runs, so a model id from `vars.*` would be
 # public in the job log. PERSONA_UAT_MODEL and PERSONA_UAT_COMPLIANCE_MODEL therefore arrive on the DRIVER step as ${{ secrets.PERSONA_UAT_MODEL }} / ${{ secrets.PERSONA_UAT_COMPLIANCE_MODEL }}

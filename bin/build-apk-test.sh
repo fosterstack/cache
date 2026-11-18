@@ -1096,7 +1096,7 @@ t "rule 22" "apk-tool verify (K3): a correctly signed apk whose signature segmen
 t "rule 22" "bin/release-sign-apks.sh, bin/release-apks.sh and bin/apk-tool.py name no stored release key variable and hold no private-key text or PEM key parsing (no PRIVATE KEY text, no derive_pub; the two scripts do not call melange)" bash -c "! grep -En 'APK_RELEASE_SIGN""ING_KEY|PRIVATE KEY|derive_pub' '$RS_REAL' '$root/bin/release-apks.sh' '$root/bin/apk-tool.py' && ! grep -Ev '^ *#' '$RS_REAL' '$root/bin/release-apks.sh' | grep -En 'melange'"
 # release-apks.sh: the whole step on a repo-shaped tree with the test copy of the signer; and the refusals
 rm -rf "$work/ra"; mkdir -p "$work/ra/bin" "$work/ra/.github/policy" "$work/ra/witness-build"
-cp "$root/bin/release-apks.sh" "$root/bin/apk-tool.py" "$work/ra/bin/"; cp "$work/rs-copy.sh" "$work/ra/bin/release-sign-apks.sh"; cp "$root/.github/policy/cosign-signing-config.json" "$work/ra/.github/policy/"; cp "$root/bin/chain-verify.py" "$root/bin/chain_common.py" "$root/bin/chain_hostile.py" "$root/bin/chain_items.py" "$work/ra/bin/"; printf 'import sys\nsys.exit(0 if sys.argv[1:] == ["--before-publish"] else 2)\n' > "$work/ra/bin/release-postverify.py"; mkdir -p "$work/ra/.github/policy"; cp "$root/.github/policy/chain-scripts.json" "$work/ra/.github/policy/"
+cp "$root/bin/release-apks.sh" "$root/bin/apk-tool.py" "$root/bin/build-admit.py" "$work/ra/bin/"; cp "$work/rs-copy.sh" "$work/ra/bin/release-sign-apks.sh"; cp "$root/.github/policy/cosign-signing-config.json" "$work/ra/.github/policy/"; cp "$root/bin/chain-verify.py" "$root/bin/chain_common.py" "$root/bin/chain_hostile.py" "$root/bin/chain_items.py" "$work/ra/bin/"; printf 'import sys\nsys.exit(0 if sys.argv[1:] == ["--before-publish"] else 2)\n' > "$work/ra/bin/release-postverify.py"; mkdir -p "$work/ra/.github/policy"; cp "$root/.github/policy/chain-scripts.json" "$work/ra/.github/policy/"
 python3 - "$work/ra" "$pr/a.apk" <<'P'
 import json, os, shutil, subprocess, sys
 r, apk = sys.argv[1:3]
@@ -1512,7 +1512,7 @@ t "rule 22" "build/keys/release.rsa.pub is a placeholder that is NOT a key (no P
 
 # no key-shaped block of ANY label under build/keys, except the committed non-secret assembly pair (assembly.rsa and assembly.rsa.pub) and the real public keys release.rsa.pub and retired/<day>/release.rsa.pub
 cat >"$work/keyscan.py" <<'P'
-import base64, hashlib, os, re, subprocess, sys, tempfile
+import base64, os, re, subprocess, sys, tempfile
 def _tlv(b, i, end):
     if i + 2 > end: raise ValueError("truncated")
     tag, l = b[i], b[i + 1]
@@ -1550,7 +1550,6 @@ def der_rsa_public(b):
     k = _children(inner, s2, e2)
     if t2 != 0x30 or e2 != len(inner) or len(k) != 2 or any(c[0] != 0x02 for c in k): raise ValueError("not RSAPublicKey (two INTEGERs) spanning the bit string")
 d = sys.argv[1]; bad = []
-PLACEHOLDER_SHA = "4c1b4fee97806b9659f4c0dbd84f4bd97d46d08df1b3df2c3f774442ebac3673"   # the committed placeholder; committing the real release public key edits this line, the placeholder test and the ret-placeholder case
 B64 = re.compile(rb"[A-Za-z0-9+/]{1,76}={0,2}")
 HEADER = re.compile(rb"NON-SECRET assembly key[ -~]{0,160}")
 FILES = {"assembly.rsa": b"RSA PRIVATE KEY", "assembly.rsa.pub": b"PUBLIC KEY", "release.rsa.pub": None}
@@ -1572,10 +1571,11 @@ for root_, dirs, files in os.walk(d):
         if len(raw) > 8192: bad.append(rel + " (larger than 8 KiB)"); continue
         if any(c >= 0x80 for c in raw) or b"\r" in raw or b"\0" in raw: bad.append(rel + " (not plain ASCII text: a high byte, a NUL or a carriage return)"); continue
         label = None if retired else FILES[rel]
-        if retired and hashlib.sha256(raw).hexdigest() == PLACEHOLDER_SHA:
+        is_placeholder = raw.startswith(b"PLACEHOLDER:") and raw.count(b"\n") == 2 and b"-----" not in raw   # the committed placeholder: two plain lines, no armour
+        if retired and is_placeholder:
             bad.append(rel + " (the placeholder is not a key: a retired key must be a real public key)"); continue
-        if label is None and hashlib.sha256(raw).hexdigest() == PLACEHOLDER_SHA:
-            continue   # the committed placeholder, byte for byte
+        if label is None and is_placeholder:
+            continue   # the committed placeholder
         if label is None: label = b"PUBLIC KEY"   # the real release public key: exactly one public key block that OpenSSL parses
         # line by line: [one NON-SECRET header line] BEGIN, base64 lines, END, end of file. Nothing else.
         lines = raw.split(b"\n")

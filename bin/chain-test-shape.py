@@ -726,6 +726,8 @@ NS_ROOTS = ("bin/build-stage-*.sh", "bin/witnessed-local.sh", "bin/archive-pull.
             # what the run: lines of stage-build.yml and stage-reproducibility.yml start, bar NS_SKIP
             "bin/chain-hostile-step.sh", "bin/chain-sandbox-probe.sh", "bin/rebuild-records-digests.sh")
 NS_SKIP = ("bin/install-scanner.sh", "bin/install-build-tools.sh")
+# Only named by bin/dependabot-reviewer-version.sh, whose hash covers them; no stage starts them.
+NS_NAMED_ONLY = ("bin/dependabot-reviewer.py",)
 # The freeze job's script starts go of the tagged tree. It is no root of the closure; a closure file that names it or
 # lists
 # it in `runs` is a finding (ns_closure), and stage() lets only the freeze job run it.
@@ -772,7 +774,7 @@ def ns_closure(root):
     seen, bad = [], []
     while todo:
         p = todo.pop()
-        if p in seen or p in NS_SKIP:
+        if p in seen or p in NS_SKIP or p in NS_NAMED_ONLY:
             continue
         seen.append(p)
         if p not in rows:
@@ -1256,6 +1258,18 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         '  *) echo "::error::mode must be release or snapshot" >&2; exit 1 ;;',
         'esac',
     ],
+    'bin/dependabot-reviewer-version.sh': [
+        'set -euo pipefail',
+        'files=(',
+        '  bin/dependabot-reviewer.py',
+        '  .github/policy/dependabot-reviewer-prompt.txt',
+        '  .github/workflows/dependabot-reviewer.yml',
+        '  .github/policy/required-checks.json',
+        ')',
+        'if [ "${1:-}" = --files ]; then printf \'%s\\n\' "${files[@]}"; exit 0; fi',
+        'cd "${1:-.}"',
+        'sha256sum "${files[@]}" | sha256sum | cut -d\' \' -f1',
+    ],
 }
 
 
@@ -1507,7 +1521,7 @@ def workflows(directory):
     import os
     have = set(os.listdir(directory))
     added = sorted(have - KNOWN_WORKFLOWS - {"persona-uat.yml", "customer-words-edited.yml", "evidence-letter.yml"})
-    only = "(the only new files of v0.3.0 are persona-uat.yml, REQ-UAT-001, customer-words-edited.yml, decision 98, and evidence-letter.yml, REQ-REL-013; release.yml is the one file of the release chain)"
+    only = "(the only new files of v0.3.0 are persona-uat.yml, REQ-UAT-001, customer-words-edited.yml, decision 98, and evidence-letter.yml, REQ-REL-015; release.yml is the one file of the release chain)"
     bad = ["workflow file %s was added %s" % (f, only) for f in added]
     return bad + ["%s still exists (the stage files are folded into release.yml, REQ-CHAIN-005-AC5)" % f for f in sorted(have) if f.startswith("stage-")]
 

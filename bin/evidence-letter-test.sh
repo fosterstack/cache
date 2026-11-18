@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-013-AC1, REQ-REL-013-AC2, REQ-REL-013-AC3, REQ-REL-013-AC4
-# proves: REQ-REL-013-AC5, REQ-REL-013-AC6, REQ-REL-013-AC7, REQ-REL-013-AC8, REQ-REL-013-AC11
+# proves: REQ-REL-015-AC1, REQ-REL-015-AC2, REQ-REL-015-AC3, REQ-REL-015-AC4
+# proves: REQ-REL-015-AC5, REQ-REL-015-AC6, REQ-REL-015-AC7, REQ-REL-015-AC8, REQ-REL-015-AC11
 # The monthly signed evidence letter (owner Oct 27; ops/docs/ratify/2026-10-27-monthly-evidence-letter.md):
 # bin/evidence-letter.py makes the letter from a template out of the release assets.
 # Offline: no network, no signing here.
@@ -1006,7 +1006,7 @@ pr, lr = present([[V4]], old_manifest=window_manifest("2026-11-01T00:00:00Z", "2
 check("F7 R5 b3: two entries, the first inside the key window and the second outside it: fails, not passed on entry 0",
       one_line(pr) and pr.returncode == 1 and verifies(lr) == 0, (pr.stderr, lr))
 
-# ---- evidence-letter-back: the audit's fixes 1 to 5 (REQ-REL-013); each label starts "r1 fix N:"
+# ---- evidence-letter-back: the audit's fixes 1 to 5 (REQ-REL-015); each label starts "r1 fix N:"
 def rel_manifest(name, valid_from, valid_to=None, root_signed=True):
     """A function of the sandbox folder: the (manifest, signature) of a fresh release key called name, made once."""
     def make(tmp):

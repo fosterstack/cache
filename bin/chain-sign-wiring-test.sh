@@ -350,7 +350,7 @@ def only_new_workflow(files, bad):
     (listed_signers and direct_signers still judge it; decision 98, Oct 3), and persona-uat.yml, the persona proof's own file. No stage-*.yml file is added."""
     new = sorted(os.path.basename(f) for f in files if os.path.basename(f) not in V022_WORKFLOWS)
     if set(new) != {"persona-uat.yml", "customer-words-edited.yml", "evidence-letter.yml"}:
-        bad.append("AC1: workflow files added since v0.2.2 must be customer-words-edited.yml (decision 98, Oct 3), evidence-letter.yml (REQ-REL-013) and persona-uat.yml, found %s" % new)
+        bad.append("AC1: workflow files added since v0.2.2 must be customer-words-edited.yml (decision 98, Oct 3), evidence-letter.yml (REQ-REL-015) and persona-uat.yml, found %s" % new)
 
 def listed_signers(base, bad):
     """001-AC1: "every other signing call being listed with its reason in .github/policy/chain-signers.json" (never a provenance signer)."""
@@ -1222,7 +1222,7 @@ mk() {
   local d="$work/$1"; rm -rf "$d"; mkdir -p "$d/.github/workflows" "$d/.github/policy" "$d/.github/actions/x" "$d/bin"
   for f in acceptance auditor ci stage-promote stage-verify stage-reproducibility; do printf 'jobs: {}\n' > "$d/.github/workflows/$f.yml"; done
   printf 'jobs: {}\n' > "$d/.github/workflows/customer-words-edited.yml"   # an added file that is not a signer
-  printf 'jobs: {}\n' > "$d/.github/workflows/evidence-letter.yml"   # the monthly evidence letter's file (REQ-REL-013)
+  printf 'jobs: {}\n' > "$d/.github/workflows/evidence-letter.yml"   # the monthly evidence letter's file (REQ-REL-015)
   printf 'jobs: {}\n' > "$d/.github/workflows/persona-uat.yml"      # the other added file: the persona proof has its own workflow file
   printf 'jobs:\n  b:\n    steps:\n      - run: |\n          set -euo pipefail\n          bash bin/build-stage.sh apk\n' > "$d/.github/workflows/stage-build.yml"
   { printf 'jobs:\n  hostile-verify:\n    steps:\n      - run: git -c gpg.x509.program=gitsign tag -s v1\n'
@@ -3037,7 +3037,7 @@ extra="$d/.github/workflows/stage-extra.yml"
 printf 'jobs:\n  b:\n    steps:\n      - uses: actions/checkout@%s # v4\n' "$sha" > "$extra"
 printf '        with:\n          persist-credentials: false\n' >> "$extra"
 out=$(judge tree "$d" 2>/dev/null) || true
-want="AC1: workflow files added since v0.2.2 must be customer-words-edited.yml (decision 98, Oct 3), evidence-letter.yml (REQ-REL-013) and persona-uat.yml,"
+want="AC1: workflow files added since v0.2.2 must be customer-words-edited.yml (decision 98, Oct 3), evidence-letter.yml (REQ-REL-015) and persona-uat.yml,"
 want="$want found ['customer-words-edited.yml', 'evidence-letter.yml', 'persona-uat.yml', 'stage-extra.yml']"
 if [ "$out" = "$want" ]; then
   pass=$((pass + 1))
@@ -3406,7 +3406,7 @@ probe stale     "scorecard.yml job analysis" "a listed job that no longer holds 
 # (the shadowed module must be one bin/chain-verify.py imports: it was fractions until the certificate and timestamp code went, and a control that shadows an unimported module proves nothing)
 # the isolation really works: with a bin/shutil.py that prints a marker on import, `python3 -I bin/chain-verify.py --help` runs the
 # real module (no marker, usage printed) while plain `python3 bin/chain-verify.py --help` is shadowed (the control: the probe bites)
-iso="$work/iso"; rm -rf "$iso"; mkdir -p "$iso/bin" "$iso/.github/policy"; cp "$root"/bin/chain-verify.py "$root"/bin/chain_common.py "$root"/bin/chain_hostile.py "$root"/bin/chain_items.py "$iso/bin/"
+iso="$work/iso"; rm -rf "$iso"; mkdir -p "$iso/bin" "$iso/.github/policy"; cp "$root"/bin/chain-verify.py "$root"/bin/chain_common.py "$root"/bin/chain_hostile.py "$root"/bin/chain_items.py "$root"/bin/build-admit.py "$iso/bin/"
 cp "$root/.github/policy/chain-scripts.json" "$iso/.github/policy/"
 printf 'print("SHADOW-MARKER-%s")\nfrom shutil import *\n' "$$" > "$iso/bin/shutil.py"
 rc=0; out=$(cd "$iso" && python3 -I bin/chain-verify.py --help 2>&1) || rc=$?
@@ -5305,6 +5305,23 @@ probe sg_any_secret "stored secret outside the named env entries" "a stored secr
   "jstep $REL sign-check '      - name: x\n        env:\n          X_KEY: \${{ secrets.X_KEY }}\n        run: bash bin/install-scanner.sh cosign\n'"
 probe secret_in_if "stored secret outside" "a stored secret read in a step condition of Release" \
   "repl .github/workflows/release.yml '      - name: release-publish under Witness\n' '      - name: release-publish under Witness\n        if: \${{ secrets.DOCKERHUB_TOKEN != \"\" }}\n'"
+# REQ-CHAIN-004-AC20 (ruling (B)): nothing that holds a secret loads bin/build-admit.py, directly or through a script it runs. rowruns SCRIPT ADD...: appends to the `runs` of SCRIPT's row in the copy.
+rowruns() { python3 -c 'import json,sys; p=".github/policy/chain-scripts.json"; d=json.load(open(p))
+for r in d["scripts"]:
+    if r["path"] == sys.argv[1]: r["runs"] = r["runs"] + [x for x in sys.argv[2:] if x not in r["runs"]]
+json.dump(d, open(p,"w"), indent=1)' "$@"; }
+expect ok "REQ-CHAIN-004-AC20 control: the unmodified real tree passes the judge (no secret holder lists bin/build-admit.py in its runs, directly or through a script it runs)" tree "$REAL"
+for hold in release-sign release-publish release-assets; do
+  probe "ba_direct_$hold" "GH_TOKEN" "bin/$hold.sh (a secret holder of the release job) listing bin/build-admit.py in its runs" "rowruns bin/$hold.sh bin/build-admit.py"
+done
+probe ba_via_verify "GH_TOKEN" "bin/release-sign.sh running bin/chain-verify.py whose row lists bin/build-admit.py in its runs (a load through a script it runs)" \
+  "rowruns bin/chain-verify.py bin/build-admit.py"
+probe ba_via_layout "GH_TOKEN" "bin/release-publish.sh running bin/release-layout.py whose row lists bin/build-admit.py in its runs" \
+  "rowruns bin/release-layout.py bin/build-admit.py"
+probe ba_via_layout_assets "GH_TOKEN" "bin/release-assets.sh listing bin/release-layout.py, whose row lists bin/build-admit.py in its runs" \
+  "rowruns bin/release-layout.py bin/build-admit.py; rowruns bin/release-assets.sh bin/release-layout.py"
+probe ba_via_items "GH_TOKEN" "bin/release-sign.sh running bin/chain-verify.py, which loads bin/chain_items.py, whose row lists bin/build-admit.py in its runs" \
+  "rowruns bin/chain_items.py bin/build-admit.py; rowruns bin/chain-verify.py bin/chain_items.py"
 
 # ---- the sign jobs' federation env (REQ-CHAIN-001-AC1 job keys, REQ-CHAIN-001-AC9): in release.yml the three jobs sign, sign-rebuild and sign-check, and no other job of any
 # workflow file, carry a job-level env of exactly three non-secret literals (AWS_ROLE_ARN, AWS_REGION, RELEASE_KMS_KEY_REF); no step of them repeats the literals; the release job and every

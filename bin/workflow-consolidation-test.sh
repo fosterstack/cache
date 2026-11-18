@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-008-AC1, REQ-REL-008-AC2, REQ-REL-008-AC3
+# proves: REQ-REL-008-AC1, REQ-REL-008-AC2, REQ-REL-008-AC3, REQ-REL-014-AC1
 # The ratified workflow consolidation (owner, Oct 2): go-freshness.yml keeps the freshness check on its daily schedule (and on a
 # dispatch) and nothing else: the weekly persona-uat cron moved to persona-uat.yml (REQ-UAT-001-AC6, owner rule workflow-grouped-by-purpose,
 # Nov 13). The real workflow must pass; each mutated copy must be caught.
@@ -66,8 +66,8 @@ d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
 MOVED = {   # job id -> (name, permissions, environment, needs, if) exactly as in the original file
-    "allowlist": ("allowlist", None, None, None, None),
-    "requirements": ("requirements", None, None, None, None),
+    "allowlist": ("allowlist", None, None, None, "github.event_name == 'push'"),
+    "requirements": ("requirements", None, None, None, "github.event_name == 'push'"),
 }
 jobs = d.get("jobs") or {}
 for jid, (name, perms, env, needs, cond) in MOVED.items():
@@ -90,7 +90,7 @@ for gone in ("hygiene.yml", "requirements.yml", "dependency-review.yml"):
         bad.append("%s still exists" % gone)
 if not os.path.exists(os.path.join(root, ".github/workflows/dependabot-auto-merge.yml")):
     bad.append("dependabot-auto-merge.yml was moved, but its events differ from ci.yml's")
-# every required check is produced by a top-level job (name or id) of some workflow, on its scope's event
+# every required or release-only check is produced by a top-level job of some workflow, on its scope's event
 names = {}
 for wf in glob.glob(os.path.join(root, ".github/workflows/*.yml")):
     w = d if os.path.basename(wf) == "ci.yml" else yaml.load(open(wf), Loader=yaml.BaseLoader)
@@ -99,14 +99,18 @@ for wf in glob.glob(os.path.join(root, ".github/workflows/*.yml")):
     for jid, j in (w.get("jobs") or {}).items():
         if "uses" in j:
             continue
-        names.setdefault(j.get("name") or jid, set()).update(events)
-for rc in json.load(open(os.path.join(root, ".github/policy/required-checks.json")))["required_checks"]:
-    ev = "push" if rc["scope"] == "push" else "pull_request"
-    if rc["integration_id"] != 15368:
-        continue                                    # the review gate's App check, published by the App, not a job
-    if not any(n == rc["context"] or n.split(" (")[0] == rc["context"].split(" (")[0] for n in names) or \
-            not any(ev in evs for n, evs in names.items() if n == rc["context"] or n.split(" (")[0] == rc["context"].split(" (")[0]):
-        bad.append("required check %r is no longer produced on %s" % (rc["context"], ev))
+        name = j.get("name") or jid
+        axes = ((j.get("strategy") or {}).get("matrix") or {}).values()
+        values = next(iter(axes), [])   # a matrix job is named per value of its first axis
+        for rendered in [f"{name} ({v})" for v in values] or [name]:
+            names.setdefault(rendered, set()).update(events)
+for policy_file in ("required-checks.json", "release-only-checks.json"):
+    for rc in json.load(open(os.path.join(root, ".github/policy", policy_file)))["required_checks"]:
+        ev = "push" if rc["scope"] == "push" else "pull_request"
+        if rc["integration_id"] != 15368:
+            continue                                # the review gate's App check, published by the App, not a job
+        if ev not in names.get(rc["context"], set()):
+            bad.append("required check %r is no longer produced on %s" % (rc["context"], ev))
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -129,13 +133,19 @@ PY
 case_ci real                     ok  ""
 case_ci allowlist-renamed        bad "d['jobs']['allowlist']['name'] = 'file allowlist'"
 case_ci requirements-dropped     bad "d['jobs'].pop('requirements')"
+case_ci allowlist-on-pull-request bad "d['jobs']['allowlist'].pop('if', None)"
+case_ci requirements-on-pull-request bad "d['jobs']['requirements'].pop('if', None)"
 case_ci top-level-widened        bad "d['permissions']['contents'] = 'write'"
 case_ci top-level-pr-write       bad "d['permissions']['pull-requests'] = 'write'"
 case_ci allowlist-regains-block  bad "d['jobs']['allowlist']['permissions'] = {'contents': 'read'}"
 case_ci concurrency-other-job    bad "d['jobs']['allowlist']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'false'}"
+case_ci allowlist-runs-on-prs    bad "d['jobs']['allowlist'].pop('if', None)"
+case_ci requirements-runs-on-prs bad "d['jobs']['requirements'].pop('if', None)"
+case_ci allowlist-if-always      bad "d['jobs']['allowlist']['if'] = 'always()'"
 case_ci merge-group-back         bad "d['on']['merge_group'] = ''"
 case_ci events-changed           bad "d['on'].pop('pull_request')"
 case_ci required-check-gone      bad "d['jobs']['lint']['name'] = 'lint-go'"
+case_ci release-only-check-gone  bad "d['jobs']['allowlist-chain']['name'] = 'chain'"
 
 # ---------------------------------------------------------------------------------------------------------------------
 # PR 3 of 4: main-candidate-rescan.yml absorbs daily-rescan.yml under its ONE schedule (the auditor finds its run by this
@@ -183,13 +193,14 @@ if not shape or 'jq -e "$TARGET_SHAPE"' not in mrun:
     bad.append("the manifests job does not check every target's shape before emitting the matrix")
 else:
     def ok(t):
-        return subprocess.run(["jq", "-e", shape.group(1)], input=json.dumps([t]), capture_output=True, text=True).returncode == 0
+        env = dict(os.environ, TAG_RE=subprocess.check_output(["python3", "-I", os.path.join(sys.argv[2], "bin/build-admit.py"), "tag-pattern"], text=True).strip())
+        return subprocess.run(["jq", "-e", shape.group(1)], input=json.dumps([t]), capture_output=True, text=True, env=env).returncode == 0
     good = {"release": "v0.2.1", "variant": "production", "digest": "sha256:" + "a" * 64, "scanner": "grype"}
-    if not ok(good) or not ok(dict(good, release="v0.3.0-rc.1")):
+    if not ok(good) or not ok(dict(good, release="v0.3.0-rc1")):
         bad.append("TARGET_SHAPE refuses a well-formed target")
     hostile = [dict(good, digest=good["digest"] + "$(docker run alpine:latest true)"),
                dict(good, variant="production'$(docker run alpine:latest true)'"),
-               dict(good, release="v0.2.1$(id)"), dict(good, scanner="grype;id"), dict(good, digest=None),
+               dict(good, release="v0.2.1$(id)"), dict(good, release="v0.3.0-rc.1"), dict(good, release="v02.1.0"), dict(good, scanner="grype;id"), dict(good, digest=None),
                dict(good, digest="sha256:" + "A" * 64), {k: v for k, v in good.items() if k != "variant"}]
     for t in hostile:
         if ok(t):
@@ -249,8 +260,8 @@ d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
 on = d.get("on") or {}
-if on.get("push") != {"branches": ["main"]} or "pull_request" not in on or "workflow_call" in on:
-    bad.append("acceptance.yml's events changed: %s" % list(on))
+if set(on) != {"workflow_call"}:
+    bad.append("acceptance.yml's events are not workflow_call only (REQ-REL-014-AC1): %s" % list(on))
 jobs = d.get("jobs") or {}
 a = jobs.get("acceptance") or {}
 if list(jobs) != ["acceptance"] or a.get("name") != "acceptance" or a.get("permissions") != {"contents": "read"} or "strategy" in a or "outputs" in a:
@@ -294,10 +305,12 @@ case_acc real                  ok  ""
 case_acc renamed               bad "d['jobs']['acceptance']['name'] = 'gradle'"
 case_acc maven-version-cut     bad "[s.__setitem__('run', s['run'].replace('1.2.0 1.2.3', '1.2.3')) for s in d['jobs']['acceptance']['steps'] if 'bin/acceptance-maven.sh' in (s.get('run') or '')]"
 case_acc env-at-top            bad "d['env'] = {'COLD_LOOKUPS': '2'}"
-case_acc workflow-call-back    bad "d['on']['workflow_call'] = ''"
+case_acc no-workflow-call      bad "d['on'].pop('workflow_call', None)"
+case_acc push-trigger-back     bad "d['on']['push'] = {'branches': ['main']}"
+case_acc merge-group-back      bad "d['on']['merge_group'] = ''"
 case_acc results-id-back       bad "d['jobs']['acceptance']['steps'][-2]['id'] = 'results'"
 case_acc job-split-again       bad "d['jobs']['acceptance-gradle'] = d['jobs']['acceptance']"
-case_acc no-pr-trigger         bad "d['on'].pop('pull_request')"
+case_acc pr-trigger-back       bad "d['on']['pull_request'] = ''"
 
 # ---------------------------------------------------------------------------------------------------------------------
 # PR 5: release-chain-pr.yml -> scan.yml (REQ-REL-008-AC2; advisor read-back 0062). One build feeds both: scan's own
@@ -334,10 +347,10 @@ CEILING = {"contents": "write", "packages": "write", "id-token": "write", "issue
 if (jobs.get("build") or {}).get("permissions") != CEILING:
     bad.append("the build call's permissions are not exactly the called file's set (the ceiling): %s" % (jobs.get("build") or {}).get("permissions"))
 r = jobs.get("reproducibility") or {}
-# `if: always()` and nothing else: when `rebuild` FAILS, GitHub SKIPS a job that needs it, and branch protection counts a skipped required check as passing, so
+# `if: always() && github.event_name == 'push'` and nothing else: when `rebuild` FAILS, GitHub SKIPS a job that needs it, and branch protection counts a skipped required check as passing, so
 # the required check must run in every case and fail unless rebuild succeeded (the pattern of the `scan` aggregate below; step-8 B1, Opus)
-if r.get("name") != "reproducibility" or r.get("if") != "always()" or r.get("needs") != "build":
-    bad.append("reproducibility must be named reproducibility, need build (the one call that holds Build and Rebuild) and carry exactly `if: always()`: %s" % {k: r.get(k) for k in ("name", "if", "needs")})
+if r.get("name") != "reproducibility" or r.get("if") != "always() && github.event_name == 'push'" or r.get("needs") != "build":
+    bad.append("reproducibility must be named reproducibility, need build (the one call that holds Build and Rebuild) and carry exactly `if: always() && github.event_name == 'push'` (it runs on push to main only, REQ-REL-014-AC1): %s" % {k: r.get(k) for k in ("name", "if", "needs")})
 if r.get("permissions") not in (None, {"contents": "read"}):
     bad.append("reproducibility's token is wider than contents read: %s" % r.get("permissions"))
 # fail closed (continue-on-error also hides a failure): the jobs the check rests on carry exactly the keys reviewed here
@@ -414,6 +427,9 @@ case_scan build-ceiling-checks-write bad "d['jobs']['build']['permissions']['che
 case_scan build-has-if           bad "d['jobs']['build']['if'] = \"github.event_name == 'pull_request'\""
 case_scan build-has-secrets      bad "d['jobs']['build']['secrets'] = 'inherit'"
 case_scan build-has-needs        bad "d['jobs']['build']['needs'] = 'reproducibility'"
+case_scan repro-if-always-only   bad "d['jobs']['reproducibility']['if'] = 'always()'"
+case_scan repro-if-push-only     bad "d['jobs']['reproducibility']['if'] = \"github.event_name == 'push'\""
+case_scan repro-if-always-pr     bad "d['jobs']['reproducibility']['if'] = \"always() && github.event_name == 'pull_request'\""
 case_scan repro-if-removed       bad "d['jobs']['reproducibility'].pop('if')"
 case_scan repro-if-success       bad "d['jobs']['reproducibility']['if'] = \"\${{ success() }}\""
 case_scan repro-only-echoes      bad "d['jobs']['reproducibility']['steps'][0]['run'] = 'echo identical'"
@@ -441,7 +457,7 @@ case_scan repro-self-hosted      bad "d['jobs']['reproducibility']['runs-on'] = 
 # ---------------------------------------------------------------------------------------------------------------------
 # REQ-REL-008-AC1 (owner RATIFIED Oct 2; amended by the owner rule workflow-grouped-by-purpose, Nov 13): the workflow directory holds exactly the 17 ratified files and
 # nothing else, so no workflow sprawls. The release is the one file release.yml: no stage-*.yml file exists. persona-uat.yml holds the persona UAT jobs (one purpose);
-# codeql.yml stays (owner rule ci-trim-keeps-codeql). evidence-letter.yml is the monthly evidence letter (REQ-REL-013): a monthly schedule, its own purpose.
+# codeql.yml stays (owner rule ci-trim-keeps-codeql). evidence-letter.yml is the monthly evidence letter (REQ-REL-015): a monthly schedule, its own purpose.
 ratified="acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml customer-words-edited.yml dependabot-auto-merge.yml
 dependabot-reviewer.yml evidence-letter.yml go-freshness.yml main-candidate-rescan.yml persona-uat.yml release.yml reserved-branch-guard.yml scan.yml
 scorecard.yml supply-chain.yml"

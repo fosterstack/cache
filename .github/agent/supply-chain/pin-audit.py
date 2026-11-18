@@ -4,14 +4,13 @@ disputed hits.
 
   pin-audit.py --root REPO [--base REV] [--fixtures FILE] [--now ISO] [--gh CMD] [--exceptions FILE]
 
-Daily mode (no --base): every item in today's inventory AND in the workflow history of the last 90 days. Pull request
-mode (--base REV): only the
-items the head moved. A hit becomes ONE issue (found again later: updated, never a second issue) labelled
-supply-chain-hit, naming the version,
-the advisory id and the rollback; it is also labelled owner-decision when no clean version exists or
-the version ran in the last
-90 days. A disputed hit (the two lists disagree about the same incident) is reported without rolling back unless a
-checked-in exception applies.
+Daily mode (no --base): every item in today's inventory AND in the workflow history of the last 90 days. Pull
+request mode (--base REV): only the items the head moved. A hit becomes ONE issue (found again later: updated,
+never a second issue) labelled supply-chain-hit, naming the version,
+the advisory id and the rollback; it is also labelled owner-decision when no clean version exists or the version
+ran in the last 90 days. A disputed hit (the two lists disagree about the same incident) is reported without
+rolling back
+unless a checked-in exception applies.
 Exit 0: clean (or only excepted disputes); 1: a hit or an unexcepted disputed hit; 2: it could not do its job.
 Only public facts go in an issue: versions, advisory ids, dates. It never produces run, environment or secret names.
 """
@@ -46,6 +45,21 @@ def _load(name):
 
 inv = _load("pin-inventory")
 age = _load("pin-age-check")
+
+# strict SemVer 2.0 with a leading v (no leading zero in a number or a numeric pre-release identifier, no empty identifier; the only build part is +incompatible, any other is read by Go as a branch query), or a full commit
+_NUM = r"(?:0|[1-9][0-9]*)"
+_PRE_ID = r"(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+GO_EXACT = re.compile(rf"v{_NUM}\.{_NUM}\.{_NUM}(?:-{_PRE_ID}(?:\.{_PRE_ID})*)?(?:\+incompatible)?|[0-9a-f]{{40}}")
+
+
+def report_unpinned(keys):
+    for k in keys:
+        print(f"audit: UNPINNED GO TOOL: {clean(k)} is not an exact version (vMAJOR.MINOR.PATCH or a full commit)")
+
+
+def unpinned_go_tools(items):
+    """REQ-SUP-001-AC37: the keys of the go installs whose version is not exact."""
+    return sorted(k for k, i in items.items() if i.kind == "gotool" and not GO_EXACT.fullmatch(i.version))
 
 
 class Fail(Exception):
@@ -1143,22 +1157,24 @@ UNKNOWN = "unknown"
 
 
 def rollback(item, net):
-    """The newest clean version, whatever its age. None: drop it. UNKNOWN: this kind of item
-    could not be searched."""
+    """The newest clean version. None: drop it. UNKNOWN: this kind of item could not be searched."""
     versions = net.versions(item)
     if versions is None:
         return UNKNOWN
-    eligible = [v for v in versions if v["version"] != (item.label or item.version) and v.get("sha") != item.version]
-    def vkey(v):
+    eligible = []
+    for v in versions:
+        if v["version"] == (item.label or item.version) or v.get("sha") == item.version:
+            continue
+        eligible.append(v)
+    def vkey(x):
         try:
-            nums, cls, parts = _vt(v["version"])
+            nums, cls, parts = _vt(x["version"])
         except ValueError:
             return None
         # a pre-release is never a rollback target
         return (nums, cls, [(0, q) if isinstance(q, int) else (1, q) for q in parts]) if cls != 0 else None
-    ordered = [v for v in eligible if vkey(v) is not None]
-    # newest VERSION first (a late backport is not "newest"); the lists of a candidate are fetched only when it is
-    # reached
+    ordered = [x for x in eligible if vkey(x) is not None]
+    # newest VERSION first (a late backport is not "newest"); the lists of a candidate are fetched only when it is reached
     for v in sorted(ordered, key=vkey, reverse=True):
         lists = v.get("lists")
         if lists is None:
@@ -1168,7 +1184,8 @@ def rollback(item, net):
             continue
         cand = v.get("_item")
         if cand is not None and not age.judge_item(cand)[0]:
-            # the candidate must itself be an exact pin (an action named by a tag, not a commit, is no rollback target)
+            # the candidate must itself be an exact pin (an action named by its commit):
+            # a tag or a missing sha is no rollback target
             continue
         if cand is not None and cand.kind == "action" and hasattr(net, "nested"):
             # the candidate's whole nested tree (depth 3) must be clean too: a replacement that calls a compromised
@@ -1248,8 +1265,8 @@ def body_of(f, rb, owner, ran, today):
                      "nobody has looked for a clean one, so the owner decides.")
     elif rb:
         lines.append(f"Rollback: pin the newest clean version: {_safe(rb['version'])}"
-                     + (f" (commit {_safe(rb['sha'])})" if rb.get("sha")
-                        else "") + f", published {_safe(rb['published'])}.")
+                     + (f" (commit {_safe(rb['sha'])})" if rb.get("sha") else "")
+                     + (f", published {_safe(rb['published'])}" if rb.get("published") else "") + ".")
     else:
         lines.append("No clean version exists: drop it (remove its use) until one does.")
     if ran:
@@ -1399,12 +1416,12 @@ def main(argv=None):
     ap.add_argument("--now")
     ap.add_argument("--gh", default="gh")
     ap.add_argument("--exceptions")
-    ap.add_argument("--report-only", action="store_true",
-                    help="print findings and exit 1; never touch issues (the pull request job's token cannot write "
-                         "them)")
+    ap.add_argument("--report-only", action="store_true", help="print findings and exit 1; never touch issues (the pull request job's token cannot write them)")
     ap.add_argument("--deadline", type=int,
                     help="seconds the whole run may take before it ends itself with exit 2 "
                          "(1 to 86400; default 900, or 600 for --base)")
+    ap.add_argument("--go-exact-only", action="store_true",
+                    help="judge only that every go install of the tree is at an exact version (REQ-SUP-001-AC38): no network, no issue")
     a = ap.parse_args(argv)
     if a.deadline is not None and not 1 <= a.deadline <= 86400:
         print("audit: cannot do its job: --deadline must be from 1 to 86400 seconds", file=sys.stderr)
@@ -1420,6 +1437,15 @@ def main(argv=None):
     timer.daemon = True
     timer.start()
     try:
+        if a.go_exact_only:
+            try:
+                unpinned = unpinned_go_tools(inv.load_at(a.root, None))
+            except RuntimeError as e:
+                raise Fail(str(e))
+            report_unpinned(unpinned)
+            if not unpinned:
+                print("audit: every go install is at an exact version")
+            return 1 if unpinned else 0
         fx = None
         if a.fixtures:
             try:
@@ -1453,10 +1479,10 @@ def main(argv=None):
                 ran_keys = {i.key for i in audited}
         except RuntimeError as e:
             raise Fail(str(e))
-        # placeholders (a local action, a download source) have no advisories; their CHANGE is refused by the age check
+        # placeholders (a local action, a download source) have no advisories; their CHANGE is refused by the pin scan
         audited = [i for i in audited if i.version not in ("(local)", "(source)")]
-        # REQ-SUP-001-AC20: an unpinned package that a ruled script line made is judged by that ruling (the age check
-        # reports it), never as an advisory hit
+        # REQ-SUP-001-AC20: an unpinned package that a ruled script line made is judged by that ruling
+        # (the pin scan reports it), never as an advisory hit
         if a.base:
             try:
                 audited = age.drop_ruled_unpinned(audited,
@@ -1623,6 +1649,9 @@ def main(argv=None):
         for e in dormant:
             print(f"information: dormant exception: the ruling for {_ruling_label(e)} waits for its pin; nobody holds "
                   f"it")
+        # REQ-SUP-001-AC37: a go install whose version is not exact is a finding of the daily run (the pull-request scan that judged it is deleted)
+        unpinned = [] if a.base else unpinned_go_tools(head)
+        report_unpinned(unpinned)
         plan, disputes, per_item, pending = [], {}, {}, []
         for f in findings:
             print(f"audit: {'DISPUTED' if f.disputed else 'HIT'}: {clean(f.item.key)} ({clean(', '.join(f.ids))}): "
@@ -1679,7 +1708,7 @@ def main(argv=None):
             print("audit: INCOMPLETE: some open pull request pins could not be checked (above): no clean claim is made "
                   "today", file=sys.stderr)
             return 1
-        if lapsed or dead:
+        if lapsed or dead or unpinned:
             return 1
         print(f"audit: no known-compromised versions as of {today}"
               + (f" ({excepted_n} disputed hit(s) covered by a checked-in exception)" if excepted_n else "")
@@ -1714,3 +1743,4 @@ if __name__ == "__main__":
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         code = 120
     sys.exit(code)
+

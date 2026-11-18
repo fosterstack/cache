@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The monthly evidence letter (REQ-REL-013): signs the letter with the release KMS key and attaches it, with its
+# The monthly evidence letter (REQ-REL-015): signs the letter with the release KMS key and attaches it, with its
 # bundle, to the latest published release. The key is the one Release trusts, checked against the offline root
 # before anything is signed or written to the public log; the signing call is chain-verify.py kms-sign with the KMS key, the committed
 # release public key and the committed signing config, which names the one pinned log. Before anything is uploaded the signature is verified against that key and the pinned

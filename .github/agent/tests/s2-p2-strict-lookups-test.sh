@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC3, REQ-SUP-001-AC5
+# proves: REQ-SUP-001-AC5
 # cache#359 round 5, section 2, group P2, rows 1-3: a lookup that cannot be answered is a FAILURE, never "no proof" or
 # "nothing there".
 #   (1) pin-audit's published-name query to PyPI is strict (an outage is a failure, not the pinned name alone).
@@ -39,10 +39,6 @@ def serve(handler):
     def fake(req, timeout=None, **kw):
         return handler(req if isinstance(req, str) else req.full_url)
     urllib.request.urlopen = fake
-def down(url): raise urllib.error.URLError("simulated outage")
-def code(c):
-    def h(url): raise urllib.error.HTTPError(url, c, "simulated", {}, None)
-    return h
 def raises(exc, fn):
     try: fn()
     except exc: return True
@@ -51,13 +47,7 @@ def caught(exc, fn):
     try: fn()
     except exc as e: return str(e)
     return None
-NOW = dt.datetime(2026, 10, 5, 12, tzinfo=dt.timezone.utc)
-def ago(days): return (NOW - dt.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
 PY
-cat >"$work/gh404" <<'SH'
-#!/bin/sh
-echo "gh: Not Found (HTTP 404)" >&2; exit 1
-SH
 cat >"$work/ghok" <<'SH'
 #!/bin/sh
 echo '[]'
@@ -66,7 +56,7 @@ cat >"$work/ghyaml" <<'SH'
 #!/bin/sh
 python3 -c 'import base64,json;print(json.dumps({"content": base64.b64encode(b"runs: [unclosed").decode()}))'
 SH
-chmod +x "$work/gh404" "$work/ghok" "$work/ghyaml"
+chmod +x "$work/ghok" "$work/ghyaml"
 
 # --- pin-audit's published-name query to PyPI -------------------------------------------------------------------------
 CASE="pin-audit: an unreachable PyPI while it asks for the published name of a package is a failure (Fail "
