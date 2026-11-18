@@ -964,9 +964,11 @@ def _cut_substitutions(text, data=False):
     return "".join(out), inner
 
 
-def _options(args, val, boolean):
+def _options(args, val, boolean, taken=None):
     """Skip the options at the front of args. Returns (index of the first operand, an unknown option or None);
-    a variable where an option or the operand would be stops the walk (the review pass covers it)."""
+    a variable where an option or the operand would be stops the walk (the review pass covers it). Each option the
+    walk consumes as an option, not as another option's value, is appended to `taken` when it is given."""
+    taken = [] if taken is None else taken
     i = 0
     while i < len(args):
         a = args[i]
@@ -978,8 +980,10 @@ def _options(args, val, boolean):
             name = a.split("=", 1)[0]
             if name in boolean or (name in val and "=" in a):
                 i += 1
+                taken.append(name)
             elif name in val:
                 i += 2
+                taken.append(name)
             else:
                 return i, a
             continue
@@ -988,9 +992,11 @@ def _options(args, val, boolean):
         while j < len(a):
             o = "-" + a[j]
             if o in boolean:
+                taken.append(o)
                 j += 1
                 continue
             if o in val:
+                taken.append(o)
                 i += 1 if j + 1 < len(a) else 2
                 break
             return i, a if a[j] not in short else a
@@ -2073,9 +2079,14 @@ def _cut_redirections(text):
             q = c
             bare = False
         elif c in "<>":
-            if not cut and out and out[-1].isdigit() and (len(out) == 1 or out[-2].isspace()):
-                out.pop()                                # the descriptor number of 2>file is part of the redirection
+            k = len(out)
+            while k and out[k - 1].isdigit():
+                k -= 1
+            if not cut and k < len(out) and (k == 0 or out[k - 1].isspace()):
+                del out[k:]                              # the descriptor number of 2>file or 12>file is part of the redirection
             cut = bare = True
+            i += len(re.match(r"<<-|<<<|<<|>>|>[|&]|<[&>]|[<>]", text[i:]).group())   # <<- and >| are one operator
+            continue
         elif c.isspace():
             cut = cut and bare
         elif cut:
@@ -2095,17 +2106,24 @@ OPTIONS = {"read": READ_OPTIONS, "mapfile": MAPFILE_OPTIONS, "readarray": MAPFIL
 
 def _default_target(toks):
     """REPLY or MAPFILE when the command's read, select, mapfile or readarray sets it by default: a select always, the
-    others when no variable follows their options (read -a names an array)."""
+    others when no variable follows their options (read -a names an array), through command and builtin. An operand that
+    is only a $expansion may be empty, and an option this check does not know may be anything: both leave the default."""
     words = _command_words(toks)
-    if not words or words[0] not in DEFAULT_TARGET:
+    if not words:
         return None
-    args = toks[toks.index(words[0]) + 1:]
-    if words[0] == "select":
+    if words[0] == "builtin":
+        return _default_target(toks[toks.index("builtin") + 1:])
+    prog = words[-1]
+    if prog not in DEFAULT_TARGET:
+        return None
+    args = toks[toks.index(prog) + 1:]
+    if prog == "select":
         return "REPLY"
-    first, _ = _options(args, *OPTIONS[words[0]])
-    if first < len(args) or any(re.match(r"-[ers]*a", a) for a in args):
+    taken = []
+    first, unknown = _options(args, *OPTIONS[prog], taken)
+    if "-a" in taken or (not unknown and not all(a.startswith("$") for a in args[first:])):
         return None
-    return DEFAULT_TARGET[words[0]]
+    return DEFAULT_TARGET[prog]
 
 
 SETTER_WORDS = re.compile("read|mapfile|readarray|getopts|declare|typeset|local|export|readonly|let|select|for")
@@ -2145,6 +2163,31 @@ def _set_by_setter(name, script):
     return False
 
 
+def _setter_values(name, script):
+    """The value of every `name=value` setter that is a whole command in the shell that reads on: only blanks, then the
+    end, a newline, `;`, `&&` or `||` follow it, and no pipeline `|` comes just before it (read on text with comments,
+    quoted text and escapes blanked). A value ends at a blank, `;`, `)` or an unquoted `&` / `|`. Skipped: a comment (`#`
+    opening a word), quoted text, and every other word whole, so a backslash escape or `${...}` inside a word hides
+    nothing and opens nothing. Every other setter is dropped: a flagged copy is the worse mistake."""
+    pat = re.compile(r"(?<![^\s;&|(])" + name + r"=(?:\"((?:\\.|[^\"\\])*)\"|'([^']*)'|((?:\\.|\$\([^()|&;\n]*\)|[^\s\"';)&|\\])*))"
+                     r"|(?<![^\s;&|(])#[^\n]*|\"(?:\\.|[^\"\\])*\"|'[^']*'|(?:\\.|\$\{[^}]*\}|[^\s;&|()\"'\\])+")
+    masked = _mask_shell(script)[1]
+    return [m.group(m.lastindex) for m in pat.finditer(script) if m.lastindex and _whole_command(masked, m)]
+
+
+def _whole_command(masked, m):
+    """True when the setter match `m` is a command of the current shell: nothing but blanks and a command end after
+    it, and no pipeline `|` just before it."""
+    return bool(re.match(r"[ \t]*(?:\Z|[\n;]|&&|\|\|)", masked[m.end():])
+                and not re.search(r"(?<!\|)\|&?\s*\Z", masked[:m.start()]))
+
+
+def _loose_values(name, script):
+    """Every `name=value` the text spells, quotes and comments ignored: the fail-closed view."""
+    pat = re.compile(r"(?<![^\s;&|(])" + name + r"=[\"']?([^\s\"';)&|]*)")
+    return [m.group(1) for m in pat.finditer(script)]
+
+
 def _outside(target, script, depth=0):
     """A destination that cannot be the checkout's directory: an absolute path outside the runner's workspace, a path
     under $RUNNER_TEMP or a fresh $(mktemp …), or a variable every assignment of which in the job is one of those —
@@ -2164,8 +2207,8 @@ def _outside(target, script, depth=0):
         return False
     if _set_by_setter(m.group(1), script):
         return False                                     # set by read, printf -v, (( )), name[0]= …: an unknown value
-    values = re.findall(r"(?:^|[\s;(])" + m.group(1) + r"=[\"']?([^\s\"';)]*)", script)
-    return bool(values) and all(_outside(v, script, depth + 1) for v in values)
+    values = _setter_values(m.group(1), script)
+    return bool(values) and all(_outside(v, script, depth + 1) for v in values + _loose_values(m.group(1), script))
 
 
 def _redirect_targets(chunk):
