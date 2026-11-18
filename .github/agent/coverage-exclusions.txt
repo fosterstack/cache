@@ -31,6 +31,7 @@
 .github/agent/bin/tests/test_pin_comment_word_start.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_pin_expansion_word_text.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_pin_process_subst_in_expansion.py  unit test (test code — the Go gate does not measure _test.go either)
+.github/agent/bin/tests/test_pin_three_holes.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_panel_sdk_probe.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_cov_small.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_lr27.py  unit test (test code — the Go gate does not measure _test.go either)

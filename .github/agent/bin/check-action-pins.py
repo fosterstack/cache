@@ -902,6 +902,10 @@ def _cut_substitutions(text, data=False):
                 elif d == "\\":
                     j += 2
                     continue
+                elif d == "$" and text[j + 1:j + 2] == "'":       # ANSI-C: a backslash escapes the next character
+                    j += 2
+                    while j < n and text[j] != "'":
+                        j += 2 if text[j] == "\\" else 1
                 elif d in "'\"":
                     iq = d
                 elif d == "#" and (j == i + 2 or text[j - 1] in " \t\n;("):
@@ -1905,6 +1909,10 @@ def _in_quoted_brace(stack):
     return False
 
 
+_PLAIN_BRACE_WORD = re.compile(r"\$\{\w*:?[-+=]$")     # `${x:-` `${x:+` `${x:=` `${x-` `${x+` `${x=`: bash prints a quoted <( literally
+_CASE_WORD = re.compile(r"(case|in|esac)(?![\w.-])")
+
+
 def _scan_shell(text):
     """(kinds, nl_in_quote, open_quote): `kinds` has one letter per character of `text`: `c` code, `d` a quote mark, `q`
     quoted content, `e` a backslash and the character it escapes, `k` a comment, `w` a `#`, `(`, `)`, `<` or `>` of `${ }` word text (no comment, no group; an unquoted `<(` or `>(` is a frame).
@@ -1914,7 +1922,7 @@ def _scan_shell(text):
     closed quote or a closed expansion (`\\;#x`, `$(x)#y`), and a backslash-newline is no word break. open_quote is True
     when a quote or an expansion is still open at the end (a script like that grants no trust)."""
     n, q, i, prev, nl, unread = len(text), None, 0, None, False, False
-    kinds, stack = ["c"] * n, []
+    kinds, stack, cases = ["c"] * n, [], []     # cases: per frame, [open case count, `in` awaited, a pattern awaited]
     while i < n:
         c = text[i]
         if q is not None and c == "\n":
@@ -1936,8 +1944,17 @@ def _scan_shell(text):
             nl, unread, prev, i = nl or inner_nl, unread or inner_open or j >= n, "W", j
         elif c == "$" and text[i + 1:i + 2] in ("(", "{"):
             stack.append((text[i + 1], q))
+            cases.append([0, False, False])
             q, prev = None, text[i + 1]
             i += 1
+        elif c == "$" and text[i + 1:i + 2] == "'" and q is None:    # ANSI-C: a backslash escapes the next character
+            j = i + 2
+            while j < n and text[j] != "'":
+                j += 2 if text[j] == "\\" else 1
+            kinds[i + 1], kinds[i + 2:j] = "d", ["q"] * (min(j, n) - i - 2)
+            if j < n:
+                kinds[j] = "d"
+            nl, unread, prev, i = nl or "\n" in text[i:j], unread or j >= n, "W", j
         elif q == '"':
             kinds[i] = "d" if c == '"' else "q"
             if c == '"':
@@ -1945,20 +1962,41 @@ def _scan_shell(text):
         elif c in "'\"":
             kinds[i], q = "d", c
         elif stack and stack[-1][0] == "{" and c in "#()<>" and not (
-                c in "<>" and text[i + 1:i + 2] == "(" and not _in_quoted_brace(stack)):
-            kinds[i], prev = "w", c     # inside ${ }: word text, no comment and no group (an unquoted <( or >( runs: a frame)
+                c in "<>" and text[i + 1:i + 2] == "(" and not (
+                    _in_quoted_brace(stack) and _PLAIN_BRACE_WORD.search(text[max(0, i - 64):i]))):
+            kinds[i], prev = "w", c     # inside ${ }: word text, no comment and no group (a <( or >( bash runs is a frame)
         elif c in "<>" and text[i + 1:i + 2] == "(":
             stack.append(("(", None))
+            cases.append([0, False, False])
             prev = "("
             i += 1
         elif c == "(":
             stack.append(("p", None))
+            cases.append([0, False, False])
             prev = c
+        elif c == ")" and stack and stack[-1][0] in "(p" and cases[-1][2]:
+            cases[-1][2], prev = False, ")"      # a case pattern's `)` closes no frame
         elif c == ")" and stack and stack[-1][0] in "(p":
             kind, q = stack.pop()
+            cases.pop()
             prev = ")" if kind == "p" else "W"
+        elif stack and stack[-1][0] in "(p" and prev in (" ", "\t", "\n", ";", "&", "|", "(", ")") and (
+                m := _CASE_WORD.match(text, i)):
+            state, word = cases[-1], m.group(1)
+            if word == "case":
+                state[0] += 1
+                state[1] = True
+            elif word == "in" and state[1]:
+                state[1], state[2] = False, True
+            elif word == "esac" and state[0]:
+                state[0] -= 1
+                state[2] = False
+            i, prev = m.end() - 1, "W"
+        elif c == ";" and text[i + 1:i + 2] == ";" and stack and stack[-1][0] in "(p" and cases[-1][0]:
+            cases[-1][2], prev, i = True, ";", i + 1
         elif c == "}" and stack and stack[-1][0] == "{":
             q, prev = stack.pop()[1], "W"
+            cases.pop()
         elif c == "#" and (prev is None or prev in " \t\n;&|()<>"):
             j = text.find("\n", i)
             j = n if j < 0 else j
