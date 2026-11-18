@@ -141,7 +141,6 @@ ALLOW_PATTERNS=(
   '^bin/vex-both-scanners-test\.sh$'
   '^bin/vex-scope-test\.sh$'
   '^bin/go-bump-open-pr\.sh$'
-  '^bin/go-bump-open-pr-test\.sh$'
   # The v0.3.0 release chain, Sign boundary (PR 1): the verifier, its tests, the hostile dry-run step and the signer table the
   # tests share; the Sigstore PUBLIC trust material the release policy pins (exact names: a private key never matches); results/
   # holds the dry run's per-attempt rows (.gitkeep only, the rows come from the run)
@@ -169,7 +168,7 @@ ALLOW_PATTERNS=(
   '^bin/chain_items\.py$'
   '^bin/chain-admission-old-steps\.txt$'
   '^bin/chain-(sign-wiring|check-scripts)-fixtures\.txt$'
-  '^bin/chain-(bind|build-admit|build-wiring|install-witness|rebuild|snapshot)-test\.sh$'
+  '^bin/chain-(bind|build-admit|build-wiring|install-witness|pull-request-checks|rebuild|snapshot)-test\.sh$'
   '^bin/chain-(test-(harness|shape)|known-red)\.py$'
   '^test-evidence/known-red\.json$'
   # The v0.3.0 release chain, Check (PR 3): the check scripts and their two helpers, the shared acceptance suites (and the two helpers of the Kubernetes
@@ -355,6 +354,11 @@ ALLOW_PATTERNS=(
   '^bin/layout-archive(-test)?\.sh$'
   # The suite that judges the full suite's wiring, REQ-CI-001.
   '^bin/full-suite-wiring-test\.sh$'
+  # The monthly evidence letter (REQ-REL-015): the letter script, the fetch, publish, verify and presence scripts, the
+  # two tests and the signatory text.
+  '^bin/evidence-letter\.py$'
+  '^bin/evidence-letter(-fetch|-publish|-verify|-present|-test|-job-test)\.sh$'
+  '^docs/evidence-letter-signatory\.txt$'
 
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'

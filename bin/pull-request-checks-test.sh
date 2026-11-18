@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-014-AC1, REQ-REL-014-AC2, REQ-REL-014-AC3
+# proves: REQ-REL-016-AC1, REQ-REL-016-AC2, REQ-REL-016-AC3
 # Pull requests run six checks; the rest run on push to main (owner, Nov 17 2026). Read from the PARSED workflow files:
 #   AC1  the jobs that run on the pull_request event (a workflow's `on:` keys and each job's `if` and `needs` decide) are
 #        test, lint, govulncheck, analyze (go), fips140-only and scan, the jobs scan needs, and the jobs of the two
@@ -184,8 +184,8 @@ def judge_ac1(wfs):
     if names != SIX_NAMES:
         bad.append("the six jobs' check names are not %s: %s" % (sorted(SIX_NAMES), sorted(names)))
     # the checks that left the pull request still run on push to main (and so on the exact tagged commit)
-    for f in ("ci.yml", "scan.yml"):
-        lost = set(wfs[f]["jobs"]) - runs_on(wfs[f], "push") - {"marker-gate", "report-failure"}
+    for f in ("ci.yml", "scan.yml"):   # acceptance.yml is called by another workflow only (REQ-REL-014-AC1), so it has no push run
+        lost = set(wfs[f]["jobs"]) - runs_on(wfs[f], "push") - {"marker-gate"} - ({"report-failure"} if f == "scan.yml" else set())
         if lost:
             bad.append("%s jobs that no longer run on push to main: %s" % (f, sorted(lost)))
     fs = events_of(wfs["full-suite.yml"])

@@ -39,35 +39,12 @@ unmapped:
     reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
   - ac: REQ-REL-009-AC10
     reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
-  - ac: REQ-REL-015-AC1
-    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
-  - ac: REQ-REL-015-AC2
-    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
-  - ac: REQ-REL-015-AC3
-    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
-  - ac: REQ-REL-015-AC4
-    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
-  - ac: REQ-REL-015-AC5
-    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
-  - ac: REQ-REL-015-AC6
-    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
-  - ac: REQ-REL-015-AC7
-    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
-  - ac: REQ-REL-015-AC8
-    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
-  - ac: REQ-REL-015-AC9
-    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
-  - ac: REQ-REL-015-AC10
-    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
   - ac: REQ-REL-013-AC2
     reason: "the pin-wiring judge (.github/agent/tests/pin-wiring-test.sh) that held it was deleted by the release audit ruling of Nov 12; no check holds this criterion now"
   - ac: REQ-REL-013-AC3
     reason: "the pin-wiring judge (.github/agent/tests/pin-wiring-test.sh) that held it was deleted by the release audit ruling of Nov 12; no check holds this criterion now"
   - ac: REQ-REL-013-AC4
     reason: "the pin-wiring judge (.github/agent/tests/pin-wiring-test.sh) that held it was deleted by the release audit ruling of Nov 12; no check holds this criterion now"
-
-  - ac: REQ-REL-015-AC11
-    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
   - ac: REQ-REL-009-AC1
     reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
   - ac: REQ-REL-009-AC2

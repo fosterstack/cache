@@ -182,7 +182,7 @@ jobs:
             n=$(jq -r .number <<<"$pr"); sha=$(jq -r .headRefOid <<<"$pr")
             [ -z "$ONLY_PR" ] || [ "$ONLY_PR" = "$n" ] || continue
             # held out of auto-merge, handled as a normal PR: the pinned tool module (go.mod and go.sum under
-            # tools/govulncheck/, whose version ci.yml repeats by hand, so a Dependabot bump alone cannot be right), and any PR whose file list is at the API's cap of
+            # tools/govulncheck/, which ci.yml builds through bin/install-scanner.sh, so a new version gets a normal review), and any PR whose file list is at the API's cap of
             # 100 (it may be cut, so it cannot be judged). Never reviewed or armed here, an arm made earlier is turned off; a lookup or a disarm that fails skips it and fails the step
             if [ "$(jq '[.files[]?.path | select(startswith("tools/govulncheck/"))] | length' <<<"$pr")" != 0 ] || [ "$(jq '(.files | length) >= 100' <<<"$pr")" = true ]; then
               if ! armed=$(gh pr view "$n" --json autoMergeRequest --jq '.autoMergeRequest != null'); then
@@ -219,8 +219,7 @@ jobs:
               if [ -n "$from" ] \
                  && python3 bin/dependabot-reviewer.py same-diff --repo "$GITHUB_REPOSITORY" --base main \
                       "$from" "$sha"; then
-                carried="Not re"
-                carried+="ad again: this head's diff against main is byte for byte the diff of ${from},"
+                carried="Not reviewed again: this head's diff against main is byte for byte the diff of ${from},"
                 carried+=" which two independent readers passed. The success is carried over from that head."
                 if ! GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=dependabot-reviewer \
                        -f head_sha="$sha" -f status=completed -f conclusion=success \
@@ -437,7 +436,8 @@ jobs:
             ISSUE_NO=""
             if [ -n "$existing" ]; then gh issue edit "$existing" --body-file "$2" >/dev/null || return 1; ISSUE_NO="$existing"; echo "#$existing updated"
             else
-              local url; url=$(gh issue create --title "$1" --body-file "$2") || return 1
+              local url
+              url=$(gh issue create --title "$1" --body-file "$2") || return 1
               ISSUE_NO="${url##*/}"; echo "$url"
             fi
           }
@@ -465,7 +465,7 @@ jobs:
                 | jq -e '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]] | length > 0' > /dev/null; then checks_listed=1
           else
             checks_listed=0
-            echo "::error::main lists no required status check, or its ruleset could not be fetched: nothing is armed this hour" \
+            echo "::error::main lists no required status check, or its ruleset could not be read: nothing is armed this hour" \
                  "(every merge decision below becomes an error)"
           fi
           while read -r n sha prior; do
@@ -479,17 +479,16 @@ jobs:
               --out "$d"; rc=$?
             if [ "$rc" = 5 ]; then
               moved=$((moved+1))
-              echo "PR #$n: its head is no longer ${sha:0:7} — nothing fetched, nothing published;" \
+              echo "PR #$n: its head is no longer ${sha:0:7} — nothing reviewed, nothing published;" \
                    "the new head is reviewed next hour"
               echo "::endgroup::"; continue
             elif [ "$rc" != 0 ]; then
               unfinished "$n" "$sha" "$prior" "gather failed"; echo "::endgroup::"; continue
             fi
             # 2. two readers, independently, each with a fresh identity token
-            reader_cmd=read
             for reader in AUDITOR_MODEL_PRIMARY AUDITOR_MODEL_FALLBACK; do
               mint || echo "::warning::PR #$n: could not mint a fresh identity token for $reader"
-              python3 bin/dependabot-reviewer.py "$reader_cmd" --bundle "$d/bundle.md" \
+              python3 bin/dependabot-reviewer.py review --bundle "$d/bundle.md" \
                 --prompt .github/policy/dependabot-reviewer-prompt.txt --model-env "$reader" --out "$d/reader-$reader.json" \
                 || echo "::warning::PR #$n: reader $reader did not complete"
             done
@@ -536,7 +535,7 @@ jobs:
                   echo "This is the ccode queue's, not the owner's: fix our side, then re-run the reviewer with force=true."
                   echo; echo "Run: $RUN_URL"; echo
                   echo "## breaks-us findings"; echo
-                  jq -r '.breaks_us[] | "- **\(.title)** (\(.reader | sub("AUDITOR_MODEL_PRIMARY";"reader A") | sub("AUDITOR_MODEL_FALLBACK";"reader B")))  \n  release note: \(.release_note)  \n  our line: `\(.our_line)`  \n  why: \(.why)"' "$d/decision.json"
+                  jq -r '.breaks_us[] | "- **\(.title)** " + "(" + (.reader | sub("AUDITOR_MODEL_PRIMARY";"reader A") | sub("AUDITOR_MODEL_FALLBACK";"reader B")) + ")  \n  release note: \(.release_note)  \n  our line: `\(.our_line)`  \n  why: \(.why)"' "$d/decision.json"
                   echo; echo "## every finding, both readers, verbatim"
                   jq -r '.readers[] | "\n### \(.reader | sub("AUDITOR_MODEL_PRIMARY";"reader A") | sub("AUDITOR_MODEL_FALLBACK";"reader B"))\n", (if .error then "_(no answer: \(.error))_" elif (.findings|length)==0 then "_(no findings)_" else (.findings[] | "- [\(.severity)] **\(.title)**  \n  release note: \(.release_note)  \n  our line: `\(.our_line)`  \n  why: \(.why)") end)' "$d/decision.json"
                   echo; echo "## fix on our side"; echo; echo "_(ccode fills this in: the change to our line, or why the finding is wrong, then re-runs the reviewer with force=true)_"
@@ -696,12 +695,12 @@ jobs:
           set +e -uo pipefail
           if ! prior=$(gh run list --workflow dependabot-reviewer.yml --status completed --limit 5 --json databaseId,conclusion \
                          --jq "[.[] | select(.databaseId != ${GITHUB_RUN_ID})] | .[0:2] | map(.conclusion)") || [ -z "$prior" ]; then
-            echo "::warning::could not get the run history — the streak is checked again next failed run"; exit 0
+            echo "::warning::could not read the run history — the streak is checked again next failed run"; exit 0
           fi
           echo "this run: failure; the two before it: ${prior}"
           [ "$(jq -r 'length == 2 and all(. == "failure")' <<<"$prior")" = true ] || exit 0
           title="dependabot reviewer: reader failures"
-          nl=$(printf '\n_'); nl=${nl%_}
+          nl=$'\n'
           issue_text="The reviewer could not finish its Dependabot pull requests on three consecutive runs;"
           issue_text+=" bumps are not being judged.${nl}${nl}Latest: ${RUN_URL}${nl}${nl}"
           issue_text+='Check the run log: the "OIDC identity claims" line against the federation rule,'

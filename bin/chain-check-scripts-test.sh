@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC37, REQ-SUP-001-AC39, REQ-CHAIN-006-AC18, REQ-CHAIN-006-AC17, REQ-CHAIN-006-AC16, REQ-PLAT-001-AC1, REQ-PLAT-002-AC1, REQ-PLAT-003-AC1, REQ-FIPS-001-AC1, REQ-FIPS-001-AC2, REQ-FIPS-002-AC1, REQ-CHAIN-006-AC15, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC4, REQ-CHAIN-006-AC5, REQ-CHAIN-006-AC6, REQ-CHAIN-006-AC7, REQ-CHAIN-006-AC9, REQ-CHAIN-006-AC11, REQ-CHAIN-006-AC12
+# proves: REQ-SUP-001-AC42, REQ-SUP-001-AC39, REQ-CHAIN-006-AC18, REQ-CHAIN-006-AC17, REQ-CHAIN-006-AC16, REQ-PLAT-001-AC1, REQ-PLAT-002-AC1, REQ-PLAT-003-AC1, REQ-FIPS-001-AC1, REQ-FIPS-001-AC2, REQ-FIPS-002-AC1, REQ-CHAIN-006-AC15, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC4, REQ-CHAIN-006-AC5, REQ-CHAIN-006-AC6, REQ-CHAIN-006-AC7, REQ-CHAIN-006-AC9, REQ-CHAIN-006-AC11, REQ-CHAIN-006-AC12
 # Behaviour of the Check scripts (bin/check-*.sh, bin/witnessed-local.sh). Each runs in a throw-away tree with
 # fake tools first on PATH (grype, osv-scanner, docker, the download stub, cosign, witness, ...), so the scripts carry no
 # test-only code path. No network, no Docker, no keys.
@@ -1542,7 +1542,7 @@ for suite in gradle egress k8s; do
 done
 rm -f "$fx/bin/acceptance-"{gradle,gradle-capped,egress,k8s}.sh
 rm -f "$fx/bin/acceptance-serve.sh"
-# ---- REQ-SUP-001-AC37: acceptance-serve.sh starts only a content-addressed image; check-acceptance.sh hands it the loaded image's ID ----------
+# ---- REQ-SUP-001-AC42: acceptance-serve.sh starts only a content-addressed image; check-acceptance.sh hands it the loaded image's ID ----------
 srv="$work/srv"; mkdir -p "$srv/bin" "$srv/fakedir"; cp "$root/bin/acceptance-serve.sh" "$srv/bin/"; printf '#!/bin/sh\nexit 0\n' > "$srv/bin/loopback-get.sh"
 H64=$(printf '%064d' 7); UP64=$(printf 'A%.0s' $(seq 1 64))
 serve() { # serve REF -> rc, out; the fake docker logs what ran

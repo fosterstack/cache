@@ -176,6 +176,7 @@ usage: check-action-pins.py [--verify-tags] [--git <commit>] [repo-root]
 """
 import collections
 import csv
+import hashlib
 import json
 import os
 import pathlib
@@ -789,6 +790,38 @@ def _tokens(chunk):
         return text.split()
 
 
+def _paren_end(text, i):
+    """The index just past the ) that closes the ( at text[i], read with bash's quotes, escapes and comments; None when
+    it never closes."""
+    depth, j, aq, n, esc = 1, i + 1, None, len(text), -1    # esc: where the last backslash pair ended
+    while j < n and depth:
+        d = text[j]
+        if aq == "'":                              # no escaping at all inside a single quote
+            aq = None if d == "'" else aq
+        elif aq == '"' or d == "\\":                # a backslash escapes the next char, inside a
+            if d == "\\" and j + 1 < n:              # double quote OR outside any quote (Sonnet #164
+                j += 2; esc = j                       # r14, B1: the classic 'x'\''y' idiom embeds a
+                continue                             # literal apostrophe this way — the backslash is
+            aq = None if d == '"' else aq            # NOT a new quote opening)
+        elif d in "'\"":
+            aq = d
+        elif d == "#" and (j == i + 1 or (text[j - 1] in " \t\n;&|()<>" and j != esc)):
+            # a comment inside the array (Codex #164 r13, B1): its own ')' or apostrophe is not real
+            # syntax and must not move depth or open a quote — same rule as the outer loop's own #
+            while j < n and text[j] != "\n":
+                j += 1
+            continue
+        elif d == "(":
+            depth += 1
+        elif d == ")":
+            depth -= 1
+        j += 1
+    return None if depth else j
+
+
+CASE_WORD = re.compile(r"(?<![\w.-])case(?![\w.-])")
+
+
 def _split_commands(text):
     """The simple commands of a shell text, split as bash splits them: at ; & | ( ) and newlines OUTSIDE quotes ('…',
     "…", $'…') and escapes, with comments (# at the start of a word, outside quotes) dropped. A raw split at these
@@ -823,30 +856,17 @@ def _split_commands(text):
                 i += 1
             continue
         elif c == "(" and cur and cur[-1] == "=":         # NAME=( … ): an array's words, not commands
-            depth, j, aq = 1, i + 1, None
-            while j < n and depth:
-                d = text[j]
-                if aq == "'":                              # no escaping at all inside a single quote
-                    aq = None if d == "'" else aq
-                elif aq == '"' or d == "\\":                # a backslash escapes the next char, inside a
-                    if d == "\\" and j + 1 < n:              # double quote OR outside any quote (Sonnet #164
-                        j += 2                                # r14, B1: the classic 'x'\''y' idiom embeds a
-                        continue                             # literal apostrophe this way — the backslash is
-                    aq = None if d == '"' else aq            # NOT a new quote opening)
-                elif d in "'\"":
-                    aq = d
-                elif d == "#" and (j == i + 1 or text[j - 1] in " \t\n"):
-                    # a comment inside the array (Codex #164 r13, B1): its own ')' or apostrophe is not real
-                    # syntax and must not move depth or open a quote — same rule as the outer loop's own #
-                    while j < n and text[j] != "\n":
-                        j += 1
-                    continue
-                elif d == "(":
-                    depth += 1
-                elif d == ")":
-                    depth -= 1
-                j += 1
+            j = _paren_end(text, i) or n
             cur.append(text[i:j].replace("\n", " "))
+            i = j
+            continue
+        elif c in "<>" and text[i + 1:i + 2] == "(":      # <( … ) / >( … ): the command keeps it, its inside is read too
+            j = _paren_end(text, i + 1)
+            if j is None or CASE_WORD.search(text[i + 2:j - 1]):    # a case pattern's ) ends it early: refuse, read no more
+                out.append("__too_deep__ process-substitution")
+                break
+            out += _split_commands(text[i + 2:j - 1])
+            cur.append(c + "(_)")                         # one word, whatever is inside
             i = j
             continue
         elif c == "|" and cur and cur[-1] == ">" and len(cur) != escaped:   # `>|` is a redirection that overrides noclobber, not a pipe
@@ -944,9 +964,11 @@ def _cut_substitutions(text, data=False):
     return "".join(out), inner
 
 
-def _options(args, val, boolean):
+def _options(args, val, boolean, taken=None):
     """Skip the options at the front of args. Returns (index of the first operand, an unknown option or None);
-    a variable where an option or the operand would be stops the walk (the review pass covers it)."""
+    a variable where an option or the operand would be stops the walk (the review pass covers it). Each option the
+    walk consumes as an option, not as another option's value, is appended to `taken` when it is given."""
+    taken = [] if taken is None else taken
     i = 0
     while i < len(args):
         a = args[i]
@@ -958,8 +980,10 @@ def _options(args, val, boolean):
             name = a.split("=", 1)[0]
             if name in boolean or (name in val and "=" in a):
                 i += 1
+                taken.append(name)
             elif name in val:
                 i += 2
+                taken.append(name)
             else:
                 return i, a
             continue
@@ -968,9 +992,11 @@ def _options(args, val, boolean):
         while j < len(a):
             o = "-" + a[j]
             if o in boolean:
+                taken.append(o)
                 j += 1
                 continue
             if o in val:
+                taken.append(o)
                 i += 1 if j + 1 < len(a) else 2
                 break
             return i, a if a[j] not in short else a
@@ -1093,7 +1119,7 @@ def _commands(script, depth=0, in_container=False):
     import shlex
     text, inner = _cut_substitutions(re.sub(r"\\\n", "", script))
     out = []
-    if any(re.search(r"(?<![\w.-])case(?![\w.-])", sub) for sub in inner):
+    if any(CASE_WORD.search(sub) for sub in inner):
         out.append(["__too_deep__", "case ... esac inside $( )"])    # a case pattern's `)` ends the substitution early: refuse (Codex #164 r19, B10)
     if depth < 6:
         for sub in inner:
@@ -1107,6 +1133,9 @@ def _commands(script, depth=0, in_container=False):
         chunk = _skip_array_literal(chunk)
         toks = _tokens(chunk)
         if not toks or toks[0] in PRINTERS:
+            continue
+        if toks[0] == "__too_deep__":                      # the splitter refused a process substitution it cannot read
+            out.append(toks)
             continue
         for i, w in enumerate(toks):
             c = next((j for j in range(i + 1, len(toks)) if re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", toks[j])), None) \
@@ -1237,7 +1266,7 @@ def _stdin_shell(toks):
         i = 0
         while i < len(rest):
             a = rest[i]
-            if a.startswith("<(") or (re.fullmatch(r"[0-9]*<", a) and (i + 1 == len(rest) or rest[i + 1] == "<")):
+            if a.startswith("<(") or (re.fullmatch(r"[0-9]*<", a) and (i + 1 == len(rest) or rest[i + 1].startswith("<("))):
                 return w                                  # the script is a process substitution's output (NEW-34)
             if a.startswith("<"):                          # a redirection or herestring: not an operand
                 i += 1 if re.match(r"^<(<<?|&)?[^<>&]", a) else 2
@@ -2027,28 +2056,74 @@ def _only_read(name, script):
 
 
 def _cut_redirections(text):
-    """The text with each redirection cut off its word: from a < or > outside quotes to the next blank outside quotes.
-    A < or > inside '…' or "…" stays part of the word (declare -n r='out[1<0]')."""
-    out, q, cut, i = [], None, False, 0
+    """The text with each redirection cut off its word: from a < or > outside quotes to the next blank outside quotes;
+    a bare operator (`< file`, `<<< x`) takes the word after it too, and <(…) goes whole. A < or > inside '…' or "…"
+    stays part of the word (declare -n r='out[1<0]')."""
+    out, q, cut, bare, i = [], None, False, False, 0
     while i < len(text):
         c = text[i]
         if c == "\\" and q != "'" and i + 1 < len(text):
-            if not cut:
+            if cut:
+                bare = False                             # the escaped word is the operand
+            else:
                 out.append(text[i:i + 2])
             i += 2
             continue
         if q:
             q = None if c == q else q
+        elif c in "<>" and text[i + 1:i + 2] == "(":
+            cut, bare = True, False
+            i = _paren_end(text, i + 1) or len(text)
+            continue
         elif c in "'\"":
             q = c
+            bare = False
         elif c in "<>":
-            cut = True
+            k = len(out)
+            while k and out[k - 1].isdigit():
+                k -= 1
+            if not cut and k < len(out) and (k == 0 or out[k - 1].isspace()):
+                del out[k:]                              # the descriptor number of 2>file or 12>file is part of the redirection
+            cut = bare = True
+            i += len(re.match(r"<<-|<<<|<<|>>|>[|&]|<[&>]|[<>]", text[i:]).group())   # <<- and >| are one operator
+            continue
         elif c.isspace():
-            cut = False
+            cut = cut and bare
+        elif cut:
+            bare = False
         if not cut:
             out.append(c)
         i += 1
     return "".join(out)
+
+
+# the variable a read, mapfile or select sets when the command names none; a select sets REPLY besides its own name
+DEFAULT_TARGET = {"read": "REPLY", "select": "REPLY", "mapfile": "MAPFILE", "readarray": "MAPFILE"}
+READ_OPTIONS = ({"-a", "-d", "-i", "-n", "-N", "-p", "-t", "-u"}, {"-e", "-r", "-s"})   # taking a value, taking none
+MAPFILE_OPTIONS = ({"-d", "-n", "-O", "-s", "-u", "-C", "-c"}, {"-t"})
+OPTIONS = {"read": READ_OPTIONS, "mapfile": MAPFILE_OPTIONS, "readarray": MAPFILE_OPTIONS}
+
+
+def _default_target(toks):
+    """REPLY or MAPFILE when the command's read, select, mapfile or readarray sets it by default: a select always, the
+    others when no variable follows their options (read -a names an array), through command and builtin. An operand that
+    is only a $expansion may be empty, and an option this check does not know may be anything: both leave the default."""
+    words = _command_words(toks)
+    if not words:
+        return None
+    if words[0] == "builtin":
+        return _default_target(toks[toks.index("builtin") + 1:])
+    prog = words[-1]
+    if prog not in DEFAULT_TARGET:
+        return None
+    args = toks[toks.index(prog) + 1:]
+    if prog == "select":
+        return "REPLY"
+    taken = []
+    first, unknown = _options(args, *OPTIONS[prog], taken)
+    if "-a" in taken or (not unknown and not all(a.startswith("$") for a in args[first:])):
+        return None
+    return DEFAULT_TARGET[prog]
 
 
 SETTER_WORDS = re.compile("read|mapfile|readarray|getopts|declare|typeset|local|export|readonly|let|select|for")
@@ -2070,6 +2145,8 @@ def _set_by_setter(name, script):
     for command in _split_commands(script):
         body = _tokens(command)
         toks = _tokens(_cut_redirections(_mask_shell(command)[0]))   # printf -vout>/dev/null: the redirection is no part of the name
+        if _default_target(toks) == name:
+            return True
         names_it = any(re.fullmatch(name + r"(?:\[[^]]*\])?\+?(?:=.*)?", t, re.S) for t in toks)
         if names_it and (any(SETTER_WORDS.fullmatch(t) for t in toks) or ("printf" in toks and "-v" in toks)):
             return True
@@ -2084,6 +2161,31 @@ def _set_by_setter(name, script):
             if any(re.search(word, t) for t in toks) or any(_set_by_setter(name, t) for t in body if t not in ("eval", "trap")):
                 return True   # the literal body is read as a script: a setter form in it counts as at top level
     return False
+
+
+def _setter_values(name, script):
+    """The value of every `name=value` setter that is a whole command in the shell that reads on: only blanks, then the
+    end, a newline, `;`, `&&` or `||` follow it, and no pipeline `|` comes just before it (read on text with comments,
+    quoted text and escapes blanked). A value ends at a blank, `;`, `)` or an unquoted `&` / `|`. Skipped: a comment (`#`
+    opening a word), quoted text, and every other word whole, so a backslash escape or `${...}` inside a word hides
+    nothing and opens nothing. Every other setter is dropped: a flagged copy is the worse mistake."""
+    pat = re.compile(r"(?<![^\s;&|(])" + name + r"=(?:\"((?:\\.|[^\"\\])*)\"|'([^']*)'|((?:\\.|\$\([^()|&;\n]*\)|[^\s\"';)&|\\])*))"
+                     r"|(?<![^\s;&|(])#[^\n]*|\"(?:\\.|[^\"\\])*\"|'[^']*'|(?:\\.|\$\{[^}]*\}|[^\s;&|()\"'\\])+")
+    masked = _mask_shell(script)[1]
+    return [m.group(m.lastindex) for m in pat.finditer(script) if m.lastindex and _whole_command(masked, m)]
+
+
+def _whole_command(masked, m):
+    """True when the setter match `m` is a command of the current shell: nothing but blanks and a command end after
+    it, and no pipeline `|` just before it."""
+    return bool(re.match(r"[ \t]*(?:\Z|[\n;]|&&|\|\|)", masked[m.end():])
+                and not re.search(r"(?<!\|)\|&?\s*\Z", masked[:m.start()]))
+
+
+def _loose_values(name, script):
+    """Every `name=value` the text spells, quotes and comments ignored: the fail-closed view."""
+    pat = re.compile(r"(?<![^\s;&|(])" + name + r"=[\"']?([^\s\"';)&|]*)")
+    return [m.group(1) for m in pat.finditer(script)]
 
 
 def _outside(target, script, depth=0):
@@ -2105,8 +2207,8 @@ def _outside(target, script, depth=0):
         return False
     if _set_by_setter(m.group(1), script):
         return False                                     # set by read, printf -v, (( )), name[0]= …: an unknown value
-    values = re.findall(r"(?:^|[\s;(])" + m.group(1) + r"=[\"']?([^\s\"';)]*)", script)
-    return bool(values) and all(_outside(v, script, depth + 1) for v in values)
+    values = _setter_values(m.group(1), script)
+    return bool(values) and all(_outside(v, script, depth + 1) for v in values + _loose_values(m.group(1), script))
 
 
 def _redirect_targets(chunk):
@@ -2405,14 +2507,7 @@ def _drop_foreign_heredocs(text):
 # Documented exclusions of a non-committed script a step runs (each with its reason, handoff 0023): the two scripts
 # (/tmp/pf-forward.sh, /tmp/smoke-assert.sh) that main's stage-acceptance-k8s.yml writes itself. Any other eval of a
 # variable, anywhere, is refused by the variable-program rule.
-GENERATED_OK = {
-    (".github/workflows/stage-acceptance-k8s.yml", "/tmp/smoke-assert.sh"):
-        "the documented smoke commands of docs/kubernetes.md (committed, reviewed), written by the step's own python "
-        "heredoc; they assert against the kind cluster and fetch nothing",
-    (".github/workflows/stage-acceptance-k8s.yml", "/tmp/pf-forward.sh"):
-        "the documented kubectl port-forward command of docs/kubernetes.md, written by the same heredoc; run verbatim "
-        "because rule 12 tests the customer's commands exactly as published",
-}
+GENERATED_OK = {}
 
 
 # main's copy: the pull request's base sha, or (the merge queue, REQ-DEP-005) the queue's base sha, the group's parent
@@ -2940,16 +3035,16 @@ def _token_url_breach(text, name, run_texts, key):
 
 
 DOWNLOAD_EXCLUSIONS = {
-    (".github/workflows/auditor.yml", "audit", 10): (
+    (".github/workflows/auditor.yml", "audit", 10, "ec6b56ab920e50d88208a5c553521658f5eab8c32cff1cc0d56404e1b27de643"): (
         "the CISA KEV catalog is fetched to ${AUDITOR_KEV_CATALOG}, a file under runner.temp that the step's env names and nothing else assigns (this exclusion "
         "holds only while the file assigns that variable exactly once, as `AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json`); it is read as data by the auditor and never run",
         "AUDITOR_KEV_CATALOG", "AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json"),
-    (".github/workflows/dependabot-reviewer.yml", "review", 4): (
+    (".github/workflows/dependabot-reviewer.yml", "review", 4, "bd33b686b13cadaf9d7b3b2216165f30fa6dbe35ef74bcefaebe9c5c86d4e3f1"): (
         "the identity-token request: curl prints the JSON answer from ${ACTIONS_ID_TOKEN_REQUEST_URL} "
         "(set by the runner, quoted, followed by a literal &audience=) into a "
         "command substitution that jq reads; it writes no file " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
-    (".github/workflows/dependabot-reviewer.yml", "review", 7): (
+    (".github/workflows/dependabot-reviewer.yml", "review", 7, "b1c51ee65f4383b4ae9236b202c03ac511fc4ce1963575e46c33f72462867182"): (
         "the same identity-token request inside the decision loop's token refresh: "
         "stdout into a command substitution that jq reads, no file written " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
@@ -2959,9 +3054,9 @@ DOWNLOAD_EXCLUSIONS = {
 
 def _exclusion_key(item):
     """The DOWNLOAD_EXCLUSIONS key of one step of a job's scripts:
-    (workflow file, job, step index), or None."""
+    (workflow file, job, step index, sha256 of the step's run text), or None."""
     m = re.match(r"^(.*)\.jobs\.([^.\[]+)\.steps\[(\d+)\]\.run$", item[0])
-    return (m.group(1), m.group(2), int(m.group(3))) if m else None
+    return (m.group(1), m.group(2), int(m.group(3)), hashlib.sha256(item[1].encode("utf-8", "replace")).hexdigest()) if m else None
 
 
 def _excluded_run_texts(scripts, name):

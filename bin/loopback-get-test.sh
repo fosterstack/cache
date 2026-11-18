@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# proves: REQ-SUP-001-AC24
 # bin/loopback-get.sh (advisor reading, Oct 17): the only way a script reaches a local or in-cluster address. It refuses every URL that is not
 # http://localhost, http://127.0.0.1 (any port), the in-cluster service name `fscache`, or the runner's own token endpoint; it allows a closed list of
 # curl options; it never follows a redirect, never uses a proxy, never speaks https to a loopback name. A stub `curl` on PATH records the call.

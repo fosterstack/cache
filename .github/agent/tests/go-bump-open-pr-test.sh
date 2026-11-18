@@ -14,7 +14,7 @@ set -uo pipefail
 # the name of the fake download program that the mocks put on PATH
 FAKE_FETCH_TOOL=curl
 here="$(cd "$(dirname "$0")" && pwd)"
-root="$(cd "$here/.." && pwd)"
+root="$(cd "$here/../../.." && pwd)"
 pass=0; fail=0
 B=chore/go-1.27.0
 BASE=0123456789abcdef0123456789abcdef01234567
@@ -54,7 +54,7 @@ run_case() {
     for n in $(seq 400); do printf '# pad %d %s\n' "$n" "$(printf 'x%.0s' $(seq 400))"; done >> "$work/bin/install-scanner.sh"
   fi
   # the recipe template, its generator and the two generated recipes (rc-3 item 6): copies of the real files with the Go pin moved back to 1.26.6 and the recipes regenerated, so the work tree is self-consistent before the bump; BUMP_TMPL=drift leaves the template at another Go version
-  root_real="$(cd "$here/.." && pwd)"
+  root_real="$(cd "$here/../../.." && pwd)"
   mkdir -p "$work/build/locks"; cp "$root_real"/build/locks/* "$work/build/locks/"; cp "$root_real/bin/gen-recipes.py" "$work/bin/"
   cp "$root_real/build/melange-baselayout.yaml.tmpl" "$root_real/build/melange-baselayout.yaml" "$work/build/"   # the generator reads the base-layout template too (0710)
   sed -E 's#(go\.dev/dl/go)[0-9.]+(\.linux-)#\11.26.6\2#' "$root_real/build/melange.yaml.tmpl" > "$work/build/melange.yaml.tmpl"
@@ -192,7 +192,7 @@ GIT
   if [ -z "$why" ]; then echo "ok: ${name}"; pass=$((pass+1)); return 0; fi
   echo "FAIL: ${name}:${why}"; diff <(echo "$want") <(echo "$got") | sed 's/^/    /'; echo "$out" | sed 's/^/    | /'; fail=$((fail+1)); return 1
 }
-SUT="$here/go-bump-open-pr.sh"
+SUT="$root/bin/go-bump-open-pr.sh"
 run_case "open PR -> dedup, nothing else"           "$SUT" '[{"number":42,"state":"OPEN","mergedAt":null}]' 1 0 0 "$LIST" old
 run_case "merged PR -> landed, nothing else"        "$SUT" '[{"number":40,"state":"MERGED","mergedAt":"2026-09-01T00:00:00Z"}]' 1 0 0 "$LIST" old
 run_case "closed-not-merged -> respected"           "$SUT" '[{"number":41,"state":"CLOSED","mergedAt":null}]' 1 0 0 "$LIST" old
@@ -279,7 +279,7 @@ if [ "$vrc" = 2 ] && grep -q 'must look like' <<<"$vout"; then echo "ok: a Go ve
 loose=$(grep -n 'python3' "$SUT" | grep -v 'env -u GH_TOKEN /usr/bin/python3 -I -B' | grep -v '^[0-9]*:[[:space:]]*#' || true)
 if [ -z "$loose" ]; then echo "ok: every python3 the bump script starts is 'env -u GH_TOKEN /usr/bin/python3 -I -B'"; pass=$((pass+1)); else echo "FAIL: a python3 call without the token removed or isolated mode: $loose"; fail=$((fail+1)); fi
 # a standing consistency check (every run, not only on a bump): go.mod's toolchain version, tools/requirements/go.mod's and the installer's pin agree
-root="$(cd "$here/.." && pwd)"
+root="$(cd "$here/../../.." && pwd)"
 gv() { awk '$1 == "toolchain" && $2 ~ /^go[0-9]/ {sub(/^go/, "", $2); t = $2} $1 == "go" && g == "" {g = $2} END {print (t != "" ? t : g)}' "$1"; }
 a=$(gv "$root/go.mod"); b=$(gv "$root/tools/requirements/go.mod"); c=$(sed -n 's/^GO_VER=\([0-9.]*\).*/\1/p' "$root/bin/install-scanner.sh" | head -1)
 d=$(sed -n 's#^ *uri: https://go\.dev/dl/go\([0-9.]*\)\.linux-amd64\.tar\.gz$#\1#p' "$root/build/melange.yaml.tmpl" | head -1); e=$(sed -n 's#^ *uri: https://go\.dev/dl/go\([0-9.]*\)\.linux-arm64\.tar\.gz$#\1#p' "$root/build/melange.yaml.tmpl" | head -1)
@@ -295,7 +295,7 @@ else echo "FAIL: the bump script does not describe the installer pin in the PR b
 # END TO END (Codex A r5 #3, B F2): a proposed bump, made by the script's real code path in a copy of the REAL files with a fake go.dev, leaves every
 # check that reads the pin green: the installer test and the go-freshness wiring test
 e2e="$(mktemp -d)"; rm -rf "$e2e"; mkdir -p "$e2e/bin" "$e2e/tools/requirements" "$e2e/tools/govulncheck" "$e2e/.github/policy" "$e2e/.github/workflows" "$e2e/fake"
-root="$(cd "$here/.." && pwd)"
+root="$(cd "$here/../../.." && pwd)"
 cp "$root/go.mod" "$e2e/go.mod"; cp "$root/tools/requirements/go.mod" "$e2e/tools/requirements/go.mod"
 cp "$root/tools/govulncheck/go.mod" "$root/tools/govulncheck/go.sum" "$e2e/tools/govulncheck/"      # the installer test reads the govulncheck pin (ruling G)
 cp "$root/.github/policy/chain-scripts.json" "$e2e/.github/policy/"; cp "$root"/.github/workflows/*.yml "$e2e/.github/workflows/"
@@ -431,9 +431,9 @@ guard_dead() { python3 -I -c "$GUARD_PY" dead "$@"; }   # guard_dead <repo root>
 # each row is one line, named by its file and the whole line, stripped (a tab between them)
 mapfile -t ALLOW <<'ROWS'
 .github/agent/bin/auditor-open-pr.py	shim("git commit -m auditor:%s" % change)
-.github/agent/bin/auditor-signed-commit.py	main requires signed commits; `git commit` in a runner is unsigned. This makes ONE commit on --branch through createCommitOnBranch with the
-.github/agent/bin/auditorlib/signed_commit.py	main's ruleset requires signed commits. A commit made by `git commit` in the runner is not signed, so the PR it
-.github/agent/bin/auditorlib/signed_commit.py	raise CommitError("signed commit: %s is %d bytes, over the %d-byte limit of createCommitOnBranch; the commit cannot be made through the API (and a git commit would be unsigned)"
+.github/agent/bin/auditor-signed-commit.py	main requires signed commits; `git commit` in a runner is unsigned. This makes ONE commit on --branch through
+.github/agent/bin/auditorlib/signed_commit.py	main's ruleset requires signed commits, and a commit made by `git commit` in the runner is unsigned. A commit made
+.github/agent/bin/auditorlib/signed_commit.py	"the commit cannot be made through the API (and a git commit would be unsigned)"
 bin/chain-verify.py	refuse(stage, "commit: the record's git commit %s is not the run's commit %s" % (", ".join(commits) or "(none)", commit))
 bin/melange-apko-lib.sh	GIT_COMMITTER_EMAIL=t@example.test GIT_COMMITTER_DATE="$ISO" GIT_AUTHOR_DATE="$ISO" git commit -q -m fixture ) >/dev/null 2>&1
 ROWS

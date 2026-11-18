@@ -201,6 +201,9 @@ REVIEWED_CA = [
     ("docs/docker-deploy.md",
         'The image has no CA certificate bundle, so the server cannot verify any outside '
         'certificate;'),
+    ("docs/controls.md",
+        '| After the CM-7 `cosign verify-blob` check, `jq -e \'[.packages[].name | '
+        'select(test("ca-certificates"))] | length == 0\' production.sbom.json` prints `true`.'),
     ("docs/install.md",
         '**The container images carry no CA certificate bundle.** The server makes no outbound '
         'connection and verifies no certificate.'),
@@ -257,7 +260,9 @@ check("R8 each reviewed sentence passes in its own file", all(ca_bundle_hits(f, 
 check("R8 reviewed sentence passes inside a longer paragraph",
       all(ca_bundle_hits(f, "Intro text. " + s + " More text.") == [] for f, s in REVIEWED_CA if s[-1] in ".!?;"))
 def changed(s):
-    return s.replace(" no ", " a ", 1) if " no " in s else s.replace("needs", "has", 1)
+    if " no " in s:
+        return s.replace(" no ", " a ", 1)
+    return s.replace("== 0", "== 1", 1) if "== 0" in s else s.replace("needs", "has", 1)
 check("R8 each reviewed sentence with one word changed fails",
       all(ca_bundle_hits(f, changed(s)) != [] for f, s in REVIEWED_CA))
 check("R8 reviewed sentences with changed word really differ", all(changed(s) != s for f, s in REVIEWED_CA))

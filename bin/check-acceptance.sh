@@ -40,7 +40,7 @@ tar -C "$images/production" -cf "$tmp/production.tar" -T "$tmp/production.member
 loaded=$(docker load -i "$tmp/production.tar")
 ref=$(sed -n 's/^Loaded image: //p; s/^Loaded image ID: //p' <<< "$loaded" | tail -1)
 [ -n "$ref" ] || fail "docker load named no image for the production candidate"
-ref=$(docker image inspect --format '{{.Id}}' "$ref") || fail "docker could not inspect the loaded production candidate"   # serve takes the image by its ID, never by a tag (REQ-SUP-001-AC37)
+ref=$(docker image inspect --format '{{.Id}}' "$ref") || fail "docker could not inspect the loaded production candidate"   # serve takes the image by its ID, never by a tag (REQ-SUP-001-AC42)
 [[ "$ref" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "docker named no image ID for the production candidate"
 cleanup() { [ ! -f "$tmp/extensions.xml" ] || cp "$tmp/extensions.xml" bench/maven-sample/.mvn/extensions.xml; bash bin/acceptance-serve.sh gradle stop; rm -rf "$tmp"; }
 trap cleanup EXIT

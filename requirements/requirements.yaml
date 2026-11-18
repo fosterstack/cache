@@ -1826,7 +1826,7 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-DEP-003-AC4
-        given: a Dependabot pull request that changes a file under tools/govulncheck/ (go.mod and go.sum, the pin of the Go source scanner, whose version ci.yml repeats by hand so a bump alone cannot be right), or whose file list holds 100 or more entries (the API lists at most 100, so a longer one cannot be judged)
+        given: a Dependabot pull request that changes a file under tools/govulncheck/ (go.mod and go.sum, the pin of the Go source scanner, which ci.yml builds through bin/install-scanner.sh, so a new version gets a normal review), or whose file list holds 100 or more entries (the API lists at most 100, so a longer one cannot be judged)
         when: the auto-merge workflow or the hourly reviewer sees it
         then: "the workflow does not arm auto-merge for it (its arming step reads the pull request's files and stops), the reviewer does not review or arm it and turns off an arm made earlier (a failed state read or a failed disarm skips it and fails the step); it is held out of auto-merge and handled as a normal pull request, which is reviewed by both reviewers and merged; a path that only looks like the directory (tools/govulncheck-evil/) is not held, and 99 listed files are judged as usual"
         verification: { method: ci-workflow, release_blocking: false }
@@ -1886,9 +1886,9 @@ requirements:
         status: approved
 
   - id: REQ-REL-008
-    title: The workflow set is limited to a fixed list (16 files today), each file grouping jobs by purpose
+    title: The workflow set is limited to a fixed list (18 files today), each file grouping jobs by purpose
     statement: >
-      The repository's workflows shall be limited to a fixed list of files, 16 today (AC1 fixes the list), each file holding the jobs that a person would group by what they are
+      The repository's workflows shall be limited to a fixed list of files, 18 today (AC1 fixes the list), each file holding the jobs that a person would group by what they are
       for (jobs with nothing to do with each other never share a file to cut the count, and related jobs never get files of
       their own), the release being one file, release.yml, whose build, rebuild, check, sign and release jobs each run on their
       own runner. Each merge keeps every required check's name, top-level placement and events, and a new workflow file is
@@ -1902,7 +1902,7 @@ requirements:
       - id: REQ-REL-008-AC1
         given: "the four consolidation pull requests have landed"
         when: "the workflow directory is listed"
-        then: "it holds exactly the 17 listed files, the list fixed by bin/workflow-consolidation-test.sh: acceptance.yml, agent-review-gate.yml, auditor.yml, ci.yml, codeql.yml, customer-words-edited.yml, dependabot-auto-merge.yml, dependabot-reviewer.yml, full-suite.yml, go-freshness.yml, main-candidate-rescan.yml, persona-uat.yml, release.yml, reserved-branch-guard.yml, scan.yml, scorecard.yml and supply-chain.yml; no stage-*.yml file exists, because the release is the one file release.yml (one workflow file per purpose, the rule of Nov 13 2026); persona-uat.yml holds the persona UAT jobs (the weekly run and the release-candidate leg), one purpose; full-suite.yml holds the suites that run nightly and before a release-candidate tag, one purpose"
+        then: "it holds exactly the 18 listed files, the list fixed by bin/workflow-consolidation-test.sh: acceptance.yml, agent-review-gate.yml, auditor.yml, ci.yml, codeql.yml, customer-words-edited.yml, dependabot-auto-merge.yml, dependabot-reviewer.yml, evidence-letter.yml, full-suite.yml, go-freshness.yml, main-candidate-rescan.yml, persona-uat.yml, release.yml, reserved-branch-guard.yml, scan.yml, scorecard.yml and supply-chain.yml; no stage-*.yml file exists, because the release is the one file release.yml (one workflow file per purpose, the rule of Nov 13 2026); persona-uat.yml holds the persona UAT jobs (the weekly run and the release-candidate leg), one purpose; evidence-letter.yml holds the monthly evidence letter's two jobs (REQ-REL-015), a purpose no other file has; full-suite.yml holds the suites that run nightly and before a release-candidate tag, one purpose"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-008-AC2
@@ -2282,7 +2282,7 @@ requirements:
       - id: REQ-CI-007-AC1
         given: "every workflow file"
         when: "bin/workflow-consolidation-test.sh judges them"
-        then: "full-suite.yml triggers only on a schedule and workflow_dispatch; acceptance.yml triggers only on workflow_call; scan.yml triggers on pull_request, push (main and tags v*), one schedule and workflow_dispatch and still cannot be called (REQ-SCAN-015); codeql.yml keeps its triggers and adds workflow_dispatch"
+        then: "full-suite.yml triggers only on a schedule and workflow_dispatch (acceptance.yml's own trigger is REQ-REL-014-AC1's); scan.yml triggers on pull_request, push (main and tags v*), one schedule and workflow_dispatch and still cannot be called (REQ-SCAN-015); codeql.yml keeps its triggers and adds workflow_dispatch"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-CI-007-AC2
@@ -2358,7 +2358,7 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
-  - id: REQ-REL-014
+  - id: REQ-REL-016
     title: Pull requests run six checks; the rest run on push to main
     statement: >
       On a pull request into main or a release branch only these checks shall run: test, lint, govulncheck, analyze (go),
@@ -2372,23 +2372,59 @@ requirements:
     origin: the owner's ruling on pull-request checks (Nov 17 2026, "only keep the ones that actually have meaning for CI")
     confidence: implementation-only
     acceptance_criteria:
-      - id: REQ-REL-014-AC1
+      - id: REQ-REL-016-AC1
         given: the workflows under .github/workflows on main
         when: the jobs that run on the pull_request event are listed
         then: >-
           they are test, lint, govulncheck, analyze (go), fips140-only and scan, the jobs scan needs (build, assemble, the scanner list and the scanners), and the jobs of agent-review-gate.yml and dependabot-auto-merge.yml, which are no pull-request checks of the ruleset; no other job runs on pull_request
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
-      - id: REQ-REL-014-AC2
+      - id: REQ-REL-016-AC2
         given: a push to main that moves a dependency version
         when: dependency-review runs on that push
         then: it judges the versions between the commit before the push and the commit after it
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
-      - id: REQ-REL-014-AC3
+      - id: REQ-REL-016-AC3
         given: a tag whose commit has a red or missing run of a check that required-checks.json or release-only-checks.json scopes to push (pin-age and dependency-review included)
         when: release admission runs
         then: it refuses the tag
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+
+  - id: REQ-REL-014
+    title: Pull requests run six checks; the rest run on push to main
+    statement: >
+      On a pull request into a release branch (chain-v030 today) only these checks shall run: test, lint, govulncheck,
+      analyze (go), fips140-only and scan (with the jobs scan needs). Every other check shall run on push to main, on a
+      schedule or in the release chain, so release admission reads each of them on the exact tagged commit. The pin-age
+      scan of pull requests is deleted; the daily pin audit is the supply-chain check. One check holds a security test
+      that no release step runs, marker-gate (it verifies the release candidate run a marker pull request names), so it
+      stays on pull requests until a ruling moves it; customer-words-edited, agent-review-gate.yml and
+      dependabot-auto-merge.yml are no checks of this list and are left as they are.
+    source: [.github/workflows/ci.yml, .github/workflows/scan.yml, .github/workflows/codeql.yml, .github/workflows/acceptance.yml, .github/workflows/supply-chain.yml, .github/policy/required-checks.json]
+    tier: community
+    introduced: v0.3.0
+    origin: the owner's ruling on pull-request checks (Nov 17 2026, "only keep the ones that actually have meaning for CI")
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-REL-014-AC1
+        given: the workflows under .github/workflows on chain-v030
+        when: the jobs that run on the pull_request or merge_group event are listed
+        then: >-
+          they are test, lint, govulncheck, analyze (go), fips140-only and scan, the jobs scan needs (build and the two scanners), the held check marker-gate, customer-words-edited, and the jobs of agent-review-gate.yml and dependabot-auto-merge.yml; no other job runs on pull_request or merge_group, and acceptance.yml keeps only workflow_call
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-014-AC2
+        given: the workflow supply-chain.yml and the list .github/policy/required-checks.json on chain-v030
+        when: they are read
+        then: no job of the workflow runs on pull_request, no job is named pin-age, and the list has no pin-age entry
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-014-AC3
+        given: a tag whose commit has a red or missing run of a check that required-checks.json scopes to push
+        when: release admission runs
+        then: it refuses the tag; acceptance is no required-check entry, because the release's Check stage runs the acceptance suites itself
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
@@ -2954,16 +2990,94 @@ requirements:
     introduced: v0.3.0
     origin: actions supply-chain checks (decided Oct 5 2026); AC14 comes from the Oct 9 reading (pin-audit Go major path), which lets cosign be pinned as a tool; AC16 comes from the Oct 10 ruling (ruled text lines instead of a lexer); the 7-day wait for new versions and its three exceptions were removed by the owner's ruling of Nov 11 2026 (ops/docs/ratify/2026-11-11-no-release-age-hold.md rule 1), and AC1, AC3, AC6, AC13, AC27 and AC34 say what holds without them
     notes: >
-      AC14 design decision (automated review round 1, B2): a non-plain version of a table tool is a HIT only on the records the databases return for it. A version with no OSV record and no GitHub advisory (cosign@latest, or the (default) pins of cosign and kind in the real tree) reads clean, deliberately: with no record nothing is known to be affected at any version, and making every non-plain pin a hit would open a daily issue forever with nothing to report. The rule is about the verdict on records, not about the pin.
-      AC14 evaluation: range events are evaluated as OSV evaluates them: sorted by version (introduced 0 is the minimum, at one version the fixed wins), last_affected inclusive; Go versions compare as strict semver (pseudo-versions, numeric pre-releases and +incompatible are valid; r1, p1, post1 and rev1 are pre-release identifiers). A limit event is refused in SEMVER and ECOSYSTEM ranges (the record is a hit, a fail-closed refusal): the Go vulnerability database never writes limit, the OSV schema text could not be consulted offline, so any use of it in a Go range is treated as unreadable, which also removes the any-or-all question for several limits (the evaluator, used for other ecosystems, reads below ANY limit as affected). The schema asks for id and modified on a record, ecosystem and name on a package, an introduced event in every range (their order is free), and not both fixed and last_affected in one range; aliases may be absent or null. An independent interval oracle in the test compares the evaluator on a generated grid. The 240 recorded verdicts did not change.
-      AC14 residual: the rule judges the OSV record's affected entries only; GitHub's ranges are read as before. An OSV answer that is not a record (not an object, no string id or modified) is a hit under the id UNREADABLE-OSV-RECORD; a GIT range together with a SEMVER or ECOSYSTEM range in one entry is a hit in every branch. The gh and git calls of pin-audit.py and of the shared helpers in pin-age-check.py have a 120 s timeout that stops the run (exit 2).
-      AC14 residual (semver): bounds that SemVer 2.0.0 forbids (a numeric pre-release identifier with a leading zero such as 3.0.0-01, an empty identifier in the pre-release or the build metadata) are unparsable and read as affected, so the record is a hit. Go pseudo-versions with a zero-time stamp (0.0.0-00010101000000-000000000000) are one valid alphanumeric identifier, because it contains a hyphen, and parse normally.
-      Removed Nov 17 2026 with the pin-age pull-request scan (the owner's order that only six checks run on a pull request): AC2, AC4, AC16, AC19, AC20, AC21, AC22, AC23, AC25, AC26 and AC27; their ids are not reused. AC34 holds the one judgment of that scan the daily audit keeps. Removed Nov 11 2026 with the wait for new versions: AC1 (Dependabot cooldown), AC3 (age measurement) and AC6 (re-run of the pull requests the wait stopped); their ids are not reused and the gaps are deliberate, like AC16/AC17 below. AC31 is also left empty here: it is held for the go.dev archive signature check, which a second pull request adds (the owner's rule 3 of Nov 11 2026); no AC31 exists until then.
-      AC16/AC17 history: the AC16 and AC17 first accepted for this requirement (a lexer telling text from commands, pull request 272, closed: an open-ended class) are WITHDRAWN; the AC16 above replaces both, and there is no AC17 (the gap is deliberate). AC18 (literal downloads in install-build-tools.sh) belongs to pull request 271.
-      AC16 design: the scan stays strict. A row is {file, form, key, line, ruling} plus an optional count (default 1): key is the scan's own 64-hex sha256 prefix (for a download, of the one command segment that names curl or wget), and line is the 64-hex sha256 prefix of the WHOLE whitespace-flattened line that segment sits in (the automated reviewer, pull request 273 round 1: a segment hash alone ruled the same segment inside another line that pipes it to sh); an item is ruled only when every occurrence in the head sits in a line a row names, and a row covers at most count occurrences of that line, so a second copy of a ruled line fails unless the row counts it. Editing the line other than in spaces and tabs (which the scan normalises) voids the row; changing only a row's ruling prose does not void it (the prose is the reason, not the identity). An occurrence is ADDED when the head has more of its (file, form, key, whole line) than the base (the automated reviewer, pull request 273 round 2: counting by key alone let an edit that kept the download segment, such as a ruled echo rewritten to pipe into sh, pass as no addition); a replay of the 150 first-parent commits of main from 7c6077b (Sep 11) to 09b30af (Oct 10) found no commit that this newly fails. A row never matches a line holding whitespace other than a space or a tab, or a line joined from a backslash-newline continuation: bash reads those differently from the flattening (automated review round 1); count is at most 100. Intended: editing only a row's ruling prose does not void it, and a space- or tab-only edit of the line stays ruled. The exceptions file must be strict JSON: NaN, Infinity and -Infinity (which Python's reader accepts) and a repeated key stop the check (exit 2). AC16 delta accepted by the reviewer Oct 10 (automated review round 3, P7): the given names the command hash (key) and the whole-line hash (line); the then states the count limit and the edited-line, whitespace and continuation failures. Limit of line identity (automated review round 3, P4; the maintainers' decision, Oct 10): shell CONTEXT is not part of a line's identity, so moving a line out of a heredoc (above its opener) or commenting the opener out keeps (file, form, key, line) and is no addition. Therefore a row is only ever written for a line that is HARMLESS IN ANY CONTEXT: read as a shell command it runs no download (a comment, an echo or printf, a cat into a file, Python source or a package list that bash cannot parse), and the reviewer reviews each row for exactly that; a row for a line that would download when run is the reviewer's to refuse. The test holds the text of each committed row's line and checks it is harmless that way. Allowed row forms (reviewer, Oct 10; the reviewer refuses any other row): (1) TEXT lines: a comment, a quoted or echoed string, a data heredoc (a stub body or its opener), Python or package-name text that bash cannot parse; (2) HARNESS ASSERTION lines, whose whole grammar is the single data structure HARNESS_WHITELIST in harness_form.py (written by the pin-age check's own test suite); anything it does not name is refused. In short: t "RULE" "TITLE" bash -c 'BODY' _ followed by at most nine path arguments "$NAME" or "$NAME/path" with NAME in work, CALLS; no expansion of any kind in RULE or TITLE (no $, backtick, backslash or quote); the body SINGLE-QUOTED (the automated reviewer, pull request 289: a double-quoted body let the outer shell splice a variable's value into the code) and naming the paths only as whole "$1".."$9"; the commands grep, test, [, cat and exit with one digit; grep in the shape grep OPTION... -- PATTERN ["$N"...]: the options -E, -q, -v and -Eq as bare words, -- REQUIRED before the pattern, the pattern a double-quoted word that does not start with - (or the bare '.'), file operands only "$N" (the automated reviewer, pull request 289 round 3: a double-quoted word in an option position is an option to grep); cat only as cat -- "$N"; test and [ only the file tests -f -s -e -d -r on a positional "$N" (never a literal path or a substitution: the automated reviewer, pull request 289 round 6), = and !=, and count comparisons between digits and "$(grep -c ...)" (never -v, -R or an arithmetic operand that is a name or expression: bash 5 evaluates $(...) there); the substitutions "$(grep -c OPTION... -- PATTERN "$N")" and "$(cat -- "$N")" only; no unquoted glob, brace, subscript or expansion word; and no character outside printable ASCII and tab (the automated reviewer, pull request 289). The test proves the whitelist closed: a complement enumeration of every token class outside it in every position (none accepted, none refused for another reason), and a mutation run that widens it by one token at a time and requires an unexpected acceptance or a refusal for another reason (reported apart). The role rules that live in the parser's code (a file test on a positional, cat with exactly one operand, a positional within the arguments) are pinned by code mutants that loosen each one and must be caught. A harness line that reads a test stub's call log matches whole ROLE-TAGGED fields of a log the stub writes from its own parse (opt, val, out, url, unk; brackets inside a word become _), never substrings of flattened text (the automated reviewer, pull request 289 round 4); the later rows pull request runs each such line against logs with the right words in the wrong roles, forged fields inside URLs and -o values imitating flags. Scope (maintainers, Oct 11): this pull request carries the FORM (the parser, HARNESS_WHITELIST, the complement enumeration, the mutation run, the runtime corpus with synthetic lines in the shapes of the input refresh assertions) and the three comment rows; the rows for the input refresh harness lines, with the test of what each line asserts, come with those lines in a later rows pull request. The test decides form (2) with a quote-aware parser (harness_form.py in the test) and proves each refused variant as its own case. The rows are read from the exceptions file beside the checkout the script runs from (in CI trusted/, the base branch), never from the pull request's tree; a missing default file is no rows; a malformed list (not a list, a row that is not an object, a missing, empty or extra field, a key or line that is not 16 lowercase hex, a JSON object that repeats a key, a count that is not a whole number from 1 to 100, a repeated row) stops the check with exit 2.
-      AC15 limit: the pins nested inside an action are not counted as held, so a ruling for a pin that is only nested can be dormant, never dead.
-      AC15 expectation (Oct 9): the three cosign rulings (GO-2024-2718, GO-2024-2719, GO-2023-2181) are ALIVE now because main pinned cosign 3.1.3 inside the 90-day history window (until commit 8a7512d); they become dormant (or dead, if a cosign 3.1.3 pin has appeared and they decide nothing) about 2026-12-14, 90 days after that pin left main, unless a cosign 3.1.3 pin is held again (pull request 249).
-      Finding (Oct 9): with the corrected table paths, the existing package-name filter of the audit already clears cosign 3.1.3 against GO-2026-4309. The real work of AC14 is (1) the corrected table (goreleaser, osv and golangci-lint need their /v2 path), (2) GitHub names matched under both the bare and the /vMAJOR path so the five existing rulings keep working, (3) the log of ignored entries, (4) the OSV query by the /vMAJOR path.
+      Removed Nov 17 2026 with the pin-age pull-request scan (only six checks run on a pull request): AC2, AC3, AC4, AC16, AC19, AC20, AC21, AC22, AC23, AC25, AC26, AC27, AC34 and AC35; their ids are not reused. AC37 holds the one judgment of that scan the daily audit keeps.
+      AC14 design decision: a non-plain version of a table tool is a HIT only on the records the databases return for
+      it. A version with no OSV record and no GitHub advisory (cosign@latest, or the (default) pins of cosign and kind
+      in the real tree) reads clean, deliberately: with no record nothing is known to be affected at any version, and
+      making every non-plain pin a hit would open a daily issue forever with nothing to report. The rule is about the
+      verdict on records, not about the pin. AC14 evaluation: range events are evaluated as OSV evaluates them: sorted
+      by version (introduced 0 is the minimum, at one version the fixed wins), last_affected inclusive; Go versions
+      compare as strict semver (pseudo-versions, numeric pre-releases and +incompatible are valid; r1, p1, post1 and
+      rev1 are pre-release identifiers). A limit event is refused in SEMVER and ECOSYSTEM ranges (the record is a hit,
+      a fail-closed refusal): the Go vulnerability database never writes limit, the OSV schema text could not be
+      consulted offline, so any use of it in a Go range is treated as unreadable, which also removes the any-or-all
+      question for several limits (the evaluator, used for other ecosystems, reads below ANY limit as affected). The
+      schema asks for id and modified on a record, ecosystem and name on a package, an introduced event in every range
+      (their order is free), and not both fixed and last_affected in one range; aliases may be absent or null. An
+      independent interval oracle in the test compares the evaluator on a generated grid. The 240 recorded verdicts
+      did not change. AC14 residual: the rule judges the OSV record's affected entries only; GitHub's ranges are read
+      as before. An OSV answer that is not a record (not an object, no string id or modified) is a hit under the id
+      UNREADABLE-OSV-RECORD; a GIT range together with a SEMVER or ECOSYSTEM range in one entry is a hit in every
+      branch. The gh and git calls of pin-audit.py and of the shared helpers in pin-age-check.py have a 120 s timeout
+      that stops the run (exit 2). AC14 residual (semver): bounds that SemVer 2.0.0 forbids (a numeric pre-release
+      identifier with a leading zero such as 3.0.0-01, an empty identifier in the pre-release or the build metadata)
+      are unparsable and read as affected, so the record is a hit. Go pseudo-versions with a zero-time stamp
+      (0.0.0-00010101000000-000000000000) are one valid alphanumeric identifier, because it contains a hyphen, and
+      parse normally. AC18 (literal downloads in install-build-tools.sh) is a separate criterion. There is no AC17: the AC16 and
+      AC17 first accepted for this requirement (a lexer telling text from commands, an open-ended class) were
+      withdrawn, the AC16 below replaces both, and the gap is deliberate. AC16 design: the
+      scan stays strict. A row is {file, form, key, line, ruling} plus an optional count (default 1): key is the
+      scan's own 64-hex sha256 prefix (for a download, of the one command segment that names curl or wget), and line
+      is the 64-hex sha256 prefix of the WHOLE whitespace-flattened line that segment sits in (a segment hash alone
+      ruled the same segment inside another line that pipes it to sh); an item is ruled only when every occurrence in
+      the head sits in a line a row names, and a row covers at most count occurrences of that line, so a second copy
+      of a ruled line fails unless the row counts it. Editing the line other than in spaces and tabs (which the scan
+      normalises) voids the row; changing only a row's ruling prose does not void it (the prose is the reason, not the
+      identity). An occurrence is ADDED when the head has more of its (file, form, key, whole line) than the base
+      (counting by key alone let an edit that kept the download segment, such as a ruled echo rewritten to pipe into
+      sh, pass as no addition); a replay of the 150 first-parent commits of main from 7c6077b (Sep 11) to 09b30af (Oct
+      10) found no commit that this newly fails. A row never matches a line holding whitespace other than a space or a
+      tab, or a line joined from a backslash-newline continuation: bash reads those differently from the flattening;
+      count is at most 100. Intended: editing only a row's ruling prose does not void it, and a space- or tab-only
+      edit of the line stays ruled. The exceptions file must be strict JSON: NaN, Infinity and -Infinity (which
+      Python's reader accepts) and a repeated key stop the check (exit 2). AC16 delta: the given names the command
+      hash (key) and the whole-line hash (line); the then states the count limit and the edited-line, whitespace and
+      continuation failures. Limit of line identity: shell CONTEXT is not part of a line's identity, so moving a line
+      out of a heredoc (above its opener) or commenting the opener out keeps (file, form, key, line) and is no
+      addition. Therefore a row is only ever written for a line that is HARMLESS IN ANY CONTEXT: read as a shell
+      command it runs no download (a comment, an echo or printf, a cat into a file, Python source or a package list
+      that bash cannot parse), and each row is reviewed for exactly that; a row for a line that would download when
+      run is refused. The test holds the text of each committed row's line and checks it is harmless that way. Allowed
+      row forms (any other row is refused): (1) TEXT lines: a comment, a quoted or echoed string, a data heredoc (a
+      stub body or its opener), Python or package-name text that bash cannot parse; (2) HARNESS ASSERTION lines, whose
+      whole grammar is the single data structure HARNESS_WHITELIST in harness_form.py (written by the pin-age check's
+      own test suite); anything it does not name is refused. In short: t "RULE" "TITLE" bash -c 'BODY' _ followed by
+      at most nine path arguments "$NAME" or "$NAME/path" with NAME in work, CALLS; no expansion of any kind in RULE
+      or TITLE (no $, backtick, backslash or quote); the body SINGLE-QUOTED (a double-quoted body let the outer shell
+      splice a variable's value into the code) and naming the paths only as whole "$1".."$9"; the commands grep, test,
+      [, cat and exit with one digit; grep in the shape grep OPTION... -- PATTERN ["$N"...]: the options -E, -q, -v
+      and -Eq as bare words, -- REQUIRED before the pattern, the pattern a double-quoted word that does not start with
+      - (or the bare '.'), file operands only "$N" (a double-quoted word in an option position is an option to grep);
+      cat only as cat -- "$N"; test and [ only the file tests -f -s -e -d -r on a positional "$N" (never a literal
+      path or a substitution), = and !=, and count comparisons between digits and "$(grep -c ...)" (never -v, -R or an
+      arithmetic operand that is a name or expression: bash 5 evaluates $(...) there); the substitutions "$(grep -c
+      OPTION... -- PATTERN "$N")" and "$(cat -- "$N")" only; no unquoted glob, brace, subscript or expansion word; and
+      no character outside printable ASCII and tab. The test proves the whitelist closed: a complement enumeration of
+      every token class outside it in every position (none accepted, none refused for another reason), and a mutation
+      run that widens it by one token at a time and requires an unexpected acceptance or a refusal for another reason
+      (reported apart). The role rules that live in the parser's code (a file test on a positional, cat with exactly
+      one operand, a positional within the arguments) are pinned by code mutants that loosen each one and must be
+      caught. A harness line that reads a test stub's call log matches whole ROLE-TAGGED fields of a log the stub
+      writes from its own parse (opt, val, out, url, unk; brackets inside a word become _), never substrings of
+      flattened text; each such line is run against logs with the right words in the wrong roles, forged fields inside
+      URLs and -o values imitating flags. Scope: this change carries the FORM (the parser, HARNESS_WHITELIST pinned by
+      its golden canonical sha256, the complement enumeration, the mutation run, the runtime corpus with synthetic
+      lines in the shapes of the input refresh assertions) and the three comment rows; the rows for the input refresh
+      harness lines, with the test of what each line asserts, come with those lines in a later change.
+      The grammar is held by review and by the mutation run of the test. The test decides form (2) with a quote-aware parser (harness_form.py in the
+      test) and proves each refused variant as its own case. The rows are read from the exceptions file beside the
+      checkout the script runs from (in CI trusted/, the base branch), never from the pull request's tree; a missing
+      default file is no rows; a malformed list (not a list, a row that is not an object, a missing, empty or extra
+      field, a key or line that is not 16 lowercase hex, a JSON object that repeats a key, a count that is not a whole
+      number from 1 to 100, a repeated row) stops the check with exit 2. AC15 limit: the pins nested inside an action
+      are not counted as held, so a ruling for a pin that is only nested can be dormant, never dead. AC15 expectation:
+      the three cosign rulings (GO-2024-2718, GO-2024-2719, GO-2023-2181) are ALIVE now because main pinned cosign
+      3.1.3 inside the 90-day history window (until commit 8a7512d); they become dormant (or dead, if a cosign 3.1.3
+      pin has appeared and they decide nothing) about 2026-12-14, 90 days after that pin left main, unless a cosign
+      3.1.3 pin is held again. Finding: with the corrected table paths, the existing package-name filter of the audit
+      already clears cosign 3.1.3 against GO-2026-4309. The real work of AC14 is (1) the corrected table (goreleaser,
+      osv and golangci-lint need their /v2 path), (2) GitHub names matched under both the bare and the /vMAJOR path so
+      the five existing rulings keep working, (3) the log of ignored entries, (4) the OSV query by the /vMAJOR path.
     confidence: implementation-only
     acceptance_criteria:
       - id: REQ-SUP-001-AC41
@@ -3032,6 +3146,12 @@ requirements:
         then: "every tool download is a literal command carrying the exact release version and the sha256 it is verified against, so the version is checked like any pin"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-SUP-001-AC24
+        given: "a script of this repository that reaches a local or in-cluster address (the cache under test on localhost or 127.0.0.1, the in-cluster Service fscache, or the runner's own token endpoint)"
+        when: "it makes the request"
+        then: "it does so only through bin/loopback-get.sh, which runs curl for exactly one URL and refuses before curl starts any URL that is not http://localhost, http://127.0.0.1 or http://fscache (each with an optional numeric port and a path starting with /, userinfo, fragments, whitespace and lookalike hosts refused) or the value of ACTIONS_ID_TOKEN_REQUEST_URL (https, alone or followed by &audience=); it allows a closed list of options (-s -S -f -I -g, -X GET|PUT|POST|HEAD, -u -H -o -D -w --data-binary, --max-time and --connect-timeout with a number) and refuses every other; it starts curl with -q, no proxy, one protocol and no redirect followed; the acceptance and artifact scripts name no curl of their own, except the four that change directory (acceptance-gradle, acceptance-gradle-capped, acceptance-maven, acceptance-maven-capped), a named exception that keeps their own fetch lines until check-action-pins can place a relative script path in a script that changes directory"
+        verification: { method: unit, release_blocking: false }
+        status: approved
       - id: REQ-SUP-001-AC28
         given: "the sample project's Gradle wrapper (bench/gradle-sample/gradle/wrapper/gradle-wrapper.properties)"
         when: "the wrapper downloads its Gradle distribution"
@@ -3069,13 +3189,13 @@ requirements:
         then: "no job of it measures how long a version has been public, and no job holds actions: write"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
-      - id: REQ-SUP-001-AC37
+      - id: REQ-SUP-001-AC42
         given: "bin/acceptance-serve.sh started with an IMAGE_REF, and bin/check-acceptance.sh, which loads Build's production candidate and starts it through that script"
         when: "the IMAGE_REF is not content-addressed: not exactly name@sha256:<64 lowercase hex> (name = [host[:port]/]path[/path]...[:tag]) and not exactly an image ID sha256:<64 lowercase hex> as one whole string (a tag only, an upper-case or short digest, trailing text, a second line, a leading option character)"
         then: "serve refuses it with exit 2 and a message naming the ref, before docker run; serve tags only the image's inspected ID to its fixed local name, checks that name still resolves to exactly that ID right before docker run (a re-tag is refused) and runs that name; check-acceptance.sh turns the tag that docker load printed into the loaded image's ID (docker image inspect) and hands serve that ID, never the tag; this is the plain form for an image: pinned by digest"
         verification: { method: unit, release_blocking: false }
         status: approved
-      - id: REQ-SUP-001-AC38
+      - id: REQ-SUP-001-AC43
         given: "bin/acceptance-gradle.sh and bin/acceptance-gradle-capped.sh, which run the sample project's ./gradlew"
         when: "either starts"
         then: "before any ./gradlew it checks gradle-wrapper.jar against the committed .github/policy/gradle-wrapper-jar-sha256.txt (sha256sum -c) and refuses with exit 1, naming the jar, when the jar differs, the expected file is missing, is not exactly one line naming the jar, or is for another jar; no gradlew runs behind a refusal (the owner's plain form for a tool download: exact version and checksum)"
@@ -3093,13 +3213,18 @@ requirements:
         then: "minor and patch updates arrive as one pull request per ecosystem entry and week: each github-actions, gomod (the root and the nested module tools/requirements) and pip entry carries one group that takes the minor and patch updates only (the group is called actions-minor-patch, gomod-minor-patch and pip-minor-patch), a major never joins a group and opens its own pull request, codeql-action is a major-only group placed first so that its minor and patch fall to the actions group, pip itself is excluded from the pip group, no group sets applies-to so a security update opens at once on its own, and the govulncheck tool entry keeps exactly the shape of AC1; the tools/requirements entry carries no cooldown either; the groups are the only change to the root gomod entry that AC1 describes as unchanged; a group whose checks fail stays open, because a pull request merges only when every check is green, and nothing splits a failing group"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
-      - id: REQ-SUP-001-AC34
+      - id: REQ-SUP-001-AC37
         given: "the tree the daily audit inventories holds a go install of a tool whose version is not an exact version (@latest, @main, a branch name, a range, no @version, or a variable)"
         when: "the daily audit runs"
-        then: "it prints a line that names the item, exits 1 and files no issue; a go install at an exact version (vMAJOR.MINOR.PATCH, with or without a pre-release part, or a full 40-hex commit) is no finding; v1, v1.2, a short commit and a branch are not exact"
+        then: "it prints a line that names the item, exits 1 and files no issue; a go install at an exact version (strict SemVer 2.0 vMAJOR.MINOR.PATCH, with or without a pre-release part, and with no build part but +incompatible, or a full 40-hex commit) is no finding; v1, v1.2, a short commit, a branch, and a version SemVer forbids (a number with a leading zero, a numeric pre-release identifier with a leading zero, an empty identifier: v01.2.3, v1.2.3-01, v1.2.3-main.01, and any other build part: v1.2.3+moving, v1.2.3+a.b) are not exact, because Go reads them as a branch query"
         verification: { method: unit, release_blocking: false }
         status: approved
-
+      - id: REQ-SUP-001-AC38
+        given: "a push to main, and a release tag whose commit is admitted by the source admission of the Build stage"
+        when: "ci.yml runs its job go-exact-pins (pin-audit.py --go-exact-only, which reads the tree with no network and no token and files no issue)"
+        then: "the job prints the line of AC37 for every go install that is not at an exact version and exits 1, or exits 0 when every one is exact; required-checks.json names go-exact-pins with scope push, so the source admission (bin/build-admit.py, the required-checks check) refuses a tag whose commit has no success of it; the job never runs on a pull request"
+        verification: { method: unit, release_blocking: false }
+        status: approved
   - id: REQ-UAT-001
     title: Persona UAT
     statement: >
@@ -3375,7 +3500,7 @@ requirements:
       - id: REQ-CHAIN-001-AC1
         given: "the workflow files of the release chain"
         when: "they are parsed"
-        then: "the Sign stage is the jobs sign, sign-rebuild and sign-check of release.yml, and release.yml is the only signing workflow file v0.3.0 has beyond the files that existed at v0.2.2 (customer-words-edited.yml, the one other added file, signs nothing; evidence-letter.yml, the monthly evidence letter, REQ-REL-013, may also be there, and its one signing job is on the id-token list); the Sign job runs on a GitHub-hosted runner (never self-hosted); no other workflow, composite action or .yaml file signs provenance, every other signing call being listed with its reason in .github/policy/chain-signers.json; release.yml is judged over a closed set of keys (finite grammar): the workflow, job and step keys come from fixed lists (no defaults, container, services, shell, working-directory, workflow env, continue-on-error, job-level uses; job env only on the three sign jobs of release.yml, exactly their three AWS federation literals AWS_ROLE_ARN, AWS_REGION and RELEASE_KMS_KEY_REF, which no step there carries and which the release job does not hold; strategy only a matrix of literal runner labels), step env names come from the closed env_names list of .github/policy/chain-scripts.json (never BASH_ENV, ENV, PATH, LD_*, PYTHON*, NODE_*, GITHUB_*) and each is read whole by that step, step uses is only a digest-pinned actions/checkout (persist-credentials false, no ref, repository, path or token), actions/download-artifact (an explicit path that cannot overwrite a listed script, bin/ or .github/) or actions/upload-artifact (no local composite action, docker://, github-script or reusable-workflow call), and every run line is exactly set -euo pipefail, bash or python3 followed by a plain relative path that is listed in chain-scripts.json, or one printf of a whole env variable into digests.json (any other printf line is an error), with arguments that are literals or whole reads of the step own env (anything else at command position, such as a variable, glob, make, xargs, find, npm, a pipe or a direct tool, fails and names the file and line); a listed script is scanned as raw text whatever its extension or shebang: it names no command from the fixed deny list (interpreters, source, eval, exec, make, xargs, find, curl, wget, ssh, gh, git, docker and similar) that its tools list does not allow, names no other script that its runs list does not allow, passes only a literal path in its runs list after witness run --, sets no PATH, BASH_ENV, ENV, LD_*, PYTHON* or NODE_OPTIONS, and signs only as its signs value says (a signer named anywhere in the text, comments and quotes included, counts); a script whose signs value is provenance is run by the sign jobs of release.yml alone (except through a sign_subcommand row, whose sign call text is itself a provenance signer)"
+        then: "the Sign stage is the jobs sign, sign-rebuild and sign-check of release.yml, and release.yml is the only signing workflow file v0.3.0 has beyond the files that existed at v0.2.2 (customer-words-edited.yml, the one other added file, signs nothing; evidence-letter.yml, the monthly evidence letter, REQ-REL-015, may also be there, and its one signing job is on the id-token list); the Sign job runs on a GitHub-hosted runner (never self-hosted); no other workflow, composite action or .yaml file signs provenance, every other signing call being listed with its reason in .github/policy/chain-signers.json; release.yml is judged over a closed set of keys (finite grammar): the workflow, job and step keys come from fixed lists (no defaults, container, services, shell, working-directory, workflow env, continue-on-error, job-level uses; job env only on the three sign jobs of release.yml, exactly their three AWS federation literals AWS_ROLE_ARN, AWS_REGION and RELEASE_KMS_KEY_REF, which no step there carries and which the release job does not hold; strategy only a matrix of literal runner labels), step env names come from the closed env_names list of .github/policy/chain-scripts.json (never BASH_ENV, ENV, PATH, LD_*, PYTHON*, NODE_*, GITHUB_*) and each is read whole by that step, step uses is only a digest-pinned actions/checkout (persist-credentials false, no ref, repository, path or token), actions/download-artifact (an explicit path that cannot overwrite a listed script, bin/ or .github/) or actions/upload-artifact (no local composite action, docker://, github-script or reusable-workflow call), and every run line is exactly set -euo pipefail, bash or python3 followed by a plain relative path that is listed in chain-scripts.json, or one printf of a whole env variable into digests.json (any other printf line is an error), with arguments that are literals or whole reads of the step own env (anything else at command position, such as a variable, glob, make, xargs, find, npm, a pipe or a direct tool, fails and names the file and line); a listed script is scanned as raw text whatever its extension or shebang: it names no command from the fixed deny list (interpreters, source, eval, exec, make, xargs, find, curl, wget, ssh, gh, git, docker and similar) that its tools list does not allow, names no other script that its runs list does not allow, passes only a literal path in its runs list after witness run --, sets no PATH, BASH_ENV, ENV, LD_*, PYTHON* or NODE_OPTIONS, and signs only as its signs value says (a signer named anywhere in the text, comments and quotes included, counts); a script whose signs value is provenance is run by the sign jobs of release.yml alone (except through a sign_subcommand row, whose sign call text is itself a provenance signer)"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-001-AC2
@@ -3418,13 +3543,13 @@ requirements:
       - id: REQ-CHAIN-001-AC8
         given: "the workflow files of the repository"
         when: "the chain test reads their jobs"
-        then: "exactly the three jobs sign, sign-rebuild and sign-check of release.yml run in the environment sign and request the identity token for the release signing role, and no other job of any workflow file does, so a job of any other environment or file cannot obtain the role; the role's trust itself, which accepts only the environment sign of release.yml, is applied in the ops repository"
+        then: "exactly the three jobs sign, sign-rebuild and sign-check of release.yml run in the environment sign and request the identity token for the release signing role, and no other job of any workflow file does except the job sign of evidence-letter.yml (REQ-REL-015, in the environment evidence-letter, the only job outside the environment sign that does), so a job of any other environment or file cannot obtain the role; the role's trust itself, which accepts only the environment sign of release.yml and the environment evidence-letter of evidence-letter.yml on main, is applied in the ops repository"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-001-AC9
         given: "release.yml"
         when: "its jobs are read"
-        then: "the three jobs sign, sign-rebuild and sign-check each carry environment: sign, the guard S of REQ-CHAIN-005-AC5 and exactly the identity token write for the KMS federation, and are the only jobs that carry the KMS federation (AWS_ROLE_ARN, AWS_REGION, RELEASE_KMS_KEY_REF) and the only jobs that run the signing subcommand or bin/release-signatures.sh; sign-check runs bin/release-signatures.sh on a final tag only, with no registry credential (no DOCKERHUB_* and no GH_TOKEN) and no registry or packages write, and uploads the signatures as the artifact release-signed; the job release carries neither an AWS role nor an identity token for the key, its Witness records stay local evidence under a throwaway key, and its steps release-apks and release-sign check Sign's signatures and push them and sign nothing; no job of persona-uat.yml, live-test or live-test-release names the key role"
+        then: "the three jobs sign, sign-rebuild and sign-check each carry environment: sign, the guard S of REQ-CHAIN-005-AC5 and exactly the identity token write for the KMS federation, and are the only jobs of release.yml that carry the KMS federation (AWS_ROLE_ARN, AWS_REGION, RELEASE_KMS_KEY_REF) and the only jobs that run the signing subcommand or bin/release-signatures.sh; sign-check runs bin/release-signatures.sh on a final tag only, with no registry credential (no DOCKERHUB_* and no GH_TOKEN) and no registry or packages write, and uploads the signatures as the artifact release-signed; the job release carries neither an AWS role nor an identity token for the key, its Witness records stay local evidence under a throwaway key, and its steps release-apks and release-sign check Sign's signatures and push them and sign nothing; no job of persona-uat.yml, live-test or live-test-release names the key role; the one other holder of the KMS federation is the publish step of evidence-letter.yml (REQ-REL-015), in the job with environment: evidence-letter, which carries the three names as the env of that step only, so no job of that file carries them and no other step of it or job of any other file names the key role, the key reference or the environment sign"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
 

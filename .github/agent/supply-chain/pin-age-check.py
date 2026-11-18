@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""The functions pin-audit.py imports (REQ-SUP-001): the pin judgment, the gh and tag helpers, the rulings reader.
-Run by nothing alone: the pull-request pin scan was removed, the daily pin audit is the supply-chain check."""
-import datetime as dt
+"""The pin-reading functions the daily pin audit loads (pin-audit.py): how a pin is read, and how a version is looked up at its source.
+
+Used as a module only. The pull-request scan that was its command line is deleted (REQ-REL-014-AC2); a moved version is no longer judged on a pull request.
+"""
 import hashlib
 import http.client
 import importlib.util
@@ -9,7 +10,6 @@ import json
 import os
 import re
 import subprocess
-import sys
 import urllib.parse
 import urllib.error
 import urllib.request
@@ -27,9 +27,6 @@ def _load(name):
 inv = _load("pin-inventory")
 
 
-# the one predicate lives in pin-inventory.py (its kernel-lock reader needs it); the names stay here for every caller
-# and test
-_PIN = inv._PIN
 is_pin = inv.is_pin
 
 
@@ -298,11 +295,8 @@ def _publisher_entry(name, pins=None):
     return pins.get(f"{host}/{path}")
 
 
-def _one_line(error):
-    """An error as one line. Its text can hold a pull request's file path, and a path may contain newlines;
-    a log line that starts with :: is an Actions command, and the runner reads ##[command] anywhere in a line."""
-    text = " ".join("".join(c if c.isprintable() else " " for c in str(error)).split())
-    return text.replace("##[", "## [")
+
+
 
 
 def _line_hash(flat):
@@ -340,7 +334,6 @@ def _unmeasured_counts(root, base, head):
     return added
 
 
-# keys are (file, form, the normalised command): an in-place swap or an edit of the line around it is an ADDITION
 
 
 # REQ-SUP-001-AC16: the advisor's rulings on lines that only MENTION a download tool (a comment, an echo string, a stub
@@ -349,19 +342,35 @@ def _unmeasured_counts(root, base, head):
 # pull request's tree (--root).
 DEFAULT_EXCEPTIONS = os.path.normpath(os.path.join(HERE, "..", "..", "supply-chain-exceptions.json"))
 _RULED_FIELDS = ("file", "form", "key", "line", "ruling")
-# the per-package fetch (advisor, Oct 15, owner rule 48): the literal https://packages.wolfi.dev/os/ (trailing slash
-# included, so the host cannot change) followed by
-# exactly ONE variable and nothing else
+TEXT_RULING = "text, not a command: "      # the convention: a line that only MENTIONS a download tool
 _LINE_TEXT = {}                              # whole-line hash -> the flattened line, filled by _occurrences
 
 
-# REQ-SUP-001-AC16: a reviewed_files row is a review of one whole file and of the files it sources by a literal path,
-# so any edit to them stops the row matching. A word that could run a file anywhere but in a plain line fails closed.
 
 
-# the pinned script lines, each honored for its file and its whole-line sha256 only (see PINNED_FETCH)
-# file -> the raw text of each pinned line, byte for byte (no trailing space, no carriage return); the head file must
-# hold each exactly once
+
+
+
+
+
+
+
+
+
+
+WHOLE_FILE = float("inf")      # the count of a reviewed_files ruling: the whole file is reviewed, no count
+
+
+def _rule_of(rows, reviewed, file, form, segment, line_hash):
+    """(ruling, count) of the ruling that rules this unmeasured occurrence, or None: its own unmeasured_text row, else
+    the file's reviewed_files row (no count: the whole file is reviewed)."""
+    row = rows.get((file, form, segment, line_hash))
+    if row:
+        return row
+    ruling = reviewed.get(file)
+    if line_hash.startswith("unruled:") or not ruling:      # a line bash reads differently from the flattening is never ruled
+        return None
+    return ruling, WHOLE_FILE
 
 
 MAX_RULED_COUNT = 100
@@ -580,57 +589,6 @@ def _func_bodies(lines):
     return out
 
 
-_DATA_CONSUMERS = frozenset("cat grep egrep fgrep sort head tail wc cut tr diff cmp jq base64 sha256sum shasum md5sum od".split())
-
-
-def _commands_redefined(lines, text, extra=()):
-    """True when the file defines a function named like a command the grammars trust (plus `extra`), or switches aliases on: the command's name then proves nothing."""
-    trusted = "|".join(re.escape(w) for w in sorted(_DATA_CONSUMERS | _INTERP_WORDS | {"echo", "printf", "true", "test", "tee", "uniq", "xxd"} | set(extra))) + r"|python[\d.]*"
-    return bool((set(_func_bodies(lines)) & (_DATA_CONSUMERS | _INTERP_WORDS | {"python", "python3", "echo", "printf", "true", "test"} | set(extra))) or "expand_aliases" in text or re.search(r"(?m)^[ \t]*alias[ \t]+[^\s=]", text) \
-            or re.search(r"(?m)(?<![\w.$-])(?:function[ \t]+(?:" + trusted + r")(?![\w.-])|(?:" + "|".join(w for w in trusted.split("|") if w[:1].isalpha()) + r")[ \t]*\(\s*\))", text))
-
-
-def _context_holds(text, line_hash):
-    """True only when EVERY single-line occurrence of the ruled line (by the hash of its whole flattened text) in `text` is one plain NAME=word assignment at a command
-    position. None found: False."""
-    lines = text.split("\n")
-    hits = [i for i, l in enumerate(lines)
-            if " ".join(l.split()) and all(c in " \t" or not c.isspace() for c in l) and _line_hash(" ".join(l.split())) == line_hash and not (i and lines[i - 1].rstrip().endswith("\\"))]
-    if not hits:
-        return False
-    _, sane, state = _shell_lex(lines)
-    if not sane:
-        return False
-    if _commands_redefined(lines, text):
-        return False                           # a command the grammar trusts is redefined (or aliases are on): its name proves nothing here
-    if re.search(r"\b(?:declare|typeset|integer|(?:local|readonly|export)[ \t]+-\w+)\b", text):
-        return False                           # a variable with attributes (integer, array, nameref ...) evaluates or redirects its assignment: nothing in this file is judged plain
-    import shlex
-    for i in hits:
-        if state[i] is None or set(state[i]) & _NOT_CODE:    # inside a quote, arithmetic or a here-document: the shell state decides what it is; a function or compound body is plain code
-            return False
-        s = lines[i].strip()
-        if not re.match(r"[A-Za-z_][A-Za-z0-9_]*=", s) or s.endswith("\\") or not _plain_value(s): return False
-        lx = shlex.shlex(s, posix=True, punctuation_chars=True); lx.whitespace_split = True; lx.commenters = ""
-        try:
-            toks = list(lx)
-        except ValueError:
-            return False
-        if len(toks) != 1 or not re.match(r"[A-Za-z_][A-Za-z0-9_]*=", toks[0]): return False
-    return True
-
-
-def _context_proved(root, head, path, line_hash, row):
-    """A row without a context is as it always was; a row with one rules its line only when the context is proved from the head file."""
-    ruling, count, context = row
-    if context is None:
-        return True
-    if not path.endswith(".sh"):
-        return False
-    text = _scripts_at(root, head).get(path)
-    return text is not None and not _has_cr(root, head, path) and _context_holds(text, line_hash)
-
-
 def _row_for(rulings, root, head, k, lh):
     """The base branch's row for the line when its context (if any) holds in the head, else None: a row with a context that does not hold rules nothing."""
     r = rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh))
@@ -652,78 +610,3 @@ def ruled_unpinned_lines(root, base, head, exceptions_path):
         if all(r and n <= r[1] and not in_base.get(k, {}).get(lh) for r, (lh, n) in zip(rs, per.items())):
             out.update((k[0], lh) for lh in per)
     return out
-
-
-# a module pinned by go.sum: its own key, empty sum
-
-
-_HEAD_SCRIPTS = {}
-
-
-_INTERP_WORDS = frozenset("sh bash dash zsh ksh ash csh tcsh fish eval source . exec xargs python python2 python3 node nodejs perl ruby awk gawk mawk nawk php lua".split())
-
-
-_NOT_CODE = frozenset(("'", '"', "`", "$((", "(("))        # a stack entry that makes a line text or arithmetic, not a command position
-
-
-_RAW_CR = {}
-
-
-def _has_cr(root, rev, path):
-    """True when the file's real bytes hold a carriage return (the scan reads text with universal newlines, which hides one: bash would see a different line). Unreadable: True."""
-    key = (root, rev, path)
-    if key not in _RAW_CR:
-        try:
-            raw = subprocess.run(["git", "-C", root, "show", f"{rev}:{path}"], capture_output=True, check=True, timeout=120).stdout if rev is not None else open(os.path.join(root, path), "rb").read()
-            _RAW_CR[key] = b"\r" in raw
-        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-            _RAW_CR[key] = True
-    return _RAW_CR[key]
-
-
-
-
-def _plain_value(s):
-    """True when the assignment text has no substitution that RUNS: no $( or backtick outside single quotes, no <( or >( outside every quote, no old-style $[ arithmetic."""
-    sq = dq = False
-    i = 0
-    while i < len(s):
-        c = s[i]
-        if sq:
-            sq = c != "'"
-        elif c == "\\":
-            i += 1
-        elif c == "'" and not dq:
-            sq = True
-        elif c == '"':
-            dq = not dq
-        elif c == "`" or (c == "$" and s[i + 1:i + 2] in ("(", "[")):
-            return False
-        elif not dq and c in "<>" and s[i + 1:i + 2] == "(":
-            return False
-        i += 1
-    return not (sq or dq)
-
-
-def _scripts_at(root, rev):
-    return _HEAD_SCRIPTS.setdefault((root, rev), inv.tree_scripts(root, rev))
-
-
-def parse_time(s):
-    """ISO 8601 -> aware datetime, or None when it is not one."""
-    if not isinstance(s, str):
-        return None
-    t = s.strip()
-    m = re.match(r"^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}:?\d{2})?$", t)
-    if not m:
-        return None
-    base, _, tz = m.groups()
-    try:
-        d = dt.datetime.strptime(base.replace(" ", "T"), "%Y-%m-%dT%H:%M:%S")
-    except ValueError:
-        return None
-    if tz and tz != "Z":
-        sign = 1 if tz[0] == "+" else -1
-        hh, mm = int(tz[1:3]), int(tz[-2:])
-        d = d - sign * dt.timedelta(hours=hh, minutes=mm)
-    return d.replace(tzinfo=dt.timezone.utc)

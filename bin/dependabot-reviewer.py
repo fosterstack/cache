@@ -15,7 +15,7 @@ Subcommands (each one is small and testable on its own; the workflow strings the
                                               -> DIR/bundle.md (commits + the whole diff of SHA against main
                                                  + release notes + our usage)
   same-diff --repo R --base B SHA SHA         -> exit 0 only when both commits change B by the same diff text
-  read     --bundle F --prompt F --model-env NAME --out F
+  review   --bundle F --prompt F --model-env NAME --out F
                                               -> one reader's ranked findings (JSON)
   decide   --reader F [--reader F ...] --out F
                                               -> {"decision": "merge"|"hold"|"error", ...}
@@ -601,7 +601,7 @@ def cmd_same_diff(a):
     sys.exit(0 if same else 1)
 
 
-# ----------------------------------------------------------------------------- read
+# ----------------------------------------------------------------------------- review
 
 def parse_answer(text):
     """The reader's answer must be exactly ONE JSON object, optionally wrapped in a single code
@@ -689,7 +689,7 @@ def answer_of(msg):
     return text, meta, None
 
 
-def cmd_read(a):
+def cmd_review(a):
     bundle = open(a.bundle).read()
     prompt = open(a.prompt).read().replace("{bundle}", bundle)
     model = os.environ.get(a.model_env)
@@ -781,7 +781,7 @@ def main(argv=None):
     p.add_argument("sha", nargs=2)
     p.set_defaults(fn=cmd_same_diff)
     p = sub.add_parser("mask-tree"); p.add_argument("dir"); p.set_defaults(fn=cmd_mask_tree)
-    p = sub.add_parser("read"); p.add_argument("--bundle", required=True); p.add_argument("--prompt", required=True); p.add_argument("--model-env", required=True); p.add_argument("--out", required=True); p.set_defaults(fn=cmd_read)
+    p = sub.add_parser("review"); p.add_argument("--bundle", required=True); p.add_argument("--prompt", required=True); p.add_argument("--model-env", required=True); p.add_argument("--out", required=True); p.set_defaults(fn=cmd_review)
     p = sub.add_parser("decide"); p.add_argument("--reader", action="append", required=True); p.add_argument("--out", required=True); p.set_defaults(fn=cmd_decide)
     a = ap.parse_args(argv)
     a.fn(a)

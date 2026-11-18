@@ -1,9 +1,8 @@
 name: Acceptance
 
 # The client acceptance suites: Gradle, then Maven once per extension version (1.2.0, 1.2.3), in the one job `acceptance`.
-# It is called only, by full-suite.yml, which runs it from source before a release-candidate tag and nightly. The release chain
-# does not call this file (REQ-CHAIN-006-AC10): Check runs the suites through bin/check-acceptance.sh, and this file starts no
-# container image (REQ-SUP-001-AC29).
+# Called only, by full-suite.yml, nightly and before a release-candidate tag (REQ-REL-014-AC1): no push or pull request starts it. The release chain
+# does not call this file (REQ-CHAIN-006-AC10): Check runs the suites through bin/check-acceptance.sh, and this file starts no container image (REQ-SUP-001-AC29).
 
 on:
   workflow_call:

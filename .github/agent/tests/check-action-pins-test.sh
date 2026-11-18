@@ -174,10 +174,12 @@ refusal_reason() {
     c02-ruby-e|c02-node-e|c02-perl-e|r2c02-node-eval-eq|r2c02-perl-attached|r2c02-ruby-attached \
       |r3c02-env-u-node) echo 'runs inline code from the workflow, which is not read' ;;
     c02-uncommitted-script|c02-generated-elsewhere) echo 'is not a committed file' ;;
+    w-cache-path-3-bad) echo 'does not parse as YAML' ;;
     r2c02-replaced-script|r3c02-replace-*|sealed-probe-replaced|ac3-tee-bad|w-checkout-* \
       |w-download-artifact-*|w-cache-*|w-writer-*|w-conditional-writer-bad|w-duplicate-path-keys-*) \
       echo 'is changed by the job before it runs' ;;
     c12-hash-p) echo 'binds a command name to a program' ;;
+    g3-refs-heads-main-copy-bad) echo 'not pinned by digest' ;;
     g3-*|g5-*|g6-*) echo 'named by a variable' ;;
     sealed-probe-docker-pull) echo 'not pinned by digest' ;;
     c11-*|r2c11-*|r3c11-adjacent-redirect|r3c11-workspace-abs|r3c11-tar-workspace) \
@@ -3819,7 +3821,6 @@ import subprocess
 def chain_file(p): return subprocess.run(["git", "show", "d7cab1463cef8ac9fac38696dc13d1ff80778840:" + p], check=True, capture_output=True, text=True).stdout
 cwf = chain_file(".github/workflows/auditor.yml")
 run = yaml.safe_load(cwf)["jobs"]["audit"]["steps"][10]["run"]       # the chain's step 10
-mrun = yaml.safe_load(wf)["jobs"]["audit"]["steps"][9]["run"]        # main's step 9 (its text equals the chain's step 10)
 class Tree:
     entries = {"bin/x-test.sh": "file"}
     def __init__(self, files): self.files = files
@@ -3834,13 +3835,10 @@ def judge(file, job, idx, text, files=None):
     return [b for b in bad if "REQ-REL-005-AC3" in b]
 F = ".github/workflows/auditor.yml"
 assert not judge(F, "audit", 10, run, {F: cwf}), "the chain's exact step 10 is excluded"
-assert not judge(F, "audit", 9, mrun), "main's exact step 9 is excluded"
 for other in (8, 11, 12):
     assert judge(F, "audit", other, run, {F: cwf}), "the chain's text at index %d is a finding" % other
 assert judge(F, "other", 10, run, {F: cwf}), "the same text in another job is a finding"
-assert judge(F, "other", 9, mrun), "main's text in another job is a finding"
 assert judge(".github/workflows/other.yml", "audit", 10, run, {".github/workflows/other.yml": cwf}), "the same text in another file is a finding"
-assert judge(".github/workflows/other.yml", "audit", 9, mrun, {".github/workflows/other.yml": wf}), "main's text in another file is a finding"
 assert judge(F, "audit", 10, run, {}), "a workflow file the tree cannot read keeps the finding"
 assert judge(F, "audit", 10, run, {F: cwf.replace("${{ runner.temp }}/kev.json", "bin/x-test.sh")}), "a changed destination env is a finding"
 assert judge(F, "audit", 10, run, {F: cwf + "\n          AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json\n"}), "a second assignment is a finding"
@@ -3848,7 +3846,7 @@ D = ".github/workflows/dependabot-reviewer.yml"
 URL = "ACTIONS_ID_TOKEN_REQUEST_URL"
 dwf = open(sys.argv[2].replace("auditor.yml", "dependabot-reviewer.yml")).read()
 dsteps = yaml.safe_load(dwf)["jobs"]["review"]["steps"]
-real = {4: dsteps[4]["run"], 8: dsteps[8]["run"]}
+real = {4: dsteps[4]["run"], 7: dsteps[7]["run"]}
 def judge_job(steps, files, file=D, job="review", shells={}):
     """the REQ-REL-005-AC3 findings for a job whose run steps are {index: text}, as the checker reads a whole job"""
     bad = []
@@ -3962,8 +3960,8 @@ assert [k for k in m.DOWNLOAD_EXCLUSIONS if k[0] == D and k[1] != "review"] == [
         "an excluded step of the reviewer outside its review job"
 assert {m.DOWNLOAD_EXCLUSIONS[k][1:3] for k in m.DOWNLOAD_EXCLUSIONS if k[0] == D} == {(URL, None)}, \
         "an entry of the reviewer with another condition than the URL variable's"
-assert sorted(k[2] for k in m.DOWNLOAD_EXCLUSIONS if k[0] == D) == [4, 7, 8], \
-        "the reviewer's excluded steps are not exactly main's two and the chain's step 7"
+assert sorted(k[2] for k in m.DOWNLOAD_EXCLUSIONS if k[0] == D) == [4, 7], \
+        "the reviewer's excluded steps are not exactly the chain's two"
 missed = []
 # the word curlrc anywhere in the workflow outside the excluded steps' run text: curl reads $HOME/.curlrc before any
 # option
@@ -4031,9 +4029,9 @@ for what, text in (
         ("a job service with no env", put(JOB, "    services:\n      side:\n        image: %s\n" % IMG))):
     missed.append("%s is a finding" % what) if whole(text) != [4, 7] else None
 assert not missed, missed
-cdwf = chain_file(D)
+cdwf = dwf
 csteps = yaml.safe_load(cdwf)["jobs"]["review"]["steps"]
-chain = {4: csteps[4]["run"], 7: csteps[7]["run"]}                            # the chain's: steps 4 and 7
+chain = {4: csteps[4]["run"], 7: csteps[7]["run"]}                            # this tree's steps 4 and 7
 assert judge_job(chain, {D: cdwf}) == [], "the chain's two exact steps are excluded"
 assert judge_job({5: chain[4], 7: chain[7]}, {D: cdwf}) == [5, 7], "the chain's step 4 text at another index is a finding"
 assert judge_job(chain, {D: cdwf}, job="other") == [4, 7], "the chain's texts in another job are findings"
@@ -4041,6 +4039,9 @@ assert judge_job(chain, {".github/workflows/x.yml": cdwf}, file=".github/workflo
         "the chain's texts in another file are findings"
 assert judge_job(chain, {D: cdwf + "\n          ACTIONS_ID_TOKEN_REQUEST_URL: file:///x\n"}) == [4, 7], \
         "an assignment of the URL variable is a finding"
+oldsteps = yaml.safe_load(chain_file(D))["jobs"]["review"]["steps"]
+assert oldsteps[7]["run"] != chain[7], "the chain's step 7 text is this tree's"
+assert 7 in judge_job({4: chain[4], 7: oldsteps[7]["run"]}, {D: cdwf}), "a bound step whose text has changed is a finding"
 PY
 fi
 

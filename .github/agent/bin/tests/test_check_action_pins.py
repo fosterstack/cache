@@ -904,7 +904,7 @@ class GateWorkflowPresence(unittest.TestCase):
 
 
 class MainKeepers(unittest.TestCase):
-    """What main's checker accepts beside the chain's forms: the two generated Kubernetes smoke scripts, in that one workflow only."""
+    """The two generated Kubernetes smoke scripts of main's k8s workflow: no entry excuses them on this tree, so each is refused."""
     K8S = ".github/workflows/stage-acceptance-k8s.yml"
 
     def tree_with(self, rel, script):
@@ -923,13 +923,7 @@ class MainKeepers(unittest.TestCase):
             fh.write(HEAD + "    steps:\n      - run: |\n          printf x > /tmp/smoke-assert.sh; bash /tmp/smoke-assert.sh\n")
         code, out = run([d])
         self.assertEqual(code, 1, out)
-        self.assertIn("is fenced as written only by its python heredoc", out)
-
-    def test_the_generated_smoke_scripts_pass_in_the_k8s_workflow(self):
-        for script in ("/tmp/smoke-assert.sh", "/tmp/pf-forward.sh"):
-            with self.subTest(script=script):
-                code, out = run([self.tree_with(self.K8S, script)])
-                self.assertEqual(code, 0, out)
+        self.assertIn("smoke-assert.sh, which is not a committed file", out)
 
     def test_the_same_script_names_in_another_workflow_are_refused(self):
         for script in ("/tmp/smoke-assert.sh", "/tmp/pf-forward.sh"):
@@ -1506,11 +1500,6 @@ class BasenameWriteKeepsCounting(unittest.TestCase):     # a `> "$RUNNER_TEMP/$(
                 body = fetch + 'echo evil > "$RUNNER_TEMP/$(basename bin/tool.sh)"\n' + self.RUN
                 self.assertIsNone(self.resolve(body))
 
-    def test_a_loop_whose_list_lacks_the_name_leaves_the_literal_copy_resolved(self):
-        loop = ('for f in bin/a.sh bin/b.sh; do\n  gh api repos/${GITHUB_REPOSITORY}/contents/${f}?ref=main --jq .content'
-                ' | base64 -d > "$RUNNER_TEMP/$(basename "$f")"\ndone\n')
-        self.assertEqual(self.resolve(loop + self.FETCH + self.RUN), "bin/tool.sh")
-
     def test_a_loop_whose_list_names_the_file_still_resolves_through_the_loop(self):
         loop = ('for f in bin/tool.sh bin/b.sh; do\n  gh api repos/${GITHUB_REPOSITORY}/contents/${f}?ref=main --jq .content'
                 ' | base64 -d > "$RUNNER_TEMP/$(basename "$f")"\ndone\n')
@@ -1561,6 +1550,28 @@ class BasenameWriteProofFailsClosed(unittest.TestCase):  # the "another name" pr
                 'printf x > "$RUNNER_TEMP/$(basename "$f")"\n'
                 'done\n' + self.RUN)
         self.assertIsNone(self.resolve(body))
+
+
+class FsTreeReadBytes(unittest.TestCase):                # check-action-pins.py FsTree.read_bytes, in-process
+    def test_read_bytes_returns_the_raw_bytes_of_a_tree_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "f.bin"), "wb") as fh:
+                fh.write(b"\xff\xfe\x00ok")
+            self.assertEqual(M.FsTree(d).read_bytes("f.bin"), b"\xff\xfe\x00ok")
+
+
+class BasenameIsOtherWordCount(unittest.TestCase):       # check-action-pins.py _basename_is_other, called directly
+    def test_one_literal_word_of_another_name_is_other(self):
+        self.assertTrue(M._basename_is_other("bin/other.sh", "tool.sh"))
+
+    def test_one_literal_word_of_the_same_name_is_not_other(self):
+        self.assertFalse(M._basename_is_other("bin/tool.sh", "tool.sh"))
+
+    def test_more_than_one_word_is_not_proved_other(self):
+        self.assertFalse(M._basename_is_other("bin/other.sh bin/tool.sh", "tool.sh"))
+
+    def test_no_word_is_not_proved_other(self):
+        self.assertFalse(M._basename_is_other("", "tool.sh"))
 
 
 if __name__ == "__main__":       # last: every test class above is defined first (Codex #164 adversarial r1, R02)
