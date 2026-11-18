@@ -351,6 +351,8 @@ scout_leg_run() {
 
 set -euo pipefail
 : "${ECR:?}" "${GAR:?}" "${GITHUB_WORKSPACE:?}"
+grype() { "${RUNNER_TEMP:?}/tools/grype" "$@"; }   # the install step puts it there; no step changes PATH
+export -f grype   # the guide commands run in a child bash
 work="${RUNNER_TEMP:?}/vex-live-test"
 mkdir -p "$work"
 cd "$work"

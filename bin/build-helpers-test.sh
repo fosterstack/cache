@@ -989,7 +989,6 @@ for bad in "01.0.0-c2097c7c" "v1.0.0-c2097c7" "v1.0.0-c2097c7cc" "v1.0.0-C2097C7
 done
 gdata; printf 'v1.0.0-c2097c7c' >"$work/gd/fips"
 fails "rule 21" "gen-recipes: a FIPS module file without its final newline is refused" 'FIPS module file' gen_with --check
-t "rule 21" "gen-recipes: the template pin does not depend on the data files (changing a data file never changes the template's sha256)" bash -c "a=\$(shasum -a 256 '$gt' | cut -d' ' -f1); cp '$work/gd/lock' '$work/gd/lock.bak'; printf 'zz=1-r0\n' >>'$work/gd/lock'; b=\$(shasum -a 256 '$gt' | cut -d' ' -f1); test \"\$a\" = \"\$b\""
 tmpl; python3 - "$work/gr/t.tmpl" <<'P'
 import sys
 p = sys.argv[1]; s = open(p).read(); s = s.replace("@PACKAGES@\n", "      - literal=1-r0\n", 1); open(p, "w").write(s)

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC1
+# proves: REQ-SUP-001-AC41, REQ-SUP-001-AC30, REQ-SUP-001-AC32, REQ-SUP-001-AC33
 # The owner's ruling of Nov 11 2026 removed the release-age hold: a pull request never waits for a version to age, and the pin scan measures no time. Proved on the
 # tracked files, with nothing run: (a) pin-age-check.py and (b) pin-audit.py hold none of the words of the removed hold, (c) the tag observer is gone and no tracked
 # file refers to it, (d) Dependabot carries no cooldown and one entry per ecosystem and directory, the pin-age scan is deleted (REQ-REL-014-AC2: no context, no job pin-age, no pull_request trigger in supply-chain.yml), and no workflow holds actions: write.
@@ -22,6 +22,22 @@ for f in .github/agent/supply-chain/pin-age-check.py .github/agent/supply-chain/
     else bad "$f can be read"; fi
   done
 done
+
+# e: no tracked file names the removed hold, except the files that say it was removed (AC30)
+# Files that may name it, each with its reason: this test (it names the phrases it forbids); the generated
+# docs/quality/traceability.md (it repeats requirements.yaml); requirements/requirements.yaml, whose origin line records
+# the removal; the three suites whose headers say what the removal took out (pin-age-check, pin-audit and
+# s2-p2-time-exceptions); vendor/ is third-party Go source.
+self=.github/agent/tests/release-age-gone-test.sh
+git ls-files -z | grep -zvE "^(vendor/|$self\$|docs/quality/traceability\.md\$|requirements/requirements\.yaml\$|\.github/agent/tests/(pin-age-check|pin-audit|s2-p2-time-exceptions)-test\.sh\$)" >"$work/files"
+phrases='release[ -]age(?!-gone-test)|\bage hold\b|held pull request|rerun-held'
+: >"$work/hits"
+while IFS= read -r -d '' f; do
+  [ -f "$f" ] || continue
+  rc=0; grep -IHniP -- "$phrases" "$f" >>"$work/hits" || rc=$?
+  [ "$rc" -le 1 ] || { echo "FAIL cannot read $f"; exit 1; }
+done <"$work/files"
+if [ ! -s "$work/hits" ]; then ok "no tracked file names the release-age wait"; else bad "no tracked file names the release-age wait ($(wc -l <"$work/hits") lines, first: $(head -3 "$work/hits" | cut -c1-140 | tr '\n' '|'))"; fi
 
 # c: the tag observer is gone, and no tracked file refers to it
 f=.github/agent/supply-chain/tag_observer.py
@@ -53,7 +69,7 @@ dup = sorted(k for k, n in c.items() if n > 1)
 if dup: sys.exit("more than one entry for %r" % (dup,))
 PY
 
-# d (REQ-SUP-001-AC1): the github-actions, pip and tools/govulncheck gomod entries are there (the last weekly), the root gomod entry keeps its weekly schedule and its one minor-patch group, no docker entry
+# d (REQ-SUP-001-AC41): the github-actions, pip and tools/govulncheck gomod entries are there (the last weekly), the root gomod entry keeps its weekly schedule and its one minor-patch group, no docker entry
 py .github/dependabot.yml >"$work/ac1" 2>&1 <<'PY' && ok "dependabot.yml: github-actions, pip and govulncheck entries present, root gomod unchanged, no docker entry" || { bad "dependabot.yml: github-actions, pip and govulncheck entries present, root gomod unchanged, no docker entry"; sed 's/^/     /' "$work/ac1"; }
 import sys, yaml
 u = {(e["package-ecosystem"], e["directory"]): e for e in yaml.safe_load(open(sys.argv[1]))["updates"]}
@@ -65,6 +81,15 @@ if not r or r["schedule"] != {"interval": "weekly"} or r.get("groups") != {"gomo
 if any(k[0] == "docker" for k in u): sys.exit("a docker entry exists")
 PY
 
+# no job of supply-chain.yml runs a re-run of runs or a timing of versions
+py .github/workflows/supply-chain.yml >"$work/sc2" 2>&1 <<'PY' && ok "no job of supply-chain.yml runs a re-run, a run listing \
+or a publication-time lookup" || { bad "no job of supply-chain.yml runs a re-run, a run listing or a publication-time \
+lookup"; sed 's/^/     /' "$work/sc2"; }
+import sys, yaml, re
+t = yaml.dump(yaml.safe_load(open(sys.argv[1]))["jobs"])
+m = re.search(r"run rerun|gh run |/rerun|published_at|--now|first.seen|tag_observer", t)
+if m: sys.exit("found: " + m.group(0))
+PY
 # d (REQ-REL-014-AC2): the pin-age scan is deleted: no context pin-age in required-checks.json, no job pin-age in supply-chain.yml, and supply-chain.yml has no pull_request trigger
 py .github/policy/required-checks.json >"$work/rc" 2>&1 <<'PY' && ok "required-checks.json names no context pin-age" || { bad "required-checks.json names no context pin-age"; sed 's/^/     /' "$work/rc"; }
 import json, sys

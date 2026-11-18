@@ -154,10 +154,11 @@ res("pin-age" not in scopes, "AC2: required-checks.json has no pin-age entry")
 
 # ---- REQ-REL-014-AC3: a push-scoped check is produced by a job that runs on push; acceptance is no entry
 res("acceptance" not in scopes, "AC3: required-checks.json has no acceptance entry")
-WANT = {"test": "push", "lint": "push", "govulncheck": "push", "allowlist": "push", "allowlist-chain": "push",
-        "requirements": "push", "reproducibility": "push", "scan": "push", "go-exact-pins": "push",
+WANT = {"test": "push", "lint": "push", "govulncheck": "push", "analyze (go)": "push", "allowlist": "push",
+        "allowlist-chain": "push", "fips140-only": "push", "requirements": "push", "reproducibility": "push",
+        "scan": "push", "go-exact-pins": "push",
         "auditor-review-gate": "pull_request"}
-res(scopes == WANT, "AC3: required-checks.json holds exactly the ten remaining contexts with their scopes (diff: %s)"
+res(scopes == WANT, "AC3: required-checks.json holds exactly the twelve remaining contexts with their scopes (diff: %s)"
     % sorted(k for k in set(scopes) | set(WANT) if scopes.get(k) != WANT.get(k)))
 res([c for c in checks if c["context"] == "go-exact-pins"] == [{"context": "go-exact-pins", "integration_id": 15368, "scope": "push"}],
     "AC3: required-checks.json has exactly one go-exact-pins entry, integration_id 15368, scope push")

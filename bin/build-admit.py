@@ -63,7 +63,8 @@ SIGNER = "bin/admission-tag-signer.py"
 # gate 7 (REQ-REL-012-AC7): main's judge, its helper, the writers policy and (when main has it) the owner-decision items, read from origin/main into a scratch root and never taken from the tagged commit
 AUDIT_FILES = ("bin/audit-record-judge.sh", "bin/audit-record.py", ".github/policy/audit-writers.json")
 AUDIT_ITEMS = ".auditor/accepted-items.json"      # the judge also reads it when main has it: an open owner-decision item holds the tag
-POLICY_FILES = (".github/policy/allowed_signers", ".github/policy/github-web-flow.gpg", ".github/policy/required-checks.json", SIGNER, "bin/build-admit.py")   # the signer loads the tag grammar from the copy beside it
+POLICY_FILES = (".github/policy/allowed_signers", ".github/policy/github-web-flow.gpg", ".github/policy/required-checks.json",
+    ".github/policy/release-only-checks.json", SIGNER, "bin/build-admit.py")   # the signer loads the tag grammar from the copy beside it
 
 
 class Refusal(Exception):
@@ -381,22 +382,23 @@ def one_green_run(runs, req, sha):
 
 
 def read_required_policy(ctx):
-    """Main's required-checks.json, validated: an unknown scope is a policy error, not a skipped check."""
-    try:
-        with open(os.path.join(ctx.policy, "required-checks.json"), encoding="utf-8") as fh:
-            reqs = json.load(fh)["required_checks"]
-    except (ValueError, KeyError, TypeError, OSError) as e:
-        raise Refusal("required-checks", "main's required-checks.json is unreadable: %s" % one_line(str(e), 100))
-    if not isinstance(reqs, list):
-        raise Refusal("required-checks", "main's required_checks is not a list")
+    """Main's required-checks.json and release-only-checks.json, validated: an unknown scope is a policy error, not a skipped check."""
     out = []
-    for r in reqs:
-        if not isinstance(r, dict) or not isinstance(r.get("context"), str) or not isinstance(r.get("integration_id"), int):
-            raise Refusal("required-checks", "a required check entry in main's policy is malformed: %s" % one_line(json.dumps(r), 100))
-        scope = r.get("scope", "push")
-        if scope not in ("push", "pull_request"):
-            raise Refusal("required-checks", "unknown scope %r for required check %r: policy error" % (scope, r["context"]))
-        out.append({"context": r["context"], "integration_id": r["integration_id"], "scope": scope})
+    for name in ("required-checks.json", "release-only-checks.json"):
+        try:
+            with open(os.path.join(ctx.policy, name), encoding="utf-8") as fh:
+                reqs = json.load(fh)["required_checks"]
+        except (ValueError, KeyError, TypeError, OSError) as e:
+            raise Refusal("required-checks", "main's %s is unreadable: %s" % (name, one_line(str(e), 100)))
+        if not isinstance(reqs, list) or not reqs:
+            raise Refusal("required-checks", "main's %s required_checks is not a non-empty list" % name)
+        for r in reqs:
+            if not isinstance(r, dict) or not isinstance(r.get("context"), str) or not isinstance(r.get("integration_id"), int):
+                raise Refusal("required-checks", "a required check entry in main's policy is malformed: %s" % one_line(json.dumps(r), 100))
+            scope = r.get("scope", "push")
+            if scope not in ("push", "pull_request"):
+                raise Refusal("required-checks", "unknown scope %r for required check %r: policy error" % (scope, r["context"]))
+            out.append({"context": r["context"], "integration_id": r["integration_id"], "scope": scope})
     return out
 
 

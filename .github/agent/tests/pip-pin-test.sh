@@ -538,8 +538,9 @@ def dep_twice(t):
 def dep_dir(t):
     for u in dep_pip(t): u["directory"] = "/"
     return True
-mutants += [("the Dependabot pip entry missing", "C4", dep_missing), ("a second Dependabot pip entry for the same directory", "C4", dep_twice),
-             ("the Dependabot pip entry on directory /", "C4", dep_dir)]
+mutants += [("the Dependabot pip entry missing", "C4", dep_missing),
+            ("a second Dependabot pip entry for the same directory", "C4", dep_twice),
+            ("the Dependabot pip entry on directory /", "C4", dep_dir)]
 
 def ci_steps(t): return t["docs"][".github/workflows/ci.yml"]["jobs"]["allowlist"]["steps"]
 def ci_unwire(t):

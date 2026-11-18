@@ -68,7 +68,7 @@ posture() { lg -sf --max-time 5 "http://127.0.0.1:$1/statusz" | jq -r 'if type =
 stop_last() { stop_pid "${pids[${#pids[@]}-1]}"; }
 
 # The images and archives are the ones Build recorded (re-derived from digests.json), before anything is extracted, loaded or executed; the bind also
-# lists the files of each layout docker may be given (REQ-SUP-001-AC33).
+# lists the files of each layout docker may be given (REQ-SUP-001-AC39).
 python3 bin/check-bind.py --digests "$digests" --images "$images" --archives "$archives" --members-out "$tmp" || exit 1
 
 # this architecture's binaries out of the archives: the bind above proved the four Linux archives are there (REQ-PLAT-001-AC1)

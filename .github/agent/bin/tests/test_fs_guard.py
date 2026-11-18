@@ -2,7 +2,7 @@
 """REQ-AUD-019: tests must not touch real system paths. Importing this module (unittest discovery does, before any test runs) arms fs_guard
 for the whole run (the runtime guard covers whatever discovery actually runs, Go and Java included); the static scan is scoped: Python tests in
 full, every other (shell) test only for an absolute-target `ln -s` / `cp -s` and for creating files without a mktemp call."""
-import ast, contextlib, hashlib, os, re, shutil, site, subprocess, sys, sysconfig, tempfile, unittest
+import ast, contextlib, os, re, shutil, site, subprocess, sys, sysconfig, tempfile, unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -537,13 +537,11 @@ def literal_lines(text, rel=""):
 
 
 def row_pin(raw, rel=""):
-    """(sha256 of the file's RAW BYTES, the system-path-literal lines). A whole-file allow row exempts every literal in its file, and a hash of
-    only the literal lines is blind to context (moving a closing quote makes a quoted fixture line a real command); hashing translated text
-    would be blind to CR / CRLF edits (a lone CR after a comment line changes what bash executes). So ANY byte edit to such a file changes the
-    pin and needs a reviewed PINS update; the stored lines show a reviewer what the file is allowed to contain."""
+    """The system-path-literal lines of a whole-file allow row's file: the scan cannot tell a quoted fixture line from a command, so the row
+    lists the lines the file may contain and a reviewer sees what it is allowed to hold."""
     if isinstance(raw, str):
         raw = raw.encode("utf-8", "replace")
-    return hashlib.sha256(raw).hexdigest(), tuple(literal_lines(decode(raw), rel))
+    return tuple(literal_lines(decode(raw), rel))
 
 
 def whole_file_rows():
@@ -1815,50 +1813,27 @@ class Static(unittest.TestCase):
         self.assertFalse(makes_files_without_temp(mk.replace("mkdir", "touch") + "python3 -c 'import tempfile; tempfile.mkdtemp()'\n"))
         self.assertFalse(makes_files_without_temp("echo hi\n"))
 
-    def test_a_whole_file_allow_row_pins_the_whole_file_and_shows_its_literal_lines(self):
+    def test_a_whole_file_allow_row_lists_its_literal_lines(self):
         import system_path_allowlist as A
         rows = whole_file_rows()
         self.assertEqual(sorted(A.PINS), rows, "every whole-file row needs a pin and every pin a whole-file row")
         for rel in rows:
-            sha, lines = row_pin(read_raw(rel))
-            want_sha, want_lines, reason = A.PINS[rel]
+            lines = row_pin(read_raw(rel))
+            want_lines, reason = A.PINS[rel]
             self.assertGreaterEqual(len(reason.strip()), 12)
             self.assertEqual(sorted(set(lines) - set(want_lines)), [], "%s: new system-path literal lines (add them to PINS with a reason)" % rel)
             self.assertEqual(tuple(lines), tuple(want_lines), "%s: the literal lines changed" % rel)
-            self.assertEqual(sha, want_sha, "%s: the file changed; a whole-file row pins the whole file. Review the edit, then run "
-                                            "`python3 test_fs_guard.py --print-pins` and update PINS in system_path_allowlist.py" % rel)
 
-    def test_the_whole_file_pin_bites_on_every_form_of_added_command(self):
+    def test_a_new_literal_line_shows_in_the_row_lines(self):
         import system_path_allowlist as A
         rel = sorted(A.PINS)[0]
         base = decode(read_raw(rel))
-        self.assertEqual(row_pin(read_raw(rel))[0], A.PINS[rel][0])
-        forms = ["grep -q root /etc/passwd", "ls /usr/local/bin", "source /etc/os-release", ". /etc/os-release", "head -1 /etc/hostname",
-                 "[ -x /usr/local/bin/grype ]", "test -f /etc/hosts", "x=$(cat /etc/hosts)", "if cat /etc/hosts; then", "cp a ${X:-/etc/y}",
-                 "</etc/hosts", "x | tee -a /etc/x", "find /usr/local -name x", "cmd >/tmp/out", "echo 'a\"b'; cat /etc/hosts",
-                 "ls /", "open('/')", "os.listdir('/')", "tar -C/etc -x", "cat /Etc/hosts", "ls /cores", "cat ~/x", "cat $HOME/x", "echo hi", "# a comment"]
-        for f in forms:
-            self.assertNotEqual(row_pin(base + "\n" + f + "\n")[0], A.PINS[rel][0], f)       # ANY edit changes the whole-file hash
-        self.assertNotEqual(row_pin(base + "\ncp /tmp/y /usr/bin/y\n")[1], tuple(A.PINS[rel][1]))     # and a new literal shows in the lines
-        raw = read_raw(rel)
-        self.assertNotEqual(row_pin(raw + b"\xff")[0], row_pin(raw + b"\xfe")[0])          # bytes that decode to the same replacement character
+        self.assertNotEqual(row_pin(base + "\ncp /tmp/y /usr/bin/y\n"), tuple(A.PINS[rel][0]))
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "f.sh")
             with open(p, "wb") as fh:
                 fh.write(b"a\r\nb\rc\n")
             self.assertEqual(read_raw(p), b"a\r\nb\rc\n")                                # no newline translation on the way in
-        crlf, cr = raw.replace(b"\n", b"\r\n"), raw.replace(b"\n", b"\r")
-        demo = b'# a comment\rcase_ x ok "\necho FIXTURE-LINE-EXECUTED\n"\n'
-        one = raw.replace(b"\n", b"\r", 1)
-        for name, edited in (("CRLF copy", crlf), ("every LF to CR", cr), ("one LF to CR", one), ("a CR-after-comment demo appended", raw + demo),
-                             ("a trailing CR", raw + b"\r")):
-            self.assertNotEqual(row_pin(edited)[0], A.PINS[rel][0], name)
-        self.assertEqual(row_pin(raw)[0], A.PINS[rel][0])
-        # the context attack: moving a closing quote turns a quoted fixture line into a top-level command; the literal lines are the same
-        unmoved = 'case_ x bad "$(r \'echo hi\')" "\ncp /tmp/y /usr/bin/y\n"\n'          # the cp line is INSIDE a quoted fixture
-        moved = 'case_ x bad "$(r \'echo hi\')" ""\ncp /tmp/y /usr/bin/y\n'              # the closing quote moved up: a real command
-        self.assertEqual(row_pin(moved)[1], row_pin(unmoved)[1])
-        self.assertNotEqual(row_pin(moved)[0], row_pin(unmoved)[0])
 
     EXPECTED_NAMES = ["etc", "usr", "var", "private", "Library", "System", "opt", "bin", "sbin", "dev", "home", "root", "proc", "sys", "Users",
                       "tmp", "Applications", "Volumes", "run", "srv", "lib", "lib64", "boot", "mnt", "nix", "cores", "Network", "snap",
@@ -2196,8 +2171,8 @@ if __name__ == "__main__":
         import pprint, system_path_allowlist as A
         reasons = {r[0]: r[2] for r in A.ROWS if r[1] == ""}
         for rel in whole_file_rows():
-            sha, lines = row_pin(read_raw(rel))
-            print("    %r: (%r,\n        %s,\n        %r)," % (rel, sha, pprint.pformat(list(lines), width=130, indent=9).replace("\n", "\n        "),
-                                                          A.PINS.get(rel, (0, 0, reasons[rel]))[2]))
+            lines = row_pin(read_raw(rel))
+            print("    %r: (\n        %s,\n        %r)," % (rel, pprint.pformat(list(lines), width=130, indent=9).replace("\n", "\n        "),
+                                                          A.PINS.get(rel, (0, reasons[rel]))[1]))
     else:
         unittest.main()

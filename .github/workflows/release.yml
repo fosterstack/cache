@@ -1034,7 +1034,6 @@ jobs:
           bash bin/install-scanner.sh cosign
           mkdir -p "$RUNNER_TEMP/tools"
           bash bin/install-scanner.sh grype "$RUNNER_TEMP/tools"
-          echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
       - name: install docker-scout (pinned by checksum)
         run: |
           set -euo pipefail
@@ -1100,7 +1099,6 @@ jobs:
           bash bin/install-scanner.sh cosign
           mkdir -p "$RUNNER_TEMP/tools"
           bash bin/install-scanner.sh grype "$RUNNER_TEMP/tools"
-          echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
       - name: install docker-scout (pinned by checksum)
         run: |
           set -euo pipefail

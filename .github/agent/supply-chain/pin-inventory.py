@@ -48,10 +48,8 @@ INSTALLER_INPUTS = {
 # NOT here, on purpose (rule 1, amendment 2): actions/setup-go's go-version and go.mod's toolchain line; the standard
 # library ships in our binary.
 _GO_INSTALL = re.compile(r"\bgo\s+install\b([^\n;&|]*)")
-_GO_TARGET = re.compile(r"(?<![\w.\-/@])((?:\$\{var\}|[\w.\-/])+)@((?:\$\{\{expression\}\}|\$\{var\}|[\w.\-+()]"
-    r"|\$(?!\{\{))+)")
-_GH_DOWNLOAD = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/download/(v?)("
-    r"(?:\$\{\{expression\}\}|\$\{var\}|[\w.+()-]|\$(?!\{\{))+)/([^\s/'\x22?#;|&]+)")
+_GO_TARGET = re.compile(r"(?<![\w.\-/@])((?:\$\{var\}|[\w.\-/])+)@(.+)", re.S)    # the version is the whole word after @: a leftover character makes it not exact
+_GH_DOWNLOAD = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/download/(v?)((?:\$\{\{expression\}\}|\$\{var\}|[\w.+()-]|\$(?!\{\{))+)/([^\s/'\x22?#;|&]+)")
 _GH_LATEST = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/latest/download/")
 _GO_RUN_GET = re.compile(r"\bgo\s+(?:run|get)\b([^\n;&|]*)")
 _SEP = re.compile(r"[;&|]")
@@ -321,10 +319,9 @@ def _kernel_lock_items(path, text):
             continue
         m = _KERNEL_ROW.match(row)
         if not m:
-            raise RuntimeError(
-                f"{path}:{n}: a lock row is not '<name>=<version> sha256:<64 hex>': its age cannot be judged")
+            raise RuntimeError(f"{path}:{n}: a lock row is not '<name>=<version> sha256:<64 hex>': its pin is not named")
         if not is_pin(m.group(2)):
-            raise RuntimeError(f"{path}:{n}: the row version {m.group(2)!r} is not a pin: its age cannot be judged")
+            raise RuntimeError(f"{path}:{n}: the row version {m.group(2)!r} is not a pin: its pin is not named")
         if (m.group(1), m.group(2)) in seen:
             raise RuntimeError(
                 f"{path}:{n}: the row {m.group(1)}={m.group(2)} appears twice: a duplicate row is an error")
@@ -340,10 +337,10 @@ def _kernel_lock_items(path, text):
 
 
 def _persona_tool_items(path, text):
-    """One image item per entry of the persona UAT tools file ({"<tool>": "<image>@sha256:<digest>", ...}). A file that
-    is not JSON, not an object, or holds a value that is not a string is
-    an error (exit 2 of the check): an image we cannot read is never skipped. A value without a digest is kept as a
-    tag-only item, so the age check fails it."""
+    """One image item per entry of the persona UAT tools file ({"<tool>": "<image>@sha256:<digest>", ...}).
+    A file that is not JSON, not an object, or holds a value that is not a string is
+    an error (exit 2 of the check): an image we cannot read is never skipped. A value without a digest is kept
+    as a tag-only item, so the pin scan fails it."""
     def pairs(kv):
         d = {}
         for k, v in kv:
@@ -374,7 +371,7 @@ def _image_item(ref, label=""):
     m = DIGEST.search(ref)
     if m:
         return Item("image", _strip_tag(ref[:m.start()].rstrip("@")), m.group(0), label)
-    return Item("image", ref, "", label)  # tag only: kept so the age check can fail it
+    return Item("image", ref, "", label)  # tag only: kept so the pin scan can fail it
 
 
 def _ctx_tag(node):
@@ -816,6 +813,14 @@ def _item_copy(it):
     return c
 
 
+def _shell_words(text):
+    """The words the shell makes of `text`, quotes removed by its quote state; an unbalanced quote stays in the words, so it fails closed."""
+    try:
+        return shlex.split(text)
+    except ValueError:
+        return text.split()
+
+
 _STEP_MEMO = {}     # (the step as a script line, the context it reads) -> the items _step made for it
 
 
@@ -862,18 +867,16 @@ def _step_items(node, out, labels):
             return
         run = _hide(run)
         for m in list(_GO_INSTALL.finditer(run)) + list(_GO_RUN_GET.finditer(run)):
-            for t in _GO_TARGET.finditer(m.group(1)):
-                out.append(Item("gotool", t.group(1), t.group(2)))
-            for tok in m.group(1).split():
-                tok = tok.strip("'\"")
+            words = _shell_words(m.group(1))
+            for word in words:
+                for t in _GO_TARGET.finditer(word):
+                    out.append(Item("gotool", t.group(1), t.group(2)))
+            for tok in words:
                 if not tok.startswith("-") and "@" not in tok and re.fullmatch(r"[\w.\-]+\.[\w.\-]+/[\w.\-/]+", tok):
-                    # go install with no @version: a placeholder, refused when added
-                    out.append(Item("gotool", tok, "(unversioned)"))
-                elif not tok.startswith("-") and "$" in tok:
-                    # go install "$TOOL": the target is a variable, so it cannot be proven
-                    out.append(Item("gotool", "(variable)", "(unversioned)"))
-        # "latest" is not a pin: an item that cannot be proven, so adding one fails closed
-        for m in _GH_LATEST.finditer(run):
+                    out.append(Item("gotool", tok, "(unversioned)"))     # go install with no @version: a placeholder, refused when added
+                elif not tok.startswith("-") and ("$" in tok or "`" in tok):
+                    out.append(Item("gotool", "(variable)", "(unversioned)"))   # go install "$TOOL": the target is a variable, so it cannot be proven
+        for m in _GH_LATEST.finditer(run):  # "latest" is not a pin: an item that cannot be proven, so adding one fails closed
             it = Item("tool", m.group(1), "latest")
             # a "latest" download is an item that cannot be proven: its step's raw text, an expression's literals
             # included, is its identity
@@ -1277,9 +1280,8 @@ def moved(base_items, head_items):
 def _on_key(on):
     """What of a workflow's `on:` is part of a step's identity: all of it except the `paths` and `paths-ignore`
     filters under each event.
-    Owner rule 1 (Oct 5): no NEW version of what a workflow downloads until it has been public 7 days. A trigger
-    can change what a step downloads (the event name, the ref, a schedule and the event payload all reach steps;
-    a called workflow's inputs and outputs select what is fetched), so triggers stay in the key. A changed set of
+    A trigger can change what a step downloads (the event name, the ref, a schedule and the event payload all reach
+    steps; a called workflow's inputs and outputs select what is fetched), so triggers stay in the key. A changed set of
     changed-file paths only chooses WHETHER a run happens, never what it fetches. A scalar or list `on`
     (`on: push`, `[push, merge_group]`) is unchanged."""
     if not isinstance(on, dict):
@@ -1420,6 +1422,7 @@ _VENDOR_NAMING_FILES = frozenset("""
 .github/agent/tests/auditor-matrix-test.sh
 .github/agent/tests/pin-age-check-test.sh
 .github/agent/tests/pin-audit-test.sh
+.github/agent/tests/release-age-gone-test.sh
 .github/workflows/ci.yml
 bin/assemble-image-test.sh
 bin/build-apk-test.sh
@@ -1780,3 +1783,4 @@ def unmeasured_occurrences(files):
 
 if __name__ == "__main__":
     main()
+

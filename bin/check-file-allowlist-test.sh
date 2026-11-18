@@ -276,8 +276,8 @@ mutins "SUPPRESSION_PATTERNS index assign"  2 "SUPPRESSION_PATTERNS[9]='^evil/.*
 pinkill() { # <desc> ; the mutant is already in $_mut_dir/m.sh
   if cmp -s bin/check-file-allowlist.sh "$_mut_dir/m.sh"; then gf "mutant did not apply: $1" ""; elif struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: $1" ""; else gp "struct check kills mutant: $1"; fi
 }
-pinmutins() { # <desc> <text inserted after the SUPPRESSION array close>
-  awk -v n=2 -v t="$2" '{print} /^\)$/{c++; if(c==n) print t}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "$1"
+killmutins() { # <desc> <text inserted after the SUPPRESSION array close>
+  awk -v n=2 -v t="$2" '{print} /^\)$/{c++; if(c==n) print t}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; killed "$1"
 }
 pinmutins "process-substitution dot-source of a split-name append" ". <(echo \"ALLOW_PAT\"\"TERNS+=('^evil/.*\\\$')\")"
 pinmutins "read into a computed array element name"                'n="ALLOW_PAT""TERNS[200]"; read -r "$n" <<< '"'"'^evil/.*$'"'"
@@ -744,6 +744,12 @@ passfam "feature/x" "v030: the FIPS module data file" "build/locks/fips-module.t
 runeach fail "feature/x" "v030: near-miss FIPS module file names refused" "build/locks/fips-module.txt.bak" "build/locks/fips-module.json" "build/locks/x/fips-module.txt" "build/fips-module.txt" "build/locks/Fips-module.txt" "build/locks/../fips-module.txt" "build/locks/fips-modules.txt"
 runeach fail "feature/x" "v030: the two archive record names are literal, not a group (no mixed or merged name)" "build/locks/archive-keysindex.sha256" "build/locks/archive-(keys|index).sha256" "build/locks/archive-.sha256" "build/locks/archive-keys.sha256x" "build/locks/archive-index.sha2561"
 runeach fail "feature/x" "v030: other archive record names refused" "build/locks/archive-other.sha256" "build/locks/archive-keys.sha256.bak" "build/locks/x/archive-keys.sha256" "build/locks/archive-keys.sha512" "build/locks/../archive-keys.sha256"
+passfam "feature/x" "queue gate: the merge queue judge script (cache#542)" ".github/agent/bin/queue-gate-judge.sh"
+runeach fail "feature/x" "queue gate: near-miss judge script names refused" \
+  ".github/agent/bin/queue-gate-judge.sh.bak" ".github/agent/bin/queue-gate-judgeX.sh" \
+  ".github/agent/bin/queue-gate-judge.shx" ".github/agent/bin/Queue-gate-judge.sh" \
+  ".github/agent/bin/x/queue-gate-judge.sh" "bin/queue-gate-judge.sh" ".github/agent/queue-gate-judge.sh" \
+  ".github/agent/bin/queue-gate-judge-test.sh"
 runeach fail "feature/x" "v030: the removed recipe comparer is no longer admitted" "bin/compare-recipes.py"
 passfam "feature/x" "v030: the freeze job script" "bin/build-freeze.sh"
 passfam "feature/x" "v030: the token wrapper of the release steps" "bin/with-aws-token.sh"
@@ -817,6 +823,13 @@ runeach fail "feature/x" "REQ-CHAIN-008: verify-key-page-test near-miss refused"
 passfam "feature/x" "REQ-CHAIN-007: the Release scripts and helpers" "bin/release-verify.sh" "bin/release-apks.sh" "bin/release-compare.sh" "bin/release-compare.py" "bin/release-publish.sh" "bin/release-sign.sh" "bin/release-assets.sh" "bin/release-postverify.sh" "bin/release-postverify.py" "bin/release-metadata.py" "bin/release-layout.py" "bin/release-gate.py"
 runeach fail "feature/x" "REQ-CHAIN-007: Release helper near-misses refused" "bin/release-layout.py.bak" "bin/release-layout.pyx" "bin/Release-Layout.py" "bin/release-other.py" "bin/sub/release-layout.py" "./bin/release-layout.py"
 
+
+# the reviewer's version script is the four files' list-keeper: admitted by its exact path only
+passfam "feature/x" "the reviewer's version script" "bin/dependabot-reviewer-version.sh"
+runeach fail "feature/x" "reviewer-version near-miss refused" \
+  "bin/dependabot-reviewer-version.sh.bak" "bin/dependabot-reviewer-version-x.sh" \
+  "bin/dependabot-reviewer-version.py" "bin/Dependabot-Reviewer-Version.sh" \
+  "bin/sub/dependabot-reviewer-version.sh" "bin/dependabot-reviewer-version.sh "
 
 # REQ-CHAIN-006-AC1: Check has ONE script for all three phases and both chips, bin/check-phase.sh; the dispatcher and the per-phase targets are gone
 passfam "feature/x" "REQ-CHAIN-006: the one Check script" "bin/check-phase.sh"

@@ -398,7 +398,7 @@ slot check "the real workflows" ok "$root/.github/workflows"
 mutate "scan.yml scanner job: a matrix back in the grype job" '
 edit("scan.yml", lambda s: s.replace("    needs: [build]\n    runs-on: ubuntu-latest\n    # Amazon Inspector runs in its own job below", "    needs: [build]\n    strategy:\n      matrix:\n        scanner: [grype]\n    runs-on: ubuntu-latest\n    # Amazon Inspector runs in its own job below", 1))'
 mutate "go install added to go-freshness refresh (App key, packages: write)" '
-edit("go-freshness.yml", lambda s: in_refresh(s, "./bin/install-scanner.sh crane\n", "GOBIN=/usr/local/bin go install github.com/google/go-containerregistry/cmd/crane@v0.22.1\n"))'
+edit("go-freshness.yml", lambda s: in_refresh(s, "./bin/install-scanner.sh crane\n", "GOBIN=/usr/local/bin go install github.com/google/go-containerregistry/cmd/crane@v0.22.1 \n"))'
 mutate "go build added to a job with an environment (auditor panel-probe)" '
 edit("auditor.yml", lambda s: s.replace("  panel-probe:\n", "  panel-probe:\n", 1).replace("    environment: agent\n", "    environment: agent\n    # mutated\n", 1))
 edit("auditor.yml", lambda s: re.sub(r"(  panel-probe:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: go build ./...\n", s, count=1, flags=re.S))'
@@ -525,7 +525,7 @@ mutate "a second build step in one job (ci.yml lint)" '
 edit("ci.yml", lambda s: re.sub(r"(  lint:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant one\n        run: go build ./a\n      - name: mutant two\n        run: go build ./b\n", s, count=1, flags=re.S))'
 # the govulncheck hand-over
 mutate "audit job builds govulncheck itself again" '
-edit("auditor.yml", lambda s: s.replace("      - name: Install syft and govulncheck and build the validated run manifest\n", "      - name: mutant\n        run: GOBIN=x go install golang.org/x/vuln/cmd/govulncheck@v1.1.4\n      - name: Install syft and govulncheck and build the validated run manifest\n", 1))'
+edit("auditor.yml", lambda s: s.replace("      - name: Install syft and govulncheck and build the validated run manifest\n", "      - name: mutant\n        run: GOBIN=x go install golang.org/x/vuln/cmd/govulncheck@v1.1.4 \n      - name: Install syft and govulncheck and build the validated run manifest\n", 1))'
 mutate "digest comparison inverted (!= instead of =)" '
 edit("auditor.yml", lambda s: s.replace("cut -d\x27 \x27 -f1)\" = \"${GOVULNCHECK_SHA256}\"", "cut -d\x27 \x27 -f1)\" != \"${GOVULNCHECK_SHA256}\""))'
 mutate "install no longer gated by the digest" '

@@ -247,7 +247,7 @@ if isinstance(rel.get("permissions"), dict) and "id-token" in rel["permissions"]
     bad.append("the release job holds an identity token (id-token): it holds no key role")
 if rel.get("permissions") == "write-all":
     bad.append("the release job holds write-all")
-# the one other holder: the publish step of evidence-letter.yml (REQ-REL-013), in the environment evidence-letter, the three names as that step's env only
+# the one other holder: the publish step of evidence-letter.yml (REQ-REL-015), in the environment evidence-letter, the three names as that step's env only
 LETTER = "evidence-letter.yml"
 KEY_NAME = re.compile(r"\b(?:%s)\b|fosterstack-cache-release-signing|environment:\s*sign\s*$" % "|".join(KMS_ENV), re.M)
 def judge_letter(f):

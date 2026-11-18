@@ -350,7 +350,7 @@ def only_new_workflow(files, bad):
     (listed_signers and direct_signers still judge it; decision 98, Oct 3), and persona-uat.yml, the persona proof's own file. No stage-*.yml file is added."""
     new = sorted(os.path.basename(f) for f in files if os.path.basename(f) not in V022_WORKFLOWS)
     if set(new) != {"persona-uat.yml", "customer-words-edited.yml", "evidence-letter.yml"}:
-        bad.append("AC1: workflow files added since v0.2.2 must be customer-words-edited.yml (decision 98, Oct 3), evidence-letter.yml (REQ-REL-013) and persona-uat.yml, found %s" % new)
+        bad.append("AC1: workflow files added since v0.2.2 must be customer-words-edited.yml (decision 98, Oct 3), evidence-letter.yml (REQ-REL-015) and persona-uat.yml, found %s" % new)
 
 def listed_signers(base, bad):
     """001-AC1: "every other signing call being listed with its reason in .github/policy/chain-signers.json" (never a provenance signer)."""
@@ -1222,7 +1222,7 @@ mk() {
   local d="$work/$1"; rm -rf "$d"; mkdir -p "$d/.github/workflows" "$d/.github/policy" "$d/.github/actions/x" "$d/bin"
   for f in acceptance auditor ci stage-promote stage-verify stage-reproducibility; do printf 'jobs: {}\n' > "$d/.github/workflows/$f.yml"; done
   printf 'jobs: {}\n' > "$d/.github/workflows/customer-words-edited.yml"   # an added file that is not a signer
-  printf 'jobs: {}\n' > "$d/.github/workflows/evidence-letter.yml"   # the monthly evidence letter's file (REQ-REL-013)
+  printf 'jobs: {}\n' > "$d/.github/workflows/evidence-letter.yml"   # the monthly evidence letter's file (REQ-REL-015)
   printf 'jobs: {}\n' > "$d/.github/workflows/persona-uat.yml"      # the other added file: the persona proof has its own workflow file
   printf 'jobs:\n  b:\n    steps:\n      - run: |\n          set -euo pipefail\n          bash bin/build-stage.sh apk\n' > "$d/.github/workflows/stage-build.yml"
   { printf 'jobs:\n  hostile-verify:\n    steps:\n      - run: git -c gpg.x509.program=gitsign tag -s v1\n'
@@ -3037,7 +3037,7 @@ extra="$d/.github/workflows/stage-extra.yml"
 printf 'jobs:\n  b:\n    steps:\n      - uses: actions/checkout@%s # v4\n' "$sha" > "$extra"
 printf '        with:\n          persist-credentials: false\n' >> "$extra"
 out=$(judge tree "$d" 2>/dev/null) || true
-want="AC1: workflow files added since v0.2.2 must be customer-words-edited.yml (decision 98, Oct 3), evidence-letter.yml (REQ-REL-013) and persona-uat.yml,"
+want="AC1: workflow files added since v0.2.2 must be customer-words-edited.yml (decision 98, Oct 3), evidence-letter.yml (REQ-REL-015) and persona-uat.yml,"
 want="$want found ['customer-words-edited.yml', 'evidence-letter.yml', 'persona-uat.yml', 'stage-extra.yml']"
 if [ "$out" = "$want" ]; then
   pass=$((pass + 1))

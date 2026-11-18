@@ -385,19 +385,13 @@ mappings:
   # unit coverage of bin/check-artifacts.sh, not a run of the shipped artifact. The credit for that run
   # (Check's run of bin/check-artifacts.sh on the real images and archives)
   # is added when section 1 settles the Check job's name.
-  - ac: REQ-PLAT-002-AC1
+  - ac: REQ-PLAT-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
   - ac: REQ-PLAT-003-AC1
     evidence:
       - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
-  - ac: REQ-FIPS-001-AC1
-    evidence:
-      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
-  - ac: REQ-FIPS-001-AC2
-    evidence:
-      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
-  - ac: REQ-PLAT-001-AC1
+  - ac: REQ-PLAT-002-AC1
     evidence:
       - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
   - ac: REQ-FIPS-002-AC1
@@ -407,6 +401,12 @@ mappings:
   - ac: REQ-PRIV-001-AC1
     evidence:
       - { type: workflow-job, ref: ".github/workflows/stage-verify.yml: the runtime step runs bin/acceptance-egress.sh (bin/check-acceptance.sh egress), the old egress stage body unchanged" }
+  - ac: REQ-FIPS-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-FIPS-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
   - ac: REQ-REL-004-AC1
     evidence:
       - { type: shell-test, ref: "bin/vex-both-scanners-test.sh" }
@@ -423,7 +423,7 @@ mappings:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_images_tar.py" }
   - ac: REQ-REL-004-AC4
     evidence:
-      - { type: shell-test, ref: "bin/go-bump-open-pr-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/go-bump-open-pr-test.sh" }
       - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/go-freshness.yml: scheduled daily; compares the go directive against the newest patch of a supported minor (go.dev mode=json) and opens the go.mod bump PR (both modules) when a newer patch exists" }
   - ac: REQ-REL-004-AC5
@@ -441,7 +441,7 @@ mappings:
       - { type: workflow-job, ref: ".github/workflows/ci.yml: bin/inspector-reuse-test.sh, whose wiring cases over scan.yml and main-candidate-rescan.yml (reuse program before any ScanSbom call, the pinned stock actions/cache restore and save, same-repo condition, save only on fresh results, permissions unchanged; each mutation caught)" }
   - ac: REQ-REL-004-AC9
     evidence:
-      - { type: shell-test, ref: "bin/go-bump-open-pr-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/go-bump-open-pr-test.sh" }
   - ac: REQ-REL-004-AC10
     evidence:
       - { type: inspection, ref: "Verified by reviewer inspection; there is no coded check." }
@@ -466,6 +466,12 @@ mappings:
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/check-action-pins-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs the action-pin checker's fixture cases, including the ac3-* cases for downloads in a job that runs a committed script" }
+  - ac: REQ-REL-005-AC4
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_env_names.py" }
+  - ac: REQ-REL-005-AC5
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_env_names.py" }
   - ac: REQ-REL-011-AC1
     evidence:
       - { type: shell-test, ref: "bin/job-isolation-test.sh" }
@@ -478,48 +484,48 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/job-isolation-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs bin/job-isolation-test.sh over the real workflows and its mutated copies" }
-  - ac: REQ-REL-013-AC1
+  - ac: REQ-REL-015-AC1
     evidence:
       - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
-  - ac: REQ-REL-013-AC2
+  - ac: REQ-REL-015-AC2
     evidence:
       - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
-  - ac: REQ-REL-013-AC3
+  - ac: REQ-REL-015-AC3
     evidence:
       - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
-  - ac: REQ-REL-013-AC4
+  - ac: REQ-REL-015-AC4
     evidence:
       - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
-  - ac: REQ-REL-013-AC5
+  - ac: REQ-REL-015-AC5
     evidence:
       - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
       - { type: shell-test, ref: "bin/evidence-letter-job-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
-  - ac: REQ-REL-013-AC6
+  - ac: REQ-REL-015-AC6
     evidence:
       - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
-  - ac: REQ-REL-013-AC7
+  - ac: REQ-REL-015-AC7
     evidence:
       - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
-  - ac: REQ-REL-013-AC8
+  - ac: REQ-REL-015-AC8
     evidence:
       - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
-  - ac: REQ-REL-013-AC9
+  - ac: REQ-REL-015-AC9
     evidence:
       - { type: shell-test, ref: "bin/evidence-letter-job-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-job-test.sh over the workflow file and the publish script with stand-ins for cosign and gh" }
-  - ac: REQ-REL-013-AC10
+  - ac: REQ-REL-015-AC10
     evidence:
       - { type: shell-test, ref: "bin/evidence-letter-job-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-job-test.sh" }
-  - ac: REQ-REL-013-AC11
+  - ac: REQ-REL-015-AC11
     evidence:
       - { type: shell-test, ref: "bin/evidence-letter-job-test.sh" }
       - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
@@ -560,6 +566,27 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/audit-record-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/audit-record-test.sh (the release judge, the wrapper's release mode, the admission step's pinned text with mutants, the writer's release mode)" }
+  - ac: REQ-REL-013-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-admit-test.sh" }
+  - ac: REQ-REL-012-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/audit-record-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/audit-record-test.sh (the Dependabot cases: whose head it is, the reviewer's verdict on the head and on the heads it only updates, no verdict as no pass, and the judge with a fake gh over a real git repository whose heads merge main in, carry a writer's commit, or carry more than the merge)" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs the auditor matrix, whose rel012-ac9 case holds the verdict job and the sweep to checks: read and pull-requests: read" }
+  - ac: REQ-REL-012-AC10
+    evidence:
+      - { type: shell-test, ref: "bin/audit-record-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/audit-record-test.sh (the writer's plan and its prepare script refuse a Dependabot pull request)" }
+  - ac: REQ-REL-012-AC11
+    evidence:
+      - { type: shell-test, ref: "bin/audit-record-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/audit-record-test.sh (the Dependabot cases: whose head it is, the reviewer's verdict on the head and on the heads it only updates, no verdict as no pass, and the judge with a fake gh over a real git repository whose heads merge main in, carry a writer's commit, or carry more than the merge)" }
+  - ac: REQ-REL-012-AC12
+    evidence:
+      - { type: shell-test, ref: "bin/audit-record-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/audit-record-test.sh (the Dependabot cases: whose head it is, the reviewer's verdict on the head and on the heads it only updates, no verdict as no pass, and the judge with a fake gh over a real git repository whose heads merge main in, carry a writer's commit, or carry more than the merge)" }
   - ac: REQ-REL-006-AC1
     evidence:
       - { type: go-test, ref: "tools/requirements:TestFreezeRecordsItsFixedCommit" }
@@ -637,7 +664,8 @@ mappings:
   - ac: REQ-DEP-003-AC1
     evidence:
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
-  - ac: REQ-DEP-003-AC3
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
+  - ac: REQ-DEP-003-AC4
     evidence:
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
@@ -650,6 +678,28 @@ mappings:
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
   - ac: REQ-DEP-003-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
+      - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+  - ac: REQ-DEP-001-AC11
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
+      - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+  - ac: REQ-DEP-001-AC13
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
+      - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
+  - ac: REQ-DEP-001-AC14
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
+      - { type: shell-test, ref: "bin/audit-record-test.sh" }
+      - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+  - ac: REQ-DEP-001-AC12
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
+      - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+  - ac: REQ-DEP-003-AC3
     evidence:
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
@@ -794,11 +844,24 @@ mappings:
   - ac: REQ-REL-008-AC1
     evidence:
       - { type: shell-test, ref: "bin/workflow-consolidation-test.sh" }
+  - ac: REQ-REL-016-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/pull-request-checks-test.sh" }
+  - ac: REQ-REL-016-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/pull-request-checks-test.sh" }
+  - ac: REQ-REL-016-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/pull-request-checks-test.sh" }
   - ac: REQ-SCAN-010-AC1
     evidence:
       - { type: shell-test, ref: "bin/vex-forms-test.sh" }
   - ac: REQ-SCAN-010-AC2
     evidence:
+      - { type: shell-test, ref: "bin/vex-forms-test.sh" }
+  - ac: REQ-SCAN-010-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/panel-test.sh" }
       - { type: shell-test, ref: "bin/vex-forms-test.sh" }
   - ac: REQ-SCAN-010-AC4
     evidence:
@@ -868,7 +931,7 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/persona-uat-file-test.sh" }
       - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
-  - ac: REQ-SUP-001-AC1
+  - ac: REQ-SUP-001-AC41
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/release-age-gone-test.sh" }
       - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
@@ -917,16 +980,26 @@ mappings:
   - ac: REQ-SUP-001-AC29
     evidence:
       - { type: inspection, ref: ".github/workflows/acceptance.yml: the workflow is not callable, and no step of its one job runs a container image; reviewers read it (no coded check)" }
-  - ac: REQ-SUP-001-AC31
-    evidence:
-      - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_plain_forms.py" }
-  - ac: REQ-SUP-001-AC32
+  - ac: REQ-SUP-001-AC40
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_plain_forms.py" }
   - ac: REQ-SUP-001-AC30
     evidence:
-      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/release-age-gone-test.sh" }
+  - ac: REQ-SUP-001-AC32
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/release-age-gone-test.sh" }
   - ac: REQ-SUP-001-AC33
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/release-age-gone-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
+  - ac: REQ-SUP-001-AC42
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-SUP-001-AC43
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_plain_forms.py" }
+  - ac: REQ-SUP-001-AC39
     evidence:
       - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
   - ac: REQ-SUP-001-AC36
@@ -1923,3 +1996,6 @@ mappings:
   - ac: REQ-CI-006-AC1
     evidence:
       - { type: inspection, ref: "Rule only, not built (owner, Oct 24 2026): the persona suite is not sharded; ops/docs/ratify/2026-10-24-ci-suites-once-and-persona-shard.md item 2." }
+  - ac: REQ-DEP-004-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }

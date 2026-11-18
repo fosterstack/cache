@@ -1,6 +1,6 @@
 name: Evidence letter
 
-# The monthly signed evidence letter (REQ-REL-013).
+# The monthly signed evidence letter (REQ-REL-015).
 # Once a month the first job, which has no identity token, fetches the month's release assets, checks their
 # signatures and makes the letter. The second job, the only one with an identity token, signs it with the KMS release
 # key, records its Rekor entry and attaches it to the latest published release. Only a run from main does either:

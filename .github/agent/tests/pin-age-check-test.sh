@@ -194,13 +194,25 @@ whats = {k[1] for k in inv.unmeasured(f)}
 assert whats == {"a package-manager install", "a system package install", "a gh release or extension download", "a pip install from a URL", "a download"}, whats
 PY
 
-CASE="inventory: docker run with a quoted image, with --cpus 2, and bare pip install names are items"
+CASE="inventory: docker run with a quoted image, with --cpus 2, and bare pip install names are items; a range, \
+(unpinned) or an expression is NEVER a pin the scan can read"
 check python3 - "$here/../supply-chain/pin-inventory.py" "$chk" <<'PY'
 import importlib.util, sys, datetime as dt
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv); _inv = inv.inventory; inv.inventory = lambda f: {__import__("re").sub(r"#step:[0-9a-f]+$", "", k): v for k, v in _inv(f).items()}
 got = inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: |\n          docker run --rm \"alpine:3.99\" true\n          docker run --cpus 2 --memory 1g busybox:1.36 true\n          pip install requests flask[async]\n"})
 for k in ("image:alpine:3.99@", "image:busybox:1.36@", "package:pypi/requests@(unpinned)", "package:pypi/flask@(unpinned)"):
     assert k in got, (k, sorted(got))
+spec = importlib.util.spec_from_file_location("ac", sys.argv[2]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+for v in (">=2.0", "(unpinned)", "latest", "${{expression}}"):
+    ok, why = ac.judge_item(inv.Item("package", "pypi/p", v))
+    assert not ok and "not a pin" in why, (v, why)
+# a tag-form ref is no pin where a commit is needed (an action), and a tag-only image has no digest
+for v in ("v2", "2.17", "v2.17"):
+    ok, why = ac.judge_item(inv.Item("action", "o/r", v))
+    assert not ok and "not a pin" in why, (v, why)
+for k in ("image:alpine:3.99@", "image:busybox:1.36@"):
+    ok, why = ac.judge_item(got[k])
+    assert not ok and "not a pin" in why, (k, why)
 PY
 CASE="inventory: a subdirectory taken from untrusted action metadata is redacted like every other part of a key"
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
@@ -324,6 +336,11 @@ got = inv.inventory({"bin/x.sh": "V=1.2.3\ncurl -L https://github.com/o/r/releas
 need = ("tool:o/r/t.tgz@v${var}", "image:(variable)@", "package:pypi/foo@${var}", "gotool:example.org/x@${var}")
 for k in need:
     assert k in got, (k, sorted(got))
+import importlib.util as u
+spec = u.spec_from_file_location("ac", sys.argv[1].replace("pin-inventory", "pin-age-check")); ac = u.module_from_spec(spec); spec.loader.exec_module(ac)
+for k in need:
+    ok, why = ac.judge_item(got[k])
+    assert not ok and "not a pin" in why, (k, why)
 PY
 words=('import urllib.request' 'from urllib.request import urlopen' 'data = urlopen(u).read()'
   'urlretrieve(u, "f")' 'requests.get(u)' 'requests.post(u)' 'requests.put(u)' 'requests.head(u)'
@@ -460,7 +477,9 @@ assert [k for k in um if k[1] == "a download"], "the non-release wget before a r
 assert not inv.unmeasured({".github/workflows/a.yml": "x: curl -fsSL https://github.com/foo/bar/releases/download/v1.2.3/bar.tgz -o b\n"})
 PY
 
-CASE="round 15 (Codex): the exact download tag is the identity (v1.2.3 and 1.2.3 differ), an encoded-tag URL is refused not excused, requirements.in/-dev/.lock files are refused, an unversioned go install is a placeholder, an unresolved package NAME cannot pass the age judge, installer-input placeholders carry their step identity"
+CASE="round 15 (Codex): the exact download tag is the identity (v1.2.3 and 1.2.3 differ), an encoded-tag URL is \
+refused not excused, requirements.in/-dev/.lock files are refused, an unversioned go install is a placeholder, an \
+unresolved package NAME cannot pass the pin judge, installer-input placeholders carry their step identity"
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import datetime, importlib.util, sys
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
@@ -474,8 +493,27 @@ for ln in ("pip install -r requirements.in", "pip install -r requirements-dev", 
     assert inv.unmeasured(wf(ln)), ln
 assert not inv.unmeasured(wf("pip install -r requirements.txt")) and not inv.unmeasured(wf("pip install -r .github/pins/adjudicator-requirements.txt"))
 assert [k for k in inv.inventory(wf("go install -mod=mod github.com/securego/gosec/v2/cmd/gosec")) if "(unversioned)" in k]
+it = [v for v in inv.inventory(wf('go install "$TOOL@v1.2.3"')).values() if v.kind == "gotool"][0]
+ok, why = ac.judge_item(it)
+assert not ok and "not a pin" in why, why
 u = lambda v: {".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - uses: actions/setup-python@" + "a" * 40 + " # v6\n        with:\n          python-version-file: " + v + "\n"}
 assert set(inv.inventory(u(".python-version"))) != set(inv.inventory(u(".python-version-new")))
+PY
+
+CASE="AC34: a quoted go install argument (single, double, backslash) is read after quote removal: the same gotool item (name example.com/x, its version) as the unquoted one"
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+wf = lambda run: {".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: " + run + "\n"}
+sh = lambda ln: {"bin/t.sh": "#!/usr/bin/env bash\n" + ln + "\n"}
+def read(files):
+    return sorted((v.name, v.version) for v in inv.inventory(files).values() if v.kind == "gotool")
+for mk in (wf, sh):
+    for ver, forms in (("latest", ["'example.com/x@latest'", '"example.com/x@latest"']), (">=1.0.0", ["'example.com/x@>=1.0.0'", '"example.com/x@>=1.0.0"']),
+                       ("v1.2.3", ["'example.com/x@v1.2.3'", '"example.com/x@v1.2.3"', "example.com/x@v1.2.\\3", "'example.com/x@'v1.2.3"])):
+        want = [("example.com/x", ver)]
+        for f in forms:
+            assert read(mk("go install " + f)) == want, (f, read(mk("go install " + f)))
 PY
 
 CASE="a download SOURCE is an item: url=/URL=/*_BASE_URL assignments in a script and *_BASE_URL/*_URL env at any level; retargeting one (an env override, a url template line) is a changed key and is refused"
@@ -510,10 +548,10 @@ CASE="an option chain of a thousand tokens before pip/docker is read in millisec
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys, time
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
-t = time.process_time()  # this process's CPU: in-process parsing only, so box load cannot fail it
+t = time.time()
 for body in ("pip" + " -a" * 1000 + " x", "docker" + " -a" * 1000 + " x", "python3 -m pip" + " -q" * 1000 + " install evilpkg==9.9.9"):
     inv.inventory({"bin/x.sh": body + "\n"})
-assert time.process_time() - t < 2, time.process_time() - t
+assert time.time() - t < 2, time.time() - t
 assert inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: docker --context x run evil/x:latest\n"})
 PY
 
@@ -521,7 +559,7 @@ CASE="a hostile many-line file or a step that repeats one command hundreds of ti
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys, time
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
-t = time.process_time()  # this process's CPU: in-process parsing only, so box load cannot fail it
+t = time.time()
 for files in ({"bin/x.sh": ("pip install " * 320 + "\n") * 100},
               {".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: |\n" + "".join("          " + "pip install " * 320 + "\n" for _ in range(100))},
               {"bin/y.sh": "echo\n" * 30000}):
@@ -531,7 +569,7 @@ for files in ({"bin/x.sh": ("pip install " * 320 + "\n") * 100},
         pass
     else:
         raise AssertionError("a hostile file was read")
-assert time.process_time() - t < 5, time.process_time() - t
+assert time.time() - t < 5, time.time() - t
 got = inv.inventory({"bin/x.sh": "cd x&&pip install foo==1.0\necho hi;pip install bar==2.0\n"})
 assert "package:pypi/foo@1.0" in got and "package:pypi/bar@2.0" in got
 PY
@@ -584,6 +622,10 @@ two = lambda second: {".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n     
 assert len([k for k in inv.inventory(two("")) if "(default)" in k]) == 2
 sep = lambda sm: {".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: curl -L https://github.com/o/r/releases/download/v1.2.3/tool.tgz -o tool.tgz\n      - run: echo " + sm + "  tool.tgz | sha256sum --check\n"}
 assert set(inv.inventory(sep("a" * 64))) != set(inv.inventory(sep("b" * 64)))
+spec2 = importlib.util.spec_from_file_location("ac", sys.argv[1].replace("pin-inventory", "pin-age-check")); ac = importlib.util.module_from_spec(spec2); spec2.loader.exec_module(ac)
+for name, ver in (("python", "3.12"), ("java", "21"), ("node", "22")):
+    assert not ac.judge_item(inv.Item("tool", name, ver))[0], name
+assert ac.judge_item(inv.Item("tool", "python", "3.12.4"))[0]
 PY
 
 CASE="phase 2 R5 fixes: repeated expression-valued installer steps are numbered, a checksum FILE's content moves a download, an env source key bound to an expression never prints its name"
@@ -1180,6 +1222,7 @@ a, b = wf('$(printf %s "$A").tgz'), wf('$(printf %s "$B").tgz')
 assert set(inv.inventory(a)) != set(inv.inventory(b))
 it = next(iter(inv.inventory(b).values()))
 assert "${" in it.path and "printf %s" in it.path, it.path
+assert not age.judge_item(it)[0]
 comp = {".github/actions/x/action.yml": "name: x\nruns:\n  using: composite\n  steps:\n    - shell: bash\n      run: pip install black\n"}
 assert set(inv.inventory(comp)) == {"package:pypi/black@(unpinned)#step:c38ddd42b810871e60f5080663fe9d5d899dd5a38d61c1563b41a1b78a56eed5"}
 assert all(it.step for it in inv.inventory(wf("x.tgz?download=${A}")).values())   # a quoted string holding a variable is unresolved (whole-file identity): fail-closed, advisor 0442
@@ -1214,6 +1257,7 @@ now = dt.datetime(2026, 10, 14, tzinfo=dt.timezone.utc)
 for name in ("$(uname -m).tgz", "`uname -m`.tgz", "$1.tgz", "$((1+1)).tgz"):
     it = next(iter(inv.inventory(wf("curl " + url + "tool-" + name)).values()))
     assert it.step, (name, it.key)
+    assert not age.judge_item(it)[0], name
 dl = "curl " + url + "${B}.tgz\n"
 for path in ("bin/x.sh", "bin/install-scanner.sh"):
     for pre in ("A=x B=", "export A=x B=", "declare -r B=", "export UNUSED=fixed B="):
@@ -1333,6 +1377,7 @@ def wf(run): return {".github/workflows/p.yml": json.dumps({"on": "push", "jobs"
 for run in ("bash -c 'curl \"" + url + "tool;${A}.tgz\"'", "bash -c \"curl " + url + "x.tgz;:>$OUT\"", "bash -c 'curl " + url + "x.tgz -o \"$OUT\"'", "sh -c 'wget " + url + "x.tgz -O \"$OUT\"'", "eval \"curl " + url + "x.tgz $EXTRA\""):
     its = list(inv.inventory(wf(run)).values())
     assert len(its) == 1 and ("$" in its[0].path or "`" in its[0].path), (run, [i.key for i in its])
+    assert not age.judge_item(its[0])[0], run
 # a variable after a quoted parenthesis changes the name
 a = {"bin/x.sh": "curl '" + url + "tool)'${A}.tgz -o x\n"}; b = {"bin/x.sh": "curl '" + url + "tool)'${B}.tgz -o x\n"}
 assert inv.moved(inv.inventory(a), inv.inventory(b))
@@ -1357,6 +1402,7 @@ for run in ("eval 'curl \"''" + url + "tool;${VAR}.tgz''\"'",
     a, b = inv.inventory(tree("A", run)), inv.inventory(tree("B", run))
     assert inv.moved(a, b), run
     it = next(iter(b.values()))
+    assert not age.judge_item(it)[0], run
 ok = tree("A", 'curl "' + url + 'x.tgz?download=${A}"')
 assert all(it.step for it in inv.inventory(ok).values()), sorted(inv.inventory(ok))   # fail-closed: no refinement for a quoted word that is the URL (advisor 0442)
 PY

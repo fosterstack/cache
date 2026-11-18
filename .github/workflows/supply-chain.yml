@@ -3,7 +3,7 @@ name: supply-chain
 # REQ-SUP-001: the actions supply-chain checks.
 #   daily-audit    once a day: the inventory, advisories, malicious-package reports, upstream reachability, disputed hits (AC5, AC7-AC10).
 #   evidence-letter-present  once a day: from the 3rd of the month, last month's evidence letter must be on a
-#                  published release and verify (REQ-REL-013). Read-only.
+#                  published release and verify (REQ-REL-015). Read-only.
 # It never produces a run, environment or secret name (AC8): the private details are written on a maintainer's machine, not here.
 
 on:

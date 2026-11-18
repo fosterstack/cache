@@ -553,14 +553,59 @@
       "tools": [
         "python3",
         "at",
+        "bash",
         "gh",
+        "git",
         "make"
       ],
       "runs": [
-        "bin/admission-tag-signer.py"
+        "bin/admission-tag-signer.py",
+        "bin/dependabot-reviewer-version.sh"
       ],
       "signs": false,
       "reason": "gate 7 (REQ-REL-012-AC7): the judge's decision over data the wrapper fetched (the record, the writers policy, the tag object) and main's accepted-items.json, the fourth input; reads and decides, signs and writes nothing"
+    },
+    {
+      "path": "bin/dependabot-reviewer-version.sh",
+      "tools": [
+        "bash",
+        "cd",
+        "cut",
+        "printf",
+        "sha256sum"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "run by bin/audit-record.py to compute the Dependabot reviewer's version: prints the sha256 of the sha256sum lines of five fixed files and runs nothing else; it signs and writes nothing",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "if [ \"${1:-}\" = --files ]; then printf '%s\\n' \"${files[@]}\"; exit 0; fi",
+          "line_sha256": "852338221a21a55914ed167a4bfa1d1c581f69793b9b9163efa4760216bbb14b",
+          "count": 1,
+          "why": "the array subscript is the fixed array files: `${files[@]}` is its expansion to the five literal paths listed at the top of the script, and nothing is substituted inside the brackets (REQ-CHAIN-001-AC1; reviewed line-bound waiver, the script is main's, kept as main wrote it)"
+        },
+        {
+          "rule": "script-name",
+          "text": "bin/dependabot-reviewer.py",
+          "why": "a file name in the list of files the version covers: sha256sum reads and hashes it, nothing starts it (python script)"
+        },
+        {
+          "rule": "script-name",
+          "text": ".github/policy/dependabot-reviewer-prompt.txt",
+          "why": "a file name in the list of files the version covers: sha256sum reads and hashes it, nothing starts it (prompt text)"
+        },
+        {
+          "rule": "script-name",
+          "text": ".github/workflows/dependabot-reviewer.yml",
+          "why": "a file name in the list of files the version covers: sha256sum reads and hashes it, nothing starts it (workflow file)"
+        },
+        {
+          "rule": "script-name",
+          "text": ".github/policy/required-checks.json",
+          "why": "a file name in the list of files the version covers: sha256sum reads and hashes it, nothing starts it (policy file)"
+        }
+      ]
     },
     {
       "path": "bin/build-freeze.sh",

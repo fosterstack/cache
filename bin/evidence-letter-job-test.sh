@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-013-AC5, REQ-REL-013-AC9, REQ-REL-013-AC10, REQ-REL-013-AC11
+# proves: REQ-REL-015-AC5, REQ-REL-015-AC9, REQ-REL-015-AC10, REQ-REL-015-AC11
 # The jobs of the monthly evidence letter (owner Oct 27): .github/workflows/evidence-letter.yml,
 # bin/evidence-letter-fetch.sh, bin/evidence-letter-publish.sh, bin/evidence-letter-verify.sh and
 # bin/evidence-letter-present.sh. Offline: cosign, gh, date and the Check-record verifier are stand-ins that record
@@ -1082,7 +1082,7 @@ for label, bad in (("an empty inclusionPromise", {}), ("an empty signedEntryTime
           pr.returncode != 0 and one_line(pr) and "inclusionPromise" in pr.stderr and verifies(lr) == 0, (pr.returncode, pr.stderr, lr))
 pr, lr = present([[V4]])
 check("S2 row 6b: the control, a bundle with the inclusionPromise passes", pr.returncode == 0 and verifies(lr) == 1, (pr.stderr, lr))
-# ---- evidence-letter-back: the audit's fixes 1 to 5 (REQ-REL-013); each label starts "r1 fix N:"
+# ---- evidence-letter-back: the audit's fixes 1 to 5 (REQ-REL-015); each label starts "r1 fix N:"
 def rel_manifest(name, valid_from, valid_to=None, root_signed=True):
     """A function of the sandbox folder: the (manifest, signature) of a fresh release key called name, made once."""
     def make(tmp):

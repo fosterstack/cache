@@ -1,4 +1,4 @@
-# proves: REQ-SUP-001-AC28, REQ-SUP-001-AC31, REQ-SUP-001-AC32
+# proves: REQ-SUP-001-AC28, REQ-SUP-001-AC40, REQ-SUP-001-AC43
 """Plain-form pins (owner: tool downloads are an exact version plus a checksum; images are pinned by digest).
 AC28: the sample project's Gradle wrapper carries distributionSha256Sum, a lowercase sha256 hex.
 """
@@ -14,7 +14,7 @@ WORKFLOW = os.path.join(ROOT, ".github/workflows/acceptance.yml")
 # new value with the sum Gradle publishes and with the zip itself.
 EXPECTED_SUM = "acd53f1edaf02f1a8ff99879f8a34b302661a057d9b063ae9e35b552f804d20a"
 JAR_REL = "bench/gradle-sample/gradle/wrapper/gradle-wrapper.jar"
-JAR_SUM_REL = ".github/policy/gradle-wrapper-jar-sha256.txt"   # sha256sum format, read by the two Gradle acceptance scripts (REQ-SUP-001-AC32)
+JAR_SUM_REL = ".github/policy/gradle-wrapper-jar-sha256.txt"   # sha256sum format, read by the two Gradle acceptance scripts (REQ-SUP-001-AC43)
 JAR_SUM_FILE = os.path.join(ROOT, JAR_SUM_REL)
 
 

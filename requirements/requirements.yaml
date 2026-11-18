@@ -1616,8 +1616,20 @@ requirements:
       - id: REQ-REL-005-AC3
         given: "a workflow job (or composite action) with a step that runs a script committed in the repository, and a step of the same job that runs curl, wget or aria2c in any form (also inside sh -c, eval, a command substitution or behind a wrapper such as env, sudo or xargs)"
         when: "the action-pin check reads the workflow"
-        then: "the check reports a finding that names the step and the command unless that command is demonstrably writing only to standard output or /dev/null: a closed list of read-only options (the destination of a download is never read from its options), no output redirection except to /dev/null, no bare variable where an option may stand, no word the parser cannot read, and for wget an output of - ; anything else, aria2c always, and any unreadable form is a finding; an exclusion is one exact workflow, job, step index and sha256 of the step's run text with its reason in the check, and a copy of an excluded step elsewhere or an edit of it is a finding again (it only tightens the check)"
+        then: "the check reports a finding that names the step and the command unless that command is demonstrably writing only to standard output or /dev/null: a closed list of read-only options (the destination of a download is never read from its options), no output redirection except to /dev/null, no bare variable where an option may stand, no word the parser cannot read, and for wget an output of - ; anything else, aria2c always, and any unreadable form is a finding; an exclusion is one exact workflow, job, step index and sha256 of the step's run text with its reason in the check, and a copy of an excluded step elsewhere or an edit of it is a finding again; the exclusion of a token request also fails when the word curlrc stands in the workflow outside the excluded steps' run text, or when the env of an excluded step, the env of its job or the env of the workflow is not exactly the mapping the check holds for it (the reviewer's token-request step and its job and workflow have none; the decision step has the keys and values committed in the reviewer workflow): a key added, removed or changed, and a value changed, is a finding, whatever the name; a job with container: or services: is refused the exclusion too, since their env reaches its steps and the check does not read it (it only tightens the check)"
         verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-005-AC4
+        given: "a workflow job or composite action step whose text (its run, with and env values, the env of its job and workflow, and the committed scripts it runs) writes to the environment or the PATH of later steps: through $GITHUB_ENV, ${{ github.env }}, ::set-env or exportVariable, or through $GITHUB_PATH, ${{ github.path }}, ::add-path or addPath"
+        when: "the action-pin check reads the workflow"
+        then: "an environment write is read only in three plain forms, and any other use of those routes is one finding that names the job, the step and the route, because the name it sets cannot be read as literal text: (1) one record: a command of its own that starts with echo or printf and prints a single line, so echo has no option and one argument, printf has a format that holds no conversion but %s and no escape but a closing \\n, and no argument holds a real newline, and the only word of the command that starts with > (quotes removed) is its redirection, so a quoted word that starts with > refuses the command; its first argument (the format, for printf) begins with NAME= (NAME being plain letters, digits and underscores as the shell reads it after removing quotes, and no backslash in it except the closing \\n); the command redirects with >> or > to \"$GITHUB_ENV\" or \"${GITHUB_ENV}\" and to nothing else; and it is not read in a step whose text defines or aliases echo or printf (echo() { }, function echo, alias echo=, and the same for printf); (2) exportVariable called with a quoted literal NAME as its first argument; (3) ::set-env name=NAME::. A name from an input, a matrix, needs or another expression, a variable, a command substitution, a name broken across quotes or built from pieces, a name from a file an earlier step wrote, a name built in a committed script, a heredoc, tee, a path put in a variable or env value, and a route that appears in a comment are not those forms and are refused. The route, PATH and hook-name scans read the text with each backslash at the end of a line joined to the next line, so a route split that way is read whole; form (1) is read from the text as written, so a command that holds a backslash at the end of a line is not form (1), while forms (2) and (3) are read from the joined text, the same text the route scan counts, so every plain form sits on a route the scan also counts. A write in a plain form is judged by its literal name against the closed list of names that change what later programs load or where they connect, as before, and no exception list is added. Every write to the PATH routes stays refused with the route named"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REL-005-AC5
+        given: "a workflow or composite action file in which the key steps, or the step keys run, with and env, are spelled in another letter case, such as Steps:"
+        when: "the action-pin check reads the file"
+        then: "the check reads them as it reads every other key of the file, in any letter case: the run text of such a step, its with and env values, and the committed scripts it runs are judged by the same environment and PATH write rules as the same step under the lowercase keys"
+        verification: { method: unit, release_blocking: false }
         status: approved
 
   - id: REQ-REL-006
@@ -1684,17 +1696,18 @@ requirements:
         status: approved
 
   - id: REQ-DEP-001
-    title: Dependabot majors are judged by a machine
+    title: Dependabot pull requests are judged by a machine
     statement: >
-      A Dependabot major version bump shall be judged by the Dependabot
-      reviewer, not by a person: from main, hourly, it gathers the evidence
-      with no model involved, has two readers rank findings without a verdict,
-      and decides mechanically to merge or to hold with an issue; it posts its
-      result as a check and edits nothing.
-    source: [.github/workflows/dependabot-reviewer.yml, bin/dependabot-reviewer.py]
+      Every pull request Dependabot opens into main, whatever its update kind
+      (patch, minor, major) and whoever pushed commits onto it since, shall be
+      judged by the Dependabot reviewer, not by a person: from main, hourly, it
+      gathers the evidence with no model involved, has two readers rank
+      findings without a verdict, and decides mechanically to merge or to hold
+      with an issue; it posts its result as a check and edits nothing.
+    source: [.github/workflows/dependabot-reviewer.yml, bin/dependabot-reviewer.py, .github/policy/dependabot-reviewer-prompt.txt]
     tier: community
     introduced: v0.3.0
-    origin: the release manager's approvals (Sep 29 2026; Sep 30 2026, sentences 4-5)
+    origin: the release manager's approvals (Sep 29 2026; Sep 30 2026, sentences 4-5); every update kind, with the reviewer as a Dependabot pull request's only review (Nov 11 2026)
     confidence: implementation-only
     acceptance_criteria:
       - id: REQ-DEP-001-AC1
@@ -1704,13 +1717,13 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC2
-        given: an open Dependabot major with no verdict yet
+        given: an open Dependabot pull request into main with no verdict on its head yet, whatever its updates are (patch, minor, major, flagged) and whoever pushed commits onto it
         when: the reviewer runs
-        then: it gathers, with no model involved, the PR diff, the upstream release notes for every version between old and new, and every line in our workflows and modules that uses the dependency; a read of release notes or usage that fails is labeled unavailable in the bundle and is an error (no verdict, retried), never "none found"
+        then: "it is a candidate, and for it the reviewer gathers, with no model involved: the pull request's commits, each one GitHub does not report as Dependabot's own (author dependabot[bot], committed and signed by GitHub, one parent) marked so; the whole diff of that exact head commit against main, read from GitHub by the commit's full id, never cut (a diff over the readers' limit, or one that names a changed binary file, whose bytes a diff does not carry, gives no bundle and no verdict; only while main's ruleset lists the vendor check, read once at gather time, a file under vendor/ is given by its header line and a count of the lines not shown; when that read fails, or the ruleset does not list vendor, vendored files are shown in full); and, for every update, the upstream release notes for every version between old and new and every line in our workflows and modules that uses the dependency; a read of the commits, release notes or usage that fails is labeled unavailable in the bundle and is an error (no verdict, retried), never \"none found\"; when the pull request's commits no longer end at that commit, nothing is gathered and nothing is judged"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC3
-        given: the gathered evidence for one major
+        given: the gathered evidence for one pull request
         when: the two readers answer
         then: "the bundle reaches two readers through the same workload-identity federation the auditor uses, with model identifiers only in environment secrets; each returns findings ranked \"breaks us\", \"check\" or \"noise\", never a verdict; an answer that is malformed, cut off or declares failure is an error, never a clean pass; no model name or identifier, in any letter case, reaches a finding, an issue or the uploaded evidence, the evidence bundle included"
         verification: { method: unit, release_blocking: false }
@@ -1718,7 +1731,7 @@ requirements:
       - id: REQ-DEP-001-AC4
         given: both readers' findings
         when: the reviewer decides
-        then: "the decision is mechanical: no \"breaks us\" from either reader arms squash auto-merge, which merges only once every required check is green; any \"breaks us\" from either reader holds the PR, even when the other reader errored, with one issue carrying the readers' findings and the fix, which is ccode's; a reader error with no \"breaks us\" leaves no verdict and is retried next hour"
+        then: "the decision is mechanical: no \"breaks us\" from either reader, arms squash auto-merge, which merges only once every required check is green, and only when main's ruleset lists at least one required status check (read when arming; none listed, or a read that fails, arms nothing); any \"breaks us\" from either reader holds the PR, even when the other reader errored, with one issue carrying the readers' findings and the fix, which is ccode's; a reader error with no \"breaks us\" leaves no verdict and is retried next hour"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC5
@@ -1746,56 +1759,48 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC9
-        given: a merge verdict on a Dependabot major
+        given: a merge verdict on a Dependabot pull request
         when: auto-merge is armed, and when a new commit is pushed to the PR
-        then: auto-merge is armed only for the exact head commit that was reviewed; a new push voids the verdict, turns auto-merge off, and the new head is reviewed afresh
+        then: "auto-merge is armed only for the exact head commit that was reviewed; after the readers have answered the reviewer reads the pull request's head again, and when it is another commit than the one whose diff was gathered it publishes no check, arms nothing, holds nothing and leaves the pull request as it is (not an error: the new head is a candidate at the next run); a new push voids the verdict, and the new head is reviewed afresh unless AC11 passes it; on a pull request with a major or flagged update the push also turns auto-merge off until the new head has its success"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC10
         given: a Dependabot patch or minor bump whose upstream release notes between old and new contain "breaking" or "deprecat", in any case
         when: the reviewer picks its candidates and gathers its evidence
-        then: "it is judged like a major, by the same two readers and the same mechanical decision, with the notes and our usage gathered for it; a bump whose notes say neither is left to the patch and minor auto-merge path"
+        then: "it is judged like a major, by the same two readers and the same mechanical decision, with the notes and our usage gathered for it, it is named flagged in the bundle, and an auto-merge armed on its head with no verdict is turned off before the review; a bump whose notes say neither is read by the same readers too, and keeps through the review the arm the auto-merge workflow gave it; a pull request whose update lines cannot be read is read as one update of its own kind (unparsed) and is never treated as a plain patch or minor: an auto-merge armed on its head with no verdict is turned off before the review"
         verification: { method: unit, release_blocking: false }
         status: approved
-
-  - id: REQ-DEP-002
-    title: The required-check guard runs everywhere
-    statement: >
-      The ruleset on main and the committed required-check list shall be
-      compared on every pull request and every push to main, so drift is red
-      the day it happens, and a refusal shall open one issue.
-    source: [.github/policy/required-checks.json, .github/workflows/ci.yml]
-    tier: community
-    introduced: v0.3.0
-    origin: decided Sep 29 2026
-    confidence: implementation-only
-    deprecated: true
-    deprecated_reason: The required-check guard and its drift issue were removed from the chain-v030 release branch (Nov 16 2026); GitHub's ruleset is the only list that gates merges. The committed list stays for release admission, and AC3 still holds for it.
-    acceptance_criteria:
-      - id: REQ-DEP-002-AC1
-        given: any pull request and any push to main
-        when: hygiene runs
-        then: the required-check guard compares main's ruleset with .github/policy/required-checks.json, contexts and integration IDs; any difference fails, and an unreadable side fails, never passes
-        verification: { method: ci-workflow, release_blocking: false }
+      - id: REQ-DEP-001-AC11
+        given: an open Dependabot pull request whose head has no verdict and is a merge commit, and a reviewer run that is not forced
+        when: the reviewer picks its candidates
+        then: "it walks back over first parents, at most five commits, while each commit passed is a merge commit, to the first commit that carries a reviewer verdict (a success of another version is no verdict); only if that verdict is a success of the current reviewer version (AC14) and GitHub's diff of the head against its merge base with main is byte for byte the same text as that commit's (not empty, within the readers' limit, naming no binary file) it publishes success on the head, naming the commit it carries it from, and calls no reader; a failure or neutral verdict met first, no verdict within reach, a diff that differs or a read that fails means the head is read like any other; a carried success that cannot be published fails the run and is retried"
+        verification: { method: unit, release_blocking: false }
         status: approved
-      - id: REQ-DEP-002-AC2
-        given: the guard refusing main's list
-        when: hygiene runs
-        then: it opens, or updates, one "required-check drift" issue
-        verification: { method: ci-workflow, release_blocking: false }
+      - id: REQ-DEP-001-AC12
+        given: a reviewer run that took one or more heads up for review
+        when: its act step and its cancellation cleanup have ended, whether the run finished, failed or was cancelled
+        then: "for each of those heads whose pull request is still open and still has that commit as its head: one that carries the failure verdict has any armed auto-merge turned off; a head whose every update is a plain patch or minor (none major, flagged or unparsed) that was armed when the reviewer took it up (the auto-merge workflow arms those), and that has no verdict or a neutral one and no arm after the act step, is armed again for that exact head, only when main's ruleset lists at least one required status check; a head with a success verdict is left as the act step left it; the verdict is read as REQ-DEP-001-AC14 reads it, so a success of another version, or with no version, is no verdict: such a head whose review did not finish is armed again as it was, never left disarmed; a lookup or a write that fails fails the run"
+        verification: { method: unit, release_blocking: false }
         status: approved
-      - id: REQ-DEP-002-AC3
-        given: the committed list .github/policy/required-checks.json and the jobs of .github/workflows/ci.yml
-        when: the list is read
-        then: "it names the job vendor once with scope push and the job marker-gate once with scope pull_request, each with integration ID 15368 (GitHub Actions), and ci.yml has a job of each name; the ruleset on main follows only by a maintainer's change in the GitHub UI"
-        verification: { method: ci-workflow, release_blocking: false }
+      - id: REQ-DEP-001-AC13
+        given: a verdict of the reviewer on a head that is not success (failure; or neutral, for a forced re-review, a review that did not finish over an earlier verdict, or a cancelled run whose verdict cannot be confirmed)
+        when: the reviewer publishes it
+        then: "it first publishes the review gate's own check on that head as failure (the check run named auditor-review-gate, created with the same App token as its own check, with the gate's fields), and publishes its own check only after that succeeded; it never publishes that check as anything but failure; at every hourly run, a head whose latest verdict is failure or neutral and whose latest auditor-review-gate check from the App is success gets the gate failure again; and a head whose latest verdict is success (read or carried) and whose latest auditor-review-gate check from the App is a failure more than six hours old, which the gate's sweep no longer judges, gets that gate failure published again, so that the sweep judges the head anew; a head whose newest verdict is anything but a success of the current version (none: no reviewer check, or a success of another version or with no version; failure; neutral; cancelled, timed_out, action_required or any other conclusion) never keeps a gate success: the reviewer at every hourly run, and the gate's sweep for every Dependabot head, fail it; the sweep judges a head that already has a gate success, and is a Dependabot head, only for that verdict (the passed-audit judge), not for the pin, allowlist, wiring and scanner checks, since its head did not change; the passed-audit judge answering with a GitHub API error (exit 3) on such a head publishes nothing for it and fails the run; a gate failure that cannot be published or read fails the run"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-001-AC14
+        given: "the four files that decide the reviewer's verdict, as a run checked them out: bin/dependabot-reviewer.py, .github/policy/dependabot-reviewer-prompt.txt, .github/workflows/dependabot-reviewer.yml, .github/policy/required-checks.json; their version is the sha256 of the output of sha256sum over them in that order (64 lower-case hex digits), so each file has its own boundary; one script, bin/dependabot-reviewer-version.sh, holds the list and computes it, and a file it cannot read fails it"
+        when: the reviewer publishes a verdict, whatever its conclusion (success carried from an earlier head, neutral for a forced or unfinished review, success, failure), and when it, the auto-merge workflow or the review gate's judge reads a verdict
+        then: "every check the reviewer publishes carries its version as the check run's external_id; a reader counts a success only where a verdict is needed, and then only when its external_id is the version printed by bin/dependabot-reviewer-version.sh on main now (the reviewer reads its own checkout, the auto-merge workflow fetches main's copy of the script and then the files it lists through the contents API, and runs the script with the folder of those files as its argument, the judge reads the checkout of main), so a change to any of the four makes every earlier success not count; a success with another external_id, or with none, is no success: for the reviewer it is no verdict (the head is read as a head with none is, the success is never carried to a new head, the newest check run still decides, so a new success with the current version replaces it), for the judge it is a verdict that does not pass; a failure or neutral verdict counts whatever its external_id; no time is read from GitHub and no workflow-change time decides anything; a version that cannot be computed stops the step that needs it before any verdict is published (no verdict at all, not a neutral), and gives the judge its record rule; every reader of a head's check runs (the reviewer, the auto-merge workflow, the judge, the gate's own check read by the reviewer and by the gate's sweep) asks for 100 runs a page and fails closed, as a read that failed, when it gets 100 runs, a full page that GitHub may have cut (fewer than 100 is the whole answer under the filter it asked; the judge exits 3 on it); a reader that wants the newest run per check name keeps GitHub's latest-per-name list, the others read all runs; the auto-merge workflow reads the verdict first and the version only for a success of a major, a flagged or an unparsed bump, which needs a verdict; a plain patch or minor reads no version, needs no verdict, and its step says so, armed or not, unless the reviewer failed its head, which the step says and turns off any arm over; when the verdict cannot be read it turns off the head's auto-merge before it fails; a version that cannot be read there is no verdict, and so is an empty file list or an empty version after a read that succeeded: the step turns the auto-merge off and fails"
+        verification: { method: unit, release_blocking: false }
         status: approved
 
   - id: REQ-DEP-003
     title: Patch and minor bumps merge on green
     statement: >
-      A Dependabot patch or minor bump shall merge on its own once every
-      required check is green; a major shall be left to the reviewer.
+      A Dependabot patch or minor bump shall be armed at once to merge on its
+      own once every required check is green, unless the reviewer failed it; a
+      major shall be armed by the reviewer only.
     source: [.github/workflows/dependabot-auto-merge.yml, .github/workflows/dependabot-reviewer.yml]
     tier: community
     introduced: v0.3.0
@@ -1804,17 +1809,23 @@ requirements:
     acceptance_criteria:
       - id: REQ-DEP-003-AC1
         given: a Dependabot patch or minor pull request
-        when: the auto-merge workflow runs
-        then: it gets squash auto-merge armed so it merges only when every required check is green; a major is left to the reviewer
+        when: the auto-merge job runs
+        then: it gets squash auto-merge armed only when main's ruleset lists at least one required status check (read when arming; none listed, or a read that fails, arms nothing), so it merges only when every required check is green; a major is left to the reviewer; the reviewer leaves that arm on while it reads the bump, and an arm its act step turned off because the review did not finish is put back (REQ-DEP-001-AC12)
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-DEP-003-AC2
         given: a Dependabot patch or minor pull request whose upstream release notes contain "breaking" or "deprecat", in any case
         when: the auto-merge job runs
-        then: "it does not arm auto-merge, turns off any auto-merge not backed by the reviewer's verdict on the current head, and leaves the bump to the reviewer; if the job cannot tell, it arms nothing"
+        then: "it does not arm auto-merge, turns off any auto-merge not backed by the reviewer's verdict on the current head, and leaves the bump to the reviewer; if the auto-merge workflow cannot tell (its metadata step or its screen failed), it arms nothing and turns off an auto-merge not backed by the reviewer's success on the current head (a success counts with the current version only, REQ-DEP-001-AC14)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-DEP-003-AC3
+        given: a Dependabot pull request, of any update kind, whose head carries the reviewer's failure verdict
+        when: the auto-merge workflow runs on it, and at every hourly reviewer run
+        then: "the auto-merge workflow reads the reviewer's verdict on the head before it arms and does not arm a failed head (if it cannot read the verdict the step fails and nothing is armed); its last step, after the arm, reads the pull request's current head and its auto-merge state in one read and turns off any auto-merge armed on a current head that carries the failure verdict; a read of the verdict, of the head or of the arm state that fails turns off the pull request's auto-merge before the step fails; and the reviewer turns off any auto-merge it finds armed on a head with the failure verdict, in its settle step and at every hourly run"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-003-AC4
         given: a Dependabot pull request that changes a file under tools/govulncheck/ (go.mod and go.sum, the pin of the Go source scanner, which ci.yml builds through bin/install-scanner.sh, so a new version gets a normal review), or whose file list holds 100 or more entries (the API lists at most 100, so a longer one cannot be judged)
         when: the auto-merge workflow or the hourly reviewer sees it
         then: "the workflow does not arm auto-merge for it (its arming step reads the pull request's files and stops), the reviewer does not review or arm it and turns off an arm made earlier (a failed state read or a failed disarm skips it and fails the step); it is held out of auto-merge and handled as a normal pull request, which is reviewed by both reviewers and merged; a path that only looks like the directory (tools/govulncheck-evil/) is not held, and 99 listed files are judged as usual"
@@ -1822,12 +1833,12 @@ requirements:
         status: approved
 
   - id: REQ-DEP-004
-    title: A held bump or drift dispatches the fixer
+    title: A held bump dispatches the fixer
     statement: >
-      A held Dependabot major, or a required-check drift issue, shall send one
-      generic dispatch to the agent repository so an agent fixes our side; a
-      failed dispatch shall be a warning and never undo the hold.
-    source: [bin/dispatch-fixer.sh, .github/workflows/dependabot-reviewer.yml, .github/workflows/ci.yml]
+      A held Dependabot bump shall send one generic dispatch to the agent
+      repository so an agent fixes our side; a failed dispatch shall be a
+      warning and never undo the hold.
+    source: [bin/dispatch-fixer.sh, .github/workflows/dependabot-reviewer.yml]
     tier: community
     introduced: v0.3.0
     origin: decided Sep 29 2026 (the cache side)
@@ -1839,12 +1850,6 @@ requirements:
         given: a completed hold
         when: the reviewer finishes it
         then: it sends one fix-held-bump dispatch to ops naming the issue, the pull request and the repository; a merge never dispatches; a failed or impossible dispatch is a warning and the hold stands
-        verification: { method: unit, release_blocking: false }
-        status: approved
-      - id: REQ-DEP-004-AC2
-        given: a required-check drift issue opened by the guard
-        when: hygiene has seen it
-        then: the fixer is dispatched (one fix-required-check-drift dispatch to ops naming the issue), and dispatching never fails the job
         verification: { method: unit, release_blocking: false }
         status: approved
 
@@ -1897,7 +1902,7 @@ requirements:
       - id: REQ-REL-008-AC1
         given: "the four consolidation pull requests have landed"
         when: "the workflow directory is listed"
-        then: "it holds exactly the 17 listed files, the list fixed by bin/workflow-consolidation-test.sh: acceptance.yml, agent-review-gate.yml, auditor.yml, ci.yml, codeql.yml, customer-words-edited.yml, dependabot-auto-merge.yml, dependabot-reviewer.yml, evidence-letter.yml, go-freshness.yml, main-candidate-rescan.yml, persona-uat.yml, release.yml, reserved-branch-guard.yml, scan.yml, scorecard.yml and supply-chain.yml; no stage-*.yml file exists, because the release is the one file release.yml (one workflow file per purpose, the rule of Nov 13 2026); persona-uat.yml holds the persona UAT jobs (the weekly run and the release-candidate leg), one purpose; evidence-letter.yml holds the monthly evidence letter's two jobs (REQ-REL-013), a purpose no other file has"
+        then: "it holds exactly the 17 listed files, the list fixed by bin/workflow-consolidation-test.sh: acceptance.yml, agent-review-gate.yml, auditor.yml, ci.yml, codeql.yml, customer-words-edited.yml, dependabot-auto-merge.yml, dependabot-reviewer.yml, evidence-letter.yml, go-freshness.yml, main-candidate-rescan.yml, persona-uat.yml, release.yml, reserved-branch-guard.yml, scan.yml, scorecard.yml and supply-chain.yml; no stage-*.yml file exists, because the release is the one file release.yml (one workflow file per purpose, the rule of Nov 13 2026); persona-uat.yml holds the persona UAT jobs (the weekly run and the release-candidate leg), one purpose; evidence-letter.yml holds the monthly evidence letter's two jobs (REQ-REL-015), a purpose no other file has"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-008-AC2
@@ -2167,22 +2172,29 @@ requirements:
       changes the head sha, so an earlier record no longer applies. The verdict is part of the existing
       auditor-review-gate (agent-review-gate.yml): main's copy of the judge runs over the head, so a pull request
       cannot edit or skip it, and a retarget re-runs it.
+      For a pull request Dependabot opened the Dependabot reviewer is the review: no record is written for it, and
+      the same judge passes its head on the reviewer's success (AC9 to AC12).
     source: [.github/workflows/agent-review-gate.yml, bin/audit-record-judge.sh, bin/audit-record.py, .github/policy/audit-writers.json, bin/build-admit.py]
     tier: community
     introduced: v0.3.0
-    origin: release process decision of Oct 23 2026
+    origin: release process decision of Oct 23 2026; the Dependabot exception of Nov 11 2026
     confidence: implementation-only
     notes: >
-      No new required check: auditor-review-gate is already required on main, so once this lands every pull request
-      into main needs a record. It therefore lands only after the writer (a later pull request) and the dispatch that
+      No new required check: auditor-review-gate is not required per pull request on main (it was taken off the
+      ruleset on Nov 12 2026; release-only-checks.json still has release admission require it), so a missing record
+      blocks the merge clearance, not GitHub's merge button. It therefore lands only after the writer (a later pull request) and the dispatch that
       calls it exist, on the landing day, together with the ruleset rule that only the writer creates branches under
       audit/**. The record commit adds one file, audit-record, because the API can only make a commit that changes
       something.
+      The Dependabot rule (AC9 to AC12) changes only the judge and the record writer. The gate workflow, its check
+      name and the required checks are unchanged. Without a passing record, a Dependabot head passes only on the
+      reviewer's success on that head, or, with no verdict of its own, as a clean merge of main into a head that passes
+      this way.
     acceptance_criteria:
       - id: REQ-REL-012-AC1
-        given: "a pull request whose base is main, and the head sha it has now"
+        given: "a pull request whose base is main and that Dependabot did not open (AC9 to AC12 have those), and the head sha it has now"
         when: "the verdict job of agent-review-gate.yml (and its scheduled sweep) judges it with bin/audit-record-judge.sh and bin/audit-record.py of the default branch"
-        then: "it passes only if the branch audit/<head sha> exists and holds one commit whose only parent is that head, that GitHub verified, that a writer named in .github/policy/audit-writers.json of the default branch authored (login and numeric id, a bot) and that the writer or GitHub itself committed, with the fixed message audit record, adding exactly the one file audit-record; otherwise the auditor-review-gate fails, so the pull request carries a passed-audit record for its exact head or it cannot merge"
+        then: "it passes only if the branch audit/<head sha> exists and holds one commit whose only parent is that head, that GitHub verified, that a writer named in .github/policy/audit-writers.json of the default branch authored (login and numeric id, a bot) and that the writer or GitHub itself committed, with the fixed message audit record, adding exactly the one file audit-record; otherwise the auditor-review-gate fails; since the owner took the gate off the ruleset (Nov 12 2026) the record no longer blocks GitHub's merge, and the box merger merges only after the review seats and the cleared row"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-012-AC2
@@ -2225,6 +2237,112 @@ requirements:
         given: "a dispatch of the record job with the word release as the pull request and a commit sha"
         when: "the writer's prepare script runs"
         then: "a whole-release record is written only for a commit that main contains (main is identical to it or ahead of it) and only for a named dispatcher, with the same signed commit on audit/<sha> as for a pull request; bin/audit-record-request.sh makes the request after the same check"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC9
+        given: "a head with no passing record that GitHub names as the head of exactly one open pull request, which Dependabot opened into main (the pull request's user is dependabot[bot], id 49699333, a bot) from a dependabot/ branch of the repository itself, and a well-formed writers policy on the default branch"
+        when: "the judge runs (main's copy, in the verdict job and the sweep, which hold the head's commits as git objects and check none of the head out)"
+        then: "it passes without a record on the Dependabot reviewer's success and nothing else: the newest dependabot-reviewer check run that an audit writer's App (an App whose bot account is listed under writers in .github/policy/audit-writers.json) put on the head (all runs read, not only GitHub's latest) is completed with the conclusion success and an external_id equal to the version of the reviewer's files in the checked-out main (REQ-DEP-001-AC14; a success with another external_id, or none, refuses); or the head has no such check run and is a clean merge of main into the head before it and nothing more (two parents, the first the head before it, the second a commit of the checked-out main, its tree the one git makes of merging the two), and that parent passes in the same way, at most 50 such merges back; a read of GitHub that fails, or a full page of 100 (which GitHub may have cut), is no verdict and the judge exits 3; the verdict job and the sweep hold the read scope of each endpoint the judge reads there: contents: read for the record branch and its commit, checks: read and pull-requests: read; the record job keeps contents: read, uses the App token and fails closed."
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC10
+        given: "a dispatch of the record job for an open pull request into main that Dependabot opened (its user is dependabot[bot], id 49699333, a bot) from a dependabot/ branch of the repository itself"
+        when: "the writer's prepare script runs"
+        then: "it refuses and writes nothing, whatever the reviewer says of the head. Any other pull request is recorded as before, including one Dependabot opened from another branch or from a fork. A passed-audit record on the exact head also passes the gate, even on a head the reviewer failed."
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC11
+        given: "a head with no passing record that GitHub names as the head of exactly one open pull request, which Dependabot opened into main (the pull request's user is dependabot[bot], id 49699333, a bot) from a dependabot/ branch of the repository itself, and a well-formed writers policy on the default branch"
+        when: "the judge runs (main's copy, in the verdict job and the sweep, which hold the head's commits as git objects and check none of the head out)"
+        then: "a head that does not pass as AC9 says is refused, saying why: no verdict on the head (or, for a clean merge of main, on the head before it, and so on back), on a patch as on a major; a newest verdict that is a failure, neutral, any other conclusion, or unfinished; a verdict that cannot be read (for example a check entry with a missing or empty check name or App slug, which is the App's short name); a head that carries a commit or a change of its own after the passed head. A GitHub API error is reported as an API error, not as a refusal, and the judge exits 3."
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC12
+        given: "a head with no passing record"
+        when: "the judge runs (main's copy, in the verdict job and the sweep, which hold the head's commits as git objects and check none of the head out)"
+        then: "the record rule stands, as for every other pull request, when another open pull request has the same head, when GitHub's page of pull requests holds an entry whose state cannot be read or an open entry whose head sha cannot be read, when Dependabot did not open it (another author, id or account type, a branch not under dependabot/, a fork, another base, closed, another head), or when the writers policy is missing or malformed; in that last case GitHub is not asked whose head it is. The judge's release mode, which stage-admission.yml runs, never asks whose head it is."
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+
+  - id: REQ-REL-013
+    title: Release admission requires the checks the ruleset does not list
+    statement: >
+      Release admission and the patch release's ready step shall require the checks of
+      .github/policy/release-only-checks.json together with those of required-checks.json, and a change to that list
+      shall be refused by the pin-wiring judge on every pull request.
+    source: [.github/policy/release-only-checks.json, .github/workflows/stage-admission.yml, .github/workflows/release.yml]
+    tier: community
+    introduced: v0.3.0
+    origin: the owner's trim of the ruleset (Nov 12 2026)
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-REL-013-AC1
+        given: the contexts the owner took off the ruleset on Nov 12 2026 (allowlist-persona, allowlist-chain, allowlist-pins-auditor, acceptance-gradle, acceptance-maven (1.2.0), acceptance-maven (1.2.3), coverage, auditor-review-gate), which release admission still requires green
+        when: stage admission and the patch release's ready step read the required checks from main
+        then: >-
+          each reads required-checks.json and release-only-checks.json on its own, and refuses unless that file is an object whose required_checks is a non-empty array;
+          a missing, empty, null or malformed file never lowers the requirement, whatever the other file holds;
+          the requirement is the two lists together
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-013-AC2
+        given: a head whose release-only-checks.json is not the eight entries pinned in the pin-wiring judge on main
+        when: the judge judges the head
+        then: >-
+          it refuses and prints each entry that differs;
+          each entry is compared whole: its context, its integration_id and its scope;
+          the pin is main's copy of the judge, so a change to the file and to the judge in one pull request is still refused
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-013-AC3
+        given: a head whose workflows are judged by the pin-wiring judge
+        when: it judges the head
+        then: >-
+          it refuses a head with no release-only-checks.json; only the landing form, which the judge hands to its own copy, may have none;
+          it refuses any job other than the one that produces a reserved name when that job carries the name;
+          the reserved names are the eight entries pinned by REQ-REL-013-AC2, never the head's own lists, each by job id, by literal name and by a name with an expression in it
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-013-AC4
+        given: a head whose ci.yml the pin-wiring judge reads as bytes
+        when: it judges the head
+        then: >-
+          it refuses a carriage return, a next-line (U+0085), a line separator (U+2028) or a paragraph separator (U+2029) anywhere in ci.yml, because YAML ends a line at each of them and the judge does not;
+          on the landing path too it requires the top-level keys to be byte for byte those of the landing commit's own ci.yml, with only the checkout's digest and version comment free
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+
+  - id: REQ-REL-016
+    title: Pull requests run six checks; the rest run on push to main
+    statement: >
+      On a pull request into main or a release branch only these checks shall run: test, lint, govulncheck, analyze (go),
+      fips140-only and scan (with the jobs scan needs). Every other check shall run on push to main, on a schedule or in the
+      release chain, so release admission reads each of them on the exact tagged commit. dependency-review runs on push to main
+      and judges the versions the push moved (the commit before the push to the commit after it). The pin-age scan of pull
+      requests is deleted; the daily pin audit is the supply-chain check.
+    source: [.github/workflows/ci.yml, .github/workflows/scan.yml, .github/workflows/codeql.yml, .github/workflows/acceptance.yml, .github/workflows/supply-chain.yml, .github/policy/required-checks.json]
+    tier: community
+    introduced: v0.3.0
+    origin: the owner's ruling on pull-request checks (Nov 17 2026, "only keep the ones that actually have meaning for CI")
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-REL-016-AC1
+        given: the workflows under .github/workflows on main
+        when: the jobs that run on the pull_request event are listed
+        then: >-
+          they are test, lint, govulncheck, analyze (go), fips140-only and scan, the jobs scan needs (build, assemble, the scanner list and the scanners), and the jobs of agent-review-gate.yml and dependabot-auto-merge.yml, which are no pull-request checks of the ruleset; no other job runs on pull_request
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-016-AC2
+        given: a push to main that moves a dependency version
+        when: dependency-review runs on that push
+        then: it judges the versions between the commit before the push and the commit after it
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-016-AC3
+        given: a tag whose commit has a red or missing run of a check that required-checks.json or release-only-checks.json scopes to push (pin-age and dependency-review included)
+        when: release admission runs
+        then: it refuses the tag
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
@@ -2916,7 +3034,7 @@ requirements:
       the five existing rulings keep working, (3) the log of ignored entries, (4) the OSV query by the /vMAJOR path.
     confidence: implementation-only
     acceptance_criteria:
-      - id: REQ-SUP-001-AC1
+      - id: REQ-SUP-001-AC41
         given: "Dependabot's configuration"
         when: "it is read"
         then: "the github-actions and pip entries and the gomod entry of the tool module tools/govulncheck (weekly) carry no cooldown key, the product's gomod entry for the root is unchanged, and no docker entry exists (the repository has no container build file for it to watch)"
@@ -3001,25 +3119,43 @@ requirements:
         then: "it declares no image input and no step starts a container image: both jobs run the server from source; the release chain runs the same suites through bin/check-acceptance.sh and bin/acceptance-serve.sh, where the candidate is refused unless content-addressed and run by its inspected ID (AC30); this keeps the plain form for an image, pinned by digest, on the one path that is live"
         verification: { method: inspection, release_blocking: false }
         status: approved
-      - id: REQ-SUP-001-AC31
+      - id: REQ-SUP-001-AC40
         given: "the sample project's committed Gradle wrapper jar (bench/gradle-sample/gradle/wrapper/gradle-wrapper.jar)"
         when: "the offline tests run, and when a pull request changes the wrapper jar or properties (CI then also runs the online test)"
         then: "the jar's sha256 equals the reviewed value committed beside it (.github/policy/gradle-wrapper-jar-sha256.txt, one sha256sum line) and, in the online test, the sha256 Gradle publishes for the wrapper of the version the distribution URL names, so a changed or substituted jar fails; this is the plain form for a tool download: exact version and checksum"
         verification: { method: unit, release_blocking: false }
         status: approved
-      - id: REQ-SUP-001-AC32
-        given: "bin/acceptance-gradle.sh and bin/acceptance-gradle-capped.sh, which run the sample project's ./gradlew"
-        when: "either starts"
-        then: "before any ./gradlew it checks gradle-wrapper.jar against the committed .github/policy/gradle-wrapper-jar-sha256.txt (sha256sum -c) and refuses with exit 1, naming the jar, when the jar differs, the expected file is missing, is not exactly one line naming the jar, or is for another jar; no gradlew runs behind a refusal"
-        verification: { method: unit, release_blocking: false }
-        status: approved
       - id: REQ-SUP-001-AC30
+        given: "the repository (workflows, scripts, tests, docs and configuration)"
+        when: "it is read"
+        then: "nothing in it names a wait before a new version may be used, or enforces one: no check, job, script or test measures how long a version has been public before it may be used, and no document describes such a wait"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-SUP-001-AC32
+        given: "Dependabot's configuration"
+        when: "it is read"
+        then: "it has one entry per ecosystem root we use, and no entry carries a cooldown key; every version bump it proposes is a reviewed pull request"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-SUP-001-AC33
+        given: "the workflow supply-chain.yml"
+        when: "it is read"
+        then: "no job of it measures how long a version has been public, and no job holds actions: write"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-SUP-001-AC42
         given: "bin/acceptance-serve.sh started with an IMAGE_REF, and bin/check-acceptance.sh, which loads Build's production candidate and starts it through that script"
         when: "the IMAGE_REF is not content-addressed: not exactly name@sha256:<64 lowercase hex> (name = [host[:port]/]path[/path]...[:tag]) and not exactly an image ID sha256:<64 lowercase hex> as one whole string (a tag only, an upper-case or short digest, trailing text, a second line, a leading option character)"
         then: "serve refuses it with exit 2 and a message naming the ref, before docker run; serve tags only the image's inspected ID to its fixed local name, checks that name still resolves to exactly that ID right before docker run (a re-tag is refused) and runs that name; check-acceptance.sh turns the tag that docker load printed into the loaded image's ID (docker image inspect) and hands serve that ID, never the tag; this is the plain form for an image: pinned by digest"
         verification: { method: unit, release_blocking: false }
         status: approved
-      - id: REQ-SUP-001-AC33
+      - id: REQ-SUP-001-AC43
+        given: "bin/acceptance-gradle.sh and bin/acceptance-gradle-capped.sh, which run the sample project's ./gradlew"
+        when: "either starts"
+        then: "before any ./gradlew it checks gradle-wrapper.jar against the committed .github/policy/gradle-wrapper-jar-sha256.txt (sha256sum -c) and refuses with exit 1, naming the jar, when the jar differs, the expected file is missing, is not exactly one line naming the jar, or is for another jar; no gradlew runs behind a refusal (the owner's plain form for a tool download: exact version and checksum)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-SUP-001-AC39
         given: "a Check script (bin/check-acceptance.sh, bin/check-fips.sh, bin/check-artifacts.sh) loads a candidate image layout into docker"
         when: "the layout holds anything beyond the files its index and manifests name (a root manifest.json, a stray tar, a blob nothing names)"
         then: "only oci-layout, index.json and the blobs the layout's index and child manifests name go into the archive docker load reads, everything else is left out, and a layout whose index names a blob it lacks is refused before any load. Extends the named-members rule of REQ-CHAIN-006-AC4 from the scan to docker load. Tighten-only"
@@ -3318,7 +3454,7 @@ requirements:
       - id: REQ-CHAIN-001-AC1
         given: "the workflow files of the release chain"
         when: "they are parsed"
-        then: "the Sign stage is the jobs sign, sign-rebuild and sign-check of release.yml, and release.yml is the only signing workflow file v0.3.0 has beyond the files that existed at v0.2.2 (customer-words-edited.yml, the one other added file, signs nothing; evidence-letter.yml, the monthly evidence letter, REQ-REL-013, may also be there, and its one signing job is on the id-token list); the Sign job runs on a GitHub-hosted runner (never self-hosted); no other workflow, composite action or .yaml file signs provenance, every other signing call being listed with its reason in .github/policy/chain-signers.json; release.yml is judged over a closed set of keys (finite grammar): the workflow, job and step keys come from fixed lists (no defaults, container, services, shell, working-directory, workflow env, continue-on-error, job-level uses; job env only on the three sign jobs of release.yml, exactly their three AWS federation literals AWS_ROLE_ARN, AWS_REGION and RELEASE_KMS_KEY_REF, which no step there carries and which the release job does not hold; strategy only a matrix of literal runner labels), step env names come from the closed env_names list of .github/policy/chain-scripts.json (never BASH_ENV, ENV, PATH, LD_*, PYTHON*, NODE_*, GITHUB_*) and each is read whole by that step, step uses is only a digest-pinned actions/checkout (persist-credentials false, no ref, repository, path or token), actions/download-artifact (an explicit path that cannot overwrite a listed script, bin/ or .github/) or actions/upload-artifact (no local composite action, docker://, github-script or reusable-workflow call), and every run line is exactly set -euo pipefail, bash or python3 followed by a plain relative path that is listed in chain-scripts.json, or one printf of a whole env variable into digests.json (any other printf line is an error), with arguments that are literals or whole reads of the step own env (anything else at command position, such as a variable, glob, make, xargs, find, npm, a pipe or a direct tool, fails and names the file and line); a listed script is scanned as raw text whatever its extension or shebang: it names no command from the fixed deny list (interpreters, source, eval, exec, make, xargs, find, curl, wget, ssh, gh, git, docker and similar) that its tools list does not allow, names no other script that its runs list does not allow, passes only a literal path in its runs list after witness run --, sets no PATH, BASH_ENV, ENV, LD_*, PYTHON* or NODE_OPTIONS, and signs only as its signs value says (a signer named anywhere in the text, comments and quotes included, counts); a script whose signs value is provenance is run by the sign jobs of release.yml alone (except through a sign_subcommand row, whose sign call text is itself a provenance signer)"
+        then: "the Sign stage is the jobs sign, sign-rebuild and sign-check of release.yml, and release.yml is the only signing workflow file v0.3.0 has beyond the files that existed at v0.2.2 (customer-words-edited.yml, the one other added file, signs nothing; evidence-letter.yml, the monthly evidence letter, REQ-REL-015, may also be there, and its one signing job is on the id-token list); the Sign job runs on a GitHub-hosted runner (never self-hosted); no other workflow, composite action or .yaml file signs provenance, every other signing call being listed with its reason in .github/policy/chain-signers.json; release.yml is judged over a closed set of keys (finite grammar): the workflow, job and step keys come from fixed lists (no defaults, container, services, shell, working-directory, workflow env, continue-on-error, job-level uses; job env only on the three sign jobs of release.yml, exactly their three AWS federation literals AWS_ROLE_ARN, AWS_REGION and RELEASE_KMS_KEY_REF, which no step there carries and which the release job does not hold; strategy only a matrix of literal runner labels), step env names come from the closed env_names list of .github/policy/chain-scripts.json (never BASH_ENV, ENV, PATH, LD_*, PYTHON*, NODE_*, GITHUB_*) and each is read whole by that step, step uses is only a digest-pinned actions/checkout (persist-credentials false, no ref, repository, path or token), actions/download-artifact (an explicit path that cannot overwrite a listed script, bin/ or .github/) or actions/upload-artifact (no local composite action, docker://, github-script or reusable-workflow call), and every run line is exactly set -euo pipefail, bash or python3 followed by a plain relative path that is listed in chain-scripts.json, or one printf of a whole env variable into digests.json (any other printf line is an error), with arguments that are literals or whole reads of the step own env (anything else at command position, such as a variable, glob, make, xargs, find, npm, a pipe or a direct tool, fails and names the file and line); a listed script is scanned as raw text whatever its extension or shebang: it names no command from the fixed deny list (interpreters, source, eval, exec, make, xargs, find, curl, wget, ssh, gh, git, docker and similar) that its tools list does not allow, names no other script that its runs list does not allow, passes only a literal path in its runs list after witness run --, sets no PATH, BASH_ENV, ENV, LD_*, PYTHON* or NODE_OPTIONS, and signs only as its signs value says (a signer named anywhere in the text, comments and quotes included, counts); a script whose signs value is provenance is run by the sign jobs of release.yml alone (except through a sign_subcommand row, whose sign call text is itself a provenance signer)"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-001-AC2
@@ -3361,13 +3497,13 @@ requirements:
       - id: REQ-CHAIN-001-AC8
         given: "the workflow files of the repository"
         when: "the chain test reads their jobs"
-        then: "exactly the three jobs sign, sign-rebuild and sign-check of release.yml run in the environment sign and request the identity token for the release signing role, and no other job of any workflow file does except the job sign of evidence-letter.yml (REQ-REL-013, in the environment evidence-letter, the only job outside the environment sign that does), so a job of any other environment or file cannot obtain the role; the role's trust itself, which accepts only the environment sign of release.yml and the environment evidence-letter of evidence-letter.yml on main, is applied in the ops repository"
+        then: "exactly the three jobs sign, sign-rebuild and sign-check of release.yml run in the environment sign and request the identity token for the release signing role, and no other job of any workflow file does except the job sign of evidence-letter.yml (REQ-REL-015, in the environment evidence-letter, the only job outside the environment sign that does), so a job of any other environment or file cannot obtain the role; the role's trust itself, which accepts only the environment sign of release.yml and the environment evidence-letter of evidence-letter.yml on main, is applied in the ops repository"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-001-AC9
         given: "release.yml"
         when: "its jobs are read"
-        then: "the three jobs sign, sign-rebuild and sign-check each carry environment: sign, the guard S of REQ-CHAIN-005-AC5 and exactly the identity token write for the KMS federation, and are the only jobs of release.yml that carry the KMS federation (AWS_ROLE_ARN, AWS_REGION, RELEASE_KMS_KEY_REF) and the only jobs that run the signing subcommand or bin/release-signatures.sh; sign-check runs bin/release-signatures.sh on a final tag only, with no registry credential (no DOCKERHUB_* and no GH_TOKEN) and no registry or packages write, and uploads the signatures as the artifact release-signed; the job release carries neither an AWS role nor an identity token for the key, its Witness records stay local evidence under a throwaway key, and its steps release-apks and release-sign check Sign's signatures and push them and sign nothing; no job of persona-uat.yml, live-test or live-test-release names the key role; the one other holder of the KMS federation is the publish step of evidence-letter.yml (REQ-REL-013), in the job with environment: evidence-letter, which carries the three names as the env of that step only, so no job of that file carries them and no other step of it or job of any other file names the key role, the key reference or the environment sign"
+        then: "the three jobs sign, sign-rebuild and sign-check each carry environment: sign, the guard S of REQ-CHAIN-005-AC5 and exactly the identity token write for the KMS federation, and are the only jobs of release.yml that carry the KMS federation (AWS_ROLE_ARN, AWS_REGION, RELEASE_KMS_KEY_REF) and the only jobs that run the signing subcommand or bin/release-signatures.sh; sign-check runs bin/release-signatures.sh on a final tag only, with no registry credential (no DOCKERHUB_* and no GH_TOKEN) and no registry or packages write, and uploads the signatures as the artifact release-signed; the job release carries neither an AWS role nor an identity token for the key, its Witness records stay local evidence under a throwaway key, and its steps release-apks and release-sign check Sign's signatures and push them and sign nothing; no job of persona-uat.yml, live-test or live-test-release names the key role; the one other holder of the KMS federation is the publish step of evidence-letter.yml (REQ-REL-015), in the job with environment: evidence-letter, which carries the three names as the env of that step only, so no job of that file carries them and no other step of it or job of any other file names the key role, the key reference or the environment sign"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
 
@@ -3820,8 +3956,7 @@ requirements:
       does, and a new one named test_0* before it would fail that assertion; it judges the resolved path of each call
       (symbolic links followed, ".." applied after a link, a dir_fd or an open fd resolved to its directory) against
       the temporary directory, the checkout and the interpreter environment (read only), and is proven by mutants run
-      in a container. The static literal scan keeps a reviewed allow-list (system_path_allowlist.py) whose whole-file
-      rows pin the file byte for byte. The shell scan is limited to ln -s / cp -s (and the hard-link form) with an
+      in a container. The static literal scan keeps a reviewed allow-list (system_path_allowlist.py) whose whole-file rows list the literal lines a file may hold. The shell scan is limited to ln -s / cp -s (and the hard-link form) with an
       absolute target and to a script that creates files without ever calling mktemp or tempfile (the mktemp rule);
       the scan does not check that every file lands under the temp directory, the runtime guard (AC1) is what catches
       a stray path. The shell checks are a lint of plain forms, not a security control. The static scans read only
@@ -3880,7 +4015,7 @@ requirements:
       - id: REQ-AUD-019-AC2
         given: "a Python test file in the repository"
         when: "the static scan reads it"
-        then: "it fails, naming the file and line, on a system-path literal (an absolute path under a top-level system directory, the bare root, a home-directory form, a dot or glob first component, or a chain of parent directories) unless a reviewed allow-list row approves that one complete token as pure data, and a whole-file row pins the file byte for byte"
+        then: "it fails, naming the file and line, on a system-path literal (an absolute path under a top-level system directory, the bare root, a home-directory form, a dot or glob first component, or a chain of parent directories) unless a reviewed allow-list row approves that one complete token as pure data, and a whole-file row lists the literal lines its file may hold"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-AUD-019-AC3
@@ -3943,8 +4078,7 @@ requirements:
     confidence: implementation-only
     notes: >
       Each tool's argv and exit codes are in its header comment. The drivers that call them (bin/build-apk.sh,
-      bin/assemble-image.sh) belong to the melange and apko pull requests. melange 0.61.2 and apko 1.4.6 (both public
-      for more than 7 days when pinned) are pinned by the sha256 values in the release checksums.txt files fetched
+      bin/assemble-image.sh) belong to the melange and apko pull requests. melange 0.61.2 and apko 1.4.6 are pinned by the sha256 values in the release checksums.txt files fetched
       over HTTPS from the projects' GitHub releases. Known residuals: bin/apk-tool.py refuses a PAX extended header as
       the FIRST header of stream 0 (the signature stream must start with a plain header); elsewhere only the exact key
       APK-TOOLS.checksum.SHA1 is accepted. A forwarded-value echo in error messages is not escaped. The real melange
@@ -4710,7 +4844,7 @@ requirements:
       index and is a signed index, with no versioned index/APKINDEX-<sha256> file yet, is accepted and is kept under
       its own digest by the first run that changes the index. The daily job edits only DATA files (the locks,
       build/locks/fips-module.txt) and asks bin/gen-recipes.py what the recipes become; it never edits the recipe
-      template or its pin.
+      template.
     acceptance_criteria:
       - id: REQ-REFRESH-001-AC1
         given: "the live Wolfi signing key differs from the archived one"
@@ -5331,7 +5465,7 @@ requirements:
         then: "it first lists every case, then proves each case passed exactly once across the shards: none skipped, none doubled, none failed, no dead shard"
         verification: { method: inspection, release_blocking: false }
         status: approved
-  - id: REQ-REL-013
+  - id: REQ-REL-015
     title: The monthly signed evidence letter
     statement: >
       Once a month the release chain drafts one letter that rolls up that month's public evidence, takes every line of
@@ -5353,67 +5487,67 @@ requirements:
       letter quotes it. Round 2 (Nov 1) reworded the statement and AC5 to what the code does (the read-back was removed
       in round 1, F14); wording pending approval.
     acceptance_criteria:
-      - id: REQ-REL-013-AC1
+      - id: REQ-REL-015-AC1
         given: "a month and the assets of the releases published in it (release.json and the files of each release)"
         when: "the letter is drafted for that month"
         then: "the letter lists exactly those releases, each with its tag, date, release page link and commit, and no other release; a month with no release still gets a letter, which says none was published and carries the Check records of the latest release; before any release exists there is no letter and the script says so"
         verification: { method: unit, release_blocking: false }
         status: approved
-      - id: REQ-REL-013-AC2
+      - id: REQ-REL-015-AC2
         given: "a patch release (vX.Y.Z with Z above 0) in the month"
         when: "the letter is made"
         then: "it names the patch release and its reason, the first line of that release's notes quoted verbatim; a patch release with no notes line refuses"
         verification: { method: unit, release_blocking: false }
         status: approved
-      - id: REQ-REL-013-AC3
+      - id: REQ-REL-015-AC3
         given: "a release's OpenVEX file whose hash is the one in its release manifest"
         when: "the letter is made"
         then: "it lists each statement of that file dated in the month by its CVE name and date; an OpenVEX file whose hash differs from the manifest's refuses"
         verification: { method: unit, release_blocking: false }
         status: approved
-      - id: REQ-REL-013-AC4
+      - id: REQ-REL-015-AC4
         given: "the Check records of a release and the month's advisories file"
         when: "the letter is made"
         then: "it lists each Check record by name and hash, and either the month's advisories or that none was published; a missing Check record or a missing advisories file refuses"
         verification: { method: unit, release_blocking: false }
         status: approved
-      - id: REQ-REL-013-AC5
+      - id: REQ-REL-015-AC5
         given: "the assets of a month's releases, each checked by the fetch step first"
         when: "the letter is made"
         then: "every fact in it is taken from an asset the fetch verified first; a missing or malformed asset, or one that fails its check, makes no letter and ends nonzero in one line"
         verification: { method: unit, release_blocking: false }
         status: approved
-      - id: REQ-REL-013-AC6
+      - id: REQ-REL-015-AC6
         given: "the controls document with its version history"
         when: "the letter is made"
         then: "it carries the one binding line naming the version in force and the date it was signed, 'unchanged this month' when it did not change, and when it changed names both versions and which releases fall under each"
         verification: { method: unit, release_blocking: false }
         status: approved
-      - id: REQ-REL-013-AC7
+      - id: REQ-REL-015-AC7
         given: "any letter the script makes"
         when: "its text is read"
         then: "it holds none of the words warranty, certified, compliant, guarantee or SOC 2, and no email address; a quoted line that holds one of those words refuses"
         verification: { method: unit, release_blocking: false }
         status: approved
-      - id: REQ-REL-013-AC8
+      - id: REQ-REL-015-AC8
         given: "the signatory text still holds the placeholder"
         when: "the script runs without --draft"
         then: "it makes no letter and ends nonzero naming the placeholder; with --draft it writes a file marked DRAFT that is never signed"
         verification: { method: unit, release_blocking: false }
         status: approved
-      - id: REQ-REL-013-AC9
+      - id: REQ-REL-015-AC9
         given: "the workflow .github/workflows/evidence-letter.yml (a monthly schedule and a manual start, nothing else)"
         when: "its sign job runs on a letter that passed AC5"
         then: "the sign job is the only one with an identity token (for the KMS federation); it signs the letter with the KMS key; its Rekor entry is recorded; customers verify with the release public key (connected customers also check the Rekor entry); it signs nothing that did not pass AC5"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
-      - id: REQ-REL-013-AC10
+      - id: REQ-REL-015-AC10
         given: "a signed letter and its bundle"
         when: "the letter and its bundle are attached to the release"
         then: "they go to the latest published release with gh release upload and never --clobber, so a second run, or a repository whose releases cannot take new files, ends with one plain line and publishes nothing; the letter is not in checksums.txt; a signatory that is still the placeholder fails the draft job before anything is signed"
         verification: { method: unit, release_blocking: false }
         status: approved
-      - id: REQ-REL-013-AC11
+      - id: REQ-REL-015-AC11
         given: "the daily workflow .github/workflows/supply-chain.yml and its job evidence-letter-present (a schedule and a manual start only; contents: read and nothing else)"
         when: "it runs on or after the 3rd of a month, and a published release already carries an evidence-letter-YYYY-MM.md"
         then: "last month's evidence-letter-YYYY-MM.md and its .bundle are on the same published (not draft) release, found across every page of releases, and every copy passes bin/evidence-letter-verify.sh: the release key from the key manifest checked against the root, the bundle's Rekor entry, the pinned log, and no identity; the key of each copy is also looked up in the current key manifest (the one committed in the repository, root-checked), and a copy whose key that manifest marks revoked at or before now fails, even when the manifest attached to its release does not; the copy's bundle holds exactly one transparency-log entry (none, or more than one, fails) and the signed time is that entry's; otherwise the job fails with one plain line naming the month, and a failed scheduled run is reported"
