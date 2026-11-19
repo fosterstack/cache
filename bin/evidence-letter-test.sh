@@ -131,6 +131,18 @@ check("AC2: a patch release with no notes line refuses", pp.returncode == 1 and 
 ph, th = letter(world([(("v0.3.2", "2026-11-05T12:00:00Z", "Fix: the signed reason."), {})]))
 check("AC2: the reason is the signed metadata's, not the em-dash heading of the unsigned notes",
       ph.returncode == 0 and "v0.3.2: Fix: the signed reason." in th and "patch release" not in th, th)
+# REQ-REL-009-AC8 / REQ-REL-015-AC2: the first line the patch notes generator writes is the reason the letter quotes (producer to reader)
+nd = tempfile.mkdtemp(prefix="el-notes-")
+for n_, t_ in (("grype.json", '{"matches": []}'), ("go.mod", "module x\n"), ("vex.json", '{"statements": []}'), ("next.md", ""), ("pub.txt", "")):
+    open(os.path.join(nd, n_), "w").write(t_)
+pn = subprocess.run([sys.executable, "-I", os.path.join(os.path.dirname(SCRIPT), "patch-decide.py"), "notes", "--version", "v0.3.1", "--variant-grype", "=" + nd + "/grype.json",
+                     "--gomod", nd + "/go.mod", "--vex-new", nd + "/vex.json", "--next-notes", nd + "/next.md", "--published", nd + "/pub.txt", "--out", nd + "/notes.md"],
+                    capture_output=True, text=True)
+first_line = open(nd + "/notes.md").read().split("\n")[0] if pn.returncode == 0 else ""
+check("AC8: the notes generator's first line is `Patch release v0.3.1`", pn.returncode == 0 and first_line == "Patch release v0.3.1", (pn.stderr, first_line))
+pg, tg = letter(world([(("v0.3.1", "2026-11-05T12:00:00Z", first_line), {})]))
+check("AC8: a letter is made from a patch release whose reason is the generator's first line, and holds that line",
+      pg.returncode == 0 and "Patch release v0.3.1" in tg, (pg.returncode, pg.stderr, tg))
 
 # AC3: VEX statements of the month
 check("AC3: the November statement is listed with its date", "CVE-2026-1111" in text and "2026-11-03" in text)
@@ -1139,7 +1151,7 @@ for label, order in (("after", [("v0.4.0", False, pair("2026-11")), ("v0.4.1", F
           one_line(pr) and "2026-11" in pr.stderr and "v0.4.1" in pr.stderr, (pr.returncode, pr.stderr, lr))
 
 # the number of cases this file runs: a case that silently stops running must turn the file red
-EXPECT = 158
+EXPECT = 160
 print("%d passed, %d failed (expected %d)" % (passed, failed, EXPECT))
 sys.exit(1 if failed or passed != EXPECT else 0)
 PY

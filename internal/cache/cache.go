@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"strings"
 	"sync"
 
@@ -107,9 +108,9 @@ func (c *Cache) tryLockKey(key string) (release func(), ok bool) {
 		return nil, false
 	}
 	kl := &keyLock{refs: 1}
+	kl.mu.Lock() // a new mutex never blocks; held before the entry is visible, so no Put can take it first
 	c.keys[key] = kl
 	c.keyMu.Unlock()
-	kl.mu.Lock() // a new entry: nobody else can hold it
 	return c.unlocker(key, kl), true
 }
 
@@ -362,12 +363,9 @@ func (c *Cache) evictToFit(ctx context.Context) {
 	evicted := 0
 	failedBatches := 0
 	for total > c.maxBytes {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		candidates, err := c.meta.LeastRecentlyUsed(batchSize)
+		// One load and sort of the index serves every batch below; loading
+		// per batch repeats a full scan once per 64 entries.
+		candidates, err := c.meta.LeastRecentlyUsed(math.MaxInt)
 		if err != nil {
 			c.log.Error("cache: eviction: LRU lookup failed", "error", err)
 			return
@@ -375,34 +373,43 @@ func (c *Cache) evictToFit(ctx context.Context) {
 		if len(candidates) == 0 {
 			return // nothing left to evict; cap is smaller than one entry
 		}
-		progressed := false
-		for _, entry := range candidates {
-			if total <= c.maxBytes {
-				break
+		for len(candidates) > 0 && total > c.maxBytes {
+			select {
+			case <-ctx.Done():
+				return
+			default:
 			}
-			if err := c.evictOne(entry); err != nil {
-				if errors.Is(err, errEntryChanged) {
-					continue // a Put of the key replaced it after it was selected: it is recent now, not evicted
+			batch := candidates[:min(batchSize, len(candidates))]
+			candidates = candidates[len(batch):]
+			progressed := false
+			for _, entry := range batch {
+				if total <= c.maxBytes {
+					break
 				}
-				c.log.Error("cache: eviction: failed", "key", entry.Key, "error", err)
+				if err := c.evictOne(entry); err != nil {
+					if errors.Is(err, errEntryChanged) {
+						continue // a Put of the key replaced it after it was selected: it is recent now, not evicted
+					}
+					c.log.Error("cache: eviction: failed", "key", entry.Key, "error", err)
+					continue
+				}
+				total -= entry.Size
+				evicted++
+				progressed = true
+				if c.onEvict != nil {
+					c.onEvict(entry.Key, entry.Size)
+				}
+			}
+			if progressed {
+				failedBatches = 0
 				continue
 			}
-			total -= entry.Size
-			evicted++
-			progressed = true
-			if c.onEvict != nil {
-				c.onEvict(entry.Key, entry.Size)
+			failedBatches++
+			if failedBatches >= maxFailedEvictionBatches {
+				c.log.Error("cache: eviction: giving up after repeated failures",
+					"consecutive_failed_batches", failedBatches, "total_bytes", total, "max_bytes", c.maxBytes)
+				return
 			}
-		}
-		if progressed {
-			failedBatches = 0
-			continue
-		}
-		failedBatches++
-		if failedBatches >= maxFailedEvictionBatches {
-			c.log.Error("cache: eviction: giving up after repeated failures",
-				"consecutive_failed_batches", failedBatches, "total_bytes", total, "max_bytes", c.maxBytes)
-			return
 		}
 	}
 	if evicted > 0 {

@@ -24,7 +24,7 @@ with the floating-tags amendment; advisor read-backs 0051/0055/0056; REQ-REL-009
                           prints them: the "base input changed" signal).
   floating                amendment: :X.Y always; :X and :latest only when this is the highest released version.
 """
-import argparse, datetime, html, json, os, re, subprocess, sys, unicodedata
+import argparse, ast, datetime, fnmatch, html, json, os, re, subprocess, sys, unicodedata
 # data that ships nothing: the auditor's own work (three names) and the .vex README (REQ-REL-009 AC15); every other path under .vex/ and .auditor/ stays fix-class
 NEUTRAL_EXACT = {".auditor/panel-state.json", ".auditor/knowledge.md", ".vex/README.md"}
 # ".auditor/proposals/p.json" matches; ".auditor/proposals/a/p.json" and ".auditor/proposals/p.txt" do not
@@ -474,7 +474,7 @@ def _refuse_text(text, name):
 
 
 def _no_dup_bullets(text, name):
-    """refuse (ValueError naming both name:line) two '- ' lines of one release block (from one '## ' heading to the next)
+    """refuse (ValueError naming both name:line) two '- ' lines of one release block (from one '## ' heading or generated first line to the next)
     that publish the same line, trailing whitespace ignored (REQ-REL-009-AC14 (5) in the readers: a tag's notes, the
     changelog's notes, the history; Codex #300 r9, B 4). Each line is compared as it is published, cleaned by _clean_free
     ('- gpt' and '- claude' publish the same line; so do a marker line and its escaped spelling: Codex #300 r10, A medium /
@@ -483,7 +483,7 @@ def _no_dup_bullets(text, name):
     seen = {}
     for n, ln in enumerate(str(text).splitlines(), 1):
         c = _clean_free(ln)                 # the line as published: compared cleaned, named by its source line (r10, A / B 2)
-        if c.startswith("## "):
+        if c.startswith("## ") or PATCH_HEAD.match(c):      # a patch's notes open with "Patch release vX.Y.Z"
             seen = {}
         elif c.startswith("- "):
             k = c.rstrip()
@@ -711,7 +711,7 @@ def notes(version, fixes, vex_changes, behavior=(), fix_locs=None, behavior_locs
             raise ValueError("%s %s" % (loc, why))
     fl = [_clean_free(_fix_raw(f)) for f in fixes]
     published = list(zip(fl, fix_locs))
-    lines = [_clean_free("## %s — patch release" % _oneline(version)), "", "### Fixes"] + fl
+    lines = [_clean_free("Patch release %s" % _oneline(version)), "", "### Fixes"] + fl
     if not fixes:
         lines.append("- none (dependency or VEX maintenance only)")
         published.append((lines[-1], "the Fixes section:"))
@@ -1078,7 +1078,9 @@ def unpublished(entries, published_text):
     return [e for e in entries if _entry_line(e).rstrip() not in pub]
 
 
-PATCH_HEAD = re.compile(r"^## (v\d+\.\d+\.\d+) — patch release$")
+# the first line is the reason the release manifest and the evidence letter quote, so it stays inside the letter's plain
+# characters: "Patch release v0.3.1" matches; the old "## v0.3.1 — patch release" does not
+PATCH_HEAD = re.compile(r"^Patch release (v\d+\.\d+\.\d+)$")
 
 
 RELEASE_TAGGER = "fosterstack release <release@users.noreply.github.com>"   # decide's git identity (release.yml)
@@ -1165,7 +1167,18 @@ def changelog(notes_text, changelog_text, next_notes_text, names=("notes", "CHAN
     return new_cl, "".join(keep)
 
 
-def decide(event, commits, tags, cut_today, removed, base_inputs=None):
+FAILED_RUNS = ("failure", "cancelled", "timed_out")
+
+
+def in_flight(tags, since, runs):
+    """The patch tags above the latest published release whose newest release run has not failed: their releases are
+    still due. A tag with no entry in runs counts as in flight."""
+    if not since:
+        return []
+    return [t for t in tags if _semver(t) and _semver(t) > _semver(since) and runs.get(t) not in FAILED_RUNS]
+
+
+def decide(event, commits, tags, cut_today, removed, base_inputs=None, since=None, runs=None):
     """{cut, version, reason, not_clean}: rule 1 (patch-clean, fix-only), rule 2 (a critical/high fix at once on push;
     otherwise at most one daily patch on the schedule)."""
     version = next_patch(tags)
@@ -1177,6 +1190,9 @@ def decide(event, commits, tags, cut_today, removed, base_inputs=None):
         out["reason"] = "main is not patch-clean"
     elif not clean:
         out["reason"] = "nothing shipped since the latest tag"
+    elif event == "push" and in_flight(tags, since, runs or {}):
+        out["reason"] = "the patch %s is still being released: no second patch for the same fix" % max(
+            in_flight(tags, since, runs or {}), key=_semver)
     elif event == "push":
         if removed is None:
             out["reason"] = "the latest release could not be scanned: no at-once cut (the daily run decides)"
@@ -1197,25 +1213,82 @@ def _scope(req):
     return "push" if s is None or s is False else s      # identity, not ==: scope 0 is not push (Codex #159 r2, B6)
 
 
-def ready(required, check_runs):
+def _bound_table():
+    """bin/build-admit.py's BOUND_CONTEXTS (context glob, producing workflow file) and BOUND_EVENTS, read as data from its source."""
+    tree = ast.parse(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "build-admit.py")).read())
+    got = {t.id: ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+           for t in n.targets if isinstance(t, ast.Name) and t.id in ("BOUND_CONTEXTS", "BOUND_EVENTS")}
+    return got["BOUND_CONTEXTS"], got["BOUND_EVENTS"]
+
+
+def _bound_verdict(req, check_runs, workflow_runs, sha, repo, file, events):
+    """admission's bound_run (bin/build-admit.py): the newest check run of the context and app (by id) whose workflow run has the
+    producing file's path, an event of BOUND_EVENTS and the tagged commit decides. ("ok"|"wait"|"red"|"no", why)."""
+    prefix = "https://github.com/%s/actions/runs/" % repo
+    facts_by_id = {w.get("id"): w for w in workflow_runs if isinstance(w, dict)}
+    mine = sorted((r for r in check_runs if r.get("name") == req["context"] and r.get("app_id") == req["integration_id"]
+                   and isinstance(r.get("id"), int)), key=lambda r: -r["id"])
+    for r in mine:
+        url = r.get("url") if isinstance(r.get("url"), str) and r["url"].startswith(prefix) else ""
+        run_id = url[len(prefix):].split("/")[0]
+        if not run_id.isascii() or not run_id.isdigit():
+            continue
+        facts = facts_by_id.get(int(run_id))
+        if not isinstance(facts, dict) or not all(isinstance(facts.get(k), str) for k in ("path", "event", "head_sha")):
+            return "no", "cannot read workflow run %s behind %r" % (run_id, req["context"])
+        if facts["path"] != ".github/workflows/" + file or facts["event"] not in events or facts["head_sha"] != sha:
+            continue
+        if r.get("status") != "completed" or r.get("conclusion") is None:
+            return "wait", ""
+        return ("ok", "") if r["conclusion"] == "success" else ("red", "")
+    return "wait", ""
+
+
+def ready(required, check_runs, workflow_runs=None, sha=None, repo=None, bound=(), all_runs=None):
     """(verdict, why) for the tagged commit's push-scoped required checks, judged as source admission judges them
     (stage-admission.yml): a check counts only as a success from its pinned app. "ready": every one has one. "wait": none
     is red with nothing left to run (a run is missing, queued or in progress). "no": a check finished without success and
-    no run of it is still pending. pull_request-scoped checks are admission's to read on the merged PR head."""
-    waiting, red = [], []
-    reqs = required.get("required_checks") if isinstance(required, dict) else None
-    # a policy admission would reject is never ready (Codex #159 r1, B6): admission fails on these
-    if not isinstance(reqs, list) or not reqs:
-        return "no", "policy error: no required_checks list"
-    for req in reqs:
+    no run of it is still pending. pull_request-scoped checks are admission's to read on the merged PR head.
+    `required` is one policy file or a list of them (required-checks.json and release-only-checks.json): admission
+    requires both, and a bad file never lowers the requirement. The policies of `bound` (release-only-checks.json) are
+    judged by admission's run selection (BOUND_CONTEXTS): the newest run of the producing file on `sha` decides, from
+    `all_runs` (every run of the commit; `check_runs` when not given) and `workflow_runs` {id, path, event, head_sha}.
+    The others are judged on `check_runs`, the latest run of each name, as admission's one_green_run is: more than one latest run of a name and app is "no", as ambiguous. With no sha or repo, or a context the table does not bind, it is "no"."""
+    waiting, red, reqs = [], [], []
+    for policy in required if isinstance(required, list) else [required]:
+        part = policy.get("required_checks") if isinstance(policy, dict) else None
+        # a policy admission would reject is never ready (Codex #159 r1, B6): admission fails on these
+        if not isinstance(part, list) or not part:
+            return "no", "policy error: no required_checks list"
+        reqs += [(req, any(policy is b for b in bound)) for req in part]
+    table, events = _bound_table()
+    files = {}
+    for req, is_bound in reqs:
         if not isinstance(req, dict) or not req.get("context") or not isinstance(req.get("integration_id"), int):
             return "no", "policy error: a required check without a context or integration_id"
         if _scope(req) not in ("push", "pull_request"):
             return "no", "policy error: unknown scope %r for required check %r" % (req.get("scope"), req["context"])
-    for req in reqs:
+        if is_bound and _scope(req) == "push":
+            files[req["context"]] = next((f for pat, f in table if fnmatch.fnmatchcase(req["context"], pat)), None)
+            if not files[req["context"]]:
+                return "no", "policy error: %r has no producing workflow file in the admission table" % req["context"]
+            if not sha or not repo:
+                return "no", "policy error: the tagged commit and repository are needed to judge %r" % req["context"]
+    for req, is_bound in reqs:
         if _scope(req) != "push":
             continue
+        if is_bound:
+            v, why = _bound_verdict(req, check_runs if all_runs is None else all_runs, workflow_runs or [], sha, repo, files[req["context"]], events)
+            if v == "no":
+                return "no", why
+            if v == "wait":
+                waiting.append(req["context"])
+            elif v == "red":
+                red.append(req["context"])
+            continue
         mine = [r for r in check_runs if r.get("name") == req["context"] and r.get("app_id") == req["integration_id"]]
+        if len(mine) > 1:
+            return "no", "required check %r is ambiguous: %d runs of it (app %s)" % (req["context"], len(mine), req["integration_id"])
         if any(r.get("status") == "completed" and r.get("conclusion") == "success" for r in mine):
             continue
         if not mine or any(r.get("status") != "completed" for r in mine):
@@ -1596,8 +1669,18 @@ def cmd_changelog(a):
     return 0
 
 
+def _policy(path):
+    try:
+        return json.load(open(path))
+    except (ValueError, OSError):
+        return None             # ready judges it: a policy file that cannot be read is a policy error, never a lower requirement
+
+
 def cmd_ready(a):
-    verdict, why = ready(json.load(open(a.required)), json.load(open(a.check_runs)))
+    policies = [_policy(f) for f in a.required]
+    bound = [p for f, p in zip(a.required, policies) if os.path.basename(f) == "release-only-checks.json"]
+    verdict, why = ready(policies, json.load(open(a.check_runs)), json.load(open(a.workflow_runs)) if a.workflow_runs else [],
+                         a.sha, a.repo, bound, json.load(open(a.all_check_runs)) if a.all_check_runs else None)
     print(verdict, _clean(why))
     return 0
 
@@ -1637,7 +1720,8 @@ def cmd_decide(a):
     except ValueError as e:
         print("decide: %s — no patch decision" % _clean(str(e)), file=sys.stderr)
         return 2
-    dec = decide(event, commits, tags if since else [], a.cut_today == "true", removed, base_inputs)
+    runs = json.load(open(a.runs)) if a.runs else {}
+    dec = decide(event, commits, tags if since else [], a.cut_today == "true", removed, base_inputs, since, runs)
     dec["since"] = since
     # decision.json feeds a public issue (the "not patch-clean" list): every string in it is redacted as stdout is
     dec = {k: ([_clean(x) for x in v] if isinstance(v, list) else _clean(v) if isinstance(v, str) else v)
@@ -1681,6 +1765,7 @@ def main(argv=None):
                         "tag whose release failed (Codex #159 r1, B4)")
     d.add_argument("--labels", help="JSON {sha: [labels]} of the PRs that merged each commit")
     d.add_argument("--base-inputs", help="the list of base inputs (default: .github/policy/base-inputs.json beside this script)")
+    d.add_argument("--runs", help="JSON {tag: conclusion of its newest release run}: a push cuts nothing while a tag above the baseline has no failed run")
     d.add_argument("--out", required=True)
     bm = sub.add_parser("base-moved", help="the listed base inputs that differ between a release tag and HEAD (the base-input-changed signal)")
     bm.add_argument("--since", required=True, help="the latest release's tag")
@@ -1691,8 +1776,13 @@ def main(argv=None):
     q.add_argument("--commit", required=True)
     q.add_argument("--repo", default=".")
     k = sub.add_parser("ready")
-    k.add_argument("--required", required=True, help=".github/policy/required-checks.json")
-    k.add_argument("--check-runs", required=True, help="JSON list of the commit's check runs {name, status, conclusion, app_id}")
+    k.add_argument("--required", required=True, action="append",
+                   help="a policy file, once each: required-checks.json and release-only-checks.json")
+    k.add_argument("--check-runs", required=True, help="JSON list of the latest check run of each name {name, status, conclusion, app_id, id, url}")
+    k.add_argument("--all-check-runs", help="JSON list of every check run of the commit, for the contexts the admission table binds (default: --check-runs)")
+    k.add_argument("--workflow-runs", help="JSON list of the commit's workflow runs {id, path, event, head_sha}")
+    k.add_argument("--sha", help="the tagged commit")
+    k.add_argument("--repo", help="owner/name")
     r = sub.add_parser("removed")
     r.add_argument("--release-grype", required=True, action="append", help="one per scanned release image")
     r.add_argument("--gomod", required=True)

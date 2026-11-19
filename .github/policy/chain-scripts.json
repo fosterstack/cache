@@ -142,6 +142,7 @@
         "at",
         "bash",
         "curl",
+        "find",
         "sed",
         "sh"
       ],
@@ -179,12 +180,6 @@
         {
           "rule": "deny",
           "line": "  jq -n --arg pt \"$pt\" --arg payload \"$(base64 < \"$1\" | tr -d '\\n')\" --arg sig \"$(base64 < hostile-work/forged.sig | tr -d '\\n')\" --arg kid \"$kid\" \\",
-          "count": 1,
-          "why": "a line the data-opener default deny cannot read as code: a comment, a message, a nested substitution (live code in double quotes around single-quoted text), a generated-source printf or a shell continuation holding quoted text with $( or backticks; it is not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454 round 9, every waived line is comment, message or ordinary nested-substitution code)"
-        },
-        {
-          "rule": "deny",
-          "line": "    echo \"searched: $(grep -rIl '' \"${roots[@]}\" 2> /dev/null | wc -l | tr -d ' ') files\"",
           "count": 1,
           "why": "a line the data-opener default deny cannot read as code: a comment, a message, a nested substitution (live code in double quotes around single-quoted text), a generated-source printf or a shell continuation holding quoted text with $( or backticks; it is not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454 round 9, every waived line is comment, message or ordinary nested-substitution code)"
         }
@@ -648,7 +643,6 @@
         {
           "rule": "deny",
           "line": "    (\"analyze (go)\", \"codeql.yml\"),",
-          "line_sha256": "cd2a382e70104aafa8c00bf998ed9130cf7378fe26a6848ce7e2fa1bd1dd6205",
           "count": 1,
           "why": "the name of a CodeQL context in the table of bound contexts (analyze (go)), a string read as data; no go command is named or run"
         }
@@ -709,7 +703,6 @@
         {
           "rule": "deny",
           "line": "if [ \"${1:-}\" = --files ]; then printf '%s\\n' \"${files[@]}\"; exit 0; fi",
-          "line_sha256": "852338221a21a55914ed167a4bfa1d1c581f69793b9b9163efa4760216bbb14b",
           "count": 1,
           "why": "the array subscript is the fixed array files: `${files[@]}` is its expansion to the five literal paths listed at the top of the script, and nothing is substituted inside the brackets (REQ-CHAIN-001-AC1; reviewed line-bound waiver, the script is main's, kept as main wrote it)"
         },

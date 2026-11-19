@@ -440,6 +440,26 @@ t = copy.deepcopy(d); step(t["jobs"]["decide"]["steps"], "facts")["if"] = "${{ a
 e = wiring_errors(t); report(e, "the facts step with another if is refused", "the facts step with another if passes")
 PY
 while IFS= read -r l; do case "$l" in OK\ *) ok "${l#OK }";; *) bad "${l#FAIL }";; esac; done < <(python3 -I "$work/rcproof.py" "$root" "$work" 2>&1)
+# ---- REQ-REL-013-AC1 and REQ-REL-009-AC3: what release.yml's decide job passes to bin/patch-decide.py (the workflow text) ------------------
+cat > "$work/decide-text.py" <<'PY'
+import re, sys, yaml
+d = yaml.safe_load(open(sys.argv[1] + "/.github/workflows/release.yml"))
+steps = d["jobs"]["decide"]["steps"]
+def run_of(i): return next(s for s in steps if s.get("id") == i)["run"]
+def report(c, m): print(("OK " if c else "FAIL ") + m)
+chk = run_of("checks"); ready = re.search(r"patch-decide\.py ready[^\n]*", chk).group(0)
+for f in ("required-checks.json", "release-only-checks.json"):
+    report(re.search(r"git show origin/main:\.github/policy/%s\s*>" % re.escape(f), chk) is not None, "AC1 the checks step reads %s from origin/main in each wait round" % f)
+report(0 < chk.find("while ") < chk.find("git fetch") < chk.find("release-only-checks.json") < chk.find("patch-decide.py ready"), "AC1 both policy files are read inside the wait loop, after the fetch of main")
+report(len(re.findall(r"--required ", ready)) == 2, "AC1 patch-decide.py ready is given --required twice, once per policy file: %s" % ready)
+fd = run_of("facts") + "\n" + run_of("decide")
+g = re.search(r"[^\n]*gh run list[^\n]*(?:\\\n[^\n]*)*", fd)
+report(g is not None and all(w in re.sub(r"\\\n\s*", " ", g.group(0)) for w in ("--workflow release.yml", "--branch", "--limit 1", "--json conclusion")), "AC3 the facts and decide steps gather the newest release run of each tag with gh run list --workflow release.yml --branch TAG --limit 1 --json conclusion")
+report(g is not None and "||" not in g.group(0) and "set -euo pipefail" in run_of("facts" if "gh run list" in run_of("facts") else "decide"), "AC3 a failed gh run list fails the step (set -e, no || after it)")
+dec = re.search(r"patch-decide\.py decide[^\n]*(?:\\\n[^\n]*)*", run_of("decide")).group(0)
+report("--runs " in dec, "AC3 patch-decide.py decide is passed --runs FILE")
+PY
+while IFS= read -r l; do case "$l" in OK\ *) ok "${l#OK }";; *) bad "${l#FAIL }";; esac; done < <(python3 -I "$work/decide-text.py" "$root" 2>&1)
 # ---- the real repository ------------------------------------------------------------------------------------------------------------
 out=$(python3 "$work/judge.py" "$root" 2>&1) && ok "the real release.yml and policy lists carry the tag jobs as the rules say" || {
   n=0; while IFS= read -r l; do n=$((n + 1)); bad "real repository: $l"; done < <(tr ';' '\n' <<< "$out" | sed 's/^ //'); [ "$n" -gt 0 ] || bad "real repository: $out"; }

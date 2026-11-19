@@ -79,15 +79,23 @@ attempt_read_sign_token() {
 # Sign's key lives in cosign's memory on another VM; whatever key files this runner holds are not it unless their public key is the
 # one in Sign's certificate. So the material is each key file's PUBLIC key hash (the private key is never copied) and the number
 # of files searched (a search of nothing proves nothing); the verifier compares the hashes with Sign's certificate.
-# The workspace is not searched: it holds this repository, whose test files contain key-shaped text.
+# The workspace is not searched (find prunes it): it holds this repository, whose test files contain key-shaped text.
 attempt_read_sign_key() {
   # the search roots are the arguments; the call below passes none, which means the four runner locations (the offline test passes its own directories)
-  local f hash keyfiles roots=("$@")
+  local f hash files keyfiles=() nfiles=0 roots=("$@") ws
   [ "${#roots[@]}" -gt 0 ] || roots=("${HOME:-/nonexistent}" "${RUNNER_TEMP:-/nonexistent}" /tmp /dev/shm)
+  # the checkout is left out even when it sits under HOME (the hosted runner's does)
+  ws=$(realpath -- "${GITHUB_WORKSPACE:-$PWD}")
+  # one pass over every file find lists (NUL-separated, so no name splits): a text file counts as searched, and one that holds a private key header is kept
+  mapfile -d '' -t files < <(find "${roots[@]}" -path "$ws" -prune -o -type f -print0 2> /dev/null)
+  for f in "${files[@]}"; do
+    grep -Iq '' -- "$f" 2> /dev/null || continue
+    nfiles=$((nfiles + 1))
+    if grep -Iq -e 'BEGIN [A-Z ]*PRIVATE KEY' -- "$f" 2> /dev/null; then keyfiles+=("$f"); fi
+  done
   {
     echo "# transcript: searched HOME, RUNNER_TEMP, /tmp and /dev/shm for private key files and recorded the sha256 of each one's public key"
-    echo "searched: $(grep -rIl '' "${roots[@]}" 2> /dev/null | wc -l | tr -d ' ') files"
-    mapfile -d '' -t keyfiles < <(grep -rIlZ -e 'BEGIN [A-Z ]*PRIVATE KEY' "${roots[@]}" 2> /dev/null)
+    echo "searched: $nfiles files"
     for f in "${keyfiles[@]}"; do
       if hash=$(set -o pipefail; openssl pkey -in "$f" -pubout -outform DER 2> /dev/null | sha256sum | cut -d' ' -f1); then
         printf 'pubkey-sha256: %s\n' "$hash"
