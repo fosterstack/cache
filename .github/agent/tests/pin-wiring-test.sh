@@ -312,6 +312,10 @@ JUDGED = json.loads(r'''{
    {
     "name": "VEX tripwire \u2014 components answered by a VEX statement must stay absent",
     "run": "set -euo pipefail\nif grep -q 'golang-jwt' go.sum; then\n  echo \"::error::golang-jwt has entered go.sum. The published VEX statement for CVE-2024-51744 claims component_not_present, which is no longer true on its face. VEX statement requires review before this can merge \u2014 see .vex/README.md.\" >&2\n  exit 1\nfi\necho \"VEX tripwire: golang-jwt absent from go.sum, as the published statement asserts.\""
+   },
+   {
+    "name": "no wait for new versions \u2014 no text of it, Dependabot proposes at once, the pin-age context stays, no job holds actions write (REQ-SUP-001 AC30, AC32, AC33)",
+    "run": "bash .github/agent/tests/release-age-gone-test.sh"
    }
   ]
  },
