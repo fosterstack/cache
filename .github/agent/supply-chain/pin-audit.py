@@ -1278,7 +1278,10 @@ def body_of(f, rb, owner, ran, today):
 
 
 # ---------- history: what we ran in the last 90 days ----------
-def history_items(root, start, now):
+# A workflow file that does not parse stops no walk: that file alone is left out of its revision and reported by the
+# revision's sha and its name (an old file nobody can fix); the revision's other files are judged as usual, and the daily
+# clean line counts the files not read. The tree of today is read apart from the walk and still ends the audit.
+def history_items(root, start, now, unread=None):
     since = (now - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
     paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh",
              ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS, inv.KERNEL_LOCK]
@@ -1295,11 +1298,19 @@ def history_items(root, start, now):
     for r in revs:
         key = inv.tree_key(root, r)
         if key not in memo:
+            skipped = []    # the files of this tree that do not parse: each is left out alone
+            inv._UNREAD[0] = skipped
             try:
-                memo[key] = inv.load_at(root, r)
+                memo[key] = (inv.load_at(root, r), skipped)
             except RuntimeError as e:
                 raise RuntimeError(f"revision {r[:12]} cannot be read whole: {e}") from None
-        items.update(memo[key])
+            finally:
+                inv._UNREAD[0] = None
+        for msg in memo[key][1]:
+            print(f"information: revision {r}: file not read: {msg}")
+            if unread is not None:
+                unread.append((r, msg))
+        items.update(memo[key][0])
     return items
 
 
@@ -1464,6 +1475,7 @@ def main(argv=None):
         default_ex = os.path.join(a.root, ".github", "supply-chain-exceptions.json")
         exceptions = load_exceptions(a.exceptions or default_ex, bool(a.exceptions))
         phase("history")
+        unread = []    # (revision, message) of every old file the history walk left out
         try:
             head = inv.load_at(a.root, a.head if (a.base and a.head) else None)
         except RuntimeError as e:
@@ -1471,10 +1483,10 @@ def main(argv=None):
         try:
             if a.base:
                 audited = inv.moved(inv.load_at(a.root, a.base), head)
-                hist = history_items(a.root, a.base, now) if audited else {}
+                hist = history_items(a.root, a.base, now, unread) if audited else {}
                 ran_keys = set(hist)
             else:
-                hist = history_items(a.root, "HEAD", now)
+                hist = history_items(a.root, "HEAD", now, unread)
                 audited = [hist.get(k) or head[k] for k in sorted({**hist, **head})]
                 ran_keys = {i.key for i in audited}
         except RuntimeError as e:
@@ -1714,6 +1726,7 @@ def main(argv=None):
               + (f" ({excepted_n} disputed hit(s) covered by a checked-in exception)" if excepted_n else "")
               + (f"; {len(dormant)} dormant exception ruling(s) wait for their pin: "
                  f"{', '.join(_ruling_label(e) for e in dormant)}" if dormant else "")
+              + (f"; {len(unread)} file(s) not read (listed above)" if unread else "")
               + (f"; {len(unchecked)} of {len(audited)} item(s) have no advisory source and were not checked (listed "
                  f"above)" if unchecked else ""))
         return 0
