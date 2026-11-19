@@ -278,6 +278,36 @@ for v in production fips; do
 done
 t "rule 34" "[fips] no shell package, no shell-fragment, no sh path" y apko-noshell "$root/build/apko-fips.yaml"
 t "rule 34" "[production] no shell package, no shell-fragment, no sh path" y apko-noshell "$root/build/apko.yaml"
+# rule 34: the nonroot account has an explicit no-login shell (apko writes /bin/sh into /etc/passwd when `shell:` is missing)
+real_apko=$(command -v apko 2> /dev/null || true)   # the PATH of this shell is the one before any stub (the stubs go in front of it per call)
+case $(${real_apko:+"$real_apko"} version 2> /dev/null) in *"GitVersion:    v1.4.6"*) ;; *) real_apko= ;; esac
+nologin_src() { python3 -I - "$1" <<'PY'
+import re, sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+us = [u for u in d["accounts"]["users"] if u["username"] == "nonroot"]
+assert len(us) == 1 and re.fullmatch(r"/(usr/)?sbin/nologin", str(us[0].get("shell", ""))), us
+PY
+}
+nologin_layer() { # nologin_layer RECIPE: apko 1.4.6 builds a minimal rootfs from the recipe's accounts block; the passwd line of nonroot names a no-login shell
+  local f=$1 d; d=$(mktemp -d -p "$work" nologin.XXXXXX) || return 1
+  mkdir -p "$d/repo/x86_64" || return 1
+  : > "$d/APKINDEX" && tar -C "$d" -czf "$d/repo/x86_64/APKINDEX.tar.gz" APKINDEX || return 1
+  python3 -I - "$f" "$d" <<'PY' || return 1
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+cfg = {"contents": {"repositories": [sys.argv[2] + "/repo"], "keyring": [], "packages": []}, "accounts": d["accounts"], "archs": ["x86_64"]}
+yaml.safe_dump(cfg, open(sys.argv[2] + "/cfg.yaml", "w"))
+PY
+  ( cd "$d" && "$real_apko" build-minirootfs --ignore-signatures cfg.yaml out.tar.gz ) > "$d/apko.log" 2>&1 || { cat "$d/apko.log"; return 1; }
+  line=$(tar xOf "$d/out.tar.gz" etc/passwd | grep '^nonroot:') || return 1
+  case ${line##*:} in /sbin/nologin|/usr/sbin/nologin) ;; *) echo "$line"; return 1;; esac   # the shell is the last field; a path ending in sh never matches
+}
+for v in production fips; do
+  f="$root/build/apko.yaml"; [ $v = fips ] && f="$root/build/apko-fips.yaml"
+  t "rule 34" "[$v] the nonroot user has an explicit shell: /sbin/nologin or /usr/sbin/nologin" nologin_src "$f"
+  if [ -n "$real_apko" ]; then t "rule 34" "[$v] the built layer's /etc/passwd line for nonroot names a no-login shell and no sh (apko 1.4.6)" nologin_layer "$f"
+  else echo "skipped: no apko 1.4.6 on PATH ([$v] layer check of the nonroot shell)"; ok; fi
+done
 t "rule 25" "build/apko.yaml and build/apko-fips.yaml differ only in the apk name" bash -c "test -f '$root/build/apko.yaml' && diff <(sed 's/fscache-fips/fscache/' '$root/build/apko-fips.yaml') '$root/build/apko.yaml'"
 t "rule 37" "committed base lock (production): v1, every base package for both archs with checksums, archive paths, no fscache, keyring content" python3 "$work/lib.py" lockshape "$root/build/locks/apko.base.lock.json" production
 t "rule 37" "committed base lock (fips): the same" python3 "$work/lib.py" lockshape "$root/build/locks/apko-fips.base.lock.json" fips

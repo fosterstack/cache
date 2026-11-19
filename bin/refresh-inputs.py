@@ -742,6 +742,28 @@ for _a in ARCHS:
     if os.path.isfile(_cur):
         # the pointer must be a SIGNED index, whatever the record says and before any early exit
         check_signature(_cur, _a, "legacy archived")
+# REQ-REFRESH-001-AC32, the first fill: an archive that holds nothing but the pinned key and a main with no pointer
+# cannot already hold the versions the committed locks name, so the ones Wolfi still serves are fetched below and
+# verified before they are archived. Any other state keeps the rule: a missing version stops the job.
+def first_fill_state():
+    """exactly the key and nothing else: a real archive directory holding one real keys directory that holds one regular
+    file, the pinned key (any other entry,
+    whatever its type, a symlinked archive or keys directory, or a listing that cannot be read is not the first-fill
+    state)"""
+    if os.path.lexists(repo + "/build/archive.json"):
+        return False
+    try:
+        if os.path.islink(archive) or not os.path.isdir(archive) or os.listdir(archive) != ["keys"]:
+            return False
+        kd = archive + "/keys"
+        if os.path.islink(kd) or not os.path.isdir(kd) or os.listdir(kd) != ["wolfi-signing.rsa.pub"]:
+            return False
+        return (os.lstat(archived_key).st_mode & 0o170000) == 0o100000
+    except OSError:
+        return False
+
+
+FIRST_FILL = first_fill_state()
 _rec_path = repo + "/build/locks/archive-index.sha256"
 ahead = False
 ahead_info = []
@@ -762,6 +784,8 @@ if os.path.exists(_rec_path):
     if sorted(_rec) != sorted(ARCHS):
         fail("build/locks/archive-index.sha256 is malformed: it must have exactly the two lines x86_64 and aarch64", 2)
     for _a in ARCHS:
+        if FIRST_FILL:
+            break   # the archive holds only the pinned key: there is no index for the record to name yet
         _cur = "%s/%s/APKINDEX.tar.gz" % (archive, _a)
         _idir = "%s/%s/index" % (archive, _a)
         if os.path.islink(_idir) or os.path.islink("%s/%s" % (archive, _a)):
@@ -829,28 +853,6 @@ committed = {}
 for kind in ("production", "fips"):
     for e in base[kind]["doc"]["contents"]["packages"]:
         committed.setdefault((e["name"], e["version"], e["architecture"]), []).append(e)
-# REQ-REFRESH-001-AC32, the first fill: an archive that holds nothing but the pinned key and a main with no pointer
-# cannot already hold the versions the committed locks name, so the ones Wolfi still serves are fetched below and
-# verified before they are archived. Any other state keeps the rule: a missing version stops the job.
-def first_fill_state():
-    """exactly the key and nothing else: a real archive directory holding one real keys directory that holds one regular
-    file, the pinned key (any other entry,
-    whatever its type, a symlinked archive or keys directory, or a listing that cannot be read is not the first-fill
-    state)"""
-    if os.path.lexists(repo + "/build/archive.json"):
-        return False
-    try:
-        if os.path.islink(archive) or not os.path.isdir(archive) or os.listdir(archive) != ["keys"]:
-            return False
-        kd = archive + "/keys"
-        if os.path.islink(kd) or not os.path.isdir(kd) or os.listdir(kd) != ["wolfi-signing.rsa.pub"]:
-            return False
-        return (os.lstat(archived_key).st_mode & 0o170000) == 0o100000
-    except OSError:
-        return False
-
-
-FIRST_FILL = first_fill_state()
 ff_locked = {}   # (name, version, arch) -> the committed lock entry (checksums): verified like any package
 # (name, version, arch) named only by the committed melange.lock (name=version): verified against the signed live index
 ff_mel = []

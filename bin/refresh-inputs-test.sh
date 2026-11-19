@@ -1522,6 +1522,12 @@ for st_ in fifo socket dir symroot symkeys; do
   ffrun "$ffl"
   t "AC32" "first fill gate ($st_): an archive that is not exactly the key and nothing else never takes the first-fill path: exit 1, the old version is not fetched" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -q 'busybox-$ffbv.apk' '$CALLS'"
 done
+# AC32: the first-fill state is decided before the recorded archive index is looked for: the committed record may be present (the archive holds no index to check it against)
+ffrec() { printf 'x86_64 sha256:%s\naarch64 sha256:%s\n' "$(printf 'a%.0s' $(seq 64))" "$(printf 'b%.0s' $(seq 64))" >"$work/rp/build/locks/archive-index.sha256"; }
+ffempty; ffrec; ffrun "$ffl"
+t "AC32" "first fill with the committed archive-index.sha256 record present (no build/archive.json): exit 0 and the old version is archived, byte for byte" bash -c "test \"\$(cat '$work/rc')\" = 0 && test -f '$work/ar/x86_64/busybox-$ffbv.apk' && cmp -s '$work/ar/x86_64/busybox-$ffbv.apk' '$ffl/x86_64/busybox-$ffbv.apk'"
+ffempty; ffrec; mkdir -p "$work/ar/x86_64"; : >"$work/ar/x86_64/stray.apk"; ffrun "$ffl"
+t "AC32" "first fill mutant: the committed record present and the archive holds anything beside the key is still not the first fill: exit 1, the old version is not fetched" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -q 'busybox-$ffbv.apk' '$CALLS'"
 # ---- REQ-REFRESH-001-AC33: the Go toolchain tarballs the committed recipes pin are kept in the archive (rule 12; advisor reading Oct 16, release review R1) -----------------------
 # The recipes (build/melange.yaml, build/melange-fips.yaml) pin each Go tarball by its go.dev file name and sha256; build-apk.sh requires archive/go/<file> and checks the same
 # sha256. The refresh job stores a missing one only after the sha256 it fetched equals the pin; a present one must equal the pin; old files are never removed.
@@ -2303,5 +2309,18 @@ for L in host guest; do
   cp "$fx/live/x86_64/$ZAPK" "$work/ar/x86_64/"; printf 'X' >>"$work/ar/x86_64/$ZAPK"; vmrun "$MEL" "$MEL"
   t "AC39" "refresh: a damaged archived package that only vm-$L.lock names (zlib): exit 1, names the file" vm_damaged
 done
+# AC39: the committed VM locks may be empty: the first run resolves both lists and puts locks, archived packages and pointer in one pull request
+vmrepo; : >"$work/rp/build/locks/vm-host.lock"; : >"$work/rp/build/locks/vm-guest.lock"; rm -f "$work/ar/x86_64/$ZAPK"
+vmrun "$MELZ" "$MELZ"
+t "AC39" "refresh: both committed VM locks empty, the archive lacks zlib, the live resolution has it: exit 0, one pull request, both locks written with the live rows, zlib archived" \
+  bash -c "$(declare -f rcis nopr); work='$work'; CALLS='$CALLS'; test \"\$(cat '$work/rc')\" = 0 && test -f '$work/ar/x86_64/$ZAPK' &&
+  for f in vm-host vm-guest; do grep -q '^zlib=1.3.2-r0\$' '$work/rp/build/locks/'\$f.lock || exit 1; done &&
+  test \"\$(grep -c '^gh pr create' '$CALLS')\" = 1 && $GHPATHS | grep -q 'build/locks/vm-host.lock' && $GHPATHS | grep -q 'build/locks/vm-guest.lock'"
+# AC39: the committed repository files: the two VM locks are committed empty, the kernel lock holds its one row
+realroot=$(cd "$(dirname "$RF_PROD")/.." && pwd)
+t "AC39" "the committed build/locks/vm-host.lock and vm-guest.lock are empty files" \
+  bash -c "for f in vm-host vm-guest; do test -f '$realroot/build/locks/'\$f.lock && test ! -s '$realroot/build/locks/'\$f.lock || exit 1; done"
+t "AC39" "the committed build/locks/vm-kernel.lock holds exactly one row, linux-virt=<version> sha256:<64 hex>" \
+  bash -c "test \"\$(wc -l <'$realroot/build/locks/vm-kernel.lock')\" = 1 && grep -Eq '^linux-virt=[^ ]+ sha256:[0-9a-f]{64}\$' '$realroot/build/locks/vm-kernel.lock'"
 echo "refresh-inputs-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
