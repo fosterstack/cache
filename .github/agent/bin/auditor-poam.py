@@ -59,7 +59,8 @@ def _remove_ignores(root, aliases):
 def recheck(pkgfile, suppdir, today, out):
     p = json.load(open(pkgfile)); cve = p["cve"]
     aliases = {cve} | set(p.get("aliases", []))
-    expired = p.get("ignore_expiry", "") <= today          # the expiry date itself counts as expired
+    # `accept` writes the date under "expiry"; records written before that carry "ignore_expiry"
+    expired = (p.get("expiry") or p.get("ignore_expiry") or "") <= today          # the expiry date itself counts as expired
     if expired and not p.get("fix_available"):
         removed = _remove_ignores(suppdir, aliases) if suppdir and os.path.isdir(suppdir) else []
         cli.writej(os.path.join(out, "recheck.json"),

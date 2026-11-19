@@ -1196,11 +1196,17 @@ def rollback(item, net):
                     nxt = []
                     for outer in level:
                         for n in net.nested(outer):
-                            m = re.match(r"^([\w.-]+/[\w.-]+)(?:/([^@\s]*))?@([0-9a-f]{40})$", n["ref"])
+                            m = re.match(r"^([\w.-]+/[\w.-]+)(?:/([^@\s]*))?@(\S+)$", n["ref"])
                             if not m:
                                 continue
                             # the subdirectory is part of the child (o/x/sub is not o/x)
                             child = inv.Item("action", m.group(1), m.group(3), "", m.group(2) or "")
+                            if not inv.SHA40.match(child.version):
+                                # a tag moves: it is asked about as the commit it points at now, none found = not proven clean
+                                sha = net.resolve_ref(child.name, child.version)
+                                if not sha:
+                                    raise Fail(f"the tag {child.version} of {child.name} does not resolve to a commit")
+                                child = inv.Item("action", child.name, sha, child.version, child.path)
                             if child.key in seen_c:
                                 continue
                             seen_c.add(child.key)
@@ -1284,7 +1290,7 @@ def body_of(f, rb, owner, ran, today):
 def history_items(root, start, now, unread=None):
     since = (now - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
     paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh",
-             ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS, inv.KERNEL_LOCK]
+             ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS, inv.KERNEL_LOCK, *inv.GOVULN_FILES]
     # open pull request heads are read by open_pr_items, which continues as incomplete when one cannot be read
     refs = ["--all"] if start == "HEAD" else [start]    # daily mode: every branch and PR ref this checkout has
     revs = [r for r in inv.git(root, "log", f"--since={since}", "--format=%H", *refs, "--", *paths).split() if r]

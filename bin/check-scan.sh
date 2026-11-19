@@ -6,7 +6,8 @@
 # digest), osv-scanner scans each child from a docker-save archive built from the layout (bin/layout-archive.sh); grype
 # also scans every release archive (ARCHIVES/*.tar.gz) and osv-scanner the Go
 # modules (go.mod, tools/requirements/go.mod), as scanners.json (row 45) and today's stage-verify.yml have it. No unlisted scanner runs.
-# A scanner exits 0 (clean), 1 (findings the published VEX document does not except) or anything else (could not run). The package
+# A scanner exits 0 (clean), 1 (findings the published VEX document does not except) or anything else (could not run). grype
+# exits 0, 2 (findings) or 1 (a runtime error; confirmed by running the pinned v0.118.0) and grype_rc maps it to that reading. The package
 # count is read from the tool's own machine output: the components of the CycloneDX SBOM grype writes (-o cyclonedx-json=FILE, as
 # the PR scan script counts them for REQ-REL-004-AC1) and the packages osv-scanner lists with --format json --all-packages (shapes as
 # recorded in the scanner fixtures of the auditor directory (fixtures/scanners)).
@@ -84,6 +85,7 @@ fi
 now=$(date +%s)
 [[ "$now" =~ ^[0-9]+$ ]] || fail "the runner's clock did not give epoch seconds: $now"
 GRYPE_HOST=grype.anchore.io   # the host in grype's recorded database status (the scanner fixtures of the auditor directory (fixtures/scanners)/grype.json)
+grype_map() { gx=$rc; case $rc in 2) rc=1 ;; 1) rc=2 ;; esac; }   # grype's own exit (0 clean, 2 findings, 1 error) as this script reads a scanner's: 1 findings, anything else could not run; gx keeps grype's own
 MAX_AGE=172800                # 48 hours
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 export GRYPE_DB_CACHE_DIR="$tmp/grype-db"   # an inherited directory could hold a planted database
@@ -217,10 +219,10 @@ for s in "${scanners[@]}"; do
   fi
   for ti in "${!tname[@]}"; do
     name=${tname[$ti]} digest=${tdigest[$ti]} path=${tpath[$ti]} plat=${tplat[$ti]} conf=${tconf[$ti]:-}
-    rc=0
+    rc=0 gx=
     : > "$tmp/out.json"; rm -f "$tmp/sbom.json"
     case "$s:$path" in
-      grype:*.tar.gz) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "file:$path" -c "$tmp/empty.yaml" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
+      grype:*.tar.gz) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "file:$path" -c "$tmp/empty.yaml" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || { rc=$?; grype_map; } ;;
       grype:*)
         # An oci-dir: layout carries no tag and no repo digest, so grype derives no image identity from it and applies NO VEX statement (rc-5a I, ruling R1; probed on
         # the pinned grype). The child is read from an image archive that names it <repository>:cand-<variant>-<arch>, the name the cache image statements are
@@ -231,7 +233,7 @@ for s in "${scanners[@]}"; do
         else
           GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h \
             grype "docker-archive:$path" -c "$tmp/empty.yaml" --fail-on negligible --vex "$VEX" \
-            -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$?
+            -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || { rc=$?; grype_map; }
         fi ;;
       osv-scanner:*.mod) OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$osvcache" osv-scanner scan source --config "$tmp/empty.toml" --all-vulns --offline-vulnerabilities --download-offline-databases --format json --all-packages "$path" > "$tmp/out.json" || rc=$? ;;
       osv-scanner:*)
@@ -305,7 +307,7 @@ for s in "${scanners[@]}"; do
     if [ "$rc" = 1 ]; then
       echo "check-scan: $s found vulnerabilities in $name ($digest) that the VEX document does not except" >&2; sv=fail
     elif [ "$rc" != 0 ]; then
-      echo "check-scan: $s could not run on $name (exit $rc): nothing is judged behind a scanner that did not run" >&2; sv=fail
+      echo "check-scan: $s could not run on $name (exit ${gx:-$rc}): nothing is judged behind a scanner that did not run" >&2; sv=fail
     elif [ "$packages" -eq 0 ]; then
       echo "check-scan: $s reported 0 packages for $name: a scan that inventoried nothing did not run (REQ-REL-004-AC1)" >&2; sv=fail
     fi
