@@ -74,6 +74,7 @@ if [ -n "${FAKE_NEEDFILES:-}" ]; then for a in "$@"; do case "$a" in *.json|*.bu
 [ -z "${COSIGN_FAIL:-}" ] || { echo "cosign failed" >&2; exit 1; }
 [ -z "${COSIGN_FAIL_ON:-}" ] || case "$*" in *"$COSIGN_FAIL_ON"*) echo "cosign failed" >&2; exit 1;; esac
 if [ "$1" = login ]; then cat > /dev/null; d="${DOCKER_CONFIG:-$HOME/.docker}"; mkdir -p "$d"; echo "login $*" >> "$d/config.json"; echo "$d" >> "$LOG.dockercfg"; fi
+if [ "$1 $2" = "attach attestation" ]; then av=("$@"); for i in "${!av[@]}"; do [ "${av[$i]}" != --attestation ] || printf '%s\t%s\n' "${av[-1]}" "$(tr -d '\n' < "${av[$((i+1))]}")" >> "$LOG.atts"; done; fi
 [ "$1 $2" != "attach attestation" ] || [ -z "${COSIGN_ATTEST_FAIL_ON:-}" ] || case "$*" in *"$COSIGN_ATTEST_FAIL_ON"*) echo "cosign attach attestation failed" >&2; exit 1;; esac
 exit 0''',
  "git": r'''#!/usr/bin/env bash
@@ -904,6 +905,25 @@ for key in ("apk-standard-amd64", "apk-fips-arm64"):
     t = tree(); d = json.load(open(os.path.join(t, "witness-build/digests.json"))); d[key] = "sha256:" + "0" * 64; json.dump(d, open(os.path.join(t, "witness-build/digests.json"), "w"))
     rc, so, se = sign_step(t)
     check(rc == 1 and "apk" in se and len(kms_calls(t)) < 23, "I1 an apk whose digest is not an apk-* value of digests.json (%s changed) is refused with exit 1 and not signed" % key, "rc=%s n=%d %s" % (rc, len(kms_calls(t)), first(se)))
+# the apks are chosen as release-apks.sh chooses them (fixed table: per runner and arch one standard fscache-[0-9]*-r0.apk and one fips fscache-fips-*-r0.apk): any other apk (Build also writes fscache-baselayout) is neither signed nor an error
+def apk_sigs_of(t): return [opts(c)["--bundle"] for c in kms_calls(t) if "/apks/" in opts(c).get("--bundle", "")]
+def add_baselayout(t):
+    for runner, archdir, short in RUNNERS: open(os.path.join(t, "apks", runner, archdir, "fscache-baselayout-0.3.0-r0.apk"), "w").write("apk\nsigner: assembly.rsa.pub\ndata: baselayout-%s\n" % short)
+t = tree(); add_baselayout(t); rc, so, se = sign_step(t); ab = apk_sigs_of(t)
+check(rc == 0 and len(kms_calls(t)) == 23 and sorted(ab) == sorted("%s/apks/%s/%s.bundle" % (S, a, n) for _r, a, _s in RUNNERS for _v, n in APKS) and not [f for f in files_of(t) if f.startswith(S + "/") and "baselayout" in f],
+      "I1 a fscache-baselayout apk beside the four apks (digests.json never names it) is neither signed nor an error: exit 0, 23 signatures, exactly the four apks' signatures", "rc=%s n=%d %s %s" % (rc, len(kms_calls(t)), ab, first(se)))
+for runner, archdir, short in RUNNERS:
+    for variant, name in APKS:
+        t = tree(); os.remove(os.path.join(t, "apks", runner, archdir, name)); rc, so, se = sign_step(t)
+        check(rc == 1 and "apk" in se, "I1 the %s %s apk missing is refused with exit 1 (all four must be present)" % (variant, short), "rc=%s %s" % (rc, first(se)))
+        check(not apk_sigs_of(t), "I1 the %s %s apk missing: no apk is signed" % (variant, short), str(apk_sigs_of(t)))
+t = tree(); shutil.copy(os.path.join(t, "apks/ubuntu-24.04/x86_64/fscache-0.3.0-r0.apk"), os.path.join(t, "apks/ubuntu-24.04/x86_64/fscache-9.9.9-r0.apk")); rc, so, se = sign_step(t)
+check(rc == 1 and "apk" in se and not apk_sigs_of(t), "I1 two standard apks in one directory (ambiguous) are refused with exit 1 and no apk is signed", "rc=%s %s %s" % (rc, apk_sigs_of(t), first(se)))
+t = tree(); shutil.copy(os.path.join(t, "apks/ubuntu-24.04-arm/aarch64/fscache-fips-0.3.0-r0.apk"), os.path.join(t, "apks/ubuntu-24.04-arm/aarch64/fscache-fips-9.9.9-r0.apk")); rc, so, se = sign_step(t)
+check(rc == 1 and "apk" in se and not apk_sigs_of(t), "I1 two fips apks in one directory (ambiguous) are refused with exit 1 and no apk is signed", "rc=%s %s %s" % (rc, apk_sigs_of(t), first(se)))
+# each apk must have the digest Build attested FOR ITS OWN key: another apk's attested digest is not enough
+t = tree(); d = json.load(open(os.path.join(t, "witness-build/digests.json"))); d["apk-standard-amd64"], d["apk-fips-amd64"] = d["apk-fips-amd64"], d["apk-standard-amd64"]; json.dump(d, open(os.path.join(t, "witness-build/digests.json"), "w")); rc, so, se = sign_step(t)
+check(rc == 1 and "apk" in se and not apk_sigs_of(t), "I1 an apk whose digest is another apk's attested digest (the digests of apk-standard-amd64 and apk-fips-amd64 swapped: both are still apk-* values) is refused with exit 1 and no apk is signed", "rc=%s %s %s" % (rc, apk_sigs_of(t), first(se)))
 # R-A (now made in Sign by release-signatures): the manifest's --reason is the first LINE of the release tag's message (the owner's words) and --published-at is the UTC time the step runs
 def mf_of(t):
     pth = os.path.join(t, S, "release-metadata/release-manifest.json"); return json.load(open(pth)) if os.path.exists(pth) else {}
@@ -1011,11 +1031,25 @@ for h in HOSTS:
         ref = "%s/fosterstack/cache@%s" % (h, DIG["image-" + v])
         a = [i for i, c in enumerate(cc) if c.startswith("cosign attach signature ") and c.endswith(" " + ref)]
         vr = [i for i, c in enumerate(cc) if c == "cosign verify --key build/keys/release.rsa.pub " + ref]
-        att = [i for i, c in enumerate(cc) if c == "cosign attach attestation --attestation %s/images/%s/%s.attestation.bundle %s" % (S, h, v, ref)]
+        att = [i for i, c in enumerate(cc) if re.fullmatch(r"cosign attach attestation --attestation \S+ " + re.escape(ref), c)]
         o = opts(cc[a[0]]) if a else {}
         good = len(a) == 1 and len(vr) == 1 and len(att) == 1 and a[0] < vr[0] < att[0] and o.get("--payload") == "%s/images/%s/%s.payload" % (S, h, v) and "--signature" in o and "--rekor-response" in o
         ok_calls &= good; why += "" if good else " %s:%s" % (h, v)
-check(ok_calls and len(cc) == 14, "I2 per host and variant: `cosign attach signature --payload P --signature S --rekor-response R REF@DIGEST`, then `cosign verify --key build/keys/release.rsa.pub REF@DIGEST`, then `cosign attach attestation --attestation BUNDLE REF@DIGEST` (14 cosign calls in all)", "%s %d" % (why, len(cc)))
+check(ok_calls and len(cc) == 14, "I2 per host and variant: `cosign attach signature --payload P --signature S --rekor-response R REF@DIGEST`, then `cosign verify --key build/keys/release.rsa.pub REF@DIGEST`, then `cosign attach attestation --attestation ENVELOPE REF@DIGEST` (14 cosign calls in all)", "%s %d" % (why, len(cc)))
+# cosign 3.1.3 refuses a Sigstore bundle as an attestation ("invalid payloadType on envelope") and accepts the bare DSSE envelope: the file attached is the bundle's dsseEnvelope, nothing else
+atts = {}
+for l in (open(os.path.join(t, "calls.log.atts")).read().split("\n") if os.path.exists(os.path.join(t, "calls.log.atts")) else []):
+    if l: r_, c_ = l.split("\t", 1); atts[r_] = c_
+ok_env = len(atts) == 4; why = ""
+for h in HOSTS:
+    for v in ("production", "fips"):
+        ref = "%s/fosterstack/cache@%s" % (h, DIG["image-" + v]); bj = json.load(open(os.path.join(t, S, "images", h, v + ".attestation.bundle")))
+        try: got = json.loads(atts[ref])
+        except Exception: got = None
+        good = isinstance(got, dict) and sorted(got) == ["payload", "payloadType", "signatures"] and got == bj["dsseEnvelope"] and got["payloadType"] == "application/vnd.in-toto+json"
+        ok_env &= good; why += "" if good else " %s:%s=%s" % (h, v, atts.get(ref, "none")[:80])
+check(ok_env, "I2 the file given to `cosign attach attestation --attestation` is the bare DSSE envelope of Sign's bundle (exactly payloadType, payload, signatures, equal to the bundle's dsseEnvelope; no mediaType, no verificationMaterial), for each host and variant", why)
+check(all("verificationMaterial" in json.load(open(os.path.join(t, S, "images", h, v + ".attestation.bundle"))) for h in HOSTS for v in ("production", "fips")), "I2 Sign's attestation bundles in release-signed stay bundles (verificationMaterial still in them)")
 check(not [l for l in lg if re.match(r"(cosign (sign|sign-blob|attest|generate-key-pair)\b|with-aws-token|chain-verify kms-sign|aws|crane push)", l)], "R1 I2 Release never runs cosign sign, sign-blob or attest, kms-sign, with-aws-token or any aws command")
 rsrc = open(os.path.join(BIN, "release-sign.sh")).read()
 check(not re.search(r"(?<![A-Za-z])(RELEASE|AWS)_[A-Z]|\baws\b|kms-sign|with-aws-token|cosign (sign|attest)\b|sign-blob", "\n".join(l for l in rsrc.split("\n") if not l.lstrip().startswith("#"))), "R1 I2 release-sign.sh reads no RELEASE_* or AWS_* name and names no aws, kms-sign, cosign sign, sign-blob or attest call")

@@ -598,6 +598,32 @@ mutant3("the token file readable by others", lambda s: s.replace("umask 077\n", 
 mutant3("the wrapper no longer passes kms-sign through (KA-2 p4 group 4)", lambda s: s.replace("sign-record|sign|kms-sign)", "sign-record|sign)"))
 
 
+# with-aws-token.sh with the REAL bin/loopback-get.sh (the doubles above replace it): the token endpoint is the job's own ACTIONS_ID_TOKEN_REQUEST_URL, which loopback-get.sh reads from ITS environment, so the wrapper must
+# hand it the URL while it is still set, and take the request variables away from the signing call itself. Only curl and the verifier are doubles.
+def real_loopback_run(rtext=None):
+    t = tempfile.mkdtemp()
+    work, runner, fakebin, rec = (os.path.join(t, n) for n in ("work", "runner", "fakebin", "rec"))
+    for d in (work, runner, fakebin, rec):
+        os.makedirs(d)
+    sh(os.path.join(work, "bin", "with-aws-token.sh"), rtext if rtext is not None else open(os.path.join(root, "bin", "with-aws-token.sh")).read())
+    sh(os.path.join(work, "bin", "loopback-get.sh"), open(os.path.join(root, "bin", "loopback-get.sh")).read())
+    sh(os.path.join(work, "bin", "chain-verify.py"), "import os, sys\nd = os.environ['REC']\nopen(d + '/cv-argv', 'w').write('\\n'.join(sys.argv[1:]))\nopen(d + '/cv-env', 'w').write('\\n'.join('%s=%s' % kv for kv in os.environ.items()))\ntf = os.environ.get('AWS_WEB_IDENTITY_TOKEN_FILE')\nopen(d + '/cv-token', 'w').write(open(tf).read() if tf else 'NOFILE')\nsys.exit(7)\n")
+    sh(os.path.join(fakebin, "curl"), "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$REC/curl-argv\"\necho x >> \"$REC/curl-calls\"\nfor a in \"$@\"; do case $a in @*) cat \"${a#@}\" > \"$REC/curl-header\";; esac; done\necho '{\"value\":\"tok123\"}'\n")
+    e = {"PATH": fakebin + ":" + os.environ["PATH"], "HOME": t, "REC": rec, "RUNNER_TEMP": runner, "AWS_ROLE_ARN": ROLE, "AWS_REGION": "us-east-1", "RELEASE_KMS_KEY_REF": KEY,
+         "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "REQTOK-77", "ACTIONS_ID_TOKEN_REQUEST_URL": "https://token.example/x?a=1", "ACTIONS_RUNTIME_TOKEN": "RT", "ACTIONS_RUNTIME_URL": "https://rt.example/"}
+    r = subprocess.run(["bash", "bin/with-aws-token.sh", "kms-sign", "--digest", "ab"], cwd=work, env=e, capture_output=True, text=True)
+    return r, rec
+
+
+r, rec = real_loopback_run()
+check("with-aws-token.sh + the real loopback-get.sh: the token fetch completes (the real helper accepts the job's own token URL with the audience added) and the verifier runs", os.path.exists(os.path.join(rec, "cv-env")), "rc=%s %s" % (r.returncode, r.stderr.strip()[:200]))
+check("with-aws-token.sh + the real loopback-get.sh: curl is called once, with the token URL and &audience=sts.amazonaws.com", read(os.path.join(rec, "curl-calls")).count("x") == 1 and "https://token.example/x?a=1&audience=sts.amazonaws.com" in read(os.path.join(rec, "curl-argv")).split("\n"), read(os.path.join(rec, "curl-argv"))[:200])
+check("with-aws-token.sh + the real loopback-get.sh: the request token goes through the header file (Authorization: bearer ...), in no argument of curl or of the verifier", "REQTOK-77" in read(os.path.join(rec, "curl-header")) and "REQTOK-77" not in read(os.path.join(rec, "curl-argv")) and "REQTOK-77" not in read(os.path.join(rec, "cv-argv")), read(os.path.join(rec, "curl-argv"))[:200])
+check("with-aws-token.sh + the real loopback-get.sh: the verifier sees AWS_WEB_IDENTITY_TOKEN_FILE pointing at a file that holds the fetched token", read(os.path.join(rec, "cv-token")).strip() == "tok123", repr(read(os.path.join(rec, "cv-token"))))
+cvenv = read(os.path.join(rec, "cv-env"))
+check("with-aws-token.sh + the real loopback-get.sh: the verifier sees none of ACTIONS_ID_TOKEN_REQUEST_URL, ACTIONS_ID_TOKEN_REQUEST_TOKEN, ACTIONS_RUNTIME_TOKEN, ACTIONS_RUNTIME_URL", bool(cvenv) and not re.search(r"^ACTIONS_(ID_TOKEN_REQUEST_(URL|TOKEN)|RUNTIME_(TOKEN|URL))=", cvenv, re.M), cvenv[:100])
+check("with-aws-token.sh + the real loopback-get.sh: the wrapper exits with the verifier's exit status", r.returncode == 7, "rc=%s %s" % (r.returncode, r.stderr.strip()[:200]))
+
 print("pass=%d fail=%d" % (passn, failn))
 sys.exit(0 if failn == 0 else 1)
 PY

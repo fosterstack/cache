@@ -54,10 +54,12 @@ for host in ghcr.io docker.io; do
     v="${pair%%:*}"; d="${pair#*:}"; ref="$host/$repo@$d"
     att="$signed/images/$host/$v.attestation.bundle"
     jq -e --arg d "${d#sha256:}" --slurpfile m release-metadata/release-manifest.json '(.dsseEnvelope.payload | @base64d | fromjson) as $s | $s.subject[0].digest.sha256 == $d and $s.predicate == $m[0]' "$att" > /dev/null || { echo "release-sign: $att is not the attestation of release-manifest.json for $ref" >&2; exit 1; }
+    # cosign reads a bare DSSE envelope there and refuses a Sigstore bundle (pinned cosign 3.1.3: "invalid payloadType"); the bundle with its Rekor entry stays in release-signed
+    jq -c .dsseEnvelope "$att" > "$scratch/$host-$v.envelope"
     if [ "$host" = ghcr.io ]; then
-      cosign attach attestation --attestation "$att" "$ref"
+      cosign attach attestation --attestation "$scratch/$host-$v.envelope" "$ref"
     else
-      cosign attach attestation --attestation "$att" "$ref" || echo "::warning::could not attach the manifest referrer on $ref: the GHCR referrer is authoritative"
+      cosign attach attestation --attestation "$scratch/$host-$v.envelope" "$ref" || echo "::warning::could not attach the manifest referrer on $ref: the GHCR referrer is authoritative"
     fi
   done
 done
