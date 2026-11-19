@@ -321,7 +321,7 @@ def tree():
             open(os.path.join(t, n), "w").write(body)
         else:
             open(os.path.join(fb, n), "w").write(body); os.chmod(os.path.join(fb, n), 0o755)
-    for s in ("release-verify", "release-apks", "release-publish", "release-sign", "release-signatures", "release-stage", "release-assets", "release-postverify"):
+    for s in ("release-verify", "release-apks", "release-publish", "release-sign", "release-sign-verify", "release-signatures", "release-stage", "release-assets", "release-postverify"):
         src = os.path.join(BIN, s + ".sh")
         if os.path.exists(src): shutil.copy(src, os.path.join(t, "bin", s + ".sh"))
     for extra in ("build-admit.py", "release-postverify.py", "release-metadata.py", "release-gate.py", "release-layout.py", "chain_common.py", "guide_plan_judge.py"):
@@ -444,6 +444,14 @@ def run(t, script, env=None, creds=None, tag="v0.3.0", args=()):
     return r.returncode, r.stdout, r.stderr
 def log(t):
     p = os.path.join(t, "calls.log"); return open(p).read().split("\n") if os.path.exists(p) else []
+SBASE = []
+def stree():
+    """a tree as the Release job holds it for release-publish: Sign's output is in release-signed/ (one run of release-signatures, copied for each case)"""
+    if not SBASE: b = tree(); run(b, "release-signatures"); SBASE.append(b)
+    t = tempfile.mkdtemp(); shutil.rmtree(t); shutil.copytree(SBASE[0], t, symlinks=True)
+    for f in os.listdir(t):
+        if f.startswith("calls.log"): os.remove(os.path.join(t, f))
+    return t
 def tree_text(t):
     out = ""
     for dp, dn, fn in os.walk(t):
@@ -555,7 +563,7 @@ for tag in ("v0.3.0-rc1", "v0.3.0-rc.1", "main"):
 # ---- AC7: release-publish.sh -------------------------------------------------------------------------------------------------------------
 REG = ["DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN"]
 def pushes(t): return [l.split(" ") for l in log(t) if l.startswith("crane push")]
-t = tree(); rc, so, se = run(t, "release-publish", creds=REG); P = pushes(t)
+t = stree(); rc, so, se = run(t, "release-publish", creds=REG); P = pushes(t)
 check(rc == 0, "AC7 a good v0.3.0 publishes", se)
 need = {(h, tag) for h in ("ghcr.io", "docker.io") for tag in ("0.3.0", "0.3.0-fips")}
 got = {(p[3].split("/")[0], p[3].split(":")[1]) for p in P}
@@ -572,19 +580,19 @@ for s in ("release-sign", "release-publish", "release-assets"):
 import yaml
 _rel = yaml.safe_load(open(os.path.join(os.environ["RELEASE_ROOT"], ".github/workflows/release.yml")))["jobs"]["release"]
 check("!contains(github.ref_name, '-')" in str(_rel.get("if")) and {"release-verify", "release-compare"} <= set(_rel.get("needs", [])), "AC14 the release job, which holds the credentials, needs the release-verify and release-compare jobs and its if: holds the condition !contains(github.ref_name, '-')")
-t = tree(); rc, so, se = run(t, "release-publish", creds=REG, env={"REG_CORRUPT": "docker.io"})
+t = stree(); rc, so, se = run(t, "release-publish", creds=REG, env={"REG_CORRUPT": "docker.io"})
 check(rc != 0 and "differ" in se and DIG["image-production"] in se and "docker.io" in se, "AC7 a registry that shows another digest blocks release, naming the image and both digests", "rc=%s %s" % (rc, first(se)))
-t = tree(); rc, so, se = run(t, "release-publish", creds=REG, env={"REG_CORRUPT": "ghcr.io"}); h = [p[3].split("/")[0] for p in pushes(t)]
+t = stree(); rc, so, se = run(t, "release-publish", creds=REG, env={"REG_CORRUPT": "ghcr.io"}); h = [p[3].split("/")[0] for p in pushes(t)]
 check(rc != 0 and "docker.io" not in h, "AC7 a mismatch at ghcr.io stops everything: nothing is pushed to the mirror afterwards", str(h))
-t = tree(); os.makedirs(os.path.join(t, "reg/ghcr.io/fosterstack/cache"), exist_ok=True); open(os.path.join(t, "reg/ghcr.io/fosterstack/cache/0.3.0"), "w").write("sha256:" + "9" * 64)
+t = stree(); os.makedirs(os.path.join(t, "reg/ghcr.io/fosterstack/cache"), exist_ok=True); open(os.path.join(t, "reg/ghcr.io/fosterstack/cache/0.3.0"), "w").write("sha256:" + "9" * 64)
 rc, so, se = run(t, "release-publish", creds=REG)
 check(rc != 0 and "already" in se.lower() and not pushes(t), "AC7 a target tag that already shows another digest is refused before anything is pushed")
-t = tree(); os.makedirs(os.path.join(t, "reg/ghcr.io/fosterstack/cache"), exist_ok=True); open(os.path.join(t, "reg/ghcr.io/fosterstack/cache/0.3.0"), "w").write(DIG["image-production"])
+t = stree(); os.makedirs(os.path.join(t, "reg/ghcr.io/fosterstack/cache"), exist_ok=True); open(os.path.join(t, "reg/ghcr.io/fosterstack/cache/0.3.0"), "w").write(DIG["image-production"])
 rc, so, se = run(t, "release-publish", creds=REG); check(rc == 0, "AC7 a rerun on a tag that already shows the attested digest passes", se)
-t = tree(); open(os.path.join(t, "images/fips.digest"), "w").write("sha256:" + "c" * 64 + "\n"); rc, so, se = run(t, "release-publish", creds=REG)
+t = stree(); open(os.path.join(t, "images/fips.digest"), "w").write("sha256:" + "c" * 64 + "\n"); rc, so, se = run(t, "release-publish", creds=REG)
 check(rc != 0 and not pushes(t), "AC7 an image whose own digest is not the attested one is refused before any push")
 for miss in ("DOCKERHUB_TOKEN", "DOCKERHUB_USERNAME", "GH_TOKEN"):
-    t = tree(); rc, so, se = run(t, "release-publish", creds=[c for c in REG if c != miss])
+    t = stree(); rc, so, se = run(t, "release-publish", creds=[c for c in REG if c != miss])
     check(rc == 2 and miss in se and not pushes(t), "AC7 a missing %s is refused with exit 2, naming it, before any push" % miss, "rc=%s %s" % (rc, first(se)))
 # ---- R4 and R5 (S2) ---------------------------------------------------------------------------------------------------------------------------------------
 def code_lines(name): return [l for l in open(os.path.join(BIN, name)).read().split("\n") if not l.lstrip().startswith("#")]
@@ -603,7 +611,7 @@ def seed(t, tags, hosts=("ghcr.io", "docker.io"), dig="7"):
         d = os.path.join(t, "reg", host, "fosterstack", "cache"); os.makedirs(d, exist_ok=True)
         for x in tags: open(os.path.join(d, x), "w").write("sha256:" + dig * 64)
 def float_run(tag, tags, env=None, creds=REG):
-    t = tree()
+    t = stree()
     if tags is not None: seed(t, tags)
     rc, so, se = run(t, "release-publish", creds=creds, env=env, tag=tag)
     return t, rc, so, se
@@ -673,7 +681,7 @@ check(
     "0.3.1",
     "rc=%s rc2=%s %s" % (rc, rc2, first(se2))
 )
-t = tree(); seed(t, ["0.3.1", "0.3", "0", "latest"], hosts=("ghcr.io",), dig="8"); seed(t, ["0.3.1"], hosts=("docker.io",), dig="8"); seed(t, ["0", "latest", "0.3"], hosts=("docker.io",), dig="7")
+t = stree(); seed(t, ["0.3.1", "0.3", "0", "latest"], hosts=("ghcr.io",), dig="8"); seed(t, ["0.3.1"], hosts=("docker.io",), dig="8"); seed(t, ["0", "latest", "0.3"], hosts=("docker.io",), dig="7")
 rc, so, se = run(t, "release-publish", creds=REG, tag="v0.3.0")
 check(
     rc != 0 and "docker.io" in se and "0.3.1" in se,
@@ -695,7 +703,7 @@ check(
     "AC11 no concurrent publication: unchanged, the highest release moves :0 and :latest",
     "rc=%s %s" % (rc, sorted(got))
 )
-t = tree(); import shutil as _sh; _sh.rmtree(os.path.join(t, "images/production")); open(os.path.join(t, "images/production"), "w").write("a tarball, not a layout directory")
+t = stree(); import shutil as _sh; _sh.rmtree(os.path.join(t, "images/production")); open(os.path.join(t, "images/production"), "w").write("a tarball, not a layout directory")
 rc, so, se = run(t, "release-publish", creds=REG); check(rc != 0 and "production" in se and not pushes(t), "AC7 an image that is not an OCI layout directory (a tarball) is refused before any push, naming it", "rc=%s %s" % (rc, first(se)))
 # a signing run that leaves one of the four apks of the attested list missing is refused (no empty glob skips
 # validation)
@@ -725,12 +733,12 @@ def login_gone(t, what):
         "AC10 %s: the private configuration directory is removed when the step ends" % what,
         "left=%s" % [d for d in used if os.path.exists(d)]
     )
-t = tree(); rc, so, se = run(t, "release-publish", creds=REG); login_gone(t, "release-publish (success)")
-t = tree(); rc, so, se = run(t, "release-publish", creds=REG, env={"REG_CORRUPT": "docker.io"}); login_gone(t, "release-publish (a registry mismatch stops it)")
+t = stree(); rc, so, se = run(t, "release-publish", creds=REG); login_gone(t, "release-publish (success)")
+t = stree(); rc, so, se = run(t, "release-publish", creds=REG, env={"REG_CORRUPT": "docker.io"}); login_gone(t, "release-publish (a registry mismatch stops it)")
 t, rc, so, se = signed_released(); login_gone(t, "release-sign")
 # a failed mktemp stops the step before any login (an empty DOCKER_CONFIG would fall back to ~/.docker)
 for s_ in ("release-publish", "release-sign"):
-    t = tree(); run(t, "release-signatures") if s_ == "release-sign" else None; fb = os.path.join(t, ".fakebin"); open(os.path.join(fb, "mktemp"), "w").write("#!/usr/bin/env bash\nexit 1\n"); os.chmod(os.path.join(fb, "mktemp"), 0o755)
+    t = stree() if s_ == "release-publish" else tree(); run(t, "release-signatures") if s_ == "release-sign" else None; fb = os.path.join(t, ".fakebin"); open(os.path.join(fb, "mktemp"), "w").write("#!/usr/bin/env bash\nexit 1\n"); os.chmod(os.path.join(fb, "mktemp"), 0o755)
     rc, so, se = run(t, s_, creds=REG)
     check(rc != 0 and not [l for l in log(t) if "auth login" in l or l.startswith("cosign login") or "push" in l or l.startswith("cosign sign")], "AC10 F2b %s: a failed mktemp stops the step before any login or push" % s_, "rc=%s %s" % (rc, first(se)))
 # the layout's CONTENT is the attested image before anything is logged in or pushed
@@ -738,17 +746,17 @@ def layout_refused(t, what, word):
     rc, so, se = run(t, "release-publish", creds=REG)
     check(rc != 0 and word in se and not pushes(t) and not [l for l in log(t) if "auth login" in l], "AC7 B4 " + what + " is refused before any login or push", "rc=%s %s pushes=%s" % (rc, first(se), pushes(t)))
 def blobs_of(t, v): d = os.path.join(t, "images", v, "blobs/sha256"); return d, sorted(os.listdir(d))
-t = tree(); d, bl = blobs_of(t, "production"); open(os.path.join(d, bl[0]), "ab").write(b"x")
+t = stree(); d, bl = blobs_of(t, "production"); open(os.path.join(d, bl[0]), "ab").write(b"x")
 layout_refused(t, "a layout blob whose bytes no longer hash to its name", "production")
-t = tree(); d, bl = blobs_of(t, "fips"); os.remove(os.path.join(d, bl[0])); layout_refused(t, "a layout with a blob missing", "fips")
-t = tree(); ix = os.path.join(t, "images/fips/index.json"); j = json.load(open(ix)); j["manifests"][0]["digest"] = "sha256:" + "d" * 64; json.dump(j, open(ix, "w"))
+t = stree(); d, bl = blobs_of(t, "fips"); os.remove(os.path.join(d, bl[0])); layout_refused(t, "a layout with a blob missing", "fips")
+t = stree(); ix = os.path.join(t, "images/fips/index.json"); j = json.load(open(ix)); j["manifests"][0]["digest"] = "sha256:" + "d" * 64; json.dump(j, open(ix, "w"))
 layout_refused(t, "an index.json whose descriptor is not the attested digest (the sidecar still says it is)", "fips")
-t = tree(); ix = os.path.join(t, "images/production/index.json"); j = json.load(open(ix)); j["manifests"].append(dict(j["manifests"][0])); json.dump(j, open(ix, "w"))
+t = stree(); ix = os.path.join(t, "images/production/index.json"); j = json.load(open(ix)); j["manifests"].append(dict(j["manifests"][0])); json.dump(j, open(ix, "w"))
 layout_refused(t, "an index.json with two descriptors", "production")
-t = tree(); d, bl = blobs_of(t, "production"); idx_hex = DIG["image-production"].split(":")[1]
+t = stree(); d, bl = blobs_of(t, "production"); idx_hex = DIG["image-production"].split(":")[1]
 blob_id = [b for b in bl if b != idx_hex][0]; os.remove(os.path.join(d, blob_id)); open(os.path.join(d, blob_id), "wb").write(b"swapped")
 layout_refused(t, "a child blob replaced under its name", "production")
-t = tree(); os.remove(os.path.join(t, "images/fips/index.json")); rc, so, se = run(t, "release-publish", creds=REG)
+t = stree(); os.remove(os.path.join(t, "images/fips/index.json")); rc, so, se = run(t, "release-publish", creds=REG)
 check(rc != 0 and "fips" in se and not pushes(t), "AC7 a layout directory without index.json is refused before any push", "rc=%s %s" % (rc, first(se)))
 # ---- AC8 (S2 design): Sign's bin/release-signatures.sh makes and KMS-signs everything; Release's bin/release-sign.sh holds no key, checks every signature and pushes ----------------
 # R1: only the Sign job reaches the release key. Sign: one `bash bin/with-aws-token.sh kms-sign ...` per signature (the fake records each call and signs with a throw-away key);
@@ -1039,6 +1047,83 @@ t = released_tree(); fb = os.path.join(t, ".fakebin"); open(os.path.join(fb, "aw
 rc, so, se = run(t, "release-sign", creds=REG, env={"RELEASE_KMS_KEY_REF": KMS, "RELEASE_ROLE_ARN": "arn:aws:iam::1:role/x", "AWS_REGION": "us-east-1", "RUNNER_TEMP": os.path.join(t, "rt")})
 check(rc == 0 and not [l for l in log(t) if l.startswith(("aws", "with-aws-token", "chain-verify kms-sign"))], "R1 I2 with a key reference, a role and an aws CLI in reach the step still makes no aws call and no KMS signature", "rc=%s %s" % (rc, first(se)))
 t = released_tree(); rc, so, se = run(t, "release-sign", creds=REG); check(rc == 0 and os.path.exists(os.path.join(t, "release-evidence")), "AC8 the bundles and the evidence land in release-evidence/")
+# ---- AC7/AC8/AC10 (row 2): bin/release-sign-verify.sh checks every signature Sign made, FIRST: release-publish and release-sign both run it before any registry login, push or placing of a file ----
+def snap(t):
+    """every directory and file of the tree (the sha256 of each file, the target of each link), but not the fakes' call logs: what a run changed"""
+    out = {}
+    for dp, dn, fn in os.walk(t):
+        for d in dn: out[os.path.relpath(os.path.join(dp, d), t) + "/"] = ""
+        for f in fn:
+            if f.startswith("calls.log"): continue
+            pth = os.path.join(dp, f); out[os.path.relpath(pth, t)] = os.readlink(pth) if os.path.islink(pth) else sha_file(pth)
+    return out
+def registry_calls(t): return [l for l in log(t) if l.startswith(("crane", "cosign")) or "auth login" in l]
+def sign_mutations(bundle, blob):
+    """the ways a signature of Sign's is bad: the same four as the I2 cases above; each takes the tree"""
+    name = os.path.basename(bundle); bp = os.path.join(S, bundle)
+    return [("a bundle with no Rekor entry (%s)" % name, lambda t: put_bundle(t, bundle, lambda b: b["verificationMaterial"].update(tlogEntries=[]))),
+            ("a file changed after Sign signed it (%s)" % os.path.basename(blob), lambda t: open(os.path.join(t, blob), "ab").write(b"\n")),
+            ("a bundle whose signature does not verify under build/keys/release.rsa.pub (%s)" % name, lambda t: put_bundle(t, bundle, lambda b: b["messageSignature"].update(signature=base64.b64encode(b"x" * 256).decode()))),
+            ("a missing bundle (%s)" % name, lambda t: os.remove(os.path.join(t, bp)))], name + "|" + os.path.basename(blob)
+def refused_first(script, t, why_, name):
+    """the script exits 1 naming the file, calls no registry tool, and leaves the tree exactly as it was (nothing copied, placed or made)"""
+    before = snap(t); rc, so, se = run(t, script, creds=REG if script != "release-sign-verify" else None)
+    check(rc == 1 and any(x in se for x in name.split("|")) and not registry_calls(t) and snap(t) == before, "AC7 row 2 %s: %s: exit 1 naming the file, no crane or cosign call, nothing changed" % (script, why_),
+          "rc=%s %s calls=%s changed=%s" % (rc, first(se), registry_calls(t)[:2], sorted(set(snap(t).items()) ^ set(before.items()))[:2]))
+for bundle, blob in sorted(SRC.items()):
+    muts, name = sign_mutations(bundle, blob)
+    for why_, fn in muts:
+        t = stree(); fn(t); refused_first("release-publish", t, why_, name)
+    t = stree(); muts[0][1](t); refused_first("release-sign-verify", t, muts[0][0], name)      # the script alone: the bad bundle is refused with no credential
+    t = stree(); muts[0][1](t); refused_first("release-sign", t, muts[0][0], name)               # release-sign: refused before it places anything (a late bad bundle must not leave early blobs placed)
+    t = stree(); muts[3][1](t); refused_first("release-sign-verify", t, muts[3][0], name)
+for script in ("release-publish", "release-sign-verify", "release-sign"):
+    t = stree(); shutil.rmtree(os.path.join(t, S)); before = snap(t); rc, so, se = run(t, script, creds=REG if script != "release-sign-verify" else None)
+    check(rc == 1 and S in se and not registry_calls(t) and snap(t) == before, "AC7 row 2 %s without release-signed/: exit 1 naming it, no crane or cosign call" % script, "rc=%s %s" % (rc, first(se)))
+def resign(t, rel):
+    """Sign's own signer (the fake kms-sign) signs the payload again, so the bundle is true to the changed file and only what the payload SAYS is wrong"""
+    pth = os.path.join(t, rel); bp = pth[:-len(".payload")] + ".bundle"; sg = os.path.join(t, "re.sig"); os.remove(bp)
+    r = subprocess.run(["python3", "-I", "-B", "bin/chain-verify.py", "kms-sign", "--aws", "x", "--key-ref", "k", "--digest", sha_file(pth), "--signing-config", ".github/policy/cosign-signing-config.json", "--public-key", "build/keys/release.rsa.pub", "--out", sg, "--bundle", bp],
+                       cwd=t, env={**os.environ, "LOG": os.path.join(t, "calls.log.resign"), "KMSSIGN_PRIV": PRIV}, capture_output=True, text=True)
+    os.remove(sg); return r.returncode == 0
+def payload_edit(t, h, v, how):
+    rel = "%s/images/%s/%s.payload" % (S, h, v); p = json.load(open(os.path.join(t, rel)))
+    if how == "digest": p["critical"]["image"]["docker-manifest-digest"] = "sha256:" + "e" * 64
+    else: p["critical"]["identity"]["docker-reference"] = ("docker.io" if h == "ghcr.io" else "ghcr.io") + "/fosterstack/cache"
+    json.dump(p, open(os.path.join(t, rel), "w")); return resign(t, rel)
+t = stree(); rel = "%s/images/ghcr.io/production.payload" % S; p = json.load(open(os.path.join(t, rel))); json.dump(p, open(os.path.join(t, rel), "w"), indent=2)
+rc0, so0, se0 = (0, "", "") if resign(t, rel) else (1, "", "the test's own re-signing failed")
+rc, so, se = run(t, "release-publish", creds=REG) if rc0 == 0 else (rc0, so0, se0)
+check(rc == 0, "AC7 row 2 control: a payload Sign's signer signed again (same claims, other bytes) still publishes, so the payload cases below fail only for what the payload names", "rc=%s %s" % (rc, first(se)))
+for h in HOSTS:
+    for v in ("production", "fips"):
+        for how, what in (("digest", "an attested digest that is not the image's"), ("ref", "another registry's repository")):
+            for script in ("release-publish", "release-sign-verify", "release-sign"):
+                t = stree()
+                if not payload_edit(t, h, v, how): check(False, "AC7 row 2 %s: the %s/%s payload naming %s" % (script, h, v, what), "the test's own re-signing failed"); continue
+                refused_first(script, t, "the %s/%s payload (signed, bundle true) names %s" % (h, v, what), "images/%s/%s.payload" % (h, v))
+# a good Sign tree: release-publish checks all 15 first (11 blobs, 4 image payloads), then logs in and publishes as before
+t = stree(); rc, so, se = run(t, "release-publish", creds=REG); lg = log(t); P = pushes(t)
+bc = [i for i, l in enumerate(lg) if l.startswith("chain-verify bundle-check")]; cr = [i for i, l in enumerate(lg) if l.startswith("crane")]; lo = [i for i, l in enumerate(lg) if l.startswith("crane auth login")]
+check(rc == 0 and len(bc) == 15 and len(lo) == 2 and cr and bc[-1] < cr[0], "AC7 row 2 release-publish: all 15 bundle-checks come before the first crane call, login or push", "rc=%s checks=%d first-crane=%s last-check=%s %s" % (rc, len(bc), cr[:1], bc[-1:], first(se)))
+check(len(bc) == 15 and all(" --bundle release-signed/" in lg[i] and re.search(r" --digest [0-9a-f]{64}( |$)", lg[i]) and "--public-key build/keys/release.rsa.pub" in lg[i] and "--signing-config .github/policy/cosign-signing-config.json" in lg[i] for i in bc), "AC7 row 2 release-publish: each bundle-check names the blob's bundle, its sha256, the public key and the signing config", str([lg[i] for i in bc][:1]))
+check({(p[3].split("/")[0], p[3].split(":")[1]) for p in P} >= {(h, x) for h in HOSTS for x in ("0.3.0", "0.3.0-fips")} and not [l for l in lg if l.startswith("cosign")], "AC7 row 2 release-publish after the check publishes both variants to both registries as before and calls no cosign", str(sorted(P))[:200])
+# the script alone: a good tree passes with no credential, changes nothing, calls no cosign or crane, checks the same 15
+t = stree(); before = snap(t); rc, so, se = run(t, "release-sign-verify"); lg = log(t); bc = [l for l in lg if l.startswith("chain-verify bundle-check")]
+check(rc == 0 and len(bc) == 15 and not [l for l in lg if l and not l.startswith("chain-verify bundle-check")] and snap(t) == before, "AC8 row 2 release-sign-verify on a good tree: exit 0 with no credential, 15 bundle-checks, no other call, nothing copied or placed", "rc=%s calls=%d other=%s %s" % (rc, len(bc), [l for l in lg if l and not l.startswith("chain-verify bundle-check")][:2], first(se)))
+check(not [l for l in lg if l.startswith(("cosign", "crane", "gh ", "aws", "with-aws-token"))], "AC8 row 2 release-sign-verify calls no cosign, crane, gh or aws")
+# the order in the scripts' own text
+LAST[0] = 0
+RV = "bash bin/release-sign-verify.sh"
+pl = code_lines("release-publish.sh"); vi = next((i for i, l in enumerate(pl) if RV in l), None)
+check(vi is not None and all(vi < i for i, l in enumerate(pl) if re.search(r"crane (auth login|push)", l)), "AC7 row 2 release-publish.sh runs `%s` before its first crane login or push in its own text" % RV)
+sl = code_lines("release-sign.sh"); vi = next((i for i, l in enumerate(sl) if RV in l), None)
+check(vi is not None and all(vi < i for i, l in enumerate(sl) if re.search(r"(?<![\w-])(cp|mkdir|cosign login|cosign attach)\b", l)), "AC8 row 2 release-sign.sh runs `%s` before it copies, makes or places anything and before cosign login" % RV)
+check(not [l for l in sl if "bundle-check" in l or "check_signed" in l], "AC8 row 2 release-sign.sh holds no bundle check of its own any more: it calls bin/release-sign-verify.sh instead of checking inline")
+vp = os.path.join(BIN, "release-sign-verify.sh")
+vl = code_lines("release-sign-verify.sh") if os.path.exists(vp) else None
+check(vl is not None and not [l for l in vl if re.search(r"(?:^|[;&|(]|\bthen\b|\bdo\b)\s*(cp|mv|ln|install|crane|cosign|aws|gh)\s", l)] and not [l for l in vl if re.search(r'(?<![\w./-])python3(?![\w-])', l) and not re.search(r"python3 -I -B ", l)], "AC7 row 2 bin/release-sign-verify.sh exists, copies or moves nothing, names no crane, cosign, aws or gh, and every python3 line is `python3 -I -B`")
+check(vl is not None and not [l for l in vl if re.search(r"DOCKERHUB_|GH_TOKEN|GITHUB_TOKEN|printenv", l)], "AC7 row 2 bin/release-sign-verify.sh reads no registry credential")
 # ---- R2/R3: release-postverify.py --before-publish, called by release-apks.sh before anything is signed ----------------------------------------
 def bp_tree(cmds=None, listed=(IMG0,)):
     """A tree for the pre-publish pass: the guide (provenance, SBOM and image commands), the committed key manifest, provenance/provenance.bundle.json."""
@@ -1956,7 +2041,7 @@ check(rc != 0 and first(se).startswith("release-stage:") and not calls(t), "B-F2
 # ---- AC10: no script prints a credential, anywhere ---------------------------------------------------------------------------------------------
 for s, creds in (("release-verify", list(SENT)), ("release-apks", KEY), ("release-publish", REG),
                  ("release-sign", REG), ("release-assets", ["GH_TOKEN"]), ("release-postverify", ["GH_TOKEN"])):
-    t = full_assets() if s == "release-assets" else vtree() if s == "release-verify" else atree() if s == "release-apks" else signed_released()[0] if s == "release-sign" else tree()
+    t = full_assets() if s == "release-assets" else vtree() if s == "release-verify" else atree() if s == "release-apks" else signed_released()[0] if s == "release-sign" else stree() if s == "release-publish" else tree()
     if s == "release-sign": shutil.rmtree(os.path.join(t, "release-evidence")); os.remove(os.path.join(t, "dist/checksums.txt")); [os.remove(os.path.join(t, f)) for f in os.listdir(t) if f.startswith("calls.log")]
     if s == "release-assets": run(t, "release-stage")      # the step before it, which staged release-upload/
     if s == "release-postverify": real_verifier(t); seed_manifest(t)      # a post-publish run needs the manifest to get as far as its commands

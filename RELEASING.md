@@ -59,8 +59,10 @@ rebuilds. Of the jobs above, Release is the only one that holds a registry crede
   order before any credential exists in the job; `release-apks` puts the apk
   signatures Sign made on the apks; `release-publish` pushes the images by
   digest to `ghcr.io/fosterstack/cache` and `docker.io/fosterstack/cache` and
-  reads each registry back; `release-sign` checks every signature Sign made,
-  each with its Rekor entry, against the public release key and pushes them;
+  reads each registry back, after `bin/release-sign-verify.sh` has checked every
+  signature Sign made, each with its Rekor entry, against the public release
+  key (a bad one stops the release before any login or push); `release-sign`
+  runs that check again and pushes the signatures;
   `release-postverify` runs the customer-guide commands that need a registry
   against what was just published; and `release-assets` creates the GitHub
   release only after that. Every signature is made before publishing by Sign's
