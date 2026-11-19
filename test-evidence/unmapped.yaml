@@ -35,8 +35,6 @@ unmapped:
     reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
   - ac: REQ-DEP-005-AC3
     reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
-  - ac: REQ-REL-009-AC5
-    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
   - ac: REQ-REL-009-AC10
     reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
   - ac: REQ-REL-013-AC2
@@ -45,21 +43,5 @@ unmapped:
     reason: "the pin-wiring judge (.github/agent/tests/pin-wiring-test.sh) that held it was deleted by the release audit ruling of Nov 12; no check holds this criterion now"
   - ac: REQ-REL-013-AC4
     reason: "the pin-wiring judge (.github/agent/tests/pin-wiring-test.sh) that held it was deleted by the release audit ruling of Nov 12; no check holds this criterion now"
-  - ac: REQ-REL-009-AC1
-    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
-  - ac: REQ-REL-009-AC2
-    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion text is unchanged and no test proves it"
-  - ac: REQ-REL-009-AC3
-    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
-  - ac: REQ-REL-009-AC4
-    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
-  - ac: REQ-REL-009-AC8
-    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
-  - ac: REQ-REL-009-AC11
-    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
-  - ac: REQ-REL-009-AC14
-    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
-  - ac: REQ-REL-009-AC15
-    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
   - ac: REQ-SUP-001-AC13
     reason: "Pins are a markdown rule; reviewers and the release audit check them (docs/ratify/2026-11-19-pins-markdown-no-checker.md:5)."

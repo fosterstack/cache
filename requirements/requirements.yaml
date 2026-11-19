@@ -1183,7 +1183,7 @@ requirements:
     confidence: documented
     acceptance_criteria:
       - id: REQ-PLAT-002-AC1
-        given: a release's three image manifests
+        given: a release's two image manifests (production and -fips)
         when: each is inspected and run on both architectures
         then: both platform entries exist and the container serves cache traffic on each
         verification: { method: acceptance-release-artifact, release_blocking: true }
@@ -1201,9 +1201,9 @@ requirements:
     confidence: documented
     acceptance_criteria:
       - id: REQ-PLAT-003-AC1
-        given: the three release images
+        given: the two release images (production and -fips)
         when: shell presence is probed in each
-        then: production and -fips run no shell at any path; -debug runs /busybox/sh and has no /bin/sh
+        then: production and -fips run no shell at any path
         verification: { method: acceptance-release-artifact, release_blocking: true }
         status: approved
 
@@ -2341,7 +2341,7 @@ requirements:
         given: the workflows under .github/workflows on main
         when: the jobs that run on the pull_request event are listed
         then: >-
-          they are test, lint, govulncheck, analyze (go), fips140-only and scan, the jobs scan needs (build, assemble, the scanner list and the scanners), and the jobs of agent-review-gate.yml and dependabot-auto-merge.yml, which are no pull-request checks of the ruleset; no other job runs on pull_request
+          they are test, lint, govulncheck, analyze (go), fips140-only and scan, the jobs scan needs (build, assemble, the scanner list and the scanners), and the jobs of agent-review-gate.yml and dependabot-auto-merge.yml, which are no pull-request checks of the ruleset; no other job runs on pull_request, except the two chain-v030 checks of REQ-REL-014-AC1 (marker-gate and customer-words-edited)
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-016-AC2
