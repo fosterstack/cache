@@ -26,7 +26,7 @@ nothing is expanded after the check.
 commands that name provenance.bundle.json, on release-staged/ (that bundle from provenance/ and the key manifest, removed when
 the pass ends), with the same judge, refusals and key. It reads no list and touches no registry.
 """
-import collections, json, os, re, shlex, shutil, subprocess, sys, tempfile, types
+import collections, importlib.util, json, os, re, shlex, shutil, subprocess, sys, tempfile, types
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import guide_plan_judge   # noqa: E402
@@ -42,8 +42,16 @@ ROOT_KEY = ".github/policy/release-key-root.pub"   # the committed offline root 
 DIGESTS = "witness-build/digests.json"
 # Constants: releases publish identical digests to both, and no input names a repository.
 REPOSITORIES = ("ghcr.io/fosterstack/cache", "docker.io/fosterstack/cache")
-# v0.3.0 yes, v0.3.0-rc1 and "v0.3.0\n" no
-TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
+# the one tag grammar (REQ-CHAIN-004-AC20), loaded from bin/ of the checkout the step runs in, as VERIFIER is
+_spec = importlib.util.spec_from_file_location("build_admit", "bin/build-admit.py")
+_admit = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_admit)
+
+
+def is_final(tag):   # v0.3.0 yes, v0.3.0-rc1 and "v0.3.0\n" no: a release candidate publishes nothing to verify
+    return bool(_admit.TAG_SYNTAX.fullmatch(tag)) and "-rc" not in tag
+
+
 # sha256: and 64 lowercase hex digits yes; sha256:abc and an upper-case digest no
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 # a command the judge accepted: its pipe segments filled for this registry, the files a jq-only command reads
@@ -362,7 +370,7 @@ def before_publish(tag):
 
 def main():
     tag = os.environ.get("GITHUB_REF_NAME", "")
-    if not TAG.fullmatch(tag):
+    if not is_final(tag):
         refuse("refused at tag: %r is not vX.Y.Z" % tag)
     if sys.argv[1:] == ["--before-publish"]:
         return before_publish(tag)

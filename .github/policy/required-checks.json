@@ -81,5 +81,22 @@
       "integration_id": 15368,
       "scope": "push"
     }
+  ],
+  "promotion_checks": [
+    {
+      "context": "analyze (go)",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "reproducibility",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "scan",
+      "integration_id": 15368,
+      "scope": "push"
+    }
   ]
 }

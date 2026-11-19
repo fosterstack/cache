@@ -1305,6 +1305,10 @@ mappings:
       - { type: shell-test, ref: "bin/release-workflow-wiring-test.sh" }
   - ac: REQ-CHAIN-004-AC20
     evidence:
+      - { type: shell-test, ref: "bin/chain-release-metadata-test.sh" }
+      - { type: shell-test, ref: "bin/chain-tag-grammar-test.sh" }
+  - ac: REQ-CHAIN-004-AC21
+    evidence:
       - { type: shell-test, ref: "bin/chain-build-admit-test.sh" }
   - ac: REQ-CHAIN-005-AC7
     evidence:
@@ -1561,6 +1565,7 @@ mappings:
       - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
       - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
       - { type: shell-test, ref: "bin/guide-judge-test.sh" }
+      - { type: shell-test, ref: "bin/chain-tag-grammar-test.sh" }
   - ac: REQ-CHAIN-007-AC15
     evidence:
       - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }

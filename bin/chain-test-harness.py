@@ -356,7 +356,7 @@ if cmd == "items-apk" and os.environ.get("ITEMS_MODE") == "real":
     real = os.path.dirname(os.environ["REAL_CV"])
     shadow = os.path.abspath(".real")
     os.makedirs(shadow + "/bin", exist_ok=True); os.makedirs(shadow + "/.github/policy", exist_ok=True)
-    for f in ("chain-verify.py", "chain_common.py", "chain_hostile.py", "chain_items.py"): shutil.copy(real + "/" + f, shadow + "/bin/" + f)
+    for f in ("build-admit.py", "chain-verify.py", "chain_common.py", "chain_hostile.py", "chain_items.py"): shutil.copy(real + "/" + f, shadow + "/bin/" + f)
     for f in ("rebuild-items.json", "chain-scripts.json"): shutil.copy(real + "/../.github/policy/" + f, shadow + "/.github/policy/" + f)
     shutil.copy(os.path.abspath("bin/apk-tool.py"), shadow + "/bin/apk-tool.py")
     os.execv(sys.executable, [sys.executable, shadow + "/bin/chain-verify.py"] + a)
