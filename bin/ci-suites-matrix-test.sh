@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # proves: REQ-CI-005-AC1, REQ-CI-005-AC2, REQ-CI-005-AC5, REQ-CI-005-AC6, REQ-CI-005-AC7 — every tracked suite runs once (a bash PATH step or a matrix leg); the legs are the tracked suites less the bash PATH steps; grype only where the VEX suites need it
-# Guards the suites matrix of .github/workflows/ci.yml: each tracked suite must run exactly once, and a wiring slip would otherwise drop a suite silently.
+# Guards the suites matrix of .github/workflows/full-suite.yml (the bash PATH steps are ci.yml's): each tracked suite must run exactly once, and a wiring slip would otherwise drop a suite silently.
 # The real `list` step is executed (not re-implemented) and compared with a list worked out independently; the checks are also run against broken
 # copies of the workflow, since a check that cannot fail proves nothing. Needs bash, git, jq and python3 with PyYAML.
 set -euo pipefail
@@ -12,22 +12,23 @@ ok()  { pass=$((pass + 1)); echo "ok   $1"; }
 bad() { failn=$((failn + 1)); echo "FAIL $1"; }
 python3 -c 'import yaml' 2> /dev/null || { echo "FAIL python3 needs PyYAML (install the python3-yaml package)"; echo "ci-suites-matrix: 0 passed, 1 failed"; exit 1; }
 
-# chk.py CHECK ROOT: reads ROOT/.github/workflows/ci.yml and the tracked files of the git repo ROOT; exit 0 if the check holds, else 1 with the reason.
+# chk.py CHECK ROOT: reads ROOT/.github/workflows/ci.yml and full-suite.yml and the tracked files of the git repo ROOT; exit 0 if the check holds, else 1 with the reason.
 # It works out the expected list on its own (it does not trust the list step) and runs the real run text of the list step from ROOT.
 cat > "$work/chk.py" <<'PY'
 import json, os, re, subprocess, sys, tempfile, yaml
 check, base = sys.argv[1], sys.argv[2]
 wf = yaml.safe_load(open(base + "/.github/workflows/ci.yml"))
+fs = yaml.safe_load(open(base + "/.github/workflows/full-suite.yml"))
 files = subprocess.run(["git", "ls-files"], cwd=base, capture_output=True, text=True, check=True).stdout.split("\n")
 tracked = [f for f in files if re.fullmatch(r"(bin|[^/]*/agent/tests)/[^/]*-test\.sh", f)]
 RUN = re.compile(r"^bash (\S+)$")
 def fail(msg): print(msg); sys.exit(1)
-steps = lambda job: wf["jobs"][job].get("steps", [])
+steps = lambda job, w=wf: w["jobs"][job].get("steps", [])
 by_path = [(m.group(1), s) for j in wf["jobs"] for s in steps(j) if (m := RUN.match(str(s.get("run", "")).strip()))]
 counted = [p for p, _ in by_path]
 expected = sorted(os.path.basename(f) for f in tracked if f not in counted)
 def legs():
-    step = [s for s in steps("suite-list") if s.get("id") == "list"]
+    step = [s for s in steps("suite-list", fs) if s.get("id") == "list"]
     if len(step) != 1: fail("suite-list has no single step with id: list")
     scratch = tempfile.mkdtemp(prefix="ci-suites-run.", dir=os.environ["SCRATCH"])
     out = scratch + "/out"; open(out, "w").close()
@@ -61,31 +62,33 @@ elif check == "ac5":
         n = counted.count(f) + got.count(os.path.basename(f))
         if n != 1: fail("%s runs %d times" % (f, n))
 elif check == "wiring":
-    job = wf["jobs"]["suites"]
+    job = fs["jobs"]["suites"]
     if job.get("needs") != "suite-list": fail("suites does not need suite-list")
     if job["strategy"]["matrix"].get("suite") != "${{ fromJSON(needs.suite-list.outputs.suites) }}": fail("matrix.suite is not fromJSON of the list output")
     run = [s for s in job["steps"] if 'python3 -I bin/run-ci-suite.py "$SUITE"' in str(s.get("run", ""))]
     if len(run) != 1: fail("no single leg step that runs python3 -I bin/run-ci-suite.py \"$SUITE\"")
     if run[0].get("env", {}).get("SUITE") != "${{ matrix.suite }}": fail("SUITE is not matrix.suite")
 elif check == "grype":
-    hits = [s for s in wf["jobs"]["suites"]["steps"] if "install-scanner.sh grype" in str(s.get("run", ""))]
+    hits = [s for s in fs["jobs"]["suites"]["steps"] if "install-scanner.sh grype" in str(s.get("run", ""))]
     want = "${{ matrix.suite == 'vex-scope-test.sh' || matrix.suite == 'vex-both-scanners-test.sh' }}"
     if len(hits) != 1 or "./bin/install-scanner.sh grype" not in hits[0]["run"]: fail("no single grype install step in suites")
     if hits[0].get("if") != want: fail("grype step condition is %r" % hits[0].get("if"))
 elif check == "netcut":
-    if "CHAIN_TEST_REQUIRE_NETCUT" in open(base + "/.github/workflows/ci.yml").read(): fail("ci.yml still sets CHAIN_TEST_REQUIRE_NETCUT")
+    for name in ("ci.yml", "full-suite.yml"):
+        if "CHAIN_TEST_REQUIRE_NETCUT" in open(base + "/.github/workflows/" + name).read(): fail(name + " still sets CHAIN_TEST_REQUIRE_NETCUT")
 else:
     fail("unknown check " + check)
 PY
 
-# mut.py KIND SRC DST: DST is a copy of the workflow SRC broken in one named way.
+# mut.py KIND SRC DST: DST is a copy of the workflow directory SRC (ci.yml and full-suite.yml) broken in one named way.
 cat > "$work/mut.py" <<'PY'
 import sys, yaml
 kind, src, dst = sys.argv[1:4]
-wf = yaml.safe_load(open(src))
-suites = wf["jobs"]["suites"]["steps"]
+wf = yaml.safe_load(open(src + "/ci.yml"))
+fs = yaml.safe_load(open(src + "/full-suite.yml"))
+suites = fs["jobs"]["suites"]["steps"]
 grype = [s for s in suites if "install-scanner.sh grype" in str(s.get("run", ""))][0]
-lst = [s for s in wf["jobs"]["suite-list"]["steps"] if s.get("id") == "list"][0]
+lst = [s for s in fs["jobs"]["suite-list"]["steps"] if s.get("id") == "list"][0]
 runs = [s for s in suites if "run-ci-suite.py" in str(s.get("run", ""))][0]
 bash_step = [s for s in wf["jobs"]["other"]["steps"] if str(s.get("run", "")).startswith("bash ")][0]
 emit = lambda text: "echo 'suites=%s' >> \"$GITHUB_OUTPUT\"" % text
@@ -101,7 +104,8 @@ elif kind == "netcut-variable": runs["env"]["CHAIN_TEST_REQUIRE_NETCUT"] = "1"
 elif kind == "bash-if": bash_step["if"] = "${{ false }}"
 elif kind == "bash-continue": bash_step["continue-on-error"] = True
 elif kind == "run-twice": wf["jobs"]["other"]["steps"].append(dict(bash_step))
-yaml.safe_dump(wf, open(dst, "w"), width=10000)
+yaml.safe_dump(wf, open(dst + "/ci.yml", "w"), width=10000)
+yaml.safe_dump(fs, open(dst + "/full-suite.yml", "w"), width=10000)
 PY
 
 # A small repo shaped as the real one: a-test.sh has a bash PATH step; b-, c-, d- and the two VEX suites do not.
@@ -121,6 +125,11 @@ jobs:
     steps:
       - name: a
         run: bash bin/a-test.sh
+YML
+cat > "$work/good/.github/workflows/full-suite.yml" <<'YML'
+name: full suite
+on: [schedule]
+jobs:
   suite-list:
     runs-on: ubuntu-latest
     outputs:
@@ -146,7 +155,7 @@ jobs:
           SUITE: ${{ matrix.suite }}
         run: python3 -I bin/run-ci-suite.py "$SUITE"
 YML
-sed -i "s#AUDITOR_DIR#$aud#" "$work/good/.github/workflows/ci.yml"
+sed -i "s#AUDITOR_DIR#$aud#" "$work/good/.github/workflows/full-suite.yml"
 export SCRATCH="$work"
 chk() { python3 -I "$work/chk.py" "$@" 2>&1 | head -c 300; return "${PIPESTATUS[0]}"; }
 # pass_ CHECK DIR LABEL / refuse CHECK DIR LABEL: the check holds / fails on that tree
@@ -159,7 +168,7 @@ for c in form ac1 ac2 ac5 plain wiring grype netcut; do pass_ $c "$work/good" "c
 # ---- ...and fail on a broken copy of it ---------------------------------------------------------------------------------------
 # broken KIND CHECK LABEL [EXTRA]: EXTRA is one more tracked file in the fixture repo
 broken() { local kind=$1 check=$2 label=$3 d="$work/m-$1-$2"; mk "$d"; [ -z "${4:-}" ] || { : > "$d/$4"; git -C "$d" add -A; }
-  python3 -I "$work/mut.py" "$kind" "$work/good/.github/workflows/ci.yml" "$d/.github/workflows/ci.yml"; refuse "$check" "$d" "$label"; }
+  python3 -I "$work/mut.py" "$kind" "$work/good/.github/workflows" "$d/.github/workflows"; refuse "$check" "$d" "$label"; }
 broken grype-dropped grype "REQ-CI-005-AC6 the grype condition dropped (every leg installs it) is refused"
 broken grype-widened grype "REQ-CI-005-AC6 the grype condition widened to a third suite is refused"
 broken grype-one-missing grype "REQ-CI-005-AC6 the grype condition missing a VEX suite is refused"

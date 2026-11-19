@@ -3,8 +3,9 @@
 # Pull requests run six checks; the rest run on push to main (owner, Nov 17 2026). Read from the PARSED workflow files:
 #   AC1  the jobs that run on the pull_request event (a workflow's `on:` keys and each job's `if` and `needs` decide) are
 #        test, lint, govulncheck, analyze (go), fips140-only and scan, the jobs scan needs, and the jobs of the two
-#        untouched workflows (agent-review-gate.yml, dependabot-auto-merge.yml); every other job of ci.yml, scan.yml,
-#        acceptance.yml still runs on push to main; supply-chain.yml has no job on a pull request or a push.
+#        untouched workflows (agent-review-gate.yml, dependabot-auto-merge.yml); every other job of ci.yml and scan.yml
+#        still runs on push to main (scan's report-failure runs on a schedule); the suites and acceptance.yml are called or run
+#        only by full-suite.yml, which has no pull_request or push trigger; supply-chain.yml has no job on a pull request or a push.
 #   AC2  supply-chain.yml (the daily audit) has no push, pull_request, pull_request_target or workflow_run trigger: the
 #        pin-age pull-request scan was deleted. The chain has no dependency-review job.
 #   AC3  required-checks.json scopes requirements to push and lists each of the six; the chain's release admission is
@@ -183,10 +184,15 @@ def judge_ac1(wfs):
     if names != SIX_NAMES:
         bad.append("the six jobs' check names are not %s: %s" % (sorted(SIX_NAMES), sorted(names)))
     # the checks that left the pull request still run on push to main (and so on the exact tagged commit)
-    for f in ("ci.yml", "scan.yml"):   # acceptance.yml is called by another workflow only (REQ-REL-014-AC2), so it has no push run
-        lost = set(wfs[f]["jobs"]) - runs_on(wfs[f], "push") - {"marker-gate"}
+    for f in ("ci.yml", "scan.yml"):   # acceptance.yml is called by another workflow only (REQ-REL-014-AC1), so it has no push run
+        lost = set(wfs[f]["jobs"]) - runs_on(wfs[f], "push") - {"marker-gate"} - ({"report-failure"} if f == "scan.yml" else set())
         if lost:
             bad.append("%s jobs that no longer run on push to main: %s" % (f, sorted(lost)))
+    fs = events_of(wfs["full-suite.yml"])
+    if fs & {"push", "pull_request"}:
+        bad.append("full-suite.yml has a push or pull_request trigger: %s" % sorted(fs))
+    if events_of(wfs["acceptance.yml"]) != {"workflow_call"}:
+        bad.append("acceptance.yml is not callable alone: %s" % sorted(events_of(wfs["acceptance.yml"])))
     return bad
 
 
@@ -231,7 +237,9 @@ for name, f, edit, want_bad in [
     ("requirements-unconditional", "ci.yml", "J['requirements'].pop('if', None)", True),
     ("requirements-pull-request-only", "ci.yml", "J['requirements']['if'] = \"${{ github.event_name == 'pull_request' }}\"", True),
     ("reproducibility-on-pull-request", "scan.yml", "J['reproducibility'].pop('if', None)", True),
-    ("suite-list-on-pull-request", "ci.yml", "J['suite-list'].pop('if', None)", True),
+    ("full-suite-on-pull-request", "full-suite.yml", "d['on']['pull_request'] = ''", True),
+    ("full-suite-on-push", "full-suite.yml", "d['on']['push'] = {'branches': ['main']}", True),
+    ("acceptance-on-push", "acceptance.yml", "d['on']['push'] = {'branches': ['main']}", True),
     ("acceptance-on-pull-request", "acceptance.yml", "d['on']['pull_request'] = ''", True),
     ("codeql-off-pull-request", "codeql.yml", "d['on'].pop('pull_request')", True),
     ("supply-chain-on-pull-request", "supply-chain.yml", "d['on']['pull_request'] = {}; J['daily-audit'].pop('if')", True),

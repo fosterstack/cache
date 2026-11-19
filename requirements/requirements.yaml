@@ -1502,7 +1502,7 @@ requirements:
     statement: >
       A newly disclosed vulnerability shall be caught before release, not on
       tag day: the full scanner set shall run as a required check on every
-      pull request, every push to main, and every tag; scanner installers
+      pull request, every push to main, every tag and nightly on main; scanner installers
       shall be pinned by checksum so a scanner that cannot run fails the
       pipeline rather than passing silently; main's latest candidate shall be
       rescanned daily; and the Go toolchain shall be kept on its latest patch
@@ -1514,9 +1514,9 @@ requirements:
     confidence: implementation-only
     acceptance_criteria:
       - id: REQ-REL-004-AC1
-        given: any pull request, push to main, or tag
+        given: any pull request, push to main, tag, or the nightly run
         when: the required scan check runs
-        then: "The scan check runs Grype and Amazon Inspector on pull requests, pushes to main, and tags. Grype scans all four image children and every archive; Inspector scans the four image children from an SBOM generated on the runner. Each scanner reports its package count; zero packages fails. Both block at any severity. The published VEX document is the only exception for both: Grype applies it natively, and the gate applies it to Inspector's findings itself, since Inspector does not read VEX; no suppression is configured in AWS. A test proves that a VEX-covered finding is suppressed for both scanners and an uncovered one blocks. Go modules are scanned by govulncheck."
+        then: "The scan check runs Grype and Amazon Inspector on pull requests, pushes to main and tags, and in a nightly run on main, which is the schedule or dispatch run that a release-candidate tag needs (REQ-CI-001-AC7). Grype scans all four image children and every archive; Inspector scans the four image children from an SBOM generated on the runner. Each scanner reports its package count; zero packages fails. Both block at any severity. The published VEX document is the only exception for both: Grype applies it natively, and the gate applies it to Inspector's findings itself, since Inspector does not read VEX; no suppression is configured in AWS. A test proves that a VEX-covered finding is suppressed for both scanners and an uncovered one blocks. Go modules are scanned by govulncheck."
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-004-AC2
@@ -1886,9 +1886,9 @@ requirements:
         status: approved
 
   - id: REQ-REL-008
-    title: The workflow set is limited to a fixed list (17 files today), each file grouping jobs by purpose
+    title: The workflow set is limited to a fixed list (18 files today), each file grouping jobs by purpose
     statement: >
-      The repository's workflows shall be limited to a fixed list of files, 17 today (AC1 fixes the list), each file holding the jobs that a person would group by what they are
+      The repository's workflows shall be limited to a fixed list of files, 18 today (AC1 fixes the list), each file holding the jobs that a person would group by what they are
       for (jobs with nothing to do with each other never share a file to cut the count, and related jobs never get files of
       their own), the release being one file, release.yml, whose build, rebuild, check, sign and release jobs each run on their
       own runner. Each merge keeps every required check's name, top-level placement and events, and a new workflow file is
@@ -1902,7 +1902,7 @@ requirements:
       - id: REQ-REL-008-AC1
         given: "the four consolidation pull requests have landed"
         when: "the workflow directory is listed"
-        then: "it holds exactly the 17 listed files, the list fixed by bin/workflow-consolidation-test.sh: acceptance.yml, agent-review-gate.yml, auditor.yml, ci.yml, codeql.yml, customer-words-edited.yml, dependabot-auto-merge.yml, dependabot-reviewer.yml, evidence-letter.yml, go-freshness.yml, main-candidate-rescan.yml, persona-uat.yml, release.yml, reserved-branch-guard.yml, scan.yml, scorecard.yml and supply-chain.yml; no stage-*.yml file exists, because the release is the one file release.yml (one workflow file per purpose, the rule of Nov 13 2026); persona-uat.yml holds the persona UAT jobs (the weekly run and the release-candidate leg), one purpose; evidence-letter.yml holds the monthly evidence letter's two jobs (REQ-REL-015), a purpose no other file has"
+        then: "it holds exactly the 18 listed files, the list fixed by bin/workflow-consolidation-test.sh: acceptance.yml, agent-review-gate.yml, auditor.yml, ci.yml, codeql.yml, customer-words-edited.yml, dependabot-auto-merge.yml, dependabot-reviewer.yml, evidence-letter.yml, full-suite.yml, go-freshness.yml, main-candidate-rescan.yml, persona-uat.yml, release.yml, reserved-branch-guard.yml, scan.yml, scorecard.yml and supply-chain.yml; no stage-*.yml file exists, because the release is the one file release.yml (one workflow file per purpose, the rule of Nov 13 2026); persona-uat.yml holds the persona UAT jobs (the weekly run and the release-candidate leg), one purpose; evidence-letter.yml holds the monthly evidence letter's two jobs (REQ-REL-015), a purpose no other file has; full-suite.yml holds the suites that run nightly and before a release-candidate tag, one purpose"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-008-AC2
@@ -2264,6 +2264,46 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
+  - id: REQ-CI-007
+    title: The long suites and the acceptance tests run before a release-candidate tag and nightly
+    statement: >
+      Every tracked test suite that no step of ci.yml runs, and both acceptance suites, never run on a pull request. They run
+      in full-suite.yml before a release-candidate tag and nightly on main. A failed nightly run opens a fix item and never
+      blocks a merge.
+    source: [.github/workflows/full-suite.yml, .github/workflows/ci.yml, .github/workflows/acceptance.yml, .github/workflows/scan.yml, .github/workflows/codeql.yml, .github/policy/required-checks.json, bin/build-admit.py]
+    tier: community
+    introduced: v0.3.0
+    origin: owner ratified Nov 10 2026; the cache half built Nov 12 2026
+    confidence: implementation-only
+    notes: >
+      The six checks of a pull request are REQ-REL-014's. Admission's side of the full suite, the table that binds each
+      promotion or release-only context to its producing file, is REQ-CHAIN-004-AC21.
+    acceptance_criteria:
+      - id: REQ-CI-007-AC1
+        given: "every workflow file"
+        when: "bin/workflow-consolidation-test.sh judges them"
+        then: "full-suite.yml triggers only on a schedule and workflow_dispatch (acceptance.yml's own trigger is REQ-REL-014-AC1's); scan.yml triggers on pull_request, push (main and tags v*), one schedule and workflow_dispatch and still cannot be called (REQ-SCAN-015); codeql.yml keeps its triggers and adds workflow_dispatch"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-CI-007-AC2
+        given: ".github/workflows/full-suite.yml"
+        when: "its jobs are read"
+        then: "it holds suite-list, suites and allowlist-chain, which run every tracked suite that no step of ci.yml runs, one runner each, and fail unless every suite succeeded, and it calls acceptance.yml once, from source; ci.yml holds none of them; no job name of full-suite.yml is also made by another workflow file; the scan and the CodeQL analysis keep their own workflows, whose schedule is the nightly run"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-CI-007-AC3
+        given: "a scheduled run of full-suite.yml, scan.yml or codeql.yml on main that fails"
+        when: "the run ends"
+        then: "an issue with a fixed title and a fixed label is opened, or commented on when one is already open, naming the run; a green run opens nothing; nothing required on a pull request reads the issue"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-CI-007-AC4
+        given: "the workflows that make a promotion or release-only context: full-suite.yml, scan.yml and codeql.yml"
+        when: "their triggers are read"
+        then: "each can run on a schedule or on workflow_dispatch before a release-candidate tag is pushed, so a successful run on a commit can exist before its tag, and a run started by the tag push alone is too late; full-suite.yml has no push and no pull_request trigger"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+
   - id: REQ-REL-013
     title: Release admission requires the checks the ruleset does not list
     statement: >
@@ -2309,6 +2349,12 @@ requirements:
         then: >-
           it refuses a carriage return, a next-line (U+0085), a line separator (U+2028) or a paragraph separator (U+2029) anywhere in ci.yml, because YAML ends a line at each of them and the judge does not;
           on the landing path too it requires the top-level keys to be byte for byte those of the landing commit's own ci.yml, with only the checkout's digest and version comment free
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-013-AC6
+        given: "full-suite.yml, which makes the release-only contexts and runs only on a schedule and workflow_dispatch, and a release-candidate tag to be cut"
+        when: "release admission reads the checks of the exact tagged commit"
+        then: "the full suite on that commit is the releaser's own dispatch of full-suite.yml (a nightly run on it counts as well), and admission refuses the tag while a bound context has no successful run on the commit; no job of release.yml dispatches it or holds actions: write, and full-suite.yml never gains a push or pull_request trigger"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
@@ -3844,6 +3890,12 @@ requirements:
         then: "the hostile Build step runs in every build, on a release candidate, a final or patch tag, the pull-request proof build and the nightly build alike (the same jobs, the same steps and the same condition-free step order, never a step that only a release-candidate tag runs); it is a build step run inside the sandbox of the build, holding no token, and its outcome is judged by the verifier as in REQ-CHAIN-001-AC5"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
+      - id: REQ-CHAIN-004-AC21
+        given: "main's required-checks.json (a required_checks list and a promotion_checks list), main's release-only-checks.json (a required_checks list), and the table in bin/build-admit.py (BOUND_CONTEXTS) that binds each promotion or release-only context to its one producing workflow file: analyze (go) to codeql.yml, reproducibility and scan to scan.yml, and allowlist-chain and every context that starts with `acceptance / ` to full-suite.yml"
+        when: "bin/build-admit.py runs its required-checks check for a tag"
+        then: "it refuses at required-checks, naming the file, when required-checks.json has no non-empty required_checks list or no non-empty promotion_checks list, or release-only-checks.json has no non-empty required_checks list; it requires every context of required_checks and of release-only-checks.json on every tag, and the promotion_checks as well on a release candidate tag (-rcN) only; a context of the release-only list or of promotion_checks that the table does not bind is refused naming that it has no producing workflow file, and a context of required_checks is never bound; a bound context counts only from a check run of its name and pinned app whose workflow run, read from the runs API by the run id in the check run's details_url, has the path .github/workflows/<its file>, the event schedule or workflow_dispatch, and the tagged commit as its head_sha; every run of that name is read (filter=all), newest id first, a run that does not qualify (another file, another event, another commit, a details_url that names no run) is skipped, and the newest qualifying run alone decides: success passes, a null conclusion refuses saying the run is pending, any other conclusion refuses saying the check is not green; no qualifying run refuses saying a schedule or dispatch run of that file is missing; a run that cannot be read (the API call fails or its answer is not a path, an event and a head_sha) refuses with its own message naming the run id and the context, never a skipped run; a push run of the same name that is green never satisfies a bound context; an unbound context keeps the one-green-run rule of AC4"
+        verification: { method: unit, release_blocking: true }
+        status: approved
   - id: REQ-CHAIN-005
     title: Rebuild repeats the build on a fresh machine and blocks on any difference
     statement: >
@@ -5363,9 +5415,9 @@ requirements:
         status: approved
 
   - id: REQ-CI-001
-    title: The required check allowlist-chain fails unless every suite of the suites job succeeded
+    title: The check allowlist-chain fails unless every suite of the suites job succeeded
     statement: >
-      The branch protection requires the check `allowlist-chain` of .github/workflows/ci.yml. It is a gate job that needs the `suites` job (one matrix leg per suite
+      Release admission requires the check `allowlist-chain` of .github/workflows/full-suite.yml. It is a gate job that needs the `suites` job (one matrix leg per suite
       that no counting step of ci.yml runs, REQ-CI-005) and fails unless the result of that job is exactly `success`, so a failed, skipped, cancelled or missing
       suite cannot pass the required check.
     source: [ci-speed read-back of Oct 23]
@@ -5378,7 +5430,7 @@ requirements:
       removed needs no edit of the gate.
     acceptance_criteria:
       - id: REQ-CI-001-AC1
-        given: "the CI workflow"
+        given: "the full suite workflow (full-suite.yml)"
         when: "the jobs are read"
         then: "a job named allowlist-chain exists and needs the `suites` job and no other"
         verification: { method: inspection, release_blocking: false }
@@ -5406,30 +5458,30 @@ requirements:
     title: A tracked suite is run once
     statement: >
       Every suite, a tracked *-test.sh file under bin/ or the agent tests folder, is run once per workflow run: by the step of ci.yml that runs it by its path or,
-      when no step does, by its own leg of the suites matrix. No file lists the suites: the job that lists the legs reads the tracked files.
-    source: [ci-speed read-back of Oct 23, the suites matrix of ci.yml]
+      when no step does, by its own leg of the suites matrix of full-suite.yml. No file lists the suites: the job that lists the legs reads the tracked files.
+    source: [ci-speed read-back of Oct 23, the suites matrix of full-suite.yml]
     tier: community
     introduced: v0.3.0
     origin: CI speed decision of Oct 23 2026 (no check is dropped and every test runs exactly once)
     confidence: documented
     notes: >
-      A step that runs a suite by its path is `bash PATH`. A suite no step runs by its path runs in its own leg of the suites matrix of ci.yml through
+      A step that runs a suite by its path is `bash PATH`. A suite no step runs by its path runs in its own leg of the suites matrix of full-suite.yml through
       bin/run-ci-suite.py. A suite that another suite runs inside itself (the matrix suite's variant harness) is not a tracked suite of its own here.
     acceptance_criteria:
       - id: REQ-CI-005-AC1
         given: "a tracked suite and a step of ci.yml that runs it by its path (`bash PATH`)"
         when: "the workflow runs"
-        then: "the suite is run once, by that step, which carries no `if` and no `continue-on-error` (a skipped step would drop the suite from the run), and the suites matrix has no leg for it"
+        then: "the suite is run once, by that step, which carries no `if` and no `continue-on-error` (a skipped step would drop the suite from the run), and the suites matrix of full-suite.yml has no leg for it"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-CI-005-AC2
         given: "a tracked suite that no step of ci.yml runs by its path"
         when: "the workflow runs"
-        then: "the suites matrix runs it in its own leg, and a leg that fails fails the job"
+        then: "the suites matrix of full-suite.yml runs it in its own leg, and a leg that fails fails the job"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-CI-005-AC5
-        given: "the committed ci.yml and the tracked tree"
+        given: "the committed ci.yml, full-suite.yml and the tracked tree"
         when: "the suites job lists its legs"
         then: "they are exactly the tracked suites that no step of ci.yml runs by its path, so every tracked suite runs once in a workflow run: a tracked suite that no step and no leg runs, and a suite that runs twice, fail"
         verification: { method: unit, release_blocking: false }

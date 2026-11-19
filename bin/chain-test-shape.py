@@ -17,7 +17,7 @@ the job graph is exactly the keys and targets in CHAIN. Anything else is a fault
   listed CHAIN_SCRIPTS.json ROOT            the stage scripts are rows of .github/policy/chain-scripts.json and exist
   callers FILE                              REQ-CHAIN-004-AC14: a proof workflow calls release.yml with mode: snapshot and nothing else
   graph FILE                                REQ-CHAIN-005-AC5: the fifteen chain jobs of release.yml, each with its exact needs, if, permissions and environment, and the jobs around them
-  workflows DIR                             REQ-CHAIN-004-AC1: no workflow file is added beyond persona-uat.yml, customer-words-edited.yml and evidence-letter.yml,
+  workflows DIR                             REQ-CHAIN-004-AC1: no workflow file is added beyond persona-uat.yml, customer-words-edited.yml, evidence-letter.yml and full-suite.yml,
                                              and no stage-*.yml file exists
   recordenv FILE                            REQ-CHAIN-004-AC8: no token variable or token in a Witness collection (a DSSE envelope)
   nosource ROOT                             sandboxed-build rule 1: no step of Build or Rebuild runs source code
@@ -201,7 +201,7 @@ CHECKOUT_WITH = {"persist-credentials": "false", "fetch-depth": "0"}      # fetc
 # the four building jobs hold NO identity token (owner Oct 22 2026, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md): their Witness record is made with a throwaway key and
 # signed outside the build, by Sign
 PERM_PLAIN = {"contents": "read"}
-PERM_ADMIT = {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read"}
+PERM_ADMIT = {"contents": "read", "actions": "read", "checks": "read", "statuses": "read", "pull-requests": "read"}
 MAT = "${{ matrix.runner }}"
 # Build hands the snapshot callers the digests.json text: the workflow output reads the build-assemble job's output, which one pinned step fills from digests.json
 STAGE_OUTPUT = "${{ jobs.build-assemble.outputs.digests }}"
@@ -1462,7 +1462,7 @@ def graph(path):
 # those two (ops#107) and REQ-SCAN-015 forbids anyone calling them. Their job `build` calls ./.github/workflows/release.yml with `mode: snapshot` and NOTHING
 # else: no other input, no secrets, no `if`, no needs, and exactly the called file's permission set as a static ceiling. THE JUDGE READS ONLY `on` AND THE
 # JOBS THAT CALL A WORKFLOW FILE: the scanner steps and the other jobs (`manifests` of main-candidate-rescan.yml, cache's REQ-REL-004-AC5) are not read here.
-SNAPSHOT_CALLER_PERMISSIONS = {"contents": "write", "packages": "write", "id-token": "write", "issues": "write", "checks": "read", "statuses": "read",
+SNAPSHOT_CALLER_PERMISSIONS = {"contents": "write", "packages": "write", "id-token": "write", "issues": "write", "actions": "read", "checks": "read", "statuses": "read",
                                "pull-requests": "read"}     # REQ-CHAIN-004-AC14: the called file's set (issues write: patch-failed opens its issue), a STATIC CEILING pinned in both directions
 # THE ALLOWLIST: in a proof workflow the only job that carries a job-level `uses` is build, calling EXACTLY ./.github/workflows/release.yml, whatever the form.
 # release.yml runs Build and Rebuild in snapshot mode through that one call, so there is no rebuild or artifact-acceptance caller job.
@@ -1511,8 +1511,8 @@ go-freshness.yml main-candidate-rescan.yml release.yml reserved-branch-guard.yml
 def workflows(directory):
     import os
     have = set(os.listdir(directory))
-    added = sorted(have - KNOWN_WORKFLOWS - {"persona-uat.yml", "customer-words-edited.yml", "evidence-letter.yml"})
-    only = "(the only new files of v0.3.0 are persona-uat.yml, REQ-UAT-001, customer-words-edited.yml, decision 98, and evidence-letter.yml, REQ-REL-015; release.yml is the one file of the release chain)"
+    added = sorted(have - KNOWN_WORKFLOWS - {"persona-uat.yml", "customer-words-edited.yml", "evidence-letter.yml", "full-suite.yml"})
+    only = "(the only new files of v0.3.0 are persona-uat.yml, REQ-UAT-001, customer-words-edited.yml, decision 98, evidence-letter.yml, REQ-REL-015, and full-suite.yml, REQ-CI-007; release.yml is the one file of the release chain)"
     bad = ["workflow file %s was added %s" % (f, only) for f in added]
     return bad + ["%s still exists (the stage files are folded into release.yml, REQ-CHAIN-005-AC5)" % f for f in sorted(have) if f.startswith("stage-")]
 

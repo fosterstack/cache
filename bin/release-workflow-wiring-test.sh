@@ -324,8 +324,8 @@ if "build-apk" in jobs:
     j = jobs["build-apk"]
     if matrix_runners(j) != RUNNERS:
         bad.append("build-apk is not a matrix over the two native runners %s: %s" % (RUNNERS, matrix_runners(j)))
-    if j.get("permissions") != {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read"}:
-        bad.append("build-apk does not hold exactly contents, checks, statuses and pull-requests read: %s" % j.get("permissions"))
+    if j.get("permissions") != {"contents": "read", "actions": "read", "checks": "read", "statuses": "read", "pull-requests": "read"}:
+        bad.append("build-apk does not hold exactly contents, checks, statuses and pull-requests read, and actions read for admission: %s" % j.get("permissions"))
 if "build-assemble" in jobs:
     j = jobs["build-assemble"]
     if j.get("runs-on") != "ubuntu-24.04" or j.get("permissions") != READ or "strategy" in j:

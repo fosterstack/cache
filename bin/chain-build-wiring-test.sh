@@ -663,7 +663,7 @@ wit_mutants rb ar_snap snapshot-rebuild snapshot-rapk snapshot-apk rapk snapshot
 expect caught "AC1 an unreadable allowed-actions list fails closed" "unreadable" stage "$work/build.yml" build "$work/does-not-exist.json"
 # no workflow file is added (REQ-CHAIN-004-AC1, REQ-REL-008-AC1): the release is the one file release.yml, so no stage-*.yml file exists; persona-uat.yml, customer-words-edited.yml and evidence-letter.yml are the other files this set has beyond the v0.2.2 ones
 mkdir -p "$work/wf-ok" "$work/wf-new" "$work/wf-old" "$work/wf-cw-new"
-for f in ci.yml release.yml scan.yml persona-uat.yml customer-words-edited.yml; do : > "$work/wf-ok/$f"; done
+for f in ci.yml release.yml scan.yml persona-uat.yml customer-words-edited.yml full-suite.yml; do : > "$work/wf-ok/$f"; done
 cp "$work/wf-ok"/* "$work/wf-new/"; : > "$work/wf-new/stage-extra.yml"
 mkdir -p "$work/wf-letter"; cp "$work/wf-ok"/* "$work/wf-letter/"; : > "$work/wf-letter/evidence-letter.yml"
 cp "$work/wf-ok"/* "$work/wf-old/"; : > "$work/wf-old/stage-admission.yml"
@@ -1515,7 +1515,7 @@ G = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) 
 S = "inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))"
 SIGN_IF, AFTER_IF, CHECK_IF = "${{ %s }}" % S, "${{ %s && !contains(github.ref_name, '-') }}" % S, "${{ inputs.mode != 'snapshot' }}"
 KMS = "    env:\n      AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n      AWS_REGION: us-east-1\n      RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n"
-ADMIT = {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read"}
+ADMIT = {"contents": "read", "actions": "read", "checks": "read", "statuses": "read", "pull-requests": "read"}
 def job(name, needs=None, if_=None, perm=None, env=None, extra=""):
     out = "  %s:\n" % name
     if needs: out += "    needs: %s\n" % needs
@@ -2955,6 +2955,7 @@ jobs:
       packages: write
       id-token: write
       issues: write
+      actions: read
       checks: read
       statuses: read
       pull-requests: read
@@ -3689,7 +3690,7 @@ expect ok "AC14 the real scan.yml calls release.yml in snapshot mode and nothing
 expect ok "AC14 the real main-candidate-rescan.yml calls release.yml in snapshot mode and nothing else" "" callers "$root/.github/workflows/main-candidate-rescan.yml"
 expect ok "AC11/005-AC6 release.yml does not name apko in a run line (Build and Rebuild run the one assemble script)" "" lockflow \
        "$root/.github/workflows/release.yml"
-label="AC1 the real workflow directory: no file added beyond persona-uat.yml, customer-words-edited.yml and evidence-letter.yml, no stage-*.yml file left"
+label="AC1 the real workflow directory: no file added beyond persona-uat.yml, customer-words-edited.yml, evidence-letter.yml and full-suite.yml, no stage-*.yml file left"
 expect ok "$label (REQ-CHAIN-005-AC5, REQ-UAT-001)" "" \
        workflows "$root/.github/workflows"
 # take 15 (Codex PR 421): the chain files pin download-artifact and upload-artifact each to ONE digest, and that digest is on the action allowlist; a bump that reached some of them (the Dependabot bump of main's #402 did all four) leaves two digests in one chain

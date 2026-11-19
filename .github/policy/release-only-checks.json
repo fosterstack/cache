@@ -12,6 +12,11 @@
       "scope": "push"
     },
     {
+      "context": "acceptance / acceptance",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
       "context": "auditor-review-gate",
       "integration_id": 5054756,
       "scope": "pull_request"

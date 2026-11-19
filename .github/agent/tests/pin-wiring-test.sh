@@ -2,12 +2,14 @@
 # proves: REQ-CI-001-AC1, REQ-CI-001-AC2, REQ-CI-001-AC3, REQ-CI-001-AC4 — the gate allowlist-chain is accepted only exactly (the gate cases)
 # proves: REQ-CI-005-AC2 — a suite counted by its own step is accepted only as exactly `bash PATH`, and the suites matrix only in its judged structure (the count-step and suites cases)
 # proves: REQ-REL-004-AC1 — the pull-request gate's govulncheck job judges the way Check does: it is accepted only in exactly its form (the govulncheck-gate cases)
-# proves: REQ-REL-014-AC1 — the jobs allowlist, suite-list and suites run on push to main only and the gate allowlist-chain only as `always() && github.event_name == 'push'` (plain or in an expression), accepted only exactly (the push-condition cases)
-# The workflow ci.yml runs a suite by a counting step (`bash PATH`) or by its own leg of the suites matrix, which the job suite-list computes from the tracked files;
-# the required check allowlist-chain is the one gate over the suites job. The judge below takes the pinned actions, permissions and
-# env of every job of ci.yml, the step lists' shape of the jobs allowlist, suite-list, suites and allowlist-chain (not the text of the list and leg steps: ci-suites-matrix-test.sh
-# judges those by running them), the required-check policy and the check names of
-# every other workflow. The real ci.yml must pass; each mutated copy must be caught.
+# proves: REQ-REL-014-AC1 — the job allowlist runs on push to main only, accepted only exactly (the push-condition cases)
+# proves: REQ-CI-007-AC4 — the jobs suite-list, suites and allowlist-chain of full-suite.yml run on a schedule and on workflow_dispatch only, the gate only as `always()` (plain or in an expression), accepted only exactly (the full-suite event cases)
+# The workflow ci.yml runs a suite by a counting step (`bash PATH`); full-suite.yml runs every other suite by its own leg of the suites matrix, which the job suite-list computes
+# from the tracked files, and its job allowlist-chain is the one gate over the suites job (a release-only check, bound to full-suite.yml by admission). The judge below takes the
+# pinned actions, permissions and env of every job of ci.yml, the step lists' shape of the job allowlist, the required-check policy (allowlist) and the release-only policy
+# (allowlist-chain) and the check names of every other workflow. The judge of full-suite.yml takes the same hazards of every job of that file and the step lists' shape of the jobs
+# suite-list, suites and allowlist-chain (not the text of the list and leg steps: ci-suites-matrix-test.sh judges those by running them). The real ci.yml and the real
+# full-suite.yml must pass; each mutated copy must be caught.
 # Known limit (by design): later steps of the CI allowlist job can edit this test on disk;
 # the trusted gate (.github/workflows/agent-review-gate.yml) re-runs main's copy of it over the PR head.
 set -euo pipefail
@@ -15,7 +17,7 @@ here=$(cd "$(dirname "$0")/../../.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 
-judge() { PIN_WIRING_WORKFLOWS_DIR="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}" PIN_WIRING_POLICY_FILE="${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}" python3 - "$1" <<'PY'
+judge() { PIN_WIRING_WORKFLOWS_DIR="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}" PIN_WIRING_POLICY_FILE="${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}" PIN_WIRING_RELEASE_ONLY_FILE="${PIN_WIRING_RELEASE_ONLY_FILE:-$here/.github/policy/release-only-checks.json}" python3 - "$1" <<'PY'
 import sys, os, yaml
 # cheap pre-parse, BEFORE any structure is built: a token scan is linear and expands nothing, so an
 # anchor/alias bomb cannot hang the judge; the pin checker refuses anchors and aliases too
@@ -169,7 +171,7 @@ def norm(r):  # drop comment lines; the command text itself must match exactly. 
     return "\n".join(l for l in (r or "").strip(" \t\n").split("\n") if not l.lstrip(" \t").startswith("#"))
 def odd_chars(r):  # anything but printable ASCII, tab and newline in a protected run string
     return sorted({hex(ord(c)) for c in (r or "") if not (c in "\t\n" or " " <= c <= "~")})
-JUDGED_JOBS = ("allowlist", "suite-list", "suites", "allowlist-chain")
+JUDGED_JOBS = ("allowlist",)
 for _jid in JUDGED_JOBS:
     for st in (d.get("jobs", {}).get(_jid) or {}).get("steps") or []:
         if not isinstance(st, dict):
@@ -319,7 +321,235 @@ JUDGED = json.loads(r'''{
     "name": "VEX tripwire \u2014 components answered by a VEX statement must stay absent",
     "run": "set -euo pipefail\nif grep -q 'golang-jwt' go.sum; then\n  echo \"::error::golang-jwt has entered go.sum. The published VEX statement for CVE-2024-51744 claims component_not_present, which is no longer true on its face. VEX statement requires review before this can merge \u2014 see .vex/README.md.\" >&2\n  exit 1\nfi\necho \"VEX tripwire: golang-jwt absent from go.sum, as the published statement asserts.\""
    }
-  ],
+  ]
+ },
+ "shape": {
+  "allowlist": {
+   "name": "allowlist",
+   "runs-on": "ubuntu-latest",
+   "if": "github.event_name == 'push'"
+  }
+ }
+}''')
+JUDGED_STEPS, JUDGED_SHAPE = JUDGED["steps"], JUDGED["shape"]
+for jid, want_steps in JUDGED_STEPS.items():
+    sj = d.get("jobs", {}).get(jid)
+    if not isinstance(sj, dict):
+        bad.append(f"the job {jid} is missing")
+        continue
+    got_shape = {k: v for k, v in sj.items() if k != "steps"}
+    if got_shape != JUDGED_SHAPE[jid]:
+        bad.append(f"the {jid} job is not exactly {JUDGED_SHAPE[jid]} apart from its steps (REQ-CI-001, REQ-CI-005: name, runs-on, needs, if, strategy and outputs as judged)")
+    got = sj.get("steps", [])
+    if [_by_shape(st) for st in got] != [_by_shape(st) for st in want_steps]:
+        have = [_by_shape(st).get("name") or st.get("uses") for st in got]
+        want_n = [_by_shape(st).get("name") or st.get("uses") for st in want_steps]
+        why = [f"missing {n}" for n in want_n if n not in have] + [f"unexpected {n}" for n in have if n not in want_n]
+        if not why:      # the same names: say which step differs and in which keys
+            for _i, (_g, _w) in enumerate(zip(got, want_steps)):
+                _keys = sorted(k for k in set(_g) | set(_w) if _by_shape(_g).get(k) != _by_shape(_w).get(k))
+                if _keys:
+                    _nm = _g.get("name") or _g.get("uses")
+                    bad.append(f"the {jid} step {_i + 1} ({_nm}) differs in: {', '.join(_keys)}")
+                    break
+            else:
+                bad.append(f"the {jid} steps are not exactly the judged list (same steps, other number or order)")
+        else:
+            bad.append(f"the {jid} steps are not exactly the judged list ({'; '.join(why)})")
+# the allowlist job's actions are judged on their own, so the job cannot borrow another's: the checkout (full depth) and the one setup-python
+ALLOWLIST_ACTIONS = [_by_shape(st) for st in (
+    {"uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", "with": {"fetch-depth": "0"}},
+    {"name": "set up Python", "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+     "with": {"python-version": "3.12"}})]
+for _i, st in enumerate(steps_):
+    if "uses" in st and _by_shape(st) not in ALLOWLIST_ACTIONS:
+        bad.append(f"the allowlist step {_i + 1} ({st.get('name') or st['uses']}) is not a judged action step")
+
+# the policy lists (release admission reads them): each a readable JSON object whose required_checks is a list of objects with unique contexts. required-checks.json has exactly
+# one correct entry (integration 15368, scope push) for the job allowlist and none for the gate allowlist-chain; release-only-checks.json has exactly one correct entry for the gate
+# (a context is in one file or the other, never both). Anything unreadable or malformed is refused (fail closed).
+PROTECTED = ("allowlist", "allowlist-chain")
+def policy_entries(var, label):
+    try:
+        pol = json.load(open(os.environ[var]))["required_checks"]
+        if not isinstance(pol, list) or not all(isinstance(c, dict) for c in pol):
+            raise ValueError("required_checks is not a list of objects")
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        bad.append(f"{label} is unreadable or malformed ({type(e).__name__})")
+        return None
+    ctxs = [c.get("context") for c in pol]
+    for dup in sorted({c for c in ctxs if ctxs.count(c) > 1}, key=str):
+        bad.append(f"{label} lists the context {dup} more than once")
+    return pol, ctxs
+def one_entry(listing, label, jid):
+    if listing is not None and (sum(1 for c in listing[0] if c == {"context": jid, "integration_id": 15368, "scope": "push"}) != 1 or listing[1].count(jid) != 1):
+        bad.append(f"{label} does not have exactly one entry {jid} (integration 15368, scope push)")
+required = policy_entries("PIN_WIRING_POLICY_FILE", "required-checks.json")
+one_entry(required, "required-checks.json", "allowlist")
+if required is not None and "allowlist-chain" in required[1]:
+    bad.append("required-checks.json lists allowlist-chain, which is release-only (release-only-checks.json), bound to full-suite.yml")
+one_entry(policy_entries("PIN_WIRING_RELEASE_ONLY_FILE", "release-only-checks.json"), "release-only-checks.json", "allowlist-chain")
+# the protected check names belong to their jobs alone: no other job of this workflow may produce a check run with such a name (a job named
+# `allowlist-chain` that succeeds after the real one failed satisfies admission, which accepts any success with the matching name), and no job
+# name may be an expression or come from a matrix (its rendered name cannot be judged).
+def name_disjoint(nm):   # a literal name is compared as it is; an expression name may hold only plain `${{ matrix.a.b }}` tokens and must keep a
+    nm = str(nm)        # literal space or `(` around them (no protected name has either); any other `${{` is refused, never parsed
+    if "${{" not in nm:
+        return True
+    rest = re.sub(r"\$\{\{ *matrix(\.[A-Za-z_][A-Za-z0-9_]*)+ *\}\}", "", nm)
+    return "${{" not in rest and "}}" not in rest and bool(re.search(r"[ (]", rest))
+def writes_checks(perm):   # GITHUB_TOKEN authenticates as the Actions app (integration 15368): checks: write can publish a check with a protected name
+    return perm == "write-all" or (isinstance(perm, dict) and perm.get("checks") == "write")
+for jid_, j_ in d.get("jobs", {}).items():
+    if not isinstance(j_, dict):
+        continue
+    nm = j_.get("name", jid_)
+    if jid_ != "allowlist" and (nm in PROTECTED or jid_ in PROTECTED):
+        bad.append(f"the job {jid_} produces the protected check name {nm}")
+    if jid_ in ("suite-list", "suites"):
+        bad.append(f"ci.yml holds the job {jid_}: the full suite's jobs live in full-suite.yml only (REQ-CI-007-AC2)")
+    if jid_ != "allowlist" and not name_disjoint(nm):
+        bad.append(f"the job {jid_} has an expression name that could render as a protected check name")
+    if writes_checks(j_.get("permissions")):
+        bad.append(f"the job {jid_} can write checks with the Actions token (it could publish a check run under a protected name)")
+if writes_checks(d.get("permissions")):
+    bad.append("the workflow can write checks with the Actions token (it could publish a check run under a protected name)")
+# and no other workflow file may carry such a job either (admission accepts any success with the matching name and app); an unreadable or
+# unparseable workflow file is refused, since its job names cannot be judged
+_wdir = os.environ["PIN_WIRING_WORKFLOWS_DIR"]
+for _f in sorted(os.listdir(_wdir)):
+    if not _f.endswith((".yml", ".yaml")) or _f == "ci.yml":
+        continue
+    try:
+        _w = yaml.load(open(os.path.join(_wdir, _f)).read(), Loader=yaml.BaseLoader)
+        _jobs = (_w or {}).get("jobs") or {}
+        if not isinstance(_jobs, dict):
+            raise ValueError("jobs is not a mapping")
+    except Exception as e:
+        bad.append(f"the workflow {_f} cannot be read ({type(e).__name__}), so its job names cannot be judged")
+        continue
+    if "permissions" not in (_w or {}):   # omitted permissions inherit the repository default, which may include checks: write
+        bad.append(f"{_f}: no workflow-level `permissions` (an omitted block inherits repository defaults that may allow writing checks)")
+    for _jid, _j in _jobs.items():
+        _nm = _j.get("name", _jid) if isinstance(_j, dict) else _jid
+        if (_jid in PROTECTED or _nm in PROTECTED) and not (_f == "full-suite.yml" and _jid == _nm == "allowlist-chain"):   # the gate lives there, judged by fsjudge
+            bad.append(f"{_f}: the job {_jid} takes the protected check name {_nm if _nm in PROTECTED else _jid}")
+        elif not name_disjoint(_nm):
+            bad.append(f"{_f}: the job {_jid} has an expression name that could render as a protected check name")
+        if isinstance(_j, dict) and writes_checks(_j.get("permissions")):
+            bad.append(f"{_f}: the job {_jid} can write checks with the Actions token")
+    if writes_checks((_w or {}).get("permissions")):
+        bad.append(f"{_f}: the workflow can write checks with the Actions token")
+print("; ".join(bad) or "ok")
+sys.exit(1 if bad else 0)
+PY
+}
+
+# the jobs of full-suite.yml that this judge takes: suite-list, suites and allowlist-chain (REQ-CI-007-AC2, REQ-CI-001, REQ-CI-005). The workflow runs on a schedule and on workflow_dispatch
+# only, so a job carries no event condition but the gate's `always()` (a gate skipped by a condition counts as passed, and a `push` condition would skip every run).
+fsjudge() { python3 - "$1" <<'PY'
+import sys, os, yaml
+# cheap pre-parse, BEFORE any structure is built: a token scan is linear and expands nothing, so an
+# anchor/alias bomb cannot hang the judge; the pin checker refuses anchors and aliases too
+_text = open(sys.argv[1]).read()
+_n = 0
+for _t in yaml.scan(_text, Loader=yaml.BaseLoader):
+    _n += 1
+    if isinstance(_t, (yaml.tokens.AnchorToken, yaml.tokens.AliasToken)):
+        print("the workflow uses a YAML anchor or alias"); sys.exit(1)
+    if _n > 200000:
+        print("the workflow is implausibly large"); sys.exit(1)
+# a duplicate mapping key silently keeps the LAST value in the parsed structure: refuse it anywhere in the file
+_dups = []
+def _walk(n, path):
+    if isinstance(n, yaml.MappingNode):
+        seen = set()
+        for k, v in n.value:
+            kk = k.value if isinstance(k, yaml.ScalarNode) else None
+            if kk in seen:
+                _dups.append(path + "/" + str(kk))
+            seen.add(kk)
+            _walk(v, path + "/" + str(kk))
+    elif isinstance(n, yaml.SequenceNode):
+        for i, v in enumerate(n.value):
+            _walk(v, path + "/" + str(i))
+_walk(yaml.compose(_text, Loader=yaml.BaseLoader), "")
+if _dups:
+    print("the workflow has duplicate YAML key(s): " + ", ".join(_dups[:5])); sys.exit(1)
+d = yaml.load(_text, Loader=yaml.BaseLoader)   # every scalar a string, as GitHub reads it
+bad = []
+import json, re
+for k in sorted(set(d) - {"name", "on", "permissions", "jobs", "concurrency"}):
+    bad.append(f"the workflow sets `{k}`")
+if d.get("concurrency") != {"group": "${{ format('full-suite-{0}-{1}', github.run_id, github.run_attempt) }}", "cancel-in-progress": "false"}:
+    bad.append("the workflow's concurrency is not the reviewed block (a group of its own per run and attempt, never cancelled)")
+if d.get("permissions") != {"contents": "read"}:
+    bad.append("the workflow permissions are not exactly {contents: read}")
+on = d.get("on", {})
+if not isinstance(on, dict) or sorted(on) != ["schedule", "workflow_dispatch"] or on["workflow_dispatch"] != "" or not isinstance(on["schedule"], list) or len(on["schedule"]) != 1:
+    bad.append("full-suite.yml's events are not exactly one schedule and workflow_dispatch (no push, no pull_request, no merge_group, no workflow_call)")
+if "defaults" in d or "env" in d:
+    bad.append("the workflow sets `defaults` or `env`")
+hooks = ("BASH_ENV", "GITHUB_ENV", "GITHUB_PATH")
+risky = {"BASH_ENV", "ENV", "PATH", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME", "SHELLOPTS", "BASHOPTS", "PS4", "IFS",
+         "PROMPT_COMMAND", "CDPATH", "GLOBIGNORE", "TMPDIR", "HOME", "XDG_CONFIG_HOME"}
+def is_risky(k):
+    return k in risky or re.match(r"(GIT_|GITHUB_|LD_|DYLD_|PYTHON|BASH_|RUNNER_)", k) is not None
+_PINNED_ACTIONS = ("actions/checkout", "actions/setup-python")
+for _jid, _j in (d.get("jobs") or {}).items():
+    if not isinstance(_j, dict):
+        continue
+    _nm = _j.get("name", _jid)
+    if _jid != "allowlist-chain" and ("allowlist-chain" in (_jid, _nm) or "allowlist" in (_jid, _nm)):   # the protected names belong to their jobs alone
+        bad.append(f"the job {_jid} produces the protected check name {_nm}")
+    if "concurrency" in _j:
+        bad.append(f"the job {_jid} has `concurrency`")
+    if "defaults" in _j or "continue-on-error" in _j:
+        bad.append(f"the job {_jid} has `defaults` or `continue-on-error`")
+    for h in hooks:
+        if h in json.dumps(_j):
+            bad.append(f"the job {_jid} mentions {h}")
+    for where, env in [(f"the job {_jid}", _j.get("env"))] + [(f"step {i} of {_jid}", st.get("env")) for i, st in enumerate(_j.get("steps") or []) if isinstance(st, dict)]:
+        if isinstance(env, dict):
+            for k in sorted(k for k in env if is_risky(k)):
+                bad.append(f"{where} sets env {k}")
+    for _i, _st_ in enumerate(_j.get("steps") or []):
+        if isinstance(_st_, dict) and "continue-on-error" in _st_:
+            bad.append(f"the job {_jid} has a step with `continue-on-error` ({_st_.get('name') or _st_.get('uses') or _st_.get('run')})")
+        _u = _st_.get("uses") if isinstance(_st_, dict) else None
+        if _u is not None and not (isinstance(_u, str) and re.fullmatch(r"(%s)@[0-9a-f]{40}" % "|".join(map(re.escape, _PINNED_ACTIONS)), _u)):
+            bad.append(f"the {_jid} step {_i + 1} ({_st_.get('name') or _u}) uses an action that is not a pinned one of full-suite.yml")
+def norm(r):  # drop comment lines; the command text itself must match exactly. A comment line is one whose first
+    # character after ONLY spaces and tabs is `#` (bash's rule; Python's str.strip/lstrip/splitlines also
+    # treat U+00A0, U+3000, U+2028 ... as whitespace or line ends, which bash does not)
+    return "\n".join(l for l in (r or "").strip(" \t\n").split("\n") if not l.lstrip(" \t").startswith("#"))
+def odd_chars(r):  # anything but printable ASCII, tab and newline in a protected run string
+    return sorted({hex(ord(c)) for c in (r or "") if not (c in "\t\n" or " " <= c <= "~")})
+for _jid in ("suite-list", "suites", "allowlist-chain"):
+    for st in (d.get("jobs", {}).get(_jid) or {}).get("steps") or []:
+        if not isinstance(st, dict):
+            continue
+        if odd_chars(st.get("run")):
+            bad.append(f"a run text of the {_jid} job has non-ASCII or control characters {odd_chars(st.get('run'))}")
+        if "${{" in (st.get("run") or ""):   # raw text, comment lines included: an expression is rendered before bash sees it
+            bad.append(f"a run text of the {_jid} job contains a `${{{{` expression")
+def _by_shape(st):
+    """A step with `uses: name@<full 40-hex commit>` stands for every digest of
+    that action: the digest VALUE is judged by check-action-pins --verify-tags and the daily audit (a Dependabot bump moves it), not by these lists. The
+    action name and the exact shape of the ref (40 lower-case hex) stay compared; the stand-in is a tuple, which no YAML
+    scalar can equal."""
+    u = st.get("uses")
+    if isinstance(u, str) and u.count("@") == 1:
+        name, _, ref = u.partition("@")
+        if re.fullmatch(r"[0-9a-f]{40}", ref):
+            st = dict(st, uses=(name, "@40-hex"))
+    if "run" in st:
+        st = dict(st, run=norm(st["run"]))
+    if st.get("id") == "list" or "SUITE" in (st.get("env") or {}):   # the list step and the leg: run text (and the leg's name) are judged by ci-suites-matrix-test.sh
+        st = dict(st, run="<judged elsewhere>", **({"name": "<judged elsewhere>"} if "SUITE" in (st.get("env") or {}) else {}))
+    return st
+JUDGED = json.loads(r'''{
+ "steps": {
   "suite-list": [
    {
     "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
@@ -378,15 +608,9 @@ JUDGED = json.loads(r'''{
   ]
  },
  "shape": {
-  "allowlist": {
-   "name": "allowlist",
-   "runs-on": "ubuntu-latest",
-   "if": "github.event_name == 'push'"
-  },
   "suite-list": {
    "name": "suite-list",
    "runs-on": "ubuntu-latest",
-   "if": "github.event_name == 'push'",
    "outputs": {
     "suites": "${{ steps.list.outputs.suites }}"
    }
@@ -395,7 +619,6 @@ JUDGED = json.loads(r'''{
    "name": "suites (${{ matrix.suite }})",
    "needs": "suite-list",
    "runs-on": "ubuntu-latest",
-   "if": "github.event_name == 'push'",
    "strategy": {
     "fail-fast": "false",
     "matrix": {
@@ -409,7 +632,7 @@ JUDGED = json.loads(r'''{
    "needs": [
     "suites"
    ],
-   "if": "always() && github.event_name == 'push'"
+   "if": "always()"
   }
  }
 }''')
@@ -420,8 +643,8 @@ for jid, want_steps in JUDGED_STEPS.items():
         bad.append(f"the job {jid} is missing")
         continue
     got_shape = {k: v for k, v in sj.items() if k != "steps"}
-    if jid == "allowlist-chain" and got_shape.get("if") == "${{ always() && github.event_name == 'push' }}":
-        got_shape["if"] = "always() && github.event_name == 'push'"      # the same condition, in its expression form
+    if jid == "allowlist-chain" and got_shape.get("if") == "${{ always() }}":
+        got_shape["if"] = "always()"      # the same condition, in its expression form
     if got_shape != JUDGED_SHAPE[jid]:
         bad.append(f"the {jid} job is not exactly {JUDGED_SHAPE[jid]} apart from its steps (REQ-CI-001, REQ-CI-005: name, runs-on, needs, if, strategy and outputs as judged)")
     got = sj.get("steps", [])
@@ -440,81 +663,6 @@ for jid, want_steps in JUDGED_STEPS.items():
                 bad.append(f"the {jid} steps are not exactly the judged list (same steps, other number or order)")
         else:
             bad.append(f"the {jid} steps are not exactly the judged list ({'; '.join(why)})")
-# the allowlist job's actions are judged on their own, so the job cannot borrow another's: the checkout (full depth) and the one setup-python
-ALLOWLIST_ACTIONS = [_by_shape(st) for st in (
-    {"uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", "with": {"fetch-depth": "0"}},
-    {"name": "set up Python", "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
-     "with": {"python-version": "3.12"}})]
-for _i, st in enumerate(steps_):
-    if "uses" in st and _by_shape(st) not in ALLOWLIST_ACTIONS:
-        bad.append(f"the allowlist step {_i + 1} ({st.get('name') or st['uses']}) is not a judged action step")
-
-# the required-check policy (release admission reads it): a readable JSON object whose required_checks is a list of objects with unique contexts,
-# and exactly one correct entry (integration 15368, scope push) for each protected job. Anything unreadable or malformed is refused (fail closed).
-PROTECTED = ("allowlist", "allowlist-chain")
-try:
-    pol = json.load(open(os.environ["PIN_WIRING_POLICY_FILE"]))["required_checks"]
-    if not isinstance(pol, list) or not all(isinstance(c, dict) for c in pol):
-        raise ValueError("required_checks is not a list of objects")
-except (OSError, ValueError, KeyError, TypeError) as e:
-    pol = None
-    bad.append(f"required-checks.json is unreadable or malformed ({type(e).__name__})")
-if pol is not None:
-    ctxs = [c.get("context") for c in pol]
-    for dup in sorted({c for c in ctxs if ctxs.count(c) > 1}, key=str):
-        bad.append(f"required-checks.json lists the context {dup} more than once")
-    for jid in PROTECTED:
-        if sum(1 for c in pol if c == {"context": jid, "integration_id": 15368, "scope": "push"}) != 1 or ctxs.count(jid) != 1:
-            bad.append(f"required-checks.json does not have exactly one entry {jid} (integration 15368, scope push)")
-# the protected check names belong to their jobs alone: no other job of this workflow may produce a check run with such a name (a job named
-# `allowlist-chain` that succeeds after the real one failed satisfies admission, which accepts any success with the matching name), and no job
-# name may be an expression or come from a matrix (its rendered name cannot be judged).
-def name_disjoint(nm):   # a literal name is compared as it is; an expression name may hold only plain `${{ matrix.a.b }}` tokens and must keep a
-    nm = str(nm)        # literal space or `(` around them (no protected name has either); any other `${{` is refused, never parsed
-    if "${{" not in nm:
-        return True
-    rest = re.sub(r"\$\{\{ *matrix(\.[A-Za-z_][A-Za-z0-9_]*)+ *\}\}", "", nm)
-    return "${{" not in rest and "}}" not in rest and bool(re.search(r"[ (]", rest))
-def writes_checks(perm):   # GITHUB_TOKEN authenticates as the Actions app (integration 15368): checks: write can publish a check with a protected name
-    return perm == "write-all" or (isinstance(perm, dict) and perm.get("checks") == "write")
-for jid_, j_ in d.get("jobs", {}).items():
-    if not isinstance(j_, dict):
-        continue
-    nm = j_.get("name", jid_)
-    if jid_ not in PROTECTED and (nm in PROTECTED or jid_ in PROTECTED):
-        bad.append(f"the job {jid_} produces the protected check name {nm}")
-    if jid_ not in PROTECTED and not name_disjoint(nm):
-        bad.append(f"the job {jid_} has an expression name that could render as a protected check name")
-    if writes_checks(j_.get("permissions")):
-        bad.append(f"the job {jid_} can write checks with the Actions token (it could publish a check run under a protected name)")
-if writes_checks(d.get("permissions")):
-    bad.append("the workflow can write checks with the Actions token (it could publish a check run under a protected name)")
-# and no other workflow file may carry such a job either (admission accepts any success with the matching name and app); an unreadable or
-# unparseable workflow file is refused, since its job names cannot be judged
-_wdir = os.environ["PIN_WIRING_WORKFLOWS_DIR"]
-for _f in sorted(os.listdir(_wdir)):
-    if not _f.endswith((".yml", ".yaml")) or _f == "ci.yml":
-        continue
-    try:
-        _w = yaml.load(open(os.path.join(_wdir, _f)).read(), Loader=yaml.BaseLoader)
-        _jobs = (_w or {}).get("jobs") or {}
-        if not isinstance(_jobs, dict):
-            raise ValueError("jobs is not a mapping")
-    except Exception as e:
-        bad.append(f"the workflow {_f} cannot be read ({type(e).__name__}), so its job names cannot be judged")
-        continue
-    if "permissions" not in (_w or {}):   # omitted permissions inherit the repository default, which may include checks: write
-        bad.append(f"{_f}: no workflow-level `permissions` (an omitted block inherits repository defaults that may allow writing checks)")
-    for _jid, _j in _jobs.items():
-        _nm = _j.get("name", _jid) if isinstance(_j, dict) else _jid
-        if _jid in PROTECTED or _nm in PROTECTED:
-            bad.append(f"{_f}: the job {_jid} takes the protected check name {_nm if _nm in PROTECTED else _jid}")
-        elif not name_disjoint(_nm):
-            bad.append(f"{_f}: the job {_jid} has an expression name that could render as a protected check name")
-        if isinstance(_j, dict) and writes_checks(_j.get("permissions")):
-            bad.append(f"{_f}: the job {_jid} can write checks with the Actions token")
-    if writes_checks((_w or {}).get("permissions")):
-        bad.append(f"{_f}: the workflow can write checks with the Actions token")
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -551,24 +699,28 @@ else:
 sys.exit(1 if bad else 0)
 PY
 }
-# judge mode, for the trusted review gate: judge the ci.yml of one commit of the current repo, read as a git
-# object (never checked out, never run), and nothing else
+# judge mode, for the trusted review gate: judge the ci.yml and the full-suite.yml of one commit of the current repo, read as git
+# objects (never checked out, never run), and nothing else
 if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
   git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/ci.yml" > "$work/head-ci.yml" || { echo "pin-wiring: no ci.yml at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
   git show "${PIN_WIRING_JUDGE_GIT}:.github/policy/required-checks.json" > "$work/head-policy.json" || { echo "pin-wiring: no required-checks.json at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
+  git show "${PIN_WIRING_JUDGE_GIT}:.github/policy/release-only-checks.json" > "$work/head-release-only.json" || { echo "pin-wiring: no release-only-checks.json at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
   mkdir -p "$work/head-wf"
   for wf in $(git ls-tree --name-only "${PIN_WIRING_JUDGE_GIT}" .github/workflows/ | sed 's|.*/||'); do   # every workflow of the commit, as git objects
     git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/$wf" > "$work/head-wf/$wf" || { echo "pin-wiring: cannot read workflow $wf" >&2; exit 1; }
   done
   git show "${PIN_WIRING_JUDGE_GIT}:tools/govulncheck/go.mod" > "$work/head-gomod" || { echo "pin-wiring: no tools/govulncheck/go.mod at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
-  PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" PIN_WIRING_POLICY_FILE="$work/head-policy.json" judge "$work/head-ci.yml" || exit 1
+  PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" PIN_WIRING_POLICY_FILE="$work/head-policy.json" PIN_WIRING_RELEASE_ONLY_FILE="$work/head-release-only.json" judge "$work/head-ci.yml" || exit 1
+  [ -f "$work/head-wf/full-suite.yml" ] || { echo "pin-wiring: no full-suite.yml at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
+  fsjudge "$work/head-wf/full-suite.yml" || exit 1
   gvgate_judge "$work/head-ci.yml" "$work/head-gomod" || { echo "pin-wiring: the govulncheck job of the head's ci.yml is not the Check-equivalent form (REQ-REL-004-AC1)" >&2; exit 1; }
   exit 0
 fi
 
-case_() {  # case_ <name> <expect ok|bad> <python edit of the parsed copy, or empty>
+case_on() {  # case_on <workflow file> <judge function> <name> <expect ok|bad> <python edit of the parsed copy, or empty>
+  local wf=$1 jf=$2; shift 2
   local f="$work/$1.yml"
-  cp "$here/.github/workflows/ci.yml" "$f"
+  cp "$here/.github/workflows/$wf" "$f"
   # an edit that cannot apply (its step is missing) is a failed case, not an aborted run
   if [ -n "$3" ]; then python3 - "$f" "$3" 2> /dev/null <<'PY' || { failn=$((failn+1)); echo "FAIL $1 → the edit did not apply"; return 0; }
 import sys, yaml
@@ -578,15 +730,18 @@ exec(edit)
 yaml.safe_dump(d, open(p, "w"), sort_keys=False)
 PY
   fi
-  if out=$(judge "$f"); then got=ok; else got=bad; fi
+  if out=$($jf "$f"); then got=ok; else got=bad; fi
   if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS $1 → $got ($out)"
   else failn=$((failn+1)); echo "FAIL $1 → $got, want $2 ($out)"; fi
 }
+case_() { case_on ci.yml judge "$@"; }
+case_fs() { case_on full-suite.yml fsjudge "$@"; }
 
 # case_msg <name> <python edit> <text>: the judge refuses the copy and its message holds the text
-case_msg() {
+case_msg_on() {  # case_msg_on <workflow file> <judge function> <name> <python edit> <text>
+  local wf=$1 jf=$2; shift 2
   local f="$work/$1.yml"
-  cp "$here/.github/workflows/ci.yml" "$f"
+  cp "$here/.github/workflows/$wf" "$f"
   python3 - "$f" "$2" <<'PY'
 import sys, yaml
 p, edit = sys.argv[1], sys.argv[2]
@@ -594,10 +749,12 @@ d = yaml.load(open(p), Loader=yaml.BaseLoader)
 exec(edit)
 yaml.safe_dump(d, open(p, "w"), sort_keys=False)
 PY
-  if out=$(judge "$f"); then got=ok; else got=bad; fi
+  if out=$($jf "$f"); then got=ok; else got=bad; fi
   if [ "$got" = bad ] && grep -qF -- "$3" <<<"$out"; then pass=$((pass+1)); echo "PASS $1 → bad, names: $3"
   else failn=$((failn+1)); echo "FAIL $1 → $got, want bad naming: $3 ($out)"; fi
 }
+case_msg() { case_msg_on ci.yml judge "$@"; }
+case_msg_fs() { case_msg_on full-suite.yml fsjudge "$@"; }
 
 steps='d["jobs"]["allowlist"]["steps"]'
 # a counting step of ci.yml, by the file name of the suite it runs (its run is `bash PATH`)
@@ -605,6 +762,17 @@ cnt() { echo "[s for j in d['jobs'].values() for s in (j.get('steps') or []) if 
 pick=$(cnt check-action-pins-test.sh)
 CW=$(cnt check-file-allowlist-test.sh)
 case_ the-real-hygiene      ok  ""
+case_fs the-real-full-suite ok  ""
+# the event part of full-suite.yml (REQ-CI-007-AC4): one schedule and workflow_dispatch, nothing else
+case_fs full-suite-push-trigger         bad "d['on']['push'] = {'branches': ['main']}"
+case_fs full-suite-pull-request-trigger bad "d['on']['pull_request'] = ''"
+case_fs full-suite-merge-group-trigger  bad "d['on']['merge_group'] = {'types': ['checks_requested']}"
+case_fs full-suite-workflow-call-trigger bad "d['on']['workflow_call'] = {}"
+case_fs full-suite-schedule-gone        bad "d['on'].pop('schedule')"
+case_fs full-suite-dispatch-gone        bad "d['on'].pop('workflow_dispatch')"
+case_fs full-suite-second-schedule      bad "d['on']['schedule'].append({'cron': '0 0 * * *'})"
+case_fs full-suite-permissions-widened  bad "d['permissions'] = {'contents': 'write'}"
+case_fs full-suite-concurrency-shared   bad "d['concurrency'] = {'group': 'full-suite', 'cancel-in-progress': 'true'}"
 # REQ-CI-005: a counting step is exactly `bash PATH`; any other form of the line is refused
 case_ count-step-plain-ok           ok  "w = $CW; w['run'] = 'bash bin/check-file-allowlist-test.sh'"
 case_ count-step-devnull-added      bad "w = $CW; w['run'] = 'bash bin/check-file-allowlist-test.sh </dev/null'"
@@ -733,107 +901,108 @@ for g in "suite-guard.sh files"; do
   case_ "guard-$gn-moved"    bad "x = $gs; $steps.remove(x); d['jobs']['test']['steps'].append(x)"
 done
 
-# the suites matrix (REQ-CI-005-AC2): the structure of the list job and of the legs (the run text of the list step and of the leg is judged by ci-suites-matrix-test.sh)
+# the suites matrix of full-suite.yml (REQ-CI-005-AC2, REQ-CI-007-AC2): the structure of the list job and of the legs (the run text of the list step and of the leg is judged by ci-suites-matrix-test.sh)
 SL='d["jobs"]["suite-list"]'; SU='d["jobs"]["suites"]'
 LS="[s for s in $SL['steps'] if s.get('id') == 'list'][0]"
 LEG="[s for s in $SU['steps'] if (s.get('env') or {}).get('SUITE')][0]"
 GR="[s for s in $SU['steps'] if 'install-scanner.sh grype' in (s.get('run') or '')][0]"
-case_ suites-job-missing          bad "d['jobs'].pop('suites')"
-case_ suite-list-missing          bad "d['jobs'].pop('suite-list')"
-case_ suite-list-id-changed       bad "$LS['id'] = 'other'"
-case_ suite-list-output-gone      bad "$SL.pop('outputs')"
-case_ suite-list-output-other     bad "$SL['outputs']['suites'] = '\${{ steps.other.outputs.suites }}'"
-case_ suite-list-if               bad "$SL['if'] = 'false'"
-case_ suite-list-if-gone          bad "$SL.pop('if', None)"
-case_ suite-list-env              bad "$SL['env'] = {'X': '1'}"
-case_ suite-list-step-if          bad "$LS['if'] = 'false'"
-case_ suite-list-checkout-creds   bad "$SL['steps'][0]['with'].pop('persist-credentials')"
-case_ suite-list-extra-step       bad "$SL['steps'].append({'run': 'true'})"
-case_ suites-needs-gone           bad "$SU.pop('needs')"
-case_ suites-needs-other          bad "$SU['needs'] = 'lint'"
-case_ suites-matrix-literal       bad "$SU['strategy']['matrix']['suite'] = ['check-archive-test.sh']"
-case_ suites-matrix-other-output  bad "$SU['strategy']['matrix']['suite'] = '\${{ fromJSON(needs.suite-list.outputs.other) }}'"
-case_ suites-matrix-include       bad "$SU['strategy']['matrix']['include'] = [{'suite': 'x'}]"
-case_ suites-matrix-exclude       bad "$SU['strategy']['matrix']['exclude'] = [{'suite': 'chain-verify-test.sh'}]"
-case_ suites-fail-fast            bad "$SU['strategy']['fail-fast'] = 'true'"
-case_ suites-max-parallel         bad "$SU['strategy']['max-parallel'] = '1'"
-case_ suites-strategy-gone        bad "$SU.pop('strategy')"
-case_ suites-job-if               bad "$SU['if'] = 'false'"
-case_ suites-job-if-gone          bad "$SU.pop('if', None)"
-case_ suites-job-continue         bad "$SU['continue-on-error'] = 'true'"
-case_ suites-job-timeout          bad "$SU['timeout-minutes'] = '1'"
-case_ suites-job-permissions      bad "$SU['permissions'] = {'contents': 'write'}"
-case_ suites-job-env              bad "$SU['env'] = {'SUITE': 'x'}"
-case_ suites-job-container        bad "$SU['container'] = 'alpine'"
-case_ suites-job-runs-on          bad "$SU['runs-on'] = 'self-hosted'"
-case_ suites-job-renamed          bad "$SU['name'] = 'suites'"
-case_ suites-leg-if               bad "$LEG['if'] = 'false'"
-case_ suites-leg-continue         bad "$LEG['continue-on-error'] = 'true'"
-case_ suites-leg-suite-env-literal bad "$LEG['env']['SUITE'] = 'x'"
-case_ suites-leg-suite-env-gone   bad "$LEG.pop('env')"
-case_ suites-leg-shell            bad "$LEG['shell'] = \"bash -c 'true' {0}\""
-case_ suites-leg-removed          bad "$SU['steps'][:] = [s for s in $SU['steps'] if s is not $LEG]"
-case_ suites-grype-always         bad "$GR['if'] = 'true'"
-case_ suites-grype-condition-narrowed bad "$GR['if'] = \"\${{ matrix.suite == 'vex-scope-test.sh' }}\""
-case_ suites-grype-removed        bad "$SU['steps'][:] = [s for s in $SU['steps'] if s is not $GR]"
-case_ suites-checkout-shallow     bad "$SU['steps'][0]['with'] = {'fetch-depth': '1'}"
-case_ suites-checkout-other-ref   bad "$SU['steps'][0]['with']['ref'] = 'main'"
-case_ suites-step-added           bad "$SU['steps'].append({'name': 'x', 'run': 'true'})"
-case_ suites-steps-reordered      bad "st = $SU['steps']; st[0], st[1] = st[1], st[0]"
-case_ suites-pip-env              bad "[s for s in $SU['steps'] if s.get('name') == 'pin pip (hash-checked)'][0]['env'] = {'PIP_INDEX_URL': 'http://x'}"
+case_fs suites-job-missing          bad "d['jobs'].pop('suites')"
+case_fs suite-list-missing          bad "d['jobs'].pop('suite-list')"
+case_fs suite-list-id-changed       bad "$LS['id'] = 'other'"
+case_fs suite-list-output-gone      bad "$SL.pop('outputs')"
+case_fs suite-list-output-other     bad "$SL['outputs']['suites'] = '\${{ steps.other.outputs.suites }}'"
+case_fs suite-list-if               bad "$SL['if'] = 'false'"
+case_fs suite-list-if-push          bad "$SL['if'] = \"github.event_name == 'push'\""
+case_fs suite-list-env              bad "$SL['env'] = {'X': '1'}"
+case_fs suite-list-step-if          bad "$LS['if'] = 'false'"
+case_fs suite-list-checkout-creds   bad "$SL['steps'][0]['with'].pop('persist-credentials')"
+case_fs suite-list-extra-step       bad "$SL['steps'].append({'run': 'true'})"
+case_fs suites-needs-gone           bad "$SU.pop('needs')"
+case_fs suites-needs-other          bad "$SU['needs'] = 'lint'"
+case_fs suites-matrix-literal       bad "$SU['strategy']['matrix']['suite'] = ['check-archive-test.sh']"
+case_fs suites-matrix-other-output  bad "$SU['strategy']['matrix']['suite'] = '\${{ fromJSON(needs.suite-list.outputs.other) }}'"
+case_fs suites-matrix-include       bad "$SU['strategy']['matrix']['include'] = [{'suite': 'x'}]"
+case_fs suites-matrix-exclude       bad "$SU['strategy']['matrix']['exclude'] = [{'suite': 'chain-verify-test.sh'}]"
+case_fs suites-fail-fast            bad "$SU['strategy']['fail-fast'] = 'true'"
+case_fs suites-max-parallel         bad "$SU['strategy']['max-parallel'] = '1'"
+case_fs suites-strategy-gone        bad "$SU.pop('strategy')"
+case_fs suites-job-if               bad "$SU['if'] = 'false'"
+case_fs suites-job-if-push          bad "$SU['if'] = \"github.event_name == 'push'\""
+case_fs suites-job-continue         bad "$SU['continue-on-error'] = 'true'"
+case_fs suites-job-timeout          bad "$SU['timeout-minutes'] = '1'"
+case_fs suites-job-permissions      bad "$SU['permissions'] = {'contents': 'write'}"
+case_fs suites-job-env              bad "$SU['env'] = {'SUITE': 'x'}"
+case_fs suites-job-container        bad "$SU['container'] = 'alpine'"
+case_fs suites-job-runs-on          bad "$SU['runs-on'] = 'self-hosted'"
+case_fs suites-job-renamed          bad "$SU['name'] = 'suites'"
+case_fs suites-leg-if               bad "$LEG['if'] = 'false'"
+case_fs suites-leg-continue         bad "$LEG['continue-on-error'] = 'true'"
+case_fs suites-leg-suite-env-literal bad "$LEG['env']['SUITE'] = 'x'"
+case_fs suites-leg-suite-env-gone   bad "$LEG.pop('env')"
+case_fs suites-leg-shell            bad "$LEG['shell'] = \"bash -c 'true' {0}\""
+case_fs suites-leg-removed          bad "$SU['steps'][:] = [s for s in $SU['steps'] if s is not $LEG]"
+case_fs suites-grype-always         bad "$GR['if'] = 'true'"
+case_fs suites-grype-condition-narrowed bad "$GR['if'] = \"\${{ matrix.suite == 'vex-scope-test.sh' }}\""
+case_fs suites-grype-removed        bad "$SU['steps'][:] = [s for s in $SU['steps'] if s is not $GR]"
+case_fs suites-checkout-shallow     bad "$SU['steps'][0]['with'] = {'fetch-depth': '1'}"
+case_fs suites-checkout-other-ref   bad "$SU['steps'][0]['with']['ref'] = 'main'"
+case_fs suites-step-added           bad "$SU['steps'].append({'name': 'x', 'run': 'true'})"
+case_fs suites-steps-reordered      bad "st = $SU['steps']; st[0], st[1] = st[1], st[0]"
+case_fs suites-pip-env              bad "[s for s in $SU['steps'] if s.get('name') == 'pin pip (hash-checked)'][0]['env'] = {'PIP_INDEX_URL': 'http://x'}"
 
-# the gate: the required check allowlist-chain (REQ-CI-001): the name, needs the suites job and no other, always runs, no checkout and no action, fails unless the result is exactly success
+# the gate of full-suite.yml: the release-only check allowlist-chain (REQ-CI-001, REQ-CI-007-AC2): the name, needs the suites job and no other, always runs (no event condition: the file has no push run), no checkout and no action, fails unless the result is exactly success
 GT='d["jobs"]["allowlist-chain"]'
-case_ gate-renamed          bad "$GT['name'] = 'allowlist-chain-gate'"
-case_ gate-needs-gone       bad "$GT.pop('needs')"
-case_ gate-needs-extra      bad "$GT['needs'] = ['suites', 'lint']"
-case_ gate-needs-other      bad "$GT['needs'] = ['lint']"
-case_ gate-needs-str        bad "$GT['needs'] = 'suites'"
-case_ gate-needs-suite-list bad "$GT['needs'] = ['suite-list']"
-case_ gate-no-always        bad "$GT.pop('if')"
-case_ gate-if-always-only   bad "$GT['if'] = '\${{ always() }}'"
-case_ gate-if-push-only     bad "$GT['if'] = \"github.event_name == 'push'\""
-case_ gate-if-or-push       bad "$GT['if'] = \"always() || github.event_name == 'push'\""
-case_ gate-if-pull-request  bad "$GT['if'] = \"always() && github.event_name == 'pull_request'\""
-case_ gate-if-plain-form    ok  "$GT['if'] = \"always() && github.event_name == 'push'\""
-case_ gate-if-wrapped-form  ok  "$GT['if'] = \"\${{ always() && github.event_name == 'push' }}\""
-case_ gate-if-false         bad "$GT['if'] = 'false'"
-case_ gate-success          bad "$GT['if'] = '\${{ success() }}'"
-case_ gate-checkout         bad "$GT['steps'].insert(0, $SU['steps'][0])"
-case_ gate-action           bad "$GT['steps'].insert(0, {'uses': 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'})"
-case_ gate-or-true          bad "$GT['steps'][0]['run'] += ' || true'"
-case_ gate-skipped-ok       bad "$GT['steps'][0]['run'] = '[ \"\$RESULT\" != failure ] || exit 1'"
-case_ gate-empty-ok         bad "$GT['steps'][0]['run'] = '[ \"\$RESULT\" = success ] || [ -z \"\$RESULT\" ] || exit 1'"
-case_ gate-env-wrong        bad "$GT['steps'][0]['env']['RESULT'] = '\${{ needs.suite-list.result }}'"
-case_ gate-env-lit          bad "$GT['steps'][0]['env']['RESULT'] = 'success'"
-case_ gate-env-gone         bad "$GT['steps'][0].pop('env')"
-case_ gate-continue         bad "$GT['steps'][0]['continue-on-error'] = 'true'"
-case_ gate-step-if          bad "$GT['steps'][0]['if'] = 'false'"
-case_ gate-job-env          bad "$GT['env'] = {'X': '1'}"
-case_ gate-runs-on          bad "$GT['runs-on'] = 'self-hosted'"
-case_ gate-permissions      bad "$GT['permissions'] = {'checks': 'write'}"
-case_ gate-timeout          bad "$GT['timeout-minutes'] = '1'"
-case_ gate-container        bad "$GT['container'] = 'alpine'"
-case_ gate-continue-job     bad "$GT['continue-on-error'] = 'true'"
-case_ gate-step-added       bad "$GT['steps'].append({'run': 'true'})"
-case_ gate-missing          bad "d['jobs'].pop('allowlist-chain')"
-case_ gate-impersonated     bad "d['jobs']['replacement'] = {'name': 'allowlist-chain', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
-case_ gate-impersonated-by-id bad "d['jobs']['allowlist-chain-2'] = {'name': 'x', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}; d['jobs']['allowlist-chain']['needs'] = ['suites', 'allowlist-chain-2']"
+case_fs gate-renamed          bad "$GT['name'] = 'allowlist-chain-gate'"
+case_fs gate-needs-gone       bad "$GT.pop('needs')"
+case_fs gate-needs-extra      bad "$GT['needs'] = ['suites', 'lint']"
+case_fs gate-needs-other      bad "$GT['needs'] = ['lint']"
+case_fs gate-needs-str        bad "$GT['needs'] = 'suites'"
+case_fs gate-needs-suite-list bad "$GT['needs'] = ['suite-list']"
+case_fs gate-no-always        bad "$GT.pop('if')"
+case_fs gate-if-always-wrapped ok  "$GT['if'] = '\${{ always() }}'"
+case_fs gate-if-push-only     bad "$GT['if'] = \"github.event_name == 'push'\""
+case_fs gate-if-or-push       bad "$GT['if'] = \"always() || github.event_name == 'push'\""
+case_fs gate-if-pull-request  bad "$GT['if'] = \"always() && github.event_name == 'pull_request'\""
+case_fs gate-if-always-plain   ok  "$GT['if'] = 'always()'"
+case_fs gate-if-push-added     bad "$GT['if'] = \"always() && github.event_name == 'push'\""
+case_fs gate-if-push-added-wrapped bad "$GT['if'] = \"\${{ always() && github.event_name == 'push' }}\""
+case_fs gate-if-false         bad "$GT['if'] = 'false'"
+case_fs gate-success          bad "$GT['if'] = '\${{ success() }}'"
+case_fs gate-checkout         bad "$GT['steps'].insert(0, $SU['steps'][0])"
+case_fs gate-action           bad "$GT['steps'].insert(0, {'uses': 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'})"
+case_fs gate-or-true          bad "$GT['steps'][0]['run'] += ' || true'"
+case_fs gate-skipped-ok       bad "$GT['steps'][0]['run'] = '[ \"\$RESULT\" != failure ] || exit 1'"
+case_fs gate-empty-ok         bad "$GT['steps'][0]['run'] = '[ \"\$RESULT\" = success ] || [ -z \"\$RESULT\" ] || exit 1'"
+case_fs gate-env-wrong        bad "$GT['steps'][0]['env']['RESULT'] = '\${{ needs.suite-list.result }}'"
+case_fs gate-env-lit          bad "$GT['steps'][0]['env']['RESULT'] = 'success'"
+case_fs gate-env-gone         bad "$GT['steps'][0].pop('env')"
+case_fs gate-continue         bad "$GT['steps'][0]['continue-on-error'] = 'true'"
+case_fs gate-step-if          bad "$GT['steps'][0]['if'] = 'false'"
+case_fs gate-job-env          bad "$GT['env'] = {'X': '1'}"
+case_fs gate-runs-on          bad "$GT['runs-on'] = 'self-hosted'"
+case_fs gate-permissions      bad "$GT['permissions'] = {'checks': 'write'}"
+case_fs gate-timeout          bad "$GT['timeout-minutes'] = '1'"
+case_fs gate-container        bad "$GT['container'] = 'alpine'"
+case_fs gate-continue-job     bad "$GT['continue-on-error'] = 'true'"
+case_fs gate-step-added       bad "$GT['steps'].append({'run': 'true'})"
+case_fs gate-missing          bad "d['jobs'].pop('allowlist-chain')"
+case_fs gate-impersonated     bad "d['jobs']['replacement'] = {'name': 'allowlist-chain', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
+case_fs gate-impersonated-by-id bad "d['jobs']['allowlist-chain-2'] = {'name': 'x', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}; d['jobs']['allowlist-chain']['needs'] = ['suites', 'allowlist-chain-2']"
 # the old four-shard form of REQ-CI-001 is no longer accepted: a shard job and a gate that needs the shards
-case_ shard-form-refused    bad "d['jobs']['allowlist-chain-1'] = {'name': 'allowlist-chain-1', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}; d['jobs']['allowlist-chain']['needs'] = ['allowlist-chain-1']"
+case_fs shard-form-refused    bad "d['jobs']['allowlist-chain-1'] = {'name': 'allowlist-chain-1', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}; d['jobs']['allowlist-chain']['needs'] = ['allowlist-chain-1']"
 case_ impersonate-allowlist bad "d['jobs']['replacement'] = {'name': 'allowlist', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
 case_ impersonate-by-id     bad "d['jobs']['allowlist-chain-x'] = {'name': 'allowlist', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
 
 # judge mode (the trusted gate, .github/workflows/agent-review-gate.yml): PIN_WIRING_JUDGE_GIT=<commit> judges THAT
 # commit's .github/workflows/ci.yml, read as a git object from the current repo (nothing checked out or run), and
 # does nothing else; exit 1 and the reasons when it fails
-gitcase() {  # gitcase <name> <expect ok|bad> <python edit or empty>
+gitcase() {  # gitcase <name> <expect ok|bad> <python edit or empty> [the workflow file the edit applies to, ci.yml by default]
   local r="$work/git-$1"; rm -rf "$r"; mkdir -p "$r/.github/workflows"
   cp "$here/.github/workflows/ci.yml" "$r/.github/workflows/ci.yml"
-  mkdir -p "$r/.github/policy"; cp "$here/.github/policy/required-checks.json" "$r/.github/policy/required-checks.json"
-  cp "$here"/.github/workflows/*.y*ml "$r/.github/workflows/" 2>/dev/null || true; cp "$here/.github/workflows/ci.yml" "$r/.github/workflows/ci.yml"
+  mkdir -p "$r/.github/policy"; cp "$here/.github/policy/required-checks.json" "$r/.github/policy/required-checks.json"; cp "$here/.github/policy/release-only-checks.json" "$r/.github/policy/release-only-checks.json"
+  cp "$here"/.github/workflows/*.y*ml "$r/.github/workflows/" 2>/dev/null || true
   mkdir -p "$r/tools/govulncheck"; cp "$here/tools/govulncheck/go.mod" "$r/tools/govulncheck/go.mod"      # the pin the govulncheck-gate judge reads at the judged commit
-  if [ -n "$3" ]; then python3 - "$r/.github/workflows/ci.yml" "$3" <<'PY'
+  if [ -n "$3" ]; then python3 - "$r/.github/workflows/${4:-ci.yml}" "$3" <<'PY'
 import sys, yaml
 p, edit = sys.argv[1], sys.argv[2]
 d = yaml.load(open(p), Loader=yaml.BaseLoader)
@@ -858,8 +1027,9 @@ gitcase govulncheck-gate-extra-step-at-a-commit  bad "$GVJ.insert(3, {'run': 'cp
 gitcase fetch-true-at-a-commit    bad "$fe['run'] = 'true'"
 gitcase inserted-step-at-a-commit bad "$steps.insert(2, {'run': 'git update-ref refs/remotes/origin/main HEAD'})"
 gitcase fetch-depth-at-a-commit   bad "$steps[0].pop('with')"
-gitcase gate-or-true-at-a-commit  bad "$GT['steps'][0]['run'] += ' || true'"
-gitcase suites-leg-if-at-a-commit bad "$LEG['if'] = 'false'"
+gitcase gate-or-true-at-a-commit  bad "$GT['steps'][0]['run'] += ' || true'" full-suite.yml
+gitcase suites-leg-if-at-a-commit bad "$LEG['if'] = 'false'" full-suite.yml
+gitcase full-suite-push-at-a-commit bad "d['on']['push'] = {'branches': ['main']}" full-suite.yml
 
 case_ job-needs-skipped          bad "d['jobs']['skip_guard'] = {'runs-on': 'ubuntu-latest', 'if': 'false', 'steps': [{'run': 'true'}]}; d['jobs']['allowlist']['needs'] = 'skip_guard'"
 # a bump of an action that ci.yml uses moves the digest in every step that uses it; the digest value is judged by check-action-pins --verify-tags and the daily audit,
@@ -874,19 +1044,20 @@ case_ uses-upper-digest        bad "${BUMP//%s/actions/setup-python@ABABABABABAB
 case_ uses-other-action-name   bad "${BUMP//%s/evil/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97}"
 case_ uses-literal-marker       bad "${BUMP//%s/actions/setup-python@<commit>}"
 BUMPJ="[s.__setitem__('uses', '%s') for s in d['jobs']['JOB']['steps'] if s.get('uses', '').startswith('actions/%a@')]"
-for jb in test lint govulncheck allowlist suites requirements marker-gate; do
+for jb in test lint govulncheck allowlist suite-list suites requirements marker-gate; do
+  wf=ci.yml; cs=case_; case $jb in suite-list|suites) wf=full-suite.yml; cs=case_fs;; esac
   for act in checkout setup-go setup-python upload-artifact; do
-    if python3 - "$here/.github/workflows/ci.yml" "$jb" "$act" <<'PYU'
+    if python3 - "$here/.github/workflows/$wf" "$jb" "$act" <<'PYU'
 import sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 sys.exit(0 if any(s.get("uses", "").startswith("actions/" + sys.argv[3] + "@") for s in d["jobs"][sys.argv[2]]["steps"]) else 1)
 PYU
     then
       b=${BUMPJ//JOB/$jb}; b=${b//%a/$act}
-      case_ "uses-$act-in-$jb-digest-bumped" ok  "${b//%s/actions/$act@abababababababababababababababababababab}"
-      case_ "uses-$act-in-$jb-tag"           bad "${b//%s/actions/$act@v4}"
-      case_ "uses-$act-in-$jb-short-digest"  bad "${b//%s/actions/$act@abababababababababababababababababababa}"
-      case_ "uses-$act-in-$jb-other-owner"   bad "${b//%s/evil/$act@abababababababababababababababababababab}"
+      $cs "uses-$act-in-$jb-digest-bumped" ok  "${b//%s/actions/$act@abababababababababababababababababababab}"
+      $cs "uses-$act-in-$jb-tag"           bad "${b//%s/actions/$act@v4}"
+      $cs "uses-$act-in-$jb-short-digest"  bad "${b//%s/actions/$act@abababababababababababababababababababa}"
+      $cs "uses-$act-in-$jb-other-owner"   bad "${b//%s/evil/$act@abababababababababababababababababababab}"
     fi
   done
 done
@@ -904,10 +1075,10 @@ case_msg allowlist-uses-setup-python-other-owner "d['jobs']['allowlist']['steps'
 case_msg allowlist-uses-setup-python-commit-placeholder "d['jobs']['allowlist']['steps'][7]['uses'] = 'actions/setup-python@<commit>'" "the allowlist step 8 (set up Python) is not a judged action step"
 case_msg allowlist-uses-extra-action-step "d['jobs']['allowlist']['steps'].insert(3, {'name': 'x', 'uses': 'actions/cache@0123456789abcdef0123456789abcdef01234567'})" "the allowlist step 4 (x) is not a judged action step"
 case_msg allowlist-uses-checkout-tag "s = d['jobs']['allowlist']['steps'][0]; s.pop('name', None); s['uses'] = 'actions/checkout@v4'" "the allowlist step 1 (actions/checkout@v4) is not a judged action step"
-case_msg suites-uses-tag-names-job "d['jobs']['suites']['steps'][0]['uses'] = 'actions/checkout@v4'" "the suites step 1 (actions/checkout@v4) uses an action that is not a pinned one of ci.yml"
+case_msg_fs suites-uses-tag-names-job "d['jobs']['suites']['steps'][0]['uses'] = 'actions/checkout@v4'" "the suites step 1 (actions/checkout@v4) uses an action that is not a pinned one of full-suite.yml"
 RUNX="d['jobs']['suites']['steps'][2]['run'] += ' || true'"
-case_msg run-changed-names-step "$RUNX" "the suites step 3 ("
-case_msg run-changed-names-key  "$RUNX" "differs in: run"
+case_msg_fs run-changed-names-step "$RUNX" "the suites step 3 ("
+case_msg_fs run-changed-names-key  "$RUNX" "differs in: run"
 case_msg counting-step-key-names-the-step "w = $CW; w['if'] = 'false'" "has \`if\` (a counting step has no key but name and run)"
 case_msg counted-twice-names-the-suite "d['jobs']['test']['steps'].append(dict($CW))" "the suite bin/check-file-allowlist-test.sh is counted by more than one step"
 case_ impersonate-by-name     bad "d['jobs']['replacement'] = {'name': 'allowlist-chain', 'runs-on': 'ubuntu-latest', 'needs': 'allowlist-chain', 'if': '\${{ always() }}', 'steps': [{'run': 'true'}]}"
@@ -924,7 +1095,7 @@ case_ job-needs-list             bad "d['jobs']['allowlist']['needs'] = ['lint']
 case_ job-timeout                bad "d['jobs']['allowlist']['timeout-minutes'] = '1'"
 case_ job-concurrency            bad "d['jobs']['allowlist']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'true'}"
 case_ job-concurrency-test       bad "d['jobs']['test']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'true'}"
-case_ job-concurrency-suites     bad "d['jobs']['suites']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'false'}"
+case_fs job-concurrency-suites     bad "d['jobs']['suites']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'false'}"
 case_ job-concurrency-lint-same  bad "d['jobs']['lint']['concurrency'] = d['concurrency'] if 'concurrency' in d else {'group': \"\${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}\", 'cancel-in-progress': 'true'}"
 case_ on-workflow-call           bad "d['on']['workflow_call'] = {}"
 case_ on-workflow-dispatch       bad "d['on']['workflow_dispatch'] = {}"
@@ -949,13 +1120,13 @@ case_ runs-on-list               bad "d['jobs']['allowlist']['runs-on'] = ['ubun
 case_ job-strategy-matrix        bad "d['jobs']['allowlist']['strategy'] = {'fail-fast': 'true'}"
 case_ expression-in-comment      bad "$fe['run'] = '# \${{ fromJSON(\\'\"\\\\nexit 0\\\\n#\"\\') }}\\n' + $fe['run']"
 case_ expression-in-fetch        bad "$fe['run'] = '# \${{ github.sha }}\\n' + $fe['run']"
-case_ expression-in-leg-comment  bad "$LEG['run'] = '# \${{ github.sha }}\\n' + $LEG['run']"
+case_fs expression-in-leg-comment  bad "$LEG['run'] = '# \${{ github.sha }}\\n' + $LEG['run']"
 case_ anchor-alias-in-ci         bad "sh = {'k': 'v'}; d['jobs']['test']['x-shared'] = sh; d['jobs']['lint']['x-shared'] = sh"
 case_ anchor-bomb                bad "a = ['x']; b = [a, a, a, a, a, a, a, a, a]; c = [b, b, b, b, b, b, b, b, b]; e = [c, c, c, c, c, c, c, c, c]; d['jobs']['test']['bomb'] = [e, e, e, e, e, e, e, e, e]"
 
 for u in 00a0 3000 2028 2029; do
   case_ "unicode-space-comment-$u" bad "$fe['run'] = '\\u$u# x\\n' + $fe['run']"
-  case_ "unicode-space-in-leg-$u" bad "$LEG['run'] = '\\u$u# x\\n' + $LEG['run']"
+  case_fs "unicode-space-in-leg-$u" bad "$LEG['run'] = '\\u$u# x\\n' + $LEG['run']"
 done
 case_ cr-in-fetch            bad "$fe['run'] = $fe['run'] + '\\r'"
 case_ vt-in-fetch            bad "$fe['run'] = '\\x0b# x\\n' + $fe['run']"
@@ -965,8 +1136,8 @@ case_ nbsp-inside-command    bad "$fe['run'] = $fe['run'].replace(' -n ', '\\u00
 case_ tab-comment-still-ok-shape bad "$fe['run'] = '\\t# note\\n' + $fe['run'] + ' || true'"
 
 # duplicate keys can only be written as text, so these edit the YAML text of a copy
-textcase() {  # textcase <name> <expect> <python expression editing the text variable t>
-  local f="$work/t-$1.yml"; cp "$here/.github/workflows/ci.yml" "$f"
+textcase() {  # textcase <name> <expect> <python expression editing the text variable t> [the workflow file, ci.yml by default; full-suite.yml is judged by fsjudge]
+  local f="$work/t-$1.yml" jf=judge; cp "$here/.github/workflows/${4:-ci.yml}" "$f"; [ "${4:-ci.yml}" = ci.yml ] || jf=fsjudge
   python3 - "$f" "$3" <<'PY'
 import sys
 p, edit = sys.argv[1], sys.argv[2]
@@ -974,13 +1145,13 @@ t = open(p).read()
 exec(edit)
 open(p, "w").write(t)
 PY
-  if out=$(judge "$f"); then got=ok; else got=bad; fi
+  if out=$($jf "$f"); then got=ok; else got=bad; fi
   if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS $1 → $got ($out)"
   else failn=$((failn+1)); echo "FAIL $1 → $got, want $2 ($out)"; fi
 }
 textcase duplicate-run-in-counting-step bad "a = 'run: bash bin/check-file-allowlist-test.sh'; assert a in t; t = t.replace(a, a + '\\n        run: true', 1)"
 textcase duplicate-name-allowlist-job  bad "t = t.replace('  allowlist:\\n    name: allowlist', '  allowlist:\\n    name: allowlist\\n    name: allowlist', 1)"
-textcase duplicate-name-gate-job       bad "t = t.replace('  allowlist-chain:\\n    name: allowlist-chain', '  allowlist-chain:\\n    name: allowlist-chain\\n    name: allowlist-chain', 1)"
+textcase duplicate-name-gate-job       bad "t = t.replace('  allowlist-chain:\\n    name: allowlist-chain', '  allowlist-chain:\\n    name: allowlist-chain\\n    name: allowlist-chain', 1)" full-suite.yml
 textcase duplicate-top-level-key       bad "t = t.replace('\\njobs:\\n', '\\npermissions:\\n  contents: read\\njobs:\\n', 1)"
 textcase the-text-edit-itself-is-neutral ok "t = t"
 
@@ -1029,9 +1200,9 @@ WF
   if [ "$got" = "$want" ]; then pass=$((pass+1)); echo "PASS other-workflow-$mut → $got"; else failn=$((failn+1)); echo "FAIL other-workflow-$mut → $got, want $want ($out)"; fi
 done
 
-# the required-check policy: each split job must stay listed with integration 15368 and scope push (release admission reads them)
+# the release-only policy: the gate allowlist-chain must stay listed with integration 15368 and scope push (release admission reads it)
 for mut in "drop" "scope" "integration" "null" "empty" "garbage" "dup" "notlist"; do
-  python3 - "$here/.github/policy/required-checks.json" "$work/pol-$mut.json" "$mut" <<'PY'
+  python3 - "$here/.github/policy/release-only-checks.json" "$work/pol-$mut.json" "$mut" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1])); rc = d["required_checks"]
 e = [c for c in rc if c["context"] == "allowlist-chain"][0]
@@ -1045,8 +1216,15 @@ elif sys.argv[3] == "notlist": d["required_checks"] = {"a": 1}
 if sys.argv[3] == "garbage": open(sys.argv[2], "w").write("{not json")
 else: json.dump(d, open(sys.argv[2], "w"))
 PY
-  if out=$(PIN_WIRING_POLICY_FILE="$work/pol-$mut.json" judge "$here/.github/workflows/ci.yml"); then failn=$((failn+1)); echo "FAIL policy-$mut accepted"; else pass=$((pass+1)); echo "PASS policy-$mut → bad ($out)"; fi
+  if out=$(PIN_WIRING_RELEASE_ONLY_FILE="$work/pol-$mut.json" judge "$here/.github/workflows/ci.yml"); then failn=$((failn+1)); echo "FAIL policy-$mut accepted"; else pass=$((pass+1)); echo "PASS policy-$mut → bad ($out)"; fi
 done
+# the gate is release-only: listed in required-checks.json it would be a push context that nothing produces, and admission would refuse every tag
+python3 - "$here/.github/policy/required-checks.json" "$work/pol-chain-required.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["required_checks"].append({"context": "allowlist-chain", "integration_id": 15368, "scope": "push"})
+json.dump(d, open(sys.argv[2], "w"))
+PY
+if out=$(PIN_WIRING_POLICY_FILE="$work/pol-chain-required.json" judge "$here/.github/workflows/ci.yml"); then failn=$((failn+1)); echo "FAIL policy-gate-also-required accepted"; else pass=$((pass+1)); echo "PASS policy-gate-also-required → bad ($out)"; fi
 
 gvgate_ci="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}/ci.yml"
 if gvgate_judge "$gvgate_ci" "$here/tools/govulncheck/go.mod"; then pass=$((pass+1)); echo "PASS govulncheck-gate real job"; else failn=$((failn+1)); echo "FAIL govulncheck-gate real job is not the Check-equivalent form"; fi

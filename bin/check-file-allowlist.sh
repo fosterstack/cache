@@ -352,6 +352,8 @@ ALLOW_PATTERNS=(
   # The release key page (docs/verify-key.md) is judged by bin/verify-key-page-test.sh, REQ-CHAIN-008.
   '^bin/verify-key-page-test\.sh$'
   '^bin/layout-archive(-test)?\.sh$'
+  # The suite that judges the full suite's wiring, REQ-CI-001.
+  '^bin/full-suite-wiring-test\.sh$'
   # The monthly evidence letter (REQ-REL-015): the letter script, the fetch, publish, verify and presence scripts, the
   # two tests and the signatory text.
   '^bin/evidence-letter\.py$'

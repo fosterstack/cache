@@ -32,6 +32,10 @@ name: scan
 
 on:
   pull_request:
+  schedule:
+    # Daily: the nightly run of the scan (REQ-CI-007-AC4); a release-candidate tag runs it too
+    - cron: '47 4 * * *'
+  workflow_dispatch:
   push:
     branches: [main]
     tags: ['v*']
@@ -62,6 +66,7 @@ jobs:
       packages: write
       id-token: write
       issues: write
+      actions: read
       checks: read
       statuses: read
       pull-requests: read
@@ -313,3 +318,30 @@ jobs:
           echo "aggregate scanner result: ${r}, inspector result: ${i}"
           [ "${i}" = "success" ] || { echo "::error::Amazon Inspector failed, was cancelled, or was skipped (result=${i}). Per policy nothing is clean unless every scanner in the pr_gate list of scanners.json runs and passes." >&2; exit 1; }
           [ "${r}" = "success" ] || { echo "::error::one or more scanners failed, were cancelled, or were skipped (result=${r}). Per policy nothing is clean unless every scanner in the pr_gate list of scanners.json runs and passes." >&2; exit 1; }
+
+  # REQ-CI-007-AC3: a failed scheduled run opens a fix item (an issue with a fixed title and label, or a comment on the open one) and blocks nothing;
+  # no pull request check reads it. The job holds issues: write and nothing else.
+  report-failure:
+    name: report-failure
+    needs: [build, inspector, reproducibility, scanner, scan]
+    if: ${{ failure() && github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: open the fix item, or comment on the open one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TITLE: "The scheduled scan failed"
+          LABEL: scheduled-failure
+        run: |
+          set -euo pipefail
+          body="The scheduled run failed on ${GITHUB_SHA}: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          n=$(gh issue list --state open --label "$LABEL" --json number,title --jq ".[] | select(.title == \"$TITLE\") | .number" | head -n 1)
+          if [ -n "$n" ]; then
+            gh issue comment "$n" --body "$body"
+          else
+            gh label create "$LABEL" --description "A scheduled run failed" --color D93F0B 2>/dev/null || true
+            gh issue create --title "$TITLE" --label "$LABEL" --body "$body"
+          fi
