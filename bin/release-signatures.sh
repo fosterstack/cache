@@ -99,7 +99,8 @@ for row in ubuntu-24.04:x86_64:amd64 ubuntu-24.04-arm:aarch64:arm64; do
   for variant in standard fips; do
     case "$variant" in standard) pat='fscache-[0-9]*-r0.apk' ;; fips) pat='fscache-fips-*-r0.apk' ;; esac
     files=("apks/$runner/$arch"/$pat)
-    [ "${#files[@]}" = 1 ] || { echo "release-signatures: ${#files[@]} $variant apks for $arch in apks/$runner, Build attested exactly one" >&2; exit 1; }
+    count=${#files[@]}
+    [ "$count" = 1 ] || { echo "release-signatures: $count $variant apks for $arch in apks/$runner, Build attested exactly one" >&2; exit 1; }
     f=${files[0]}
     [ -f "$f" ] && [ ! -L "$f" ] || { echo "release-signatures: $f is not a regular file" >&2; exit 1; }
     got=$(python3 -I -B bin/apk-tool.py digest "$f")
