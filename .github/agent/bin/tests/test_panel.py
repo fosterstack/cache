@@ -490,6 +490,26 @@ class Reversals(unittest.TestCase):                                         # RE
         self.assertIn("audit miss", out["issue"])
         self.assertEqual((st["false"], [x["id"] for x in st["real"]]), ([], ["CVE-2099-0002"]))
 
+    def test_req13_ac8_covered_is_per_image(self):                         # REQ-AUD-13 AC8
+        """B (fips-arm64) judged false with a published statement, seen by grype alone. Inspector's hidden sighting of the same CVE,
+        package and version is on A (production-amd64) only: it is not another scanner's report on B, so B's statement stands."""
+        st, out = P.apply_day(verdict(finding(ver=OLD, seen=("grype",))), P.new_state(), bundles, {"entries": []},
+                              {"A": Seat({"audit": false()}), "B": Seat({"audit": false()})}, "2026-10-03", SCORING)
+        self.assertEqual(out["vex"][0]["status"], "not_affected")
+        st["false"][0]["vex"] = True                                         # the statement was published
+        hidden = lambda image: {"image": image, "scanner": "inspector", "id": "CVE-2099-0002", "package": "tzdata", "version": OLD}
+        v = verdict(images=["fips-arm64", "production-amd64"])
+        v["vex_covered"] = [hidden("production-amd64")]
+        st2, out = P.apply_day(v, copy.deepcopy(st), bundles, {"entries": []}, {"A": Seat({}), "B": Seat({})}, "2026-10-04", SCORING)
+        self.assertEqual([x["status"] for x in out["vex"]], [])             # not turned affected
+        self.assertEqual(out["misses"], [])                                  # and no audit miss recorded
+        self.assertEqual(([x["id"] for x in st2["false"]], st2["real"]), (["CVE-2099-0002"], []))
+        v["vex_covered"] = [hidden("fips-arm64")]                            # the same sighting on B itself still reverses it
+        st3, out = P.apply_day(v, copy.deepcopy(st), bundles, {"entries": []}, {"A": Seat({}), "B": Seat({})}, "2026-10-04", SCORING)
+        self.assertEqual([x["status"] for x in out["vex"]], ["affected"])
+        self.assertIn("hidden by our statement", out["misses"][0]["by"])
+        self.assertEqual([x["id"] for x in st3["real"]], ["CVE-2099-0002"])
+
     def test_a_rejected_then_accepted_identity_is_remembered_as_proposed_and_the_reversal_finds_its_statement(self):   # S3 ruling (2)
         bad = ("pkg:deb/tzdata@2025b-0%2Bdeb13u1",)                      # no distro namespace: not representable, so no statement
         good = ("pkg:generic/tzdata@2025b-0%2Bdeb13u1",)

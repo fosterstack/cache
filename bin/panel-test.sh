@@ -112,6 +112,24 @@ check("Inspector's and Google's VEX-covered finding is dropped; the uncovered on
       ids == [("CVE-2099-0001", ("google", "inspector"))], ids)
 check("the dropped finding is recorded as covered by the VEX", any(c["id"] == "CVE-2025-60876" for c in v["vex_covered"]), v["vex_covered"])
 
+# --- REQ-AUD-13 AC7 (req13-ac7-covered-keeps-scanner-data): a sighting hidden by our statement keeps its scanner's own severity, fixed version and aliases
+def inspector_one(d, vuln):    # one Inspector image whose only finding is `vuln` (the covered busybox), with what the scanner said about it
+    comps = [{"bom-ref": "c%d" % i, "name": n, "version": v, "purl": "pkg:generic/%s@%s" % (n, v)} for i, (n, v) in enumerate(BASE)]
+    W(d, "sbom.cdx.json", {"bomFormat": "CycloneDX", "components": comps})
+    W(d, "scan.json", {"sbom": {"bomFormat": "CycloneDX", "components": comps, "vulnerabilities": [dict(vuln, id="CVE-2025-60876", affects=[{"ref": "c1"}])]}})
+r = tree()
+inspector_one(os.path.join(r, "inspector", "production-amd64"),
+              {"ratings": [{"severity": "high"}], "references": [{"id": "GHSA-aaaa-bbbb-cccc"}],
+               "properties": [{"name": "amazon:inspector:sbom_scanner:fixed_version:c1", "value": "1.37.1"}]})
+inspector_one(os.path.join(r, "inspector", "fips-amd64"), {})
+v = P.tally(r, P.load_vex(VEX), dirs_of(r))
+by_img = {c["image"]: c for c in v["vex_covered"] if c["scanner"] == "inspector" and c["id"] == "CVE-2025-60876"}
+rich, bare = by_img.get("production-amd64", {}), by_img.get("fips-amd64", {})
+check("req13-ac7-covered-keeps-scanner-data: a hidden sighting carries its scanner's severity, fixed version and aliases",
+      (rich.get("severity"), rich.get("fixed_version"), rich.get("aliases")) == ("high", "1.37.1", ["GHSA-aaaa-bbbb-cccc"]), rich)
+check("req13-ac7-covered-keeps-scanner-data: a hidden sighting the scanner gave no severity or fix has none (null, never guessed)",
+      "severity" in bare and "fixed_version" in bare and bare["severity"] is None and bare["fixed_version"] is None and not bare.get("aliases"), bare)
+
 # --- rule 4 with the auditor's per-image statements: a statement scoped to one image filters only that image, and
 # its encoded purl version (%2B) matches the decoded version the scanner reports
 vexf = os.path.join(tempfile.mkdtemp(), "v.json")

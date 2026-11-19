@@ -613,10 +613,10 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring, advis
     # (1) a finding our own statement hides: the scanners whose results the tally filters record what they covered
     covered = {}
     for c in verdict.get("vex_covered") or []:
-        covered.setdefault((str(c.get("id")).upper(), str(c.get("package")).lower(), _ver(c.get("version")).lower()),
+        covered.setdefault((str(c.get("image")), str(c.get("id")).upper(), str(c.get("package")).lower(), _ver(c.get("version")).lower()),
                            set()).add(c.get("scanner"))
     for k, e in sorted(false_mem.items()):
-        others = covered.get((str(e["id"]).upper(), str(e["package"]).lower(), _ver(e["version"]).lower()), set())
+        others = covered.get((str(e["image"]), str(e["id"]).upper(), str(e["package"]).lower(), _ver(e["version"]).lower()), set())
         if e.get("vex") and others - set(e.get("seen_by") or []):
             e["seen_by"] = sorted(set(e.get("seen_by") or []) | others)
             reverse(k, e, "another scanner reported it (hidden by our statement)", "corroborated")

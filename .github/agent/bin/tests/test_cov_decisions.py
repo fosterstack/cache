@@ -123,6 +123,26 @@ class ClassifyGvcVerdict(TmpCase):
         self.assertEqual(classify.gvc_verdict(g2, ["GO-1"])[0], "reachable")
 
 
+    def alias_stream(self, trace, osv="GO-2024-0001"):
+        """govulncheck's own osv message names the advisory's aliases; the finding message carries only the GO- id."""
+        osv_msg = {"osv": {"id": osv, "aliases": ["CVE-2024-1111", "GHSA-xxxx-xxxx-xxxx"]}}
+        lines = [{"config": {"scan_level": "symbol"}}, osv_msg,
+                 {"SBOM": {"modules": [{"path": "example.com/app"}, {"path": "golang.org/x/text", "version": "v0.3.0"}], "roots": ["example.com/app"]}}]
+        lines += [{"finding": {"osv": osv, "trace": t}} for t in trace]
+        return "\n".join(json.dumps(o) for o in lines) + "\n"
+
+    def test_req2_ac4b_gvc_lookup_maps_through_stream_aliases(self):
+        ids = ["CVE-2024-1111", "GHSA-xxxx-xxxx-xxxx"]                      # the ids the scanners gave; the stream's finding is under GO-2024-0001
+        v, ev = classify.gvc_verdict(self.put("imp.json", self.alias_stream([IMPORTED])), ids)
+        self.assertEqual(v, "unreachable")
+        self.assertIn("GO-2024-0001", ev["ids"])
+        for one in (["CVE-2024-1111"], ["GHSA-xxxx-xxxx-xxxx"]):          # either id alone finds it
+            self.assertEqual(classify.gvc_verdict(self.put("imp1.json", self.alias_stream([IMPORTED])), one)[0], "unreachable", one)
+        self.assertEqual(classify.gvc_verdict(self.put("call.json", self.alias_stream([IMPORTED, CALLED])), ids)[0], "reachable")
+        self.assertEqual(classify.gvc_verdict(self.put("imp2.json", self.alias_stream([IMPORTED])), ["CVE-2024-9999", "GHSA-nnnn-nnnn-nnnn"]),
+                         ("no-evidence", {"reason": "no finding message for any id"}))      # no alias in common: stays open
+
+
 class ClassifyManifestValidation(unittest.TestCase):
     FULL = {k: None for k in ("grype", "scout", "inspector", "google")}
     PANEL = {"verdict": None}
@@ -562,6 +582,50 @@ class SuppressPackageBoundary(unittest.TestCase):
                              ("example.org/lib", "pkg:golang/example.org/lib@v1"),
                              ("golang.org/x/text/language", "pkg:golang/golang.org/x/text@v0.3.0")):
             self.assertIsNone(self._verify(rowpkg, purl))
+
+
+class ClassifyGroupingByCve(TmpCase):
+    """REQ-AUD-13 AC9: an advisory that co-reports several CVEs joins each CVE's group as lineage only, never merging them."""
+
+    def manifest(self, rows):
+        from auditorlib import parsers as PL
+        images = {}
+        for im in sorted(PL.panel_images()):
+            ran = sorted(x for x in PL.PANEL_SCANNERS if PL.panel_expected(x, im))
+            images[im] = {"counts": {x: 10 for x in ran}, "did_not_run": [], "ran": ran, "counts_for_day": True}
+        fs = [{"image": "production-amd64", "id": fid, "package": "libx", "version": "1.0", "seen_by": [sc], "of": 4, "unique": True,
+               "status": "unique", "purls": ["pkg:deb/debian/libx@1.0"],
+               "details": {sc: dict({"severity": "high", "purl": "pkg:deb/debian/libx@1.0"}, **({"aliases": al} if al else {}))}}
+              for sc, fid, al in rows]
+        verdict = self.put("verdict.json", {"images": images, "not_counted": [], "scanner_failures": [], "findings": fs, "vex_covered": [],
+                                            "issue": PL.panel_module().render_issue([]), "unique": fs, "exit": 0})
+        return self.put("manifest.json", {"module": "m", "commit": "c1", "scanner_set": "panel", "panel": {"verdict": verdict},
+                                          "scanner_reports": {k: verdict for k in PL.PANEL_SCANNERS}, "scanner_status": {}})
+
+    def test_req13_ac9_distinct_cve_groups_stable_canon(self):
+        _m, groups = classify.manifest_findings(self.manifest([
+            ("grype", "DSA-5000-1", ["CVE-2099-0101", "CVE-2099-0102", "CVE-2099-0103"]),     # the advisory names three CVEs
+            ("inspector", "CVE-2099-0101", None), ("google", "CVE-2099-0102", None)]))        # two of them also have a record of their own
+        self.assertEqual(sorted(groups), ["CVE-2099-0101", "CVE-2099-0102", "CVE-2099-0103"])        # never merged into one
+        for cve in sorted(groups):
+            dsa = [f for f in groups[cve]["findings"] if f["finding_id"] == "DSA-5000-1"]
+            self.assertEqual([bool(f.get("_lineage_only")) for f in dsa], [True], cve)             # the advisory joins as lineage only
+            own = [f for f in groups[cve]["findings"] if f["finding_id"] == cve]
+            self.assertTrue(all(not f.get("_lineage_only") for f in own), cve)
+            self.assertEqual(len(own), 0 if cve == "CVE-2099-0103" else 1, cve)
+            self.assertEqual({a for a in groups[cve]["aliases"] if a.startswith("CVE-")} - {cve}, set(), cve)      # no sibling CVE merged in
+        self.assertEqual(len(groups["CVE-2099-0103"]["findings"]), 1)                              # a CVE only the advisory names still has its (lineage-only) group
+
+    def test_req13_ac9_canon_is_the_smallest_cve_whatever_the_iteration_order(self):
+        import subprocess
+        aliases = ["CVE-2099-0102", "CVE-2099-0101", "CVE-2098-9", "ALAS-2099-1", "GHSA-aaaa-bbbb-cccc", "CVE-2099-0103"]
+        self.assertEqual(classify.canon("AAA-1", set(aliases)), "CVE-2098-9")
+        code = ("import importlib.util,sys\n"
+                "spec=importlib.util.spec_from_file_location('c',%r); C=importlib.util.module_from_spec(spec); spec.loader.exec_module(C)\n"
+                "print(C.canon('AAA-1', set(%r)))" % (os.path.join(BIN, "auditor-classify.py"), aliases))
+        for seed in range(12):
+            r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=dict(os.environ, PYTHONHASHSEED=str(seed)))
+            self.assertEqual(r.stdout.strip(), "CVE-2098-9", (seed, r.stderr[-200:]))
 
 
 if __name__ == "__main__":

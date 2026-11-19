@@ -335,7 +335,7 @@ def main():
 
     syft_src = ("oci-archive:" + oci) if have_oci else ("docker-archive:" + tar)
     syft_path = os.path.join(reports, "syft.json")
-    carriers = []; base_os = "debian"
+    carriers = []; base_os = "unknown"
     rc, _ = _run(["syft", syft_src, "-o", "syft-json"], out_path=syft_path)
     if rc == 0 and os.path.exists(syft_path) and os.path.getsize(syft_path) > 0:
         carriers = _carriers(syft_path)   # SBOM carrier relationships (syft supplies the carriers and the base OS only)

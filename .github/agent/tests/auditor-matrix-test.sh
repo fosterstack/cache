@@ -2090,6 +2090,32 @@ print("OK" if no_renew and kept_perm else "BAD exp1=%s exp2=%s final=%s"%(exp1,e
 
 echo "=== REQ-AUD-13 refactor boundary regressions (refactor-loop round 1) ==="
 
+# The cases below name the unit tests that carry each criterion (bin/tests/*.py, bin/panel-test.sh): the case passes only when they all pass.
+ut(){ local out="$WORK/ut-$CASE.out"; ( cd "$BIN/tests" && LC_ALL=C "$PY" -W ignore -m unittest "$@" ) >"$out" 2>&1 && ok || no "the named unit tests to pass" "$(tail -3 "$out" | tr '\n' ' ')"; }
+
+begin "req13-ac7-covered-keeps-scanner-data" "a finding our VEX hides from a scanner keeps that scanner's severity, fixed version and aliases from the panel's coverage record into the run: a named fix lifts it, no data keeps the published statement"
+pt="$WORK/req13-ac7-panel.out"; bash bin/panel-test.sh >"$pt" 2>&1; ptrc=$?
+{ [ "$ptrc" -eq 0 ] && ! grep -q '^FAIL: req13-ac7' "$pt"; } || no "bin/panel-test.sh to record severity, fix and aliases on each vex_covered entry" "$(grep '^FAIL' "$pt" | head -2 | cut -c1-200)"
+ut test_panel_verdict.Loader.test_req13_ac7_covered_keeps_scanner_data test_cov_run.CoveredFindingKeepsScannerData
+
+begin "req13-ac8-covered-is-per-image" "a scanner's hidden sighting on one image never reverses a valid not_affected statement for another image"
+ut test_panel.Reversals.test_req13_ac8_covered_is_per_image
+
+begin "req13-ac9-distinct-cve-groups-stable-canon" "an advisory naming several CVEs joins each CVE's group as lineage only; the canonical id is the smallest CVE whatever the set order"
+ut test_cov_decisions.ClassifyGroupingByCve
+
+begin "req13-ac10-vex-carries-verified-aliases" "a statement carries the scanners' own other ids (a GHSA) in vulnerability.aliases, never the CVE itself, and stays OpenVEX-conformant"
+ut test_cov_run.StatementCarriesVerifiedAliases
+
+begin "req13-ac11-dedupe-only-existing-ids" "the delivery's @id de-duplication changes only a statement that already has a shared @id"
+ut test_cov_run.MergeConsolidate.test_req13_ac11_dedupe_only_existing_ids
+
+begin "req14-ac8-syft-failure-base-os-unknown" "when syft fails or names no distro the manifest's base_os is unknown and no endoflife lookup is made for the base"
+ut test_cov_manifest.MainDegraded.test_req14_ac8_syft_failure_base_os_unknown
+
+begin "req2-ac4b-gvc-lookup-maps-through-stream-aliases" "a Go finding named by CVE or GHSA is checked against the govulncheck stream under the GO- advisory whose aliases list it"
+ut test_cov_decisions.ClassifyGvcVerdict.test_req2_ac4b_gvc_lookup_maps_through_stream_aliases
+
 begin "refr1-1-scope-key-normalizes-purl-representation" "the scope key is representation-invariant: subcomponents by @id and by identifiers.purl for the same purl are the SAME scope; distinct purls are distinct"
 r1="$("$PY" -c '
 import importlib.util
@@ -4106,7 +4132,7 @@ d = {"images": images,
                   f("production-amd64", "CVE-2099-0002", "zlib", "1.3", ["inspector"], []),
                   f("production-amd64", "CVE-2099-0003", "curl", "8.0", ["inspector", "grype"], ["pkg:apk/wolfi/curl@8.0"]),
                   f("production-arm64", "CVE-2099-0003", "curl", "8.0", ["inspector"], ["pkg:apk/wolfi/curl@8.0"])],
-     "vex_covered": [{"image": "production-amd64", "scanner": "inspector", "id": "CVE-2099-0009", "package": "busybox", "version": "1.36"}]}
+     "vex_covered": [{"image": "production-amd64", "scanner": "inspector", "id": "CVE-2099-0009", "package": "busybox", "version": "1.36", "severity": None, "fixed_version": None, "aliases": []}]}
 d["issue"] = P.panel_module().render_issue([x for x in d["findings"] if x["status"] == "report"])   # the tally's own renderer
 d["unique"] = [x for x in d["findings"] if x["unique"]]
 d["exit"] = 2 if (d["not_counted"] or d["scanner_failures"]) else (1 if any(x["status"] == "report" for x in d["findings"]) else 0)
@@ -4799,8 +4825,10 @@ def run(cov,tag):
         R.run(mp2,True,out,"2026-09-24",adjudicator="offline-probe")
     rep=open(out+"/report.md").read()
     if "consistency check did not complete" in rep: raise SystemExit("the run's consistency check did not complete")
-    return os.path.exists(out+"/vex/%s.openvex.json"%c), [l for l in rep.split("\n") if "Not re-checkable" in l], vp2
-cov=[{"image":"production-amd64","scanner":"inspector","id":c,"package":"libmed","version":"1"}]
+    rows=[r for r in json.load(open(out+"/classification.json"))["findings"] if r["id"]==c]
+    routed=len(rows)==1 and "as published" not in (rows[0]["disposition"]+" "+rows[0]["action"]).lower()   # a hidden finding with a scanner fix is routed on it; "kept as published" is the no-fix route
+    return routed, [l for l in rep.split("\n") if "Not re-checkable" in l], vp2
+cov=[{"image":"production-amd64","scanner":"inspector","id":c,"package":"libmed","version":"1","severity":"medium","fixed_version":"2","aliases":[]}]
 rejudged,hid,vp=run(cov,"a")
 recs=[r for r in parsers.parse_panel(vp,"inspector") if r["finding_id"]==c]
 parsed_ok = len(recs)==1 and recs[0]["extra"].get("carried") is True and recs[0]["extra"]["images"]==["production-amd64"] and not [r for r in parsers.parse_panel(vp,"google") if r["finding_id"]==c]
