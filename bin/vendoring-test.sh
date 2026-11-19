@@ -377,6 +377,7 @@ exec(sys.argv[3])
 assert s != o, "mutation did not apply"
 open(sys.argv[2], "w").write(s)
 PY
+  [ $? -eq 0 ] || { bad AC3 "the mutation $1 did not apply to ci.yml (an edit moved its anchor): no proof that the job check refuses it"; return; }
   tn AC3 "the job check refuses: $1" python3 "$J" "$work/mut-$1.yml"
 }
 tn() { local ac=$1 d=$2; shift 2; if "$@" >"$work/out" 2>&1; then bad "$ac" "$d (expected a refusal)"; else ok; fi; }
