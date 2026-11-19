@@ -163,9 +163,6 @@ func (s *Store) Put(key string, r io.Reader) (int64, error) {
 		return 0, err
 	}
 	dir := path.Dir(dest)
-	if err := s.root.MkdirAll(dir, dirPerm); err != nil {
-		return 0, fmt.Errorf("blobstore: create dir: %w", err)
-	}
 
 	if err := s.root.MkdirAll(tempDirName, dirPerm); err != nil {
 		return 0, fmt.Errorf("blobstore: create temp dir: %w", err)

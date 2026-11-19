@@ -177,3 +177,40 @@ func TestDeleteEmptyDirsConcurrentWithPut(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+// Rule 1: Put succeeds while Delete removes the directories a delete has emptied, for keys sharing parents.
+func TestPutSurvivesConcurrentDeleteOfSiblingKeys(t *testing.T) {
+	s := newTestStore(t)
+	const workers, iters = 16, 40
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var errs []error
+	fail := func(err error) {
+		mu.Lock()
+		errs = append(errs, err)
+		mu.Unlock()
+	}
+	for g := 0; g < workers; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < iters; i++ {
+				key := fmt.Sprintf("v1.1/com.example.bench/app/%032x/app.jar", g*iters+i)
+				if _, err := s.Put(key, strings.NewReader("jar")); err != nil {
+					fail(fmt.Errorf("Put %s: %w", key, err))
+				}
+				if err := s.Delete(key); err != nil {
+					fail(fmt.Errorf("Delete %s: %w", key, err))
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if i == 3 {
+			t.Errorf("... and %d more errors", len(errs)-3)
+			break
+		}
+		t.Error(err)
+	}
+}

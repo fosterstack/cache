@@ -22,6 +22,9 @@ import (
 // The first scrape's refresh is held after it has read the totals and before
 // it sets the gauges (the seam), while a PUT and a second scrape complete.
 func TestGaugesEndAtTheStoreTotalsWhenUploadsOverlap(t *testing.T) {
+	prevAge := gaugesMaxAge
+	gaugesMaxAge = 0
+	t.Cleanup(func() { gaugesMaxAge = prevAge })
 	h, c := newTestHandlerWithStore(t, Credentials{})
 	_ = h
 	reg := prometheus.NewRegistry()
@@ -117,6 +120,82 @@ func TestPutDoesNotRefreshGaugesScrapeDoes(t *testing.T) {
 	}
 	if !strings.Contains(text, "fscache_store_entries 20\n") {
 		t.Errorf("scrape lacks fscache_store_entries 20:\n%s", text)
+	}
+}
+
+func newCountingServer(t *testing.T) (*httptest.Server, *countingStore) {
+	t.Helper()
+	_, c := newTestHandlerWithStore(t, Credentials{})
+	cs := &countingStore{Store: c}
+	reg := prometheus.NewRegistry()
+	srv := httptest.NewServer(New(Config{Cache: cs, Metrics: metrics.New(reg), Registry: reg, MaxBodyBytes: 1 << 20}))
+	t.Cleanup(srv.Close)
+	return srv, cs
+}
+
+// Rule: concurrent scrapes share one gauge refresh.
+func TestConcurrentScrapesShareOneGaugeRefresh(t *testing.T) {
+	prevAge := gaugesMaxAge
+	gaugesMaxAge = 2 * time.Second
+	t.Cleanup(func() { gaugesMaxAge = prevAge })
+	srv, cs := newCountingServer(t)
+	for i := 0; i < 3; i++ {
+		put(t, srv.URL, fmt.Sprintf("k%d", i), "xx")
+	}
+	time.Sleep(2200 * time.Millisecond) // the seed from New is older than gaugesMaxAge
+	cs.totals.Store(0)
+	cs.counts.Store(0)
+
+	const n = 32
+	start := make(chan struct{})
+	texts := make([]string, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			texts[i] = scrape(t, srv.URL)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	if a, b := cs.totals.Load(), cs.counts.Load(); a > 1 || b > 1 {
+		t.Errorf("%d concurrent scrapes made %d TotalSize and %d EntryCount calls, want at most 1 each", n, a, b)
+	}
+	for i, text := range texts {
+		if !strings.Contains(text, "fscache_store_entries 3\n") {
+			t.Fatalf("scrape %d lacks fscache_store_entries 3:\n%s", i, text)
+		}
+	}
+}
+
+// Rule: a scrape within gaugesMaxAge of the last refresh reuses its gauges.
+func TestScrapeReusesGaugesWithinMaxAge(t *testing.T) {
+	prevAge := gaugesMaxAge
+	gaugesMaxAge = 0
+	t.Cleanup(func() { gaugesMaxAge = prevAge })
+	srv, cs := newCountingServer(t)
+	put(t, srv.URL, "a", "x")
+	if text := scrape(t, srv.URL); !strings.Contains(text, "fscache_store_entries 1\n") {
+		t.Fatalf("first scrape lacks fscache_store_entries 1:\n%s", text)
+	}
+
+	gaugesMaxAge = time.Hour
+	cs.totals.Store(0)
+	cs.counts.Store(0)
+	put(t, srv.URL, "b", "y")
+	text := scrape(t, srv.URL)
+	if !strings.Contains(text, "fscache_store_entries 1\n") {
+		t.Errorf("scrape within gaugesMaxAge lacks the earlier fscache_store_entries 1:\n%s", text)
+	}
+	if a, b := cs.totals.Load(), cs.counts.Load(); a != 0 || b != 0 {
+		t.Errorf("scrape within gaugesMaxAge made %d TotalSize and %d EntryCount calls, want 0 and 0", a, b)
+	}
+
+	gaugesMaxAge = 0
+	if text := scrape(t, srv.URL); !strings.Contains(text, "fscache_store_entries 2\n") {
+		t.Errorf("scrape with gaugesMaxAge 0 lacks fscache_store_entries 2:\n%s", text)
 	}
 }
 
