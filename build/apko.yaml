@@ -6,7 +6,7 @@
 # Rules (v0.3.0): 25 no base image and no extra variants: only the packages named here; 26 packages come only
 # from the archive (/work/archive) and the local package folder melange writes (/work/melange-repo), never a live
 # address; 19 each package is checked against its key (the Wolfi key for archive packages, the assembly key for
-# ours); 33 one run builds linux/amd64 and linux/arm64; 34 no shell, no shell-fragment, no sh path; 38 a nonroot
+# ours); 33 one run builds linux/amd64 and linux/arm64; 34 no shell, no shell-fragment, no sh path (the nonroot login shell is /sbin/nologin: apko's default would put a sh path into /etc/passwd); 38 a nonroot
 # user (65532) owns /home/nonroot.
 # The package versions are pinned by the lock files (build/locks/*.base.lock.json), not here; @FSCACHE_VERSION@ is
 # replaced by bin/assemble-image.sh.
@@ -30,6 +30,7 @@ accounts:
       uid: 65532
       gid: 65532
       homedir: /home/nonroot
+      shell: /sbin/nologin
   run-as: 65532
 paths:
   - path: /home/nonroot
