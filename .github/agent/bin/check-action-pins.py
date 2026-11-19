@@ -661,19 +661,30 @@ PARAM_WORD = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*])(:?)([-=+?])([
 _BRACE_FRAME = re.compile(r"\$\{[^}]*[<>]\(")
 
 
+def _mask_heredoc_bodies(text):
+    """`text` with each heredoc body as spaces, its newlines kept: the body is data, so its quotes, `#`s and `${` words
+    start no frame and end none."""
+    lines = text.split("\n")
+    for _, start, end in _heredoc_bodies(lines):
+        lines[start:end] = [" " * len(x) for x in lines[start:end]]
+    return "\n".join(lines)
+
+
 def _blank_brace_comments(text):
     """`"${x:-<(cmd # } "` newline `)}"`: bash's parser opens a frame at the <( even in a word it prints, so the # comments out the
     rest of its line and the `}` after it belongs to the frame. Each such `${` word, read from its own `${` to where it closes,
     has the comments inside it blanked (a comment outside every such word, a heredoc body's included, stays as it is); one that
-    never closes is a syntax error and stays as written, whatever else the text holds."""
+    never closes is a syntax error and stays as written, whatever else the text holds. The words and the frames are read in
+    the text without its heredoc bodies: data starts no frame, and its quotes never change what the code after it is."""
     if not _BRACE_FRAME.search(text):
         return text
-    real = _scan_shell(text, frames=True)[0]
+    code = _mask_heredoc_bodies(text)
+    real = _scan_shell(code, frames=True)[0]
     out = list(text)
-    for m in _BRACE_FRAME.finditer(text):
+    for m in _BRACE_FRAME.finditer(code):
         if real[m.start()] != "c":      # not a `${` bash expands: quoted, escaped or in a comment
             continue
-        kinds, _, open_frame = _scan_shell(text[m.start():], frames=True, one_frame=True)
+        kinds, _, open_frame = _scan_shell(code[m.start():], frames=True, one_frame=True)
         for i, k in enumerate(kinds):
             if k == "k" and not open_frame:
                 out[m.start() + i] = " "
@@ -2512,25 +2523,32 @@ def _heredoc_marks(lines):
     return marks
 
 
+def _heredoc_bodies(lines):
+    """(operator match, first body line, delimiter line) of each heredoc, as bash reads them (`_heredoc_marks`); a body
+    with no delimiter line runs to the end."""
+    marks, i = _heredoc_marks(lines), 0
+    while i < len(lines):
+        found = marks[i]
+        i += 1
+        for m in found:                                  # bash's operators only: inside $(cat <<EOF …) too
+            start = i
+            while i < len(lines) and (lines[i].strip() if m.group(1) else lines[i]) != m.group(3):
+                i += 1
+            yield m, start, i
+            i += 1                                       # the delimiter line
+
+
 def _drop_foreign_heredocs(text):
     """A heredoc body is data for its command, not commands (advisor 0084 (1)): it is not parsed as shell. Only what
     bash runs inside it stays — the $( … ) and `…` substitutions of an unquoted-delimiter body. A heredoc fed to a shell
     (bash <<EOF) is refused as a shell reading stdin; other-language heredocs are the documented boundary (0094)."""
     lines, out, i = text.split("\n"), [], 0
-    marks = _heredoc_marks(lines)
-    while i < len(lines):
-        line, found = lines[i], marks[i]
-        out.append(line)
-        i += 1
-        for m in found:                                  # bash's operators only: inside $(cat <<EOF …) too
-            body = []
-            while i < len(lines) and (lines[i].strip() if m.group(1) else lines[i]) != m.group(3):
-                body.append(lines[i])
-                i += 1
-            i += 1                                       # the delimiter line
-            if not m.group(2):                           # unquoted: substitutions in the body run, quotes or not
-                out += ["$(%s)" % x for x in _cut_substitutions("\n".join(body), data=True)[1]]
-    return "\n".join(out)
+    for m, start, end in _heredoc_bodies(lines):
+        out += lines[i:start]
+        i = end + 1
+        if not m.group(2):                               # unquoted: substitutions in the body run, quotes or not
+            out += ["$(%s)" % x for x in _cut_substitutions("\n".join(lines[start:end]), data=True)[1]]
+    return "\n".join(out + lines[i:])
 
 
 # Documented exclusions of a non-committed script a step runs (each with its reason, handoff 0023): the two scripts
