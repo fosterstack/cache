@@ -24,7 +24,7 @@ with the floating-tags amendment; advisor read-backs 0051/0055/0056; REQ-REL-009
                           prints them: the "base input changed" signal).
   floating                amendment: :X.Y always; :X and :latest only when this is the highest released version.
 """
-import argparse, datetime, html, json, os, re, subprocess, sys, unicodedata
+import argparse, ast, datetime, fnmatch, html, json, os, re, subprocess, sys, unicodedata
 # data that ships nothing: the auditor's own work (three names) and the .vex README (REQ-REL-009 AC15); every other path under .vex/ and .auditor/ stays fix-class
 NEUTRAL_EXACT = {".auditor/panel-state.json", ".auditor/knowledge.md", ".vex/README.md"}
 # ".auditor/proposals/p.json" matches; ".auditor/proposals/a/p.json" and ".auditor/proposals/p.txt" do not
@@ -1213,27 +1213,77 @@ def _scope(req):
     return "push" if s is None or s is False else s      # identity, not ==: scope 0 is not push (Codex #159 r2, B6)
 
 
-def ready(required, check_runs):
+def _bound_table():
+    """bin/build-admit.py's BOUND_CONTEXTS (context glob, producing workflow file) and BOUND_EVENTS, read as data from its source."""
+    tree = ast.parse(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "build-admit.py")).read())
+    got = {t.id: ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+           for t in n.targets if isinstance(t, ast.Name) and t.id in ("BOUND_CONTEXTS", "BOUND_EVENTS")}
+    return got["BOUND_CONTEXTS"], got["BOUND_EVENTS"]
+
+
+def _bound_verdict(req, check_runs, workflow_runs, sha, repo, file, events):
+    """admission's bound_run (bin/build-admit.py): the newest check run of the context and app (by id) whose workflow run has the
+    producing file's path, an event of BOUND_EVENTS and the tagged commit decides. ("ok"|"wait"|"red"|"no", why)."""
+    prefix = "https://github.com/%s/actions/runs/" % repo
+    facts_by_id = {w.get("id"): w for w in workflow_runs if isinstance(w, dict)}
+    mine = sorted((r for r in check_runs if r.get("name") == req["context"] and r.get("app_id") == req["integration_id"]
+                   and isinstance(r.get("id"), int)), key=lambda r: -r["id"])
+    for r in mine:
+        url = r.get("url") if isinstance(r.get("url"), str) and r["url"].startswith(prefix) else ""
+        run_id = url[len(prefix):].split("/")[0]
+        if not run_id.isascii() or not run_id.isdigit():
+            continue
+        facts = facts_by_id.get(int(run_id))
+        if not isinstance(facts, dict) or not all(isinstance(facts.get(k), str) for k in ("path", "event", "head_sha")):
+            return "no", "cannot read workflow run %s behind %r" % (run_id, req["context"])
+        if facts["path"] != ".github/workflows/" + file or facts["event"] not in events or facts["head_sha"] != sha:
+            continue
+        if r.get("status") != "completed" or r.get("conclusion") is None:
+            return "wait", ""
+        return ("ok", "") if r["conclusion"] == "success" else ("red", "")
+    return "wait", ""
+
+
+def ready(required, check_runs, workflow_runs=None, sha=None, repo=None, bound=()):
     """(verdict, why) for the tagged commit's push-scoped required checks, judged as source admission judges them
     (stage-admission.yml): a check counts only as a success from its pinned app. "ready": every one has one. "wait": none
     is red with nothing left to run (a run is missing, queued or in progress). "no": a check finished without success and
     no run of it is still pending. pull_request-scoped checks are admission's to read on the merged PR head.
     `required` is one policy file or a list of them (required-checks.json and release-only-checks.json): admission
-    requires both, and a bad file never lowers the requirement."""
+    requires both, and a bad file never lowers the requirement. The policies of `bound` (release-only-checks.json) are
+    judged by admission's run selection (BOUND_CONTEXTS): the newest run of the producing file on `sha` decides, from
+    `workflow_runs` {id, path, event, head_sha}; with no sha or repo, or a context the table does not bind, it is "no"."""
     waiting, red, reqs = [], [], []
     for policy in required if isinstance(required, list) else [required]:
         part = policy.get("required_checks") if isinstance(policy, dict) else None
         # a policy admission would reject is never ready (Codex #159 r1, B6): admission fails on these
         if not isinstance(part, list) or not part:
             return "no", "policy error: no required_checks list"
-        reqs += part
-    for req in reqs:
+        reqs += [(req, any(policy is b for b in bound)) for req in part]
+    table, events = _bound_table()
+    files = {}
+    for req, is_bound in reqs:
         if not isinstance(req, dict) or not req.get("context") or not isinstance(req.get("integration_id"), int):
             return "no", "policy error: a required check without a context or integration_id"
         if _scope(req) not in ("push", "pull_request"):
             return "no", "policy error: unknown scope %r for required check %r" % (req.get("scope"), req["context"])
-    for req in reqs:
+        if is_bound and _scope(req) == "push":
+            files[req["context"]] = next((f for pat, f in table if fnmatch.fnmatchcase(req["context"], pat)), None)
+            if not files[req["context"]]:
+                return "no", "policy error: %r has no producing workflow file in the admission table" % req["context"]
+            if not sha or not repo:
+                return "no", "policy error: the tagged commit and repository are needed to judge %r" % req["context"]
+    for req, is_bound in reqs:
         if _scope(req) != "push":
+            continue
+        if is_bound:
+            v, why = _bound_verdict(req, check_runs, workflow_runs or [], sha, repo, files[req["context"]], events)
+            if v == "no":
+                return "no", why
+            if v == "wait":
+                waiting.append(req["context"])
+            elif v == "red":
+                red.append(req["context"])
             continue
         mine = [r for r in check_runs if r.get("name") == req["context"] and r.get("app_id") == req["integration_id"]]
         if any(r.get("status") == "completed" and r.get("conclusion") == "success" for r in mine):
@@ -1624,7 +1674,10 @@ def _policy(path):
 
 
 def cmd_ready(a):
-    verdict, why = ready([_policy(f) for f in a.required], json.load(open(a.check_runs)))
+    policies = [_policy(f) for f in a.required]
+    bound = [p for f, p in zip(a.required, policies) if os.path.basename(f) == "release-only-checks.json"]
+    verdict, why = ready(policies, json.load(open(a.check_runs)), json.load(open(a.workflow_runs)) if a.workflow_runs else [],
+                         a.sha, a.repo, bound)
     print(verdict, _clean(why))
     return 0
 
@@ -1722,7 +1775,10 @@ def main(argv=None):
     k = sub.add_parser("ready")
     k.add_argument("--required", required=True, action="append",
                    help="a policy file, once each: required-checks.json and release-only-checks.json")
-    k.add_argument("--check-runs", required=True, help="JSON list of the commit's check runs {name, status, conclusion, app_id}")
+    k.add_argument("--check-runs", required=True, help="JSON list of the commit's check runs {name, status, conclusion, app_id, id, url}")
+    k.add_argument("--workflow-runs", help="JSON list of the commit's workflow runs {id, path, event, head_sha}")
+    k.add_argument("--sha", help="the tagged commit")
+    k.add_argument("--repo", help="owner/name")
     r = sub.add_parser("removed")
     r.add_argument("--release-grype", required=True, action="append", help="one per scanned release image")
     r.add_argument("--gomod", required=True)

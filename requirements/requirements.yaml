@@ -2283,7 +2283,11 @@ requirements:
           a missing, empty, null or malformed file never lowers the requirement, whatever the other file holds;
           the requirement is the two lists together, and no context is in both files (auditor-review-gate is in release-only-checks.json only, since docs/ratify/2026-11-12-cache-required-checks-trimmed-by-hand.md:11);
           the checks step of the decide job in release.yml and the ready command of bin/patch-decide.py judge that combined list, each file read from origin/main and given with its own --required,
-          so the step never answers ready for a tagged commit that admission refuses for a missing release-only check
+          so the step never answers ready for a tagged commit that admission refuses for a missing release-only check;
+          a release-only context that bin/build-admit.py binds to a workflow file (BOUND_CONTEXTS) is judged by admission's own run selection:
+          every check run of that name and pinned app on the tagged commit is read (filter=all), newest id first, a run whose workflow run has another file, another event than schedule or workflow_dispatch or another commit is skipped,
+          and the newest run left alone decides: success is ready, a run not finished is wait, any other conclusion is no, and no qualifying run is wait;
+          an older green run never counts once a newer qualifying run is red or still running, and a workflow run that cannot be read is no
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-013-AC2
