@@ -51,6 +51,8 @@ TAG_SYNTAX = re.compile(TAG_PATTERN)  # fullmatch: no trailing newline slips thr
 SHA_SYNTAX = re.compile(r"[0-9a-f]{40}")
 SSH_GOOD = re.compile(r'^Good "git" signature for (\S+) with .* key (SHA256:\S+)$', re.M)
 OWNER_SSH = "owner-ssh"
+KMS_RELEASE = "kms-release"         # the one release KMS key, admitted on a patch tag only (REQ-REL-009-AC6)
+PATCH_TAG = re.compile(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.[1-9][0-9]*")
 # The freeze check (the requirements tool, Go code of the tagged commit) runs in the `freeze` job before Build, not
 # here. That job writes this file, one `freeze-ok COMMIT BASE` line per baseline file that passed, and Build's apk job
 # downloads it. Admission starts no Go: it reads the file and prints what it trusted.
@@ -74,8 +76,10 @@ SIGNER = "bin/admission-tag-signer.py"
 # gate 7 (REQ-REL-012-AC7): main's judge, its helper, the writers policy and (when main has it) the owner-decision items, read from origin/main into a scratch root and never taken from the tagged commit
 AUDIT_FILES = ("bin/audit-record-judge.sh", "bin/audit-record.py", ".github/policy/audit-writers.json")
 AUDIT_ITEMS = ".auditor/accepted-items.json"      # the judge also reads it when main has it: an open owner-decision item holds the tag
+RELEASE_SIGNER = ".github/policy/release_tag_signer"    # one ssh-rsa line, the release KMS public key; absent until a human commits it
 POLICY_FILES = (".github/policy/allowed_signers", ".github/policy/github-web-flow.gpg", ".github/policy/required-checks.json",
-    ".github/policy/release-only-checks.json", SIGNER, "bin/build-admit.py")   # the signer loads the tag grammar from the copy beside it
+    ".github/policy/release-only-checks.json", SIGNER, "bin/build-admit.py",   # the signer loads the tag grammar from the copy beside it
+                RELEASE_SIGNER)
 
 
 class Refusal(Exception):
@@ -130,6 +134,7 @@ class Context:
         self.tmp = tmp
         self.policy = os.path.join(tmp, "policy")
         self.allowed = os.path.join(self.policy, "allowed_signers")
+        self.release_signer = os.path.join(self.policy, os.path.basename(RELEASE_SIGNER))
         self.method = None
         self.tag_object = None
         self.principal = None
@@ -175,6 +180,8 @@ def check_policy_from_main(ctx):
         raise Refusal("policy-from-main", "cannot fetch origin main: %s" % one_line(text(err)))
     for path in POLICY_FILES:
         data = git_show("origin/main:" + path)
+        if data is None and path == RELEASE_SIGNER:
+            data = b""      # not committed yet: no tag is admitted by that key
         if data is None:
             raise Refusal("policy-from-main", "%s is not on origin/main" % path)
         with open(os.path.join(ctx.policy, os.path.basename(path)), "wb") as fh:
@@ -193,10 +200,9 @@ def check_tag_annotated(ctx):
 # ---------------------------------------------------------------- 5. tag-signature (REQ-REL-009-AC6)
 
 def route_tag(ctx):
-    """Ask main's bin/admission-tag-signer.py whether the owner's SSH signature decides ('ssh'); anything else is
-    refused:
-    a keyless signature on any tag, an unsigned tag, a PGP signature. An owner SSH signature is accepted on every tag,
-    patch tags included."""
+    """Ask main's bin/admission-tag-signer.py whether an SSH signature decides ('ssh'); anything else is refused:
+    a keyless signature on any tag, an unsigned tag, a PGP signature. The owner's SSH signature is accepted on every
+    tag; the release KMS key's (also an SSH signature) on a patch tag only (check_tag_signature)."""
     rc, obj, _ = run([GIT, "cat-file", "tag", "refs/tags/" + ctx.tag])
     if rc != 0:
         raise Refusal("tag-signature", "cannot read the tag object of %s" % ctx.tag)
@@ -215,21 +221,22 @@ def route_tag(ctx):
     return route, obj
 
 
-def verify_ssh(ctx, verb, ref):
-    """git verify-tag or verify-commit against main's allowed signers. Returns (principal, fingerprint) of the Good
-    "git"
+def verify_ssh(ctx, verb, ref, signers=None):
+    """git verify-tag or verify-commit against one allowed-signers file (default: main's allowed_signers). Returns
+    (principal, fingerprint) of the Good "git"
     line, or None. GNUPGHOME is empty, so an OpenPGP signature in the runner's own keyring never counts."""
     home = tempfile.mkdtemp(prefix="gnupg-", dir=ctx.tmp)
     rc, out, err = run([GIT, "-c", "gpg.format=ssh", "-c", "gpg.ssh.program=" + SSH_KEYGEN, "-c", "gpg.program=" + GPG,
-        "-c", "gpg.ssh.allowedSignersFile=" + ctx.allowed, verb, ref],
+        "-c", "gpg.ssh.allowedSignersFile=" + (signers or ctx.allowed), verb, ref],
         env=dict(os.environ, LC_ALL="C", GNUPGHOME=home))
     m = SSH_GOOD.search(text(out + err))
     return m.groups() if rc == 0 and m else None
 
 
-def verify_tag_ssh(ctx):
-    """The owner's SSH signature against main's allowed signers. Returns (principal, fingerprint)."""
-    signer = verify_ssh(ctx, "verify-tag", "refs/tags/" + ctx.tag)
+def verify_tag_ssh(ctx, signers=None):
+    """The SSH signature against one allowed-signers file (default: the owner's, main's allowed_signers). Returns
+    (principal, fingerprint)."""
+    signer = verify_ssh(ctx, "verify-tag", "refs/tags/" + ctx.tag, signers)
     if not signer:
         raise Refusal("tag-signature",
                       "the signature of %s is not a Good git signature of main's allowed signers" % ctx.tag)
@@ -237,9 +244,15 @@ def verify_tag_ssh(ctx):
 
 
 def check_tag_signature(ctx):
-    route_tag(ctx)      # the router refuses everything but an owner SSH signature, on any tag
-    ctx.method = OWNER_SSH
-    ctx.principal, ctx.fingerprint = verify_tag_ssh(ctx)
+    route_tag(ctx)      # the router refuses everything but an SSH signature
+    try:
+        ctx.method = OWNER_SSH
+        ctx.principal, ctx.fingerprint = verify_tag_ssh(ctx)
+    except Refusal:     # the release KMS key signs a patch tag only; no other signer reads its file
+        if not PATCH_TAG.fullmatch(ctx.tag) or not os.path.getsize(ctx.release_signer):
+            raise
+        ctx.method = KMS_RELEASE
+        ctx.principal, ctx.fingerprint = verify_tag_ssh(ctx, ctx.release_signer)
 
 
 # ---------------------------------------------------------------- 6. commit-signature
@@ -532,17 +545,45 @@ def check_freeze(ctx, base):
     print("freeze-ok %s %s" % (ctx.sha, base))
 
 
+def inherited_baseline(ctx):
+    """A CI patch uses its line's latest owner-approved baseline, chosen as decide chooses it (REQ-REL-009-AC13).
+    Returns the version and that baseline's bytes from the owner's signed tag."""
+    signer = os.path.join(ctx.policy, os.path.basename(SIGNER))
+    signed = os.path.join(ctx.tmp, "owner-baselines")
+    rc, _, err = run([PYTHON3, "-I", signer, "owner-baselines", "--tag", ctx.tag,
+        "--allowed-signers", ctx.allowed, "--out", signed])
+    if rc != 0:
+        raise Refusal("baseline", "the owner-signed baselines cannot be read: %s" % one_line(text(err)))
+    requirements = git_show("%s:requirements/requirements.yaml" % ctx.sha)
+    if requirements is None:
+        raise Refusal("baseline", "requirements/requirements.yaml does not exist at the tagged commit")
+    requirements_file = os.path.join(ctx.tmp, "requirements.yaml")
+    with open(requirements_file, "wb") as fh:
+        fh.write(requirements)
+    rc, out, err = run([PYTHON3, "-I", signer, "baseline", "--tag", ctx.tag, "--owner-baselines", signed,
+        "--requirements", requirements_file])
+    answer = text(out).split()
+    if rc != 0 or answer[:1] != ["use"]:
+        raise Refusal("baseline", "no owner-approved baseline for %s: %s" % (ctx.tag, one_line(text(out + err), 200)))
+    with open(os.path.join(signed, answer[1] + ".yaml"), "rb") as fh:
+        return answer[1], fh.read()
+
+
 def check_baseline(ctx):
     try:
         import yaml
     except ImportError:
         raise EnvError("PyYAML is required")
-    base = ctx.tag
+    base, signed = ctx.tag, None
+    if ctx.method == KMS_RELEASE:
+        base, signed = inherited_baseline(ctx)
     ctx.base = base
     path = "requirements/releases/%s.yaml" % base
     tagged = git_show("%s:%s" % (ctx.sha, path))
     if tagged is None:
         raise Refusal("baseline", "%s does not exist at the tagged commit: freeze the release baseline first" % path)
+    if signed is not None and tagged != signed:
+        raise Refusal("baseline", "%s differs from the owner-signed %s" % (path, base))
     # The freeze job ran the requirements tool: exact requirements hash and complete blocking set (R07). Approval is
     # checked below.
     check_freeze(ctx, base)

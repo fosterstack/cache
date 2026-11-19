@@ -28,6 +28,7 @@ CREDENTIAL_CALLEES = ("release.yml", "persona-uat.yml")
 BUILD_SIDE_JOBS = ("build-freeze", "build-apk", "build-assemble", "rebuild-apk", "rebuild-assemble", "check-govulncheck", "check")
 # the sign jobs of release.yml (REQ-CHAIN-001-AC9): the only jobs that may hold the sign environment; they build nothing (AC1 above applies to them like to every credential holder)
 SIGN_JOBS = ("sign", "sign-rebuild", "sign-check")
+SIGN_ENV_JOBS = SIGN_JOBS + ("sign-tag",)      # the four jobs of release.yml in the environment sign; sign-tag (REQ-REL-009) holds contents read and id-token write, no secret
 EXCLUDED_AC1 = {}
 # ci.yml test: the one required Go test job builds twice, without a credential, to /dev/null and to /tmp (neither is shipped): the static build and the -fips variant build, which had
 # their own jobs until the test, coverage, vendor and fips140-only jobs became one (audit row C-F7). Neither build is a release artifact.
@@ -176,7 +177,7 @@ for f in sorted(glob.glob(os.path.join(wf, "*.y*ml"))):
             if w:
                 bad.append("%s/%s is a build-side job of release.yml and holds %s: only the sign jobs hold a credential" % (key[0], jn, ", ".join(w)))
         # the sign environment belongs to the four sign jobs of release.yml alone
-        if j.get("environment") == "sign" and not (key[0] == "release.yml" and jn in SIGN_JOBS):
+        if j.get("environment") == "sign" and not (key[0] == "release.yml" and jn in SIGN_ENV_JOBS):
             bad.append("%s/%s is in the environment sign but is not one of the four sign jobs of release.yml" % key)
         callee = os.path.basename(str(j.get("uses") or ""))
         if j.get("uses") and w and not (str(j.get("uses")).startswith("./.github/workflows/") and callee in CREDENTIAL_CALLEES):
@@ -448,6 +449,14 @@ done
 want_msg="is in the environment sign but is not one of the four sign jobs"
 mutate "ci.yml lint is placed in the environment sign" '
 edit("ci.yml", lambda s: re.sub(r"(  lint:.*?)(    runs-on:)", lambda m: m.group(1) + "    environment: sign\n" + m.group(2), s, count=1, flags=re.S))'
+for job in decide cut patch-notes; do
+  want_msg="is in the environment sign but is not one of the four sign jobs"
+  mutate "release.yml tag job $job is a fifth job in the environment sign" '
+edit("release.yml", lambda s: in_job(s, "'$job'", r"(    runs-on:[^\n]*\n)(?:    environment: agent\n)?", r"\1    environment: sign\n", regex=True))'
+done
+want_msg="is in the environment sign but is not one of the four sign jobs"
+mutate "release.yml gains a fifth job in the environment sign" '
+edit("release.yml", lambda s: s.rstrip("\n") + "\n\n  fifth:\n    runs-on: ubuntu-24.04\n    environment: sign\n    permissions:\n      contents: read\n    steps:\n      - run: echo hi\n")'
 want_msg=""
 # fail closed (round 2, reviewer A): a job that holds a credential never runs a script whose path is built from a variable under bin/ (bash "bin/${helper}-local.sh" would hide the wrapper and the build from the rules above)
 want_msg="names a script path under bin/ through a variable"

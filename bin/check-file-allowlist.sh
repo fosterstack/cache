@@ -359,6 +359,13 @@ ALLOW_PATTERNS=(
   '^bin/evidence-letter\.py$'
   '^bin/evidence-letter(-fetch|-publish|-verify|-present|-test|-job-test)\.sh$'
   '^docs/evidence-letter-signatory\.txt$'
+  # REQ-REL-009: CI cuts a patch tag and the one release KMS key signs it: the tag signer, the tag jobs judge and their tests
+  '^bin/tag-sign\.py$'
+  '^bin/tag-sign-(prepare|kms|test)\.sh$'
+  '^bin/patch-decide\.py$'
+  '^bin/patch-decide-test\.sh$'
+  '^bin/chain-tag-jobs-(judge\.py|test\.sh)$'
+  '^bin/patch-tag-texts-test\.sh$'
 
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'

@@ -68,6 +68,11 @@
   },
   {
    "workflow": "release.yml",
+   "job": "sign-tag",
+   "reason": "makes the automatic patch release's tag object and signs it with the release KMS key through the job's federation role (environment sign); no push right (REQ-REL-009-AC5)"
+  },
+  {
+   "workflow": "release.yml",
    "job": "live-test",
    "reason": "the rule-12 live test on a release candidate (REQ-SCAN-012): the same federation into the dedicated live-test accounts only (environment live-test), after Check; signs and publishes nothing"
   },

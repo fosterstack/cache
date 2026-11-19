@@ -384,6 +384,117 @@
       ]
     },
     {
+      "path": "bin/tag-sign.py",
+      "tools": ["git"],
+      "runs": [],
+      "signs": false,
+      "reason": "the offline halves of signing an automatic patch release's tag (REQ-REL-009-AC5): prepare writes the unsigned tag object and the digest the release KMS key signs, assemble checks the returned RSA signature against the release key's public line and puts it into the object as one SSH SIGNATURE block; it holds no key, calls no tool and signs nothing itself (release.yml's sign-tag runs the KMS call between the two); `git` is only the namespace string of the SSH signature"
+    },
+    {
+      "path": "bin/tag-sign-prepare.sh",
+      "tools": ["bash", "python3"],
+      "runs": ["bin/tag-sign.py"],
+      "signs": false,
+      "reason": "sign-tag's first step (REQ-REL-009-AC5): tag-sign.py prepare writes the tag object decide asked for and the digest the release key signs",
+      "reads_env": []
+    },
+    {
+      "path": "bin/tag-sign-kms.sh",
+      "tools": ["bash"],
+      "runs": ["bin/with-aws-token.sh"],
+      "signs": "other",
+      "reason": "sign-tag's one signing call (REQ-REL-009-AC5): bin/with-aws-token.sh kms-sign has the release key sign the digest tag-sign.py prepare wrote, as the detached signature tag-sign.py assemble puts into the tag object",
+      "reads_env": []
+    },
+    {
+      "path": "bin/patch-decide.py",
+      "tools": [
+        "git",
+        "at",
+        "aws",
+        "go",
+        "script",
+        "make",
+        "source",
+        "gh"
+      ],
+      "runs": [
+        "bin/chain-bytes-sha.py"
+      ],
+      "signs": false,
+      "reason": "the one reader of a generated patch tag's notes (REQ-REL-009-AC8, AC14): its tag-notes subcommand prints the notes the tag carries, else exits 1, and refuses a notes text with a signature block; release-stage.sh (no credential) writes that output to the notes file that release-assets.sh posts on the GitHub release",
+      "reads_env": [],
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "chain-bytes-sha.py",
+          "why": "the file name joined to this script's own directory to run the one definition of the rc-proof marker's checks (listed in runs); a name, never a path to a command here"
+        },
+        {
+          "rule": "script-name",
+          "text": "x.sh",
+          "why": "a file-name pattern or an example of one in the classifier (data and prose), never run from here"
+        },
+        {
+          "rule": "script-name",
+          "text": "bin/a-test.sh",
+          "why": "a file-name pattern or an example of one in the classifier (data and prose), never run from here"
+        },
+        {
+          "rule": "script-name",
+          "text": "tests/test_a.py",
+          "why": "a file-name pattern or an example of one in the classifier (data and prose), never run from here"
+        },
+        {
+          "rule": "script-name",
+          "text": "bin/a.sh",
+          "why": "a file-name pattern or an example of one in the classifier (data and prose), never run from here"
+        },
+        {
+          "rule": "script-name",
+          "text": "-tests?\\.sh",
+          "why": "a file-name pattern or an example of one in the classifier (data and prose), never run from here"
+        },
+        {
+          "rule": "script-name",
+          "text": "test_[^/]*\\.py",
+          "why": "a file-name pattern or an example of one in the classifier (data and prose), never run from here"
+        },
+        {
+          "rule": "script-name",
+          "text": "-check\\.py",
+          "why": "a file-name pattern or an example of one in the classifier (data and prose), never run from here"
+        }
+      ],
+      "env_mentions": [
+        {
+          "name": "PATH",
+          "text": "# shape but its own (Codex #300 r10, A low 2 / B 3): module PATH; go a Go release version (modfile's GoVersionRE: 1.21,",
+          "why": "prose or the comment about a go.mod PATH directive or an -I isolation note: a word, never read or set"
+        },
+        {
+          "name": "PATH",
+          "text": "# 1.21.0, 1.21rc1); toolchain 'default' or go + a Go release version; require / exclude PATH VERSION; replace",
+          "why": "prose or the comment about a go.mod PATH directive or an -I isolation note: a word, never read or set"
+        },
+        {
+          "name": "PATH",
+          "text": "# PATH [VERSION] => DIR or => PATH VERSION; retract VERSION or [VERSION, VERSION]; godebug KEY=VALUE; tool / ignore PATH.",
+          "why": "prose or the comment about a go.mod PATH directive or an -I isolation note: a word, never read or set"
+        },
+        {
+          "name": "PATH",
+          "text": "# (r10, A low 3 / B 4). Go itself is not on the decide job's PATH (release.yml installs no Go toolchain), so the parser is",
+          "why": "prose or the comment about a go.mod PATH directive or an -I isolation note: a word, never read or set"
+        },
+        {
+          "name": "PYTHONPATH",
+          "text": "    # marker: no patch decision (never a skip). -I: a module planted on PYTHONPATH or in the cwd is never imported by it",
+          "why": "prose or the comment about a go.mod PATH directive or an -I isolation note: a word, never read or set"
+        }
+      ]
+    },
+    {
       "path": "bin/rebuild-records-digests.sh",
       "tools": [
         "basename",
@@ -496,6 +607,16 @@
         {
           "name": "PYTHON3",
           "text": "run([PYTHON3, \"-I\", script_path, \"check-marker\"",
+          "why": "the fixed python3 path constant, read as a Python name; no environment variable is read or set"
+        },
+        {
+          "name": "PYTHON3",
+          "text": "run([PYTHON3, \"-I\", signer, \"owner-baselines\"",
+          "why": "the fixed python3 path constant, read as a Python name; no environment variable is read or set"
+        },
+        {
+          "name": "PYTHON3",
+          "text": "run([PYTHON3, \"-I\", signer, \"baseline\"",
           "why": "the fixed python3 path constant, read as a Python name; no environment variable is read or set"
         }
       ],
@@ -1718,10 +1839,12 @@
     {
       "path": "bin/release-stage.sh",
       "tools": [
+        "git",
         "python3"
       ],
       "runs": [
         "bin/build-admit.py",
+        "bin/patch-decide.py",
         "bin/release-gate.py",
         "bin/release-metadata.py"
       ],

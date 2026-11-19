@@ -84,9 +84,10 @@ def up(name, path): return f"      - uses: {UPL}\n        with:\n          name:
 def wit(step): return f"      - name: {step}\n        run: bash bin/witnessed-local.sh {step} bin/check-phase.sh {step}\n"
 RUN = "${{ matrix.runner }}"
 SNAP = "${{ inputs.mode != 'snapshot' }}"
+GVIF = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true) }}"   # check-govulncheck has no needs: its ref guard keeps it off in a run on main
 stage = ("name: Release\non:\n  push:\n    tags: [\"v*\"]\npermissions: {}\njobs:\n"
          "  check-govulncheck:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n    outputs:\n      artifact-id: ${{ steps.upload.outputs.artifact-id }}\n"
-         f"    if: {SNAP}\n    steps:\n"
+         f"    if: {GVIF}\n    steps:\n"
          f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
          "      - name: install Go (pinned by checksum)\n        run: bash bin/install-scanner.sh go\n"
          "      - name: build govulncheck (pinned by go.sum)\n        run: bash bin/install-scanner.sh govulncheck\n"
@@ -282,6 +283,10 @@ m s_xgvdir 'run: bash bin/unpack-govulncheck.sh' 'run: bash bin/unpack-govulnche
 m s_xgvgo '(install-scanner.sh osv-scanner\n)      - name: install Go \(pinned by checksum\)\n        run: bash bin/install-scanner.sh go\n' '\1      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n' 'uses not allowed' "G the setup-go action in place of the pinned Go install in Check (its bytes are not pinned by a repository checksum)"
 m s_xinsdir '      - name: install grype \(pinned by checksum\)\n        run: bash bin/install-scanner.sh grype\n' '      - name: install grype\n        run: bash bin/install-scanner.sh grype /tmp\n' 'check step' "AC4 round 1 F2: grype installed into another directory"
 m g_cred '(  check-govulncheck:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n)' '\1      id-token: write\n' 'permissions' "REL-011-AC1 govulncheck-build granted id-token: write (a build in a job with a credential)"
+m g_gvsnap '(  check-govulncheck:\n.*?    if: )[^\n]*' "\\1\${{ inputs.mode != 'snapshot' }}" 'may carry only the `if`' "REL-011-AC1 check-govulncheck back to the snapshot-only if (no ref guard: it would run on every push to main)"
+m g_gvother '(  check-govulncheck:\n.*?    if: )[^\n]*' "\\1\${{ always() }}" 'may carry only the `if`' "REL-011-AC1 check-govulncheck with another if"
+m g_gvnoif '(  check-govulncheck:\n.*?)    if: [^\n]*\n' '\1' 'may carry only the `if`' "REL-011-AC1 check-govulncheck with no if (it has no needs: it would run in every run)"
+m g_gvnodry '(  check-govulncheck:\n.*?    if: )[^\n]*' "\\1\${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}" 'may carry only the `if`' "REL-011-AC1 check-govulncheck without the dry-run alternative"
 m g_envjob '  check-govulncheck:\n' '  check-govulncheck:\n    environment: agent\n' 'may hold exactly' "REL-011-AC1 govulncheck-build gets an environment"
 m g_pkgs '(  check-govulncheck:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n)' '\1      packages: write\n' 'permissions' "REL-011-AC1 govulncheck-build granted packages: write"
 m c_noneed '    needs:\n      - check-govulncheck\n' '    needs:\n' 'must need exactly' "REL-011-AC1 the Check job does not need check-govulncheck"
@@ -717,6 +722,8 @@ if [ "$found" = "$snap" ]; then
 else
   bad "AC2 the real release.yml check job's if: is not exactly the snapshot condition, found: $found"
 fi
+sed "s/^  check:\$/  check:\n    if: \${{ always() }}/" "$work/release.yml" > "$work/release-if2.yml"
+if [ "$(job_if "$work/release-if2.yml" check)" != "$snap" ]; then ok "AC2 a check job with another if: (always()) is told from the snapshot guard"; else bad "AC2 the snapshot-guard probe takes always() for the snapshot guard"; fi
 expect ok "the real check scripts are plain (check-phase.sh is judged by script alone, Q3)" "" plain "$root"/bin/check-scan.sh "$root"/bin/check-govulncheck.py "$root"/bin/check-fips.sh "$root"/bin/check-artifacts.sh "$root"/bin/check-acceptance.sh "$root"/bin/check-guide.sh
 expect ok "the real check scripts are listed in chain-scripts.json" "" listed "$root/.github/policy/chain-scripts.json" "$root"
 expect ok "the old acceptance stages are gone from the real repository and release.yml" "" removed "$root"

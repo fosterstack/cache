@@ -88,7 +88,7 @@ NOSNAP = "${{ inputs.mode != 'snapshot' }}"
 GATE_S = "${{ " + GUARD + " }}"
 rel_if = "${{ " + GUARD + " && !contains(github.ref_name, '-') }}"
 open(w + "/release.yml", "w").write("name: Release\non:\n  push:\n    tags: [\"v*\"]\npermissions: {}\njobs:\n" +
-    gjob("decide") + gjob("build-freeze") + gjob("build-apk", "build-freeze") + gjob("build-assemble", "build-apk") + gjob("sign", "build-assemble", GATE_S)
+    gjob("decide") + "  sign-tag:\n    needs: decide\n    runs-on: ubuntu-24.04\n    environment: sign\n    steps:\n      - run: echo hi\n" + gjob("cut", "[decide, sign-tag]") + gjob("patch-notes", "[decide, cut]") + gjob("build-freeze") + gjob("build-apk", "build-freeze") + gjob("build-assemble", "build-apk") + gjob("sign", "build-assemble", GATE_S)
     + gjob("rebuild-apk", "build-assemble") + gjob("rebuild-assemble", "rebuild-apk") + gjob("sign-rebuild", "[build-assemble, rebuild-assemble]", GATE_S)
     + gjob("check-govulncheck", None, NOSNAP) + gjob("check", "[check-govulncheck, build-assemble, sign]", NOSNAP) + gjob("sign-check", "[build-assemble, check]", GATE_S)
     + gjob("release-compare", "[check, sign, sign-rebuild, sign-check]") + gjob("release-verify", "release-compare")
@@ -134,7 +134,7 @@ ROWS = {"release-verify": (["python3"], False, ["bin/build-admit.py", "bin/chain
         "release-publish": (["bash", "crane", "jq", "python3", "trap"], False, ["bin/release-layout.py", "bin/release-sign-verify.sh"]), "release-sign": (["bash", "cosign", "git", "jq", "python3", "sha256sum", "trap"], False, ["bin/chain-verify.py", "bin/release-sign-verify.sh"]),
         "release-sign-verify": (["jq", "python3", "sha256sum", "trap"], False, ["bin/chain-verify.py"]),
         "release-signatures": (["bash", "git", "jq", "python3", "sha256sum", "trap"], "other", ["bin/apk-tool.py", "bin/build-admit.py", "bin/chain-verify.py", "bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py", "bin/with-aws-token.sh"]),
-        "release-assets": (["gh", "python3"], False, ["bin/release-gate.py"]), "release-stage": (["python3"], False, ["bin/build-admit.py", "bin/release-gate.py", "bin/release-metadata.py"]),
+        "release-assets": (["gh", "python3"], False, ["bin/release-gate.py"]), "release-stage": (["git", "python3"], False, ["bin/build-admit.py", "bin/patch-decide.py", "bin/release-gate.py", "bin/release-metadata.py"]),
         "release-postverify": (["bash", "python3"], False, ["bin/release-postverify.py", "bin/release-stage.sh"])}
 rows = []
 for n, b in BODY.items():
@@ -484,6 +484,20 @@ dm g_dpush  'git push origin refs/tags/v9.9.9'                                  
 dm g_dtag   'git tag v9.9.9'                                                             'creates a tag' "AC11 the decide job making a tag is refused"
 dm g_drefs  'gh api repos/fosterstack/cache/git/refs -f ref=refs/tags/v9.9.9 -f sha=abc' 'creates a tag' "AC11 the decide job creating a tag through the refs API is refused"
 dm g_drel   'gh release create v9.9.9'                                                   'creates a tag' "AC11 the decide job creating a release is refused"
+# the four inline tag jobs of the automatic patch release (REQ-REL-009-AC5): decide -> sign-tag -> cut -> patch-notes, each with its needs; only cut pushes a tag; no stage-sign.yml is called
+gm g_tj_cut1   '=  cut:\n    needs: [decide, sign-tag]'     '  cut:\n    needs: [decide]'              'cut must need at least decide and sign-tag' "AC11 cut does not wait for sign-tag"
+gm g_tj_cut2   '=  cut:\n    needs: [decide, sign-tag]'     '  cut:\n    needs: [sign-tag]'            'cut must need at least decide and sign-tag' "AC11 cut does not need decide"
+gm g_tj_pn1    '=  patch-notes:\n    needs: [decide, cut]'    '  patch-notes:\n    needs: [decide]'        'patch-notes must need at least cut and decide' "AC11 patch-notes does not wait for cut"
+gm g_tj_pn2    '=  patch-notes:\n    needs: [decide, cut]'    '  patch-notes:\n    needs: [cut]'           'patch-notes must need at least cut and decide' "AC11 patch-notes does not need decide"
+gm g_tj_sign1  '=  sign-tag:\n    needs: decide\n'          '  sign-tag:\n'                                 'sign-tag must need at least decide' "AC11 sign-tag does not wait for decide"
+gm g_tj_gone1  '=  sign-tag:\n    needs: decide\n    runs-on: ubuntu-24.04\n    environment: sign\n    steps:\n      - run: echo hi\n' '' 'has no job sign-tag' "AC11 release.yml without the job sign-tag (no stage-sign.yml call stands in for it)"
+gm g_tj_gone2  '=  cut:\n    needs: [decide, sign-tag]\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo hi\n' '' 'has no job cut' "AC11 release.yml without the job cut"
+gm g_tj_gone3  '=  patch-notes:\n    needs: [decide, cut]\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo hi\n' '' 'has no job patch-notes' "AC11 release.yml without the job patch-notes"
+gm g_tj_gone4  '=  decide:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo hi\n' '' 'has no job decide' "AC11 release.yml without the job decide"
+gm g_tj_chain  '=  build-apk:\n    needs: build-freeze\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo hi' '  build-apk:\n    needs: build-freeze\n    runs-on: ubuntu-24.04\n    steps:\n      - run: git push origin refs/tags/v9.9.9' 'creates a tag' "AC11 a chain job (build-apk) pushes a tag: only cut may"
+gm g_tj_chain2 '=  sign:\n    needs: build-assemble'          '  sign:\n    needs: build-assemble\n    env:\n      X: gh release create v9.9.9' 'creates a tag' "AC11 the Sign job makes a release"
+gm g_tj_stag   '=  sign-tag:\n    needs: decide\n    runs-on: ubuntu-24.04\n    environment: sign\n    steps:\n      - run: echo hi' '  sign-tag:\n    needs: decide\n    runs-on: ubuntu-24.04\n    environment: sign\n    steps:\n      - run: git tag v9.9.9' 'creates a tag' "AC11 sign-tag makes a tag itself: only cut pushes one"
+gm g_tj_pntag  '=  patch-notes:\n    needs: [decide, cut]\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo hi' '  patch-notes:\n    needs: [decide, cut]\n    runs-on: ubuntu-24.04\n    steps:\n      - run: gh release create v9.9.9' 'creates a tag' "AC11 patch-notes creates a release"
 # ---- AC4: the order of bin/release-verify.sh ------------------------------------------------------------------------------------
 vm() { if mutate "$work/verify.sh" "$work/$1.sh" "$2" "$3"; then expect caught "$5" "$4" verify "$work/$1.sh"; fi; }
 vm v_notag   'python3 -I -B bin/build-admit\.py tag-ok[^\n]*\n' ''                                                       'commands'           "AC4 the tag check dropped"
@@ -931,9 +945,9 @@ for pth in sys.argv[1:]:
             print("%s:%s" % (os.path.basename(pth), job))
 JOBSPY
 }
-ALLOWED_AWS_JOBS=$'evidence-letter.yml:sign\nrelease.yml:sign\nrelease.yml:sign-check\nrelease.yml:sign-rebuild'
+ALLOWED_AWS_JOBS=$'evidence-letter.yml:sign\nrelease.yml:sign\nrelease.yml:sign-check\nrelease.yml:sign-rebuild\nrelease.yml:sign-tag'
 mapfile -t aw_files < <(awsfiles "$root"); aj=$(awsjobs "${aw_files[@]}" | sort)
-if [ "$aj" = "$ALLOWED_AWS_JOBS" ]; then ok "KA-2 p4 r2 1b' R1 the aws CLI is installed in exactly the four signing jobs (release.yml sign, sign-rebuild, sign-check; evidence-letter.yml sign) and in no other job of any workflow, the Release job holds none"; else bad "KA-2 p4 r2 1b' the aws CLI install runs in: $(tr '\n' ' ' <<< "$aj")"; fi
+if [ "$aj" = "$ALLOWED_AWS_JOBS" ]; then ok "KA-2 p4 r2 1b' R1 the aws CLI is installed in exactly the five signing jobs (release.yml sign, sign-rebuild, sign-check and sign-tag; evidence-letter.yml sign) and in no other job of any workflow, the Release job holds none"; else bad "KA-2 p4 r2 1b' the aws CLI install runs in: $(tr '\n' ' ' <<< "$aj")"; fi
 mkdir -p "$work/awsjobs"; python3 - "$root/.github/workflows/release.yml" "$work/awsjobs/release.yml" <<'JOBMUT'
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))

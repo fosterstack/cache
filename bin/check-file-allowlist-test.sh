@@ -120,8 +120,10 @@ build/probe/read-keydir.yaml.tmpl build/probe/read-token.yaml.tmpl build/probe/n
 bin/evidence-letter.py bin/evidence-letter-test.sh docs/evidence-letter-signatory.txt
 bin/evidence-letter-fetch.sh bin/evidence-letter-publish.sh bin/evidence-letter-job-test.sh
 bin/evidence-letter-verify.sh bin/evidence-letter-present.sh
+bin/tag-sign.py bin/tag-sign-test.sh bin/chain-tag-jobs-judge.py bin/chain-tag-jobs-test.sh bin/patch-tag-texts-test.sh
+bin/tag-sign-prepare.sh bin/tag-sign-kms.sh bin/patch-decide.py bin/patch-decide-test.sh
 """.split())
-if len(DECLARED) != 98: errs.append("declared list is not 98 paths: %d" % len(DECLARED))
+if len(DECLARED) != 107: errs.append("declared list is not 107 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -836,7 +838,10 @@ runeach fail "feature/x" "reviewer-version near-miss refused" \
 # REQ-CHAIN-006-AC1: Check has ONE script for all three phases and both chips, bin/check-phase.sh; the dispatcher and the per-phase targets are gone
 passfam "feature/x" "REQ-CHAIN-006: the one Check script" "bin/check-phase.sh"
 runeach fail "feature/x" "REQ-CHAIN-006: the old Check dispatcher, the per-phase targets and the arm64 target are not admitted" "bin/check-stage.sh" "bin/check-phase-scanners.sh" "bin/check-phase-acceptance.sh" "bin/check-phase-runtime.sh" "bin/check-phase-arm64.sh"
-
+passfam "feature/x" "REQ-REL-009: the patch tag signer, the tag jobs judge and their tests" "bin/tag-sign.py" "bin/tag-sign-test.sh" "bin/chain-tag-jobs-judge.py" "bin/chain-tag-jobs-test.sh" "bin/patch-tag-texts-test.sh"
+runeach fail "feature/x" "REQ-REL-009: tag signer near-miss siblings refused" "bin/tag-sign.sh" "bin/tag-sign-test.py" "bin/tag-sign.py.bak" "bin/chain-tag-jobs-judge.sh" "bin/chain-tag-jobs-test.py" "bin/patch-tag-texts-test.py"
+passfam "feature/x" "REQ-REL-009: the sign-tag step scripts and the patch decision script with its test" "bin/tag-sign-prepare.sh" "bin/tag-sign-kms.sh" "bin/patch-decide.py" "bin/patch-decide-test.sh"
+runeach fail "feature/x" "REQ-REL-009: near-miss siblings of the sign-tag step scripts and the patch decision script refused" "bin/tag-sign-prepare.py" "bin/tag-sign-kms.py" "bin/tag-sign-other.sh" "bin/tag-sign-prepare.sh.bak" "bin/Tag-Sign-Kms.sh" "bin/patch-decide.sh" "bin/patch-decide-test.py" "bin/patch-decide.py.bak" "bin/patch-decides.py" "bin/sub/patch-decide.py" "bin/patch-decide-other-test.sh"
 # Deferred (not admitted until the PR that adds them): the vendored tree.
 
 echo "----"

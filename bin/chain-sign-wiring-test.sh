@@ -3508,9 +3508,10 @@ for how in "permissions:\n      contents: read\n      id-token: write" "environm
   python3 - "$work/rel-govuln.yml" "$how" <<'PY'
 import sys
 t = open(sys.argv[1]).read()
-a = "  check-govulncheck:\n    if: ${{ inputs.mode != 'snapshot' }}\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n"
+GV = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true) }}"      # check-govulncheck's own if: it has no needs, so the ref guard keeps it off on main
+a = "  check-govulncheck:\n    if: " + GV + "\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n"
 assert a in t
-open(sys.argv[1], "w").write(t.replace(a, "  check-govulncheck:\n    if: ${{ inputs.mode != 'snapshot' }}\n    runs-on: ubuntu-24.04\n    " + sys.argv[2].replace("\\n", "\n") + "\n", 1))
+open(sys.argv[1], "w").write(t.replace(a, "  check-govulncheck:\n    if: " + GV + "\n    runs-on: ubuntu-24.04\n    " + sys.argv[2].replace("\\n", "\n") + "\n", 1))
 PY
   tg caught "$work/rel-govuln.yml" "R8 mutation: check-govulncheck, the one job that needs nothing of Build, holding an identity token or an environment is caught"
 done
@@ -5258,6 +5259,7 @@ d=$(crf cr_e '#!/usr/bin/env bash\necho a\r\n'); out=$(python3 "$work/loadcr.py"
 # pull-requests read; in release.yml job release (contents/packages write): (2) DOCKERHUB_USERNAME and (3) DOCKERHUB_TOKEN -> release-publish.sh and release-sign.sh, (4) GH_TOKEN (the run's own) -> release-publish.sh,
 # release-sign.sh and release-assets.sh (release-postverify.sh holds no token), all through bin/witnessed.sh. The sign jobs hold no row at all: no secret, no GH_TOKEN, no DOCKERHUB_*,
 # and exactly contents read and id-token write (REQ-REL-011-AC3, REQ-CHAIN-007-AC18). Every other name, place or script is refused.
+jrepl() { python3 -c 'import re,sys;p,j,a,b=sys.argv[1:5];a=a.replace("\\n","\n");b=b.replace("\\n","\n");s=open(p).read();m=re.search(r"\n  "+re.escape(j)+r":\n(?:(?!  \S).*\n)*",s);assert m,"jrepl: no job "+j;seg=m.group(0);assert a in seg,"jrepl: not found in "+j+": "+a;open(p,"w").write(s[:m.start()]+seg.replace(a,b,1)+s[m.end():])' "$@"; }
 repl() { python3 -c 'import sys;p,a,b=sys.argv[1:4];a=a.replace("\\n","\n");t=open(p).read();assert a in t,"not found: "+a;open(p,"w").write(t.replace(a,b.replace("\\n","\n"),1))' "$@"; }
 probe sec_release_extra "stored secret outside the named env entries" "a stored secret (secrets.X_KEY) in a step env of an added job of release.yml" "printf '  extra:\n    runs-on: ubuntu-24.04\n    steps:\n      - name: x\n        env:\n          X_KEY: \${{ secrets.X_KEY }}\n        run: bash bin/install-scanner.sh cosign\n' >> .github/workflows/release.yml"
 probe gh_build_other "GH_TOKEN is allowed only" "the run's token on a Build step other than the admission step" \
@@ -5281,13 +5283,12 @@ probe sixth_row "not in the closed secret list" "a sixth row: SIXTH_SECRET bound
 probe value_glued "must be exactly" "DOCKERHUB_TOKEN with a glued value" \
   "repl .github/workflows/release.yml 'DOCKERHUB_TOKEN: \${{ secrets.DOCKERHUB_TOKEN }}' 'DOCKERHUB_TOKEN: \${{ secrets.DOCKERHUB_TOKEN }}x'"
 probe value_gh_secret "must be exactly" "GH_TOKEN read from a stored secret instead of the run's own token" \
-  "repl .github/workflows/release.yml 'GH_TOKEN: \${{ github.token }}' 'GH_TOKEN: \${{ secrets.GH_TOKEN }}'"
+  "jrepl .github/workflows/release.yml build-apk 'GH_TOKEN: \${{ github.token }}' 'GH_TOKEN: \${{ secrets.GH_TOKEN }}'"
 probe value_swapped "must be exactly" "DOCKERHUB_USERNAME given the token's secret" \
   "repl .github/workflows/release.yml 'DOCKERHUB_USERNAME: \${{ secrets.DOCKERHUB_USERNAME }}' 'DOCKERHUB_USERNAME: \${{ secrets.DOCKERHUB_TOKEN }}'"
 # jobenv FILE JOB TEXT: puts TEXT (a job-level env block, \n for newlines) before the steps of job JOB in the copy
 jobenv() { python3 -c 'import re,sys;p,j,t=sys.argv[1:4];s=open(p).read();n=re.sub(r"(\n  "+re.escape(j)+r":\n(?:(?!  \S).*\n)*?)(    steps:)",lambda m:m.group(1)+t.replace("\\n","\n")+m.group(2),s,count=1);assert n!=s,"jobenv: no change";open(p,"w").write(n)' "$@"; }
 # jrepl FILE JOB OLD NEW: replaces the first OLD inside job JOB only (the four sign jobs carry the same lines)
-jrepl() { python3 -c 'import re,sys;p,j,a,b=sys.argv[1:5];a=a.replace("\\n","\n");b=b.replace("\\n","\n");s=open(p).read();m=re.search(r"\n  "+re.escape(j)+r":\n(?:(?!  \S).*\n)*",s);assert m,"jrepl: no job "+j;seg=m.group(0);assert a in seg,"jrepl: not found in "+j+": "+a;open(p,"w").write(s[:m.start()]+seg.replace(a,b,1)+s[m.end():])' "$@"; }
 # jstep FILE JOB TEXT: puts TEXT (a step block, \n for newlines) as the first step of job JOB in the copy
 jstep() { python3 -c 'import re,sys;p,j,t=sys.argv[1:4];s=open(p).read();n=re.sub(r"(\n  "+re.escape(j)+r":\n(?:(?!  \S).*\n)*?    steps:\n)",lambda m:m.group(1)+t.replace("\\n","\n"),s,count=1);assert n!=s,"jstep: no change";open(p,"w").write(n)' "$@"; }
 # wfenv FILE TEXT: puts TEXT (a top-level block) before the top-level permissions: of FILE

@@ -50,6 +50,8 @@ GO_INSTALL = "bash bin/install-scanner.sh go"          # the pinned toolchain go
 REC_LINE = 'bash bin/check-records-digests.sh "$LEG" check-records.json witness-scanners witness-acceptance witness-runtime'   # the script writes the runner's list of its three record folders itself, a file Sign compares (REQ-REL-011-AC1); no job output
 REC_ENV = {"LEG": "${{ matrix.runner }}"}
 SNAPSHOT_IF = "${{ inputs.mode != 'snapshot' }}"
+# check-govulncheck has no needs, so a push to main or the daily run (which run only the patch tag jobs) would start it: it also names the runs that start the chain
+GV_IF = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true) }}"
 CHECK_NEEDS = ["check-govulncheck", "build-assemble", "sign"]
 CHECK_STRATEGY = {"matrix": {"runner": RUNNERS}}
 GV_BUILD = "check-govulncheck"   # REQ-REL-011-AC1 (advisor, Oct 23; Witness review F9): the job with no credential that builds govulncheck; the check job (no identity token) only installs what it hands over
@@ -207,8 +209,9 @@ def gv_job(j):
 
 def snapshot_guard(label, j):
     """The two check jobs may carry an `if`, only the snapshot guard (the snapshot mode builds and checks nothing of a release)."""
-    if "if" in j and j["if"] != SNAPSHOT_IF:
-        return ["%s may carry only the `if` %s, found %r" % (label, SNAPSHOT_IF, j["if"])]
+    want = GV_IF if label == GV_BUILD else SNAPSHOT_IF
+    if (label == GV_BUILD and "if" not in j) or ("if" in j and j["if"] != want):
+        return ["%s may carry only the `if` %s, found %r" % (label, want, j["if"])]
     return []
 
 

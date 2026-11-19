@@ -36,8 +36,17 @@ for f in release-key-manifest.json release-key-manifest.sig; do
   [ -f ".github/policy/$f" ] && [ ! -L ".github/policy/$f" ] || { echo "release-stage: .github/policy/$f is missing: the signed key manifest is attached to every release" >&2; exit 1; }
 done
 python3 -I -B bin/release-metadata.py bind-archives --version "${rel#v}" --digests witness-build/digests.json --dist dist
-rm -rf release-upload
+rm -rf release-upload release-notes.txt
 mkdir release-upload
+# The notes of the GitHub release, written outside release-upload/ (the gate refuses a stray file there) for release-assets, which reads no tag: a generated patch tag
+# carries its notes (exit 0), any other tag keeps the fixed evidence text (exit 1), and any other exit fails the step before anything is created or uploaded.
+status=0
+git cat-file tag "$rel" 2>/dev/null | python3 -I -B bin/patch-decide.py tag-notes > release-notes.txt || status=$?
+case $status in
+  0) ;;
+  1) printf '%s' "Evidence: see docs/verify-release.md for the verification commands of this release." > release-notes.txt ;;
+  *) rm -f release-notes.txt; echo "release-stage: the notes of $rel are refused" >&2; exit 1 ;;
+esac
 # Everything attached comes from an explicit inventory, and a release name has exactly one origin (round 1 F4): a second file under a name already
 # staged, or a file in a record directory that is not named below, stops the step before anything is gathered.
 stage() { # stage SRC NAME

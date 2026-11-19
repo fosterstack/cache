@@ -118,7 +118,7 @@ ROWS = {
     "bin/release-sign-verify.sh": {"tools": ["jq", "python3", "sha256sum", "trap"], "signs": False, "runs": ["bin/chain-verify.py"]},   # row 2: every signature is checked before release-publish logs in   # S2: Release checks Sign's signatures (bundle-check) and pushes them (cosign login, attach, verify); it signs nothing
     "bin/release-signatures.sh": {"tools": ["bash", "git", "jq", "python3", "sha256sum", "trap"], "signs": "other", "runs": ["bin/build-admit.py", "bin/chain-verify.py", "bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py", "bin/apk-tool.py", "bin/with-aws-token.sh"]},   # S2: the Sign job's release step: the one place the release KMS key is reached
     "bin/release-gate.py":    {"tools": [], "signs": False, "runs": []},   # AC20: the coverage gate alone, so release-assets.sh (a secret holder) runs no build-admit.py
-    "bin/release-stage.sh":   {"tools": ["python3"], "signs": False, "runs": ["bin/build-admit.py", "bin/release-gate.py", "bin/release-metadata.py"]},   # B-F22: gathers the release's files before release-postverify; no credential, no gh
+    "bin/release-stage.sh":   {"tools": ["git", "python3"], "signs": False, "runs": ["bin/build-admit.py", "bin/patch-decide.py", "bin/release-gate.py", "bin/release-metadata.py"]},   # B-F22: gathers the release's files before release-postverify and writes the release notes (a generated patch tag's, via patch-decide.py tag-notes, REQ-REL-009-AC8); no credential, no gh
     "bin/release-assets.sh":  {"tools": ["gh", "python3"], "signs": False, "runs": ["bin/release-gate.py"]},   # B-F22: creates the release after release-postverify has passed
     "bin/release-postverify.sh": {"tools": ["bash", "python3"], "signs": False, "runs": ["bin/release-postverify.py", "bin/release-stage.sh"]},   # rule 79 amended; runs the staging first
     "bin/release-postverify.py": {"tools": ["at", "command", "cosign", "exec", "gh", "jq", "just"], "signs": False, "runs": ["bin/build-admit.py", "bin/chain-verify.py", "bin/guide_plan_judge.py"]},   # runs only verify forms, judged first
@@ -518,13 +518,24 @@ def graph(path):
             bad.append("job %s has a status function in its if (it would run after a failed predecessor): %r" % (n, j.get("if")))
         if "continue-on-error" in j or "secrets" in j:
             bad.append("job %s has continue-on-error or secrets" % n)
-    # no job of release.yml creates a tag or a release, decide included (handoff 0713 P8: nothing here signs a tag, so
-    # nothing cuts one)
-    rest = json.dumps(jobs)
+    # the tag jobs of the automatic patch release (REQ-REL-009-AC5): decide -> sign-tag -> cut, and patch-notes after cut. The shape of each
+    # job is judged by bin/chain-tag-jobs-test.sh; here only the graph and the one rule that bounds every other job: no job but `cut` creates or
+    # pushes a tag or makes a release (decide, sign-tag, patch-notes and the chain jobs included)
+    for n in ("decide", "sign-tag", "cut", "patch-notes"):
+        if n not in jobs:
+            bad.append("release.yml has no job %s (the automatic patch release: decide, sign-tag, cut, patch-notes)" % n)
+    if bad:
+        return bad
+    for who, want in (("sign-tag", {"decide"}), ("cut", {"decide", "sign-tag"}), ("patch-notes", {"decide", "cut"})):
+        got = jobs[who].get("needs", [])
+        got = {got} if isinstance(got, str) else set(got)
+        if not want <= got:
+            bad.append("%s must need at least %s, found %s" % (who, " and ".join(sorted(want)), sorted(got)))
     # matches `gh api repos/o/r/git/refs -f ref=refs/tags/v9.9.9` (the refs API makes a tag); refuses nothing in
     # `gh api repos/o/r/git/commits/abc` (reading a commit makes no tag)
-    if re.search(r"git tag|git push|git/(refs|tags)|create-release|gh release create", rest):
-        bad.append("release.yml creates a tag or a release (git tag, git push, the refs API or gh release create): no job may")
+    for n, j in jobs.items():
+        if n != "cut" and re.search(r"git tag|git push|git/(refs|tags)|create-release|gh release create", json.dumps(j)):
+            bad.append("job %s of release.yml creates a tag or a release (git tag, git push, the refs API or gh release create): only the cut job may push a tag" % n)
     return bad
 
 

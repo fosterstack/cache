@@ -898,13 +898,53 @@ mappings:
   - ac: REQ-SCAN-010-AC8
     evidence:
       - { type: shell-test, ref: "bin/vex-forms-test.sh" }
+  - ac: REQ-REL-009-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
+  - ac: REQ-REL-009-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
+      - { type: shell-test, ref: "bin/chain-tag-jobs-test.sh" }
+  - ac: REQ-REL-009-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
+      - { type: shell-test, ref: "bin/chain-tag-jobs-test.sh" }
+  - ac: REQ-REL-009-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
+      - { type: shell-test, ref: "bin/chain-tag-jobs-test.sh" }
+      - { type: shell-test, ref: "bin/tag-sign-test.sh" }
+  - ac: REQ-REL-009-AC11
+    evidence:
+      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
+  - ac: REQ-REL-009-AC14
+    evidence:
+      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
+  - ac: REQ-REL-009-AC15
+    evidence:
+      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
+  - ac: REQ-REL-009-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
+      - { type: shell-test, ref: "bin/chain-tag-jobs-test.sh" }
   - ac: REQ-REL-009-AC6
     evidence:
       - { type: shell-test, ref: "bin/admission-tag-signer-test.sh" }
       - { type: shell-test, ref: "bin/chain-build-admit-test.sh" }
+      - { type: shell-test, ref: "bin/tag-sign-test.sh" }
+      - { type: shell-test, ref: "bin/chain-tag-jobs-test.sh" }
+      - { type: shell-test, ref: "bin/patch-tag-texts-test.sh" }
+  - ac: REQ-REL-009-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/chain-tag-jobs-test.sh" }
+      - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-no-keyless-tag-test.sh" }
+      - { type: shell-test, ref: "bin/patch-tag-texts-test.sh" }
+      - { type: shell-test, ref: "bin/tag-sign-test.sh" }
   - ac: REQ-REL-009-AC13
     evidence:
       - { type: shell-test, ref: "bin/admission-tag-signer-test.sh" }
+      - { type: shell-test, ref: "bin/patch-tag-texts-test.sh" }
   - ac: REQ-REL-010-AC1
     evidence:
       - { type: shell-test, ref: "bin/vex-index-test.sh" }

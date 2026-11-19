@@ -31,7 +31,10 @@ ALLOWED = {("agent-review-gate.yml", "publish"), ("agent-review-gate.yml", "swee
            # the records sweep (handoff 0681): mints the auditor App's token (contents write, this repository) to add
            # the vendored tree and provenance records to a dependency-bump branch; the agent environment keeps it
            # on main
-           ("dependabot-reviewer.yml", "vendor-records")}
+           ("dependabot-reviewer.yml", "vendor-records"),
+           # the automatic patch release (REQ-REL-009): cut pushes the signed tag and patch-notes opens the changelog pull request, each with the auditor App's token in the
+           # main-only agent environment; no other job of release.yml holds the App's secrets
+           ("release.yml", "cut"), ("release.yml", "patch-notes")}
 found = set()
 for f in sorted(glob.glob(os.path.join(tree, ".github/workflows/*.y*ml"))):
     name = os.path.basename(f)
@@ -254,6 +257,8 @@ case_ workflow-env           bad "d['env'] = {'INPUT_PERMISSION-checks': 'write'
 mk_tree() { local t="$work/tree-$1"; mkdir -p "$t/.github/workflows"; cp "$root"/.github/workflows/*.yml "$t/.github/workflows/"; echo "$t"; }
 t=$(mk_tree sidecar); printf 'on: workflow_dispatch\njobs:\n  x:\n    runs-on: ubuntu-latest\n    environment: agent\n    steps:\n      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1\n        with:\n          app-id: ${{ secrets.AUDITOR_APP_ID }}\n          permission-checks: write\n' > "$t/.github/workflows/probe-sidecar.yml"
 case_ sidecar-workflow       bad "" "$t"
+t=$(mk_tree third-release-job); printf '\n  third-app-job:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo "$ID"\n        env:\n          ID: ${{ secrets.AUDITOR_APP_ID }}\n' >> "$t/.github/workflows/release.yml"
+case_ third-release-job-app-id bad "" "$t"
 t=$(mk_tree tojson); printf 'on: push\njobs:\n  y:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n        env:\n          S: ${{ toJSON(secrets) }}\n' > "$t/.github/workflows/dump.yml"
 case_ secrets-dump-elsewhere bad "" "$t"
 # Codex #157 r3 (SEC-157-02 B): an expression-valued environment with toJson (any case); a workflow-level secret env

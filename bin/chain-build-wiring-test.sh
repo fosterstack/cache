@@ -1513,6 +1513,7 @@ import sys
 w = sys.argv[1]
 G = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"
 S = "inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))"
+GV_IF = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true) }}"   # check-govulncheck has no needs: the ref guard keeps it off on main
 SIGN_IF, AFTER_IF, CHECK_IF = "${{ %s }}" % S, "${{ %s && !contains(github.ref_name, '-') }}" % S, "${{ inputs.mode != 'snapshot' }}"
 KMS = "    env:\n      AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n      AWS_REGION: us-east-1\n      RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n"
 ADMIT = {"contents": "read", "actions": "read", "checks": "read", "statuses": "read", "pull-requests": "read"}
@@ -1531,13 +1532,13 @@ text = ("name: Release\non:\n  push:\n    tags: [\"v*\"]\n  workflow_dispatch:\n
         + job("sign", "build-assemble", SIGN_IF, SIGNP, "sign", KMS)
         + job("rebuild-apk", "build-assemble") + job("rebuild-assemble", "rebuild-apk")
         + job("sign-rebuild", "[build-assemble, rebuild-assemble]", SIGN_IF, SIGNP, "sign", KMS)
-        + job("check-govulncheck", None, CHECK_IF) + job("check", "[check-govulncheck, build-assemble, sign]", CHECK_IF)
+        + job("check-govulncheck", None, GV_IF) + job("check", "[check-govulncheck, build-assemble, sign]", CHECK_IF)
         + job("sign-check", "[build-assemble, check]", SIGN_IF, SIGNP, "sign", KMS)
         + job("release-compare", "[check, sign, sign-rebuild, sign-check]") + job("release-verify", "release-compare")
         + job("release", "[release-verify, release-compare]", AFTER_IF, {"contents": "write", "packages": "write"}, "release",
               "    concurrency:\n      group: release-publish\n      cancel-in-progress: false\n")
         + """  decide:
-    if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
+    if: ${{ inputs.mode != 'snapshot' && github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1545,9 +1546,27 @@ text = ("name: Release\non:\n  push:\n    tags: [\"v*\"]\n  workflow_dispatch:\n
       issues: write
     steps:
       - run: echo decide
-  patch-notes:
+  sign-tag:
     needs: decide
-    if: ${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}
+    if: ${{ needs.decide.outputs.tag != '' }}
+    runs-on: ubuntu-24.04
+    environment: sign
+    permissions:
+      contents: read
+      id-token: write
+    steps: []
+  cut:
+    needs: [decide, sign-tag]
+    if: ${{ needs.decide.outputs.tag != '' }}
+    runs-on: ubuntu-latest
+    environment: agent
+    permissions:
+      contents: read
+    steps:
+      - run: echo ${{ secrets.AUDITOR_APP_ID }}
+  patch-notes:
+    needs: [decide, cut]
+    if: ${{ needs.decide.outputs.tag != '' }}
     runs-on: ubuntu-latest
     environment: agent
     permissions:
@@ -1579,7 +1598,7 @@ OLDDRY="\${{ !cancelled() && (needs.admission.result == 'success' || inputs.dry-
 TAGONLY="\${{ startsWith(github.ref, 'refs/tags/v') }}"
 GUARD_S="inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))"
 SIGNIF="\${{ $GUARD_S }}"
-PNIF="\${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}"
+PNIF="\${{ needs.decide.outputs.tag != '' }}"
 RCS=" && !contains(github.ref_name, '-')"
 # needs: each job has exactly its needs (REQ-CHAIN-005-AC5, rulings 8): Rebuild needs Build only, Check needs check-govulncheck, Build and Sign, the Release jobs follow in one line
 gr n1  "005-AC5 rebuild-apk waits for sign (Rebuild needs Build only: it also runs in snapshot mode)" '  rebuild-apk:\n    needs: build-assemble' '  rebuild-apk:\n    needs: [build-assemble, sign]' "rebuild-apk must need exactly"
@@ -1630,7 +1649,9 @@ gr i24 "005-AC5 release-compare with an if (it runs after Check and the sign job
 gr i25 "005-AC5 release-verify with an if" '  release-verify:\n    needs: release-compare\n' '  release-verify:\n    needs: release-compare\n    if: ${{ !contains(github.ref_name, '"'-'"') }}\n' "release-verify must carry no if"
 gr i26 "005-AC5 check without its mode condition (it would run in a snapshot call)" "  check:\n    needs: [check-govulncheck, build-assemble, sign]\n    if: \${{ inputs.mode != 'snapshot' }}\n" "  check:\n    needs: [check-govulncheck, build-assemble, sign]\n" "check must carry exactly the if"
 gr i27 "005-AC5 check with the guard S (the Check jobs carry exactly inputs.mode != 'snapshot')" "  check:\n    needs: [check-govulncheck, build-assemble, sign]\n    if: \${{ inputs.mode != 'snapshot' }}\n" "  check:\n    needs: [check-govulncheck, build-assemble, sign]\n    if: $SIGNIF\n" "check must carry exactly the if"
-gr i28 "005-AC5 check-govulncheck without its mode condition" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' }}\n" "  check-govulncheck:\n" "check-govulncheck must carry exactly the if"
+gr i28 "005-AC5 check-govulncheck without its mode condition" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true) }}\n" "  check-govulncheck:\n" "check-govulncheck must carry exactly the if"
+gr i28b "005-AC5 check-govulncheck back to the snapshot-only if (it has no needs: it would run on every push to main)" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true) }}\n" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' }}\n" "check-govulncheck must carry exactly the if"
+gr i28c "005-AC5 check-govulncheck with a guard that lets a main push through" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true) }}\n" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' && github.event_name != 'workflow_dispatch' }}\n" "check-govulncheck must carry exactly the if"
 gr i29 "005-AC5 check that survives a failed sign (if: always())" "  check:\n    needs: [check-govulncheck, build-assemble, sign]\n    if: \${{ inputs.mode != 'snapshot' }}\n" "  check:\n    needs: [check-govulncheck, build-assemble, sign]\n    if: \${{ always() }}\n" "check must carry exactly the if"
 # environment and permissions (ruling 1: the three sign jobs are the only ones in the environment sign; the release job holds no KMS role and no id-token)
 AFTERIF="\${{ $GUARD_S$RCS }}"
@@ -1684,12 +1705,12 @@ gr g19 "005-AC5 a hostile-* job that can write" '  hostile-verify:\n    needs: s
 gr g27 "005-AC5 hostile-verify with environment: agent" "  hostile-verify:\n    needs: sign" "  hostile-verify:\n    environment: agent\n    needs: sign" "may not name an environment"
 HV='  hostile-verify:\n    needs: sign\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n    steps:'
 gr g28 "005-AC5 hostile-verify with an app-token step" "$HV []" "$HV\n      - run: echo \${{ secrets.AUDITOR_APP_PRIVATE_KEY }}" "may not use secrets."
-gr g29 "005-AC5 patch-notes needing sign as well as decide" "  patch-notes:\n    needs: decide" "  patch-notes:\n    needs: [decide, sign]" "patch-notes must need exactly"
+gr g29 "005-AC5 patch-notes needing sign as well as decide" "  patch-notes:\n    needs: [decide, cut]" "  patch-notes:\n    needs: [decide, cut, sign]" "patch-notes must need exactly"
 gr g30 "005-AC5 patch-failed in the environment that holds the App secrets" "    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n      issues: write\n    steps: []" "    runs-on: ubuntu-latest\n    environment: agent\n    permissions:\n      contents: read\n      issues: write\n    steps: []" "may not name an environment"
 gr g31 "005-AC5 decide whose if is widened (it would run on a tag)" "github.ref == 'refs/heads/main' && " "" "must carry exactly the if"
-gr g32 "005-AC5 patch-notes in another environment" "    environment: agent\n    permissions:\n      contents: read\n    steps:\n      - run: echo \${{ secrets.AUDITOR_APP_ID }}" "    environment: release\n    permissions:\n      contents: read\n    steps:\n      - run: echo \${{ secrets.AUDITOR_APP_ID }}" "may name only environment: agent"
-gr g42 "005-AC5 patch-notes whose if is always() (it would open the changelog PR without a tag)" "if: $PNIF" "if: always()" "must carry exactly the if"
-gr g43 "005-AC5 patch-notes without its if" "    needs: decide\n    if: $PNIF" "    needs: decide" "must carry exactly the if"
+gr g32 "005-AC5 patch-notes in another environment" "    needs: [decide, cut]\n    if: $PNIF\n    runs-on: ubuntu-latest\n    environment: agent\n    permissions:\n      contents: read\n    steps:\n      - run: echo \${{ secrets.AUDITOR_APP_ID }}" "    needs: [decide, cut]\n    if: $PNIF\n    runs-on: ubuntu-latest\n    environment: release\n    permissions:\n      contents: read\n    steps:\n      - run: echo \${{ secrets.AUDITOR_APP_ID }}" "may name only environment: agent"
+gr g42 "005-AC5 patch-notes whose if is always() (it would open the changelog PR without a tag)" "  patch-notes:\n    needs: [decide, cut]\n    if: $PNIF" "  patch-notes:\n    needs: [decide, cut]\n    if: always()" "must carry exactly the if"
+gr g43 "005-AC5 patch-notes without its if" "    needs: [decide, cut]\n    if: $PNIF" "    needs: [decide, cut]" "must carry exactly the if"
 gr g45 "005-AC5 the dry-run dispatch input is a string (inputs.dry-run == true would be false and skip the dry run)" \
        "      dry-run:\n        type: boolean" "      dry-run:\n        type: string" "must be type: boolean"
 gr g46 "005-AC5 the dry-run dispatch input has no type (the default is string)" "      dry-run:\n        type: boolean\n        default: false" \

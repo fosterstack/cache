@@ -27,6 +27,9 @@ EXEMPT = [
     (r"^test-evidence/(mappings|unmapped)\.yaml$",
      "the requirements traceability files: they name test paths as metadata and hold no auditor code "
      "(REQ-AUD-18 AC1 amendment, owner Oct 2)"),
+    (r"^bin/patch-decide(\.py|-test\.sh)$",
+     "the patch-release classifier and its test: they name the auditor directory as data and hold no auditor code "
+     "(REQ-AUD-18 AC1 amendment, owner Oct 3)"),
     (r"^\.github/supply-chain-exceptions\.json$",
      "the pin rulings: they name .github/agent/ files as the things they pin and hold no auditor code"),
     # exactly the output contract (auditor-run.py stages these paths; the allowlist scopes their

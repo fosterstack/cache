@@ -14,7 +14,9 @@ if [ "${#files[@]}" = 0 ]; then echo "release-assets: nothing to attach" >&2; ex
 # Only a definite "release not found" creates a release; any other failure of the view stops here (round 1 R3).
 if ! view_err=$(gh release view "$rel" 2>&1 > /dev/null); then
   [[ "$view_err" == *"release not found"* ]] || { echo "release-assets: cannot tell whether release $rel exists: $view_err" >&2; exit 1; }
-  gh release create "$rel" --title "fscache $rel" --notes "Evidence: see docs/verify-release.md for the verification commands of this release." --verify-tag
+  # the notes are release-stage's (a generated patch tag's notes, else the fixed evidence text); this step reads no tag object
+  [ -f release-notes.txt ] && [ ! -L release-notes.txt ] || { echo "release-assets: release-notes.txt, written by release-stage, is missing" >&2; exit 1; }
+  gh release create "$rel" --title "fscache $rel" --notes-file release-notes.txt --verify-tag
 fi
 gh release upload "$rel" "${files[@]}"
 rm -rf release-published

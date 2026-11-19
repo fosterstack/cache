@@ -482,7 +482,14 @@ def conj(cond):
     return out
 # the jobs that may run in a dry run: Build and Rebuild (gate G is on build-freeze), check-govulncheck and the persona leg (its own condition asks for a release-candidate tag); every other job is skipped through its needs or carries its own gate
 OPEN = {"build-freeze", "build-apk", "build-assemble", "rebuild-apk", "rebuild-assemble", "check-govulncheck", "persona-uat-rc"}
-SIGN_JOBS = ("sign", "sign-rebuild", "sign-check", "sign-release")      # the four jobs of the environment sign (ruling 1 of cache#921)
+SIGN_JOBS = ("sign", "sign-rebuild", "sign-check", "sign-release")      # the four jobs of the environment sign (ruling 1 of cache#921); sign-tag is NOT one of them: it is a tag job, below
+# the automatic patch release's inline tag jobs (REQ-REL-009): decide runs on main only (a push or the schedule of release.yml itself) and nowhere else; the three after it run only when decide named a tag
+DECIDE_IF = "${{ inputs.mode != 'snapshot' && github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run && " + WFREF + " }}"
+TAG_DUE_IF = "${{ needs.decide.outputs.tag != '' }}"
+TAG_JOBS = {"decide": ([], DECIDE_IF), "sign-tag": (["decide"], TAG_DUE_IF), "cut": (["decide", "sign-tag"], TAG_DUE_IF), "patch-notes": (["decide", "cut"], TAG_DUE_IF)}
+# check-govulncheck has no needs and runs in a dry run: its ref guard keeps it off in a run on main (push or schedule), where only the tag jobs may run
+CGV_IF = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true) }}"
+norm = lambda s: re.sub(r"\s+", " ", str(s)).strip()
 CHECK_IF = "${{ inputs.mode != 'snapshot' }}"      # the Check jobs carry exactly this and run after Sign through needs (REQ-CHAIN-005-AC5)
 POLICY_MAKE = r'python3 bin/chain-verify\.py policy make --template \.github/policy/release-policy\.template\.json --ref "\$GITHUB_REF" --out policy\.json'
 WITH = lambda s: s.get("with") or {}
@@ -530,8 +537,8 @@ else:
     if "workflow_dispatch" not in (rl.get("on") or {}): bad.append("release.yml has no workflow_dispatch (the dry run)")
     # final batch R-d: among jobs named hostile* or sign* (any case) only sign, sign-rebuild (the Witness move: Sign's second call, for Rebuild's records), sign-check (the third call, for Check's records), sign-release (the fourth, after Release publishes), hostile-verify and hostile-verdict may exist
     for _jn in jobs:
-        if str(_jn).lower().startswith(("hostile", "sign")) and _jn not in SIGN_JOBS + ("hostile-verify", "hostile-verdict"):
-            bad.append("release.yml has a job %r: among hostile*/sign* jobs only sign, sign-rebuild, sign-check, sign-release, hostile-verify and hostile-verdict are allowed" % _jn)
+        if str(_jn).lower().startswith(("hostile", "sign")) and _jn not in SIGN_JOBS + ("hostile-verify", "hostile-verdict") + tuple(TAG_JOBS):
+            bad.append("release.yml has a job %r: among hostile*/sign* jobs only sign, sign-rebuild, sign-check, sign-release, hostile-verify, hostile-verdict and the tag job sign-tag are allowed" % _jn)
     hv, hd = jobs.get("hostile-verify"), jobs.get("hostile-verdict")
     if not hv or not hd: bad.append("jobs hostile-verify and hostile-verdict are required")
     else:
@@ -636,6 +643,7 @@ else:
         STATUS = re.compile(r"always\(\)|failure\(\)|cancelled\(\)|success\(\)")
         guarded = set()      # the jobs that cannot run in a dry run or on a branch: their own if carries the push event or the dry-run conjunct and the positive tag conjunct, or they run only after such a job
         for jn, j in jobs.items():
+            if jn in TAG_JOBS: continue       # the tag jobs are judged by name below, with their exact needs and if
             if str(j.get("uses", "")).split("/")[-1].startswith("stage-"): bad.append("the job %s calls %s: no stage-*.yml file exists, release.yml is the one file" % (jn, j.get("uses")))
             if jn in OPEN:
                 if j.get("uses") and not (jn == "persona-uat-rc" and j.get("uses") == "./.github/workflows/persona-uat.yml"): bad.append("the open job %s may not call a workflow (a job named like a build job that calls anything else is not exempt from the dry-run gate): %r" % (jn, j.get("uses")))
@@ -647,7 +655,7 @@ else:
                 if j.get("permissions") != {"contents": "read"}: bad.append("the job %s must have permissions exactly {contents: read}" % jn)
                 continue
         # a job is guarded by its own if (explicit, closed form) or, with no if of its own or exactly the Check condition, by a guarded job it needs
-        pending = [jn for jn in jobs if jn not in OPEN and not jn.startswith("hostile-")]
+        pending = [jn for jn in jobs if jn not in OPEN and not jn.startswith("hostile-") and jn not in TAG_JOBS]
         grow = True
         while grow:
             grow = False
@@ -666,6 +674,68 @@ else:
         BUILD_IF = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"
         if re.sub(r"\s+", "", str(bj.get("if", ""))) != re.sub(r"\s+", "", BUILD_IF): bad.append("the build-freeze job must carry `if: %s` (else a dry run skips it, and with it everything after it, and is green with no checks): %r" % (BUILD_IF, bj.get("if")))
         if need(bj): bad.append("the build-freeze job needs nothing (admission is the first step of build-apk, not a job): %r" % need(bj))
+    # ---- the tag jobs of the automatic patch release, by name (REQ-REL-009): decide, sign-tag, cut and patch-notes are release.yml's inline jobs; no job of the chain is among them and they are not Sign jobs ----
+    nd = lambda j: [j.get("needs")] if isinstance(j.get("needs"), str) else list(j.get("needs") or [])
+    for tn, (tneeds, tif) in TAG_JOBS.items():
+        tj = jobs.get(tn)
+        if tj is None: bad.append("release.yml has no job %s (the automatic patch release: decide, sign-tag, cut, patch-notes)" % tn); continue
+        if tj.get("uses"): bad.append("the tag job %s calls a workflow: it is an inline job of release.yml" % tn)
+        if sorted(nd(tj)) != sorted(tneeds): bad.append("the tag job %s must need exactly %s, found %s" % (tn, tneeds, nd(tj)))
+        if "if" not in tj or norm(tj.get("if")) != norm(tif): bad.append("the tag job %s must carry exactly `if: %s`, found %r" % (tn, tif, tj.get("if")))
+    sj = jobs.get("sign")
+    if sj is not None and WFREF not in (conj(str(sj.get("if", ""))) or []): bad.append("the sign job does not carry guard S's workflow_ref text %s: decide's last conjunct must be the same text the sign jobs use" % WFREF)
+    if "check-govulncheck" in jobs and norm(jobs["check-govulncheck"].get("if")) != norm(CGV_IF):
+        bad.append("check-govulncheck has no needs, so it runs in every run unless its own if keeps it off: it must carry exactly `if: %s`, found %r" % (CGV_IF, jobs["check-govulncheck"].get("if")))
+    # every other job stays OFF in a run on main (a push or the daily schedule): the jobs that run are decide and, when decide names a tag, the three after it. The `if:` of each job is evaluated for the run
+    # (a missing input is null; a status function lets a job run after skipped needs; the results of other jobs are taken as the worst case), and a job runs only when every job it needs ran.
+    class _W:
+        def __getattr__(s, k): return s
+        def __eq__(s, o): return True
+        def __ne__(s, o): return True
+        def __bool__(s): return True
+    class _Ctx:
+        def __init__(s, d, wild=False): s.d, s.wild = d, wild
+        def __getattr__(s, k):
+            v = s.d.get(k, _W() if s.wild else "")
+            return _Ctx(v, s.wild) if isinstance(v, dict) else v
+    def evaluate(cond, gh, ins, ran):
+        e = re.fullmatch(r"\$\{\{\s*(.*?)\s*\}\}", str(cond).strip(), re.S).group(1)
+        parts = re.split(r"('(?:[^']|'')*')", e)
+        for i in range(0, len(parts), 2):
+            p = parts[i].replace("&&", " and ").replace("||", " or ").replace("inputs.dry-run", "inputs.dry_run").replace("needs.*.result", "needs_all")
+            p = re.sub(r"!(?!=)", " not ", p); p = re.sub(r"\bfalse\b", "False", p); p = re.sub(r"\btrue\b", "True", p)
+            p = re.sub(r"\b(always|failure|cancelled|success)\(\)", "True", p)
+            parts[i] = p
+        env = {"github": _Ctx(gh), "inputs": _Ctx({"dry_run": ins.get("dry-run", ""), "mode": ins.get("mode", "")}), "vars": _Ctx({}),
+               "needs": _Ctx({"decide": {"outputs": {"tag": "v0.3.1"}}}, True), "needs_all": _W(),
+               "startsWith": lambda a, b: str(a).lower().startswith(str(b).lower()), "format": lambda f, *a: f.format(*a),
+               "contains": lambda a, b: True if isinstance(a, _W) else str(b) in str(a)}
+        return eval("".join(parts), {"__builtins__": {}}, env)
+    def which_run(event, ref, wf, mode=None, dry=None):
+        gh = {"event_name": event, "ref": ref, "workflow_ref": "fosterstack/cache/.github/workflows/%s@%s" % (wf, ref), "repository": "fosterstack/cache"}
+        ins = {k: v for k, v in (("mode", mode), ("dry-run", dry)) if v is not None}
+        ran, grow = set(), True
+        while grow:
+            grow = False
+            for jn, j in jobs.items():
+                if jn in ran: continue
+                cond = j.get("if")
+                try: on = True if cond is None else bool(evaluate(cond, gh, ins, ran))
+                except Exception as ex: bad.append("the if of the job %s cannot be read as a workflow expression (%s): %r" % (jn, type(ex).__name__, cond)); on = False; ran.add(jn)
+                waived = cond is not None and re.search(r"\b(always|failure|cancelled)\(\)", str(cond))
+                if on and (waived or all(n in ran for n in nd(j))): ran.add(jn); grow = True
+        return ran
+    for label, args in (("a push to main", ("push", "refs/heads/main", "release.yml")), ("the daily schedule on main", ("schedule", "refs/heads/main", "release.yml"))):
+        ran = which_run(*args)
+        extra = sorted(ran - set(TAG_JOBS))
+        if extra: bad.append("in a run on main (%s) these jobs run, and only decide and the tag jobs may: %s (a job with no needs and no ref guard runs everywhere)" % (label, extra))
+        if "decide" in jobs and "decide" not in ran: bad.append("decide does not run on %s" % label)
+    for label, args in (("a v* tag push", ("push", "refs/tags/v0.3.1", "release.yml")), ("a dispatch on main", ("workflow_dispatch", "refs/heads/main", "release.yml", None, False)),
+                        ("a dry run", ("workflow_dispatch", "refs/heads/main", "release.yml", None, True)),
+                        ("a snapshot call from scan.yml on a main push", ("push", "refs/heads/main", "scan.yml", "snapshot")),
+                        ("a snapshot call whose workflow_ref reads release.yml", ("push", "refs/heads/main", "release.yml", "snapshot"))):
+        late = sorted(set(which_run(*args)) & set(TAG_JOBS))
+        if late: bad.append("the tag jobs %s run on %s: they run on main only" % (late, label))
 # Release makes its policy in its first step, bin/release-verify.sh (every Release step is a committed script under Witness)
 cands = [os.path.join(root, "bin/release-verify.sh")]
 if not os.path.exists(cands[0]): bad.append("bin/release-verify.sh missing (Release makes its policy there)")
@@ -791,6 +861,34 @@ EOF
     runs-on: ubuntu-24.04
     steps:
       - run: echo publish
+  check-govulncheck:
+    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true) }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo govulncheck
+  decide:
+    if: \${{ inputs.mode != 'snapshot' && github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo decide
+  sign-tag:
+    needs: decide
+    if: \${{ needs.decide.outputs.tag != '' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo sign-tag
+  cut:
+    needs: [decide, sign-tag]
+    if: \${{ needs.decide.outputs.tag != '' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo cut
+  patch-notes:
+    needs: [decide, cut]
+    if: \${{ needs.decide.outputs.tag != '' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo patch-notes
 EOF
   } > "$d/.github/workflows/release.yml"
   { echo "# makes five attempts; writes raw material only"; for a in $attempts; do case $a in read_sign_token|read_sign_key) printf "attempt_%s() { printf '# transcript: tried %s by reading the runner environment and the usual paths\\\\ncurl: (6) could not resolve host\\\\n' > attempts/%s.txt; }\\n" "$a" "$a" "$a" ;; *) printf 'attempt_%s() { :; }\n' "$a" ;; esac; done; for a in $attempts; do printf 'attempt_%s\n' "$a"; done; } > "$d/bin/chain-hostile-step.sh"
@@ -1268,13 +1366,13 @@ PY
 wexpect caught "wiring: any other job (extra) without the dry-run gate still runs in a dry run" "$d"
 d=$(mk w_okjobs); python3 - "$(rel "$d")" <<'PY'
 import sys
-t = open(sys.argv[1]).read() + "  rebuild-apk:\n    needs: build-assemble\n    runs-on: ubuntu-24.04\n    steps:\n      - run: true\n  check-govulncheck:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: true\n"
+t = open(sys.argv[1]).read() + "  rebuild-apk:\n    needs: build-assemble\n    runs-on: ubuntu-24.04\n    steps:\n      - run: true\n"
 open(sys.argv[1], "w").write(t)
 PY
-wexpect ok "wiring: the Rebuild and check-govulncheck jobs run in a dry run (allowlist: build-freeze, build-apk, build-assemble, rebuild-apk, rebuild-assemble, check-govulncheck, persona-uat-rc, hostile-*)" "$d"
+wexpect ok "wiring: the Rebuild job runs in a dry run, as does check-govulncheck with its guard (allowlist: build-freeze, build-apk, build-assemble, rebuild-apk, rebuild-assemble, check-govulncheck, persona-uat-rc, hostile-*)" "$d"
 d=$(mk w_tracked); echo '{"attempts":[]}' > "$d/hostile-results.json"; wexpect caught "wiring: a hostile-results.json is checked into the tree" "$d"
 d=$(mk w_nodry); sed -i.bak "s/if: .*!inputs.dry-run && startsWith(github.ref, 'refs\/tags\/v') }}\$/if: true/" "$(rel "$d")"; wexpect caught "wiring: the release job still runs in a dry run" "$d"
-d=$(mk w_orgate); sed -i.bak "s/!inputs.dry-run \&\& startsWith/!inputs.dry-run || true \&\& startsWith/" "$(rel "$d")"; wexpect caught "wiring: a dry-run gate with || true" "$d"
+d=$(mk w_orgate); sed -i.bak "s/!inputs.dry-run \&\& startsWith(github.ref/!inputs.dry-run || true \&\& startsWith(github.ref/" "$(rel "$d")"; wexpect caught "wiring: a dry-run gate with || true" "$d"
 d=$(mk w_noscript); rm "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: the hostile script is missing" "$d"
 d=$(mk w_missatt); sed -i.bak '/^attempt_read_sign_key$/d' "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: one of the attempts is never called" "$d"
 d=$(mk w_missother); sed -i.bak '/^attempt_forge_provenance$/d' "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: the forge attempt is never made" "$d"
@@ -1335,10 +1433,131 @@ wexpect caught "wiring: a hostile-* named job with write permission" "$d"
 d=$(mk w_notrans); sed -i.bak 's/# transcript: //' "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: the material attempts do not write a transcript line" "$d"
 d=$(mk w_nogatedecide2); python3 - "$(rel "$d")" <<'PY'
 import sys
-t = open(sys.argv[1]).read().replace("!inputs.dry-run && startsWith", "inputs.dry-run == false && startsWith", 1)
+t = open(sys.argv[1]).read().replace("!inputs.dry-run && startsWith(github.ref", "inputs.dry-run == false && startsWith(github.ref", 1)
 open(sys.argv[1], "w").write(t)
 PY
 wexpect caught "wiring: the promotion job's gate is a differently-written condition, not the exact !inputs.dry-run conjunct" "$d"
+# ---- the tag jobs of the automatic patch release (REQ-REL-009) are known BY NAME: decide, sign-tag, cut and patch-notes are release.yml's inline jobs. sign-tag is not one of the chain's Sign jobs, and cut and
+# patch-notes are not pulled into the set of jobs after Sign; decide's if is pinned exactly; every other job stays off in a run on main ---------------------------------------------------------
+DEC_SNAP="inputs.mode != 'snapshot' && github.ref == 'refs/heads/main'"
+DEC_WFREF="!inputs.dry-run && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}"
+DEC_DRY="github.event_name != 'workflow_dispatch' && !inputs.dry-run && "
+tjmut() { # tjmut NAME LABEL OLD NEW : the fixture's one text OLD replaced by NEW; the wiring judge must refuse it
+  local d; d=$(mk "$1"); pymut "$(rel "$d")" "$3" "$4"; wexpect caught "wiring: $2" "$d"
+}
+tjmut w_tj_snap "decide's if without the snapshot term (a snapshot call on main would decide)" "$DEC_SNAP" "github.ref == 'refs/heads/main'"
+tjmut w_tj_wfref "decide's if without the workflow_ref term (guard S's text: another workflow's call on main would decide)" "$DEC_WFREF" "!inputs.dry-run }}"
+tjmut w_tj_dry "decide's if without !inputs.dry-run" "$DEC_DRY" "github.event_name != 'workflow_dispatch' && "
+tjmut w_tj_disp "decide's if without the dispatch exclusion" "github.event_name != 'workflow_dispatch' && !inputs.dry-run" "!inputs.dry-run"
+tjmut w_tj_main "decide's if without the main ref (a tag push would decide)" "inputs.mode != 'snapshot' && github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch'" "inputs.mode != 'snapshot' && github.event_name != 'workflow_dispatch'"
+tjmut w_tj_or "decide's if with an || that lets a tag push through" "format('{0}/.github/workflows/release.yml@', github.repository)) }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo decide" "format('{0}/.github/workflows/release.yml@', github.repository)) || startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo decide"
+tjmut w_tj_decneeds "decide needs another job" "  decide:
+    if:" "  decide:
+    needs: build-freeze
+    if:"
+tjmut w_tj_signneeds "sign-tag needs more than decide" "  sign-tag:
+    needs: decide" "  sign-tag:
+    needs: [decide, build-assemble]"
+tjmut w_tj_signnone "sign-tag needs nothing" "  sign-tag:
+    needs: decide
+" "  sign-tag:
+"
+tjmut w_tj_cutneeds1 "cut does not need sign-tag (another needs)" "  cut:
+    needs: [decide, sign-tag]" "  cut:
+    needs: [decide]"
+tjmut w_tj_cutneeds2 "cut needs another job beside decide and sign-tag" "  cut:
+    needs: [decide, sign-tag]" "  cut:
+    needs: [decide, sign-tag, build-freeze]"
+tjmut w_tj_pnneeds1 "patch-notes does not need cut (another needs)" "  patch-notes:
+    needs: [decide, cut]" "  patch-notes:
+    needs: [decide]"
+tjmut w_tj_pnneeds2 "patch-notes needs sign-tag instead of cut" "  patch-notes:
+    needs: [decide, cut]" "  patch-notes:
+    needs: [decide, sign-tag]"
+tjmut w_tj_pnneeds3 "patch-notes needs another job beside decide and cut" "  patch-notes:
+    needs: [decide, cut]" "  patch-notes:
+    needs: [decide, cut, sign]"
+tjmut w_tj_cutif1 "cut runs whatever decide said (if: true)" "  cut:
+    needs: [decide, sign-tag]
+    if: \${{ needs.decide.outputs.tag != '' }}" "  cut:
+    needs: [decide, sign-tag]
+    if: true"
+tjmut w_tj_cutif2 "cut runs after a failed sign-tag (a status function in its if)" "  cut:
+    needs: [decide, sign-tag]
+    if: \${{ needs.decide.outputs.tag != '' }}" "  cut:
+    needs: [decide, sign-tag]
+    if: \${{ always() && needs.decide.outputs.tag != '' }}"
+tjmut w_tj_cutif3 "cut has no if" "  cut:
+    needs: [decide, sign-tag]
+    if: \${{ needs.decide.outputs.tag != '' }}
+" "  cut:
+    needs: [decide, sign-tag]
+"
+tjmut w_tj_pnif "patch-notes with another if" "  patch-notes:
+    needs: [decide, cut]
+    if: \${{ needs.decide.outputs.tag != '' }}" "  patch-notes:
+    needs: [decide, cut]
+    if: \${{ needs.decide.result == 'success' }}"
+tjmut w_tj_signif "sign-tag with another if" "  sign-tag:
+    needs: decide
+    if: \${{ needs.decide.outputs.tag != '' }}" "  sign-tag:
+    needs: decide
+    if: \${{ needs.decide.outputs.tag == 'x' }}"
+tjmut w_tj_signuses "sign-tag is a call of another workflow" "  sign-tag:
+    needs: decide" "  sign-tag:
+    uses: ./.github/workflows/stage-sign.yml
+    needs: decide"
+d=$(mk w_tj_gone); python3 - "$(rel "$d")" <<'PY'
+import re, sys
+t = open(sys.argv[1]).read(); t = re.sub(r"  patch-notes:\n.*\Z", "", t, flags=re.S); open(sys.argv[1], "w").write(t)
+PY
+wexpect caught "wiring: patch-notes is gone from release.yml (the four tag jobs are known by name)" "$d"
+tjmut w_tj_cgv "check-govulncheck without its ref guard (back to inputs.mode != 'snapshot' only: it has no needs and runs on every push to main)" "    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true) }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo govulncheck" "    if: \${{ inputs.mode != 'snapshot' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo govulncheck"
+tjmut w_tj_cgv2 "check-govulncheck with no if at all" "    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true) }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo govulncheck" "    runs-on: ubuntu-24.04
+    steps:
+      - run: echo govulncheck"
+tjmut w_tj_cgv3 "check-govulncheck with a guard that still lets a main push through (only the dispatch is kept out)" "    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true) }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo govulncheck" "    if: \${{ inputs.mode != 'snapshot' && github.event_name != 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo govulncheck"
+d=$(mk w_tj_newjob1); printf '  scan-main:\n    if: ${{ inputs.mode != '"'"'snapshot'"'"' }}\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo scan\n' >> "$(rel "$d")"
+wexpect caught "wiring: a new job whose if has no ref guard (it would run on every push to main)" "$d"
+d=$(mk w_tj_newjob2); printf '  scan-main:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo scan\n' >> "$(rel "$d")"
+wexpect caught "wiring: a new job with no needs and no if (it would run on every push to main)" "$d"
+d=$(mk w_tj_newjob3); printf '  scan-main:\n    if: ${{ !inputs.dry-run }}\n    needs: decide\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo scan\n' >> "$(rel "$d")"
+wexpect caught "wiring: a new job after decide whose if only keeps a dry run out (it would run on a push to main)" "$d"
+d=$(mk w_tj_newjob4); printf '  sign-notes:\n    needs: decide\n    if: ${{ needs.decide.outputs.tag != '"'"''"'"' }}\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo sign\n' >> "$(rel "$d")"
+wexpect caught "wiring: a new sign* job named like a tag job (only sign, sign-rebuild, sign-check, sign-release and the tag job sign-tag may be named sign*)" "$d"
+d=$(mk w_tj_open); printf '  rebuild-apk:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo rebuild\n' >> "$(rel "$d")"
+wexpect caught "wiring: a job of the dry-run allowlist with no needs and no ref guard (rebuild-apk) would run on every push to main: only the evaluation of the run on main sees it" "$d"
+d=$(mk w_tj_after); pymut "$(rel "$d")" "  promotion:
+    if: \${{ !inputs.dry-run && startsWith(github.ref, 'refs/tags/v') }}
+    needs: [sign, hostile-verdict]" "  promotion:
+    if: \${{ !inputs.dry-run && startsWith(github.ref, 'refs/tags/v') }}
+    needs: [sign, hostile-verdict, cut]"; wexpect ok "wiring: a chain job that needs cut keeps its own tag guard (cut and patch-notes are not pulled into the set of jobs after Sign; sign-tag is not a Sign job)" "$d"
+d=$(mk w_tj_after2); pymut "$(rel "$d")" "  promotion:
+    if: \${{ !inputs.dry-run && startsWith(github.ref, 'refs/tags/v') }}
+    needs: [sign, hostile-verdict]" "  promotion:
+    if: \${{ !inputs.dry-run }}
+    needs: [sign, hostile-verdict]"; wexpect caught "wiring: a job after Sign without the positive tag conjunct is still refused with the tag jobs present" "$d"
 # ---- key allowlists, dry-run and tag gates, Release's policy step ---------------------------------------------------
 d=$(mk w_jobenv); pymut "$(rel "$d")" "    needs: sign
     runs-on: ubuntu-24.04

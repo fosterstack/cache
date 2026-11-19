@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-004-AC4, REQ-CHAIN-004-AC5, REQ-CHAIN-004-AC7, REQ-CHAIN-001-AC6, REQ-REL-012-AC7, REQ-REL-009-AC6, REQ-REL-013-AC1, REQ-CHAIN-004-AC21
+# Two signers are admitted (REQ-REL-009-AC6): the owner's SSH key (.github/policy/allowed_signers) on any tag, method `owner-ssh`; and the one release
+# KMS key (the one ssh-rsa line of .github/policy/release_tag_signer, read from origin/main) on a patch tag vX.Y.Z with Z >= 1 only, method `kms-release`.
+# The KMS key here is a fixture RSA key made at test time; the shipped release_tag_signer is never read by this test.
 #
 # Build's first action: bin/build-admit.py keeps every check the old stage-admission.yml made, none dropped.
 # Needs: bash, git >= 2.34, ssh-keygen, gpg, jq, openssl, python3 + PyYAML. Offline: the git repos, the
@@ -280,6 +283,7 @@ grep -Eq '^GO_TOOL = "/usr/local/bin/fscache-go/bin/go"  # TEST-SUBST$' "$BVR" \
   || bad "AC7 the production file runs go by its bare name"
 # ---- the admission fixtures ----------------------------------------------------------------------------------------------
 mkkeys() { mkdir -p "$W/keys"; for k in owner attacker; do ssh-keygen -q -t ed25519 -N "" -C "$k@example.com" -f "$W/keys/$k"; done
+  for k in kms kmsattacker; do ssh-keygen -q -t rsa -b 3072 -N "" -C "$k@example.com" -f "$W/keys/$k"; done
   openssl req -x509 -newkey rsa:2048 -nodes -keyout "$W/keys/ci.key" -out "$W/keys/ci.crt" -subj "/CN=release-workflow" -days 2 2> /dev/null
   export GNUPGHOME="$W/gpg-web"; mkdir -m 700 "$GNUPGHOME"
   gpg --batch --quiet --passphrase '' --quick-gen-key "web-flow <noreply@github.com>" ed25519 sign never 2> /dev/null
@@ -293,6 +297,7 @@ mkbase() { # base fixture in $W/base: origin.git + repo with main, a signed tagg
   git config tag.gpgsign false; git checkout -q -b main
   mkdir -p .github/policy bin requirements/releases tools/requirements
   printf 'owner@example.com ssh-ed25519 %s\n' "$(cut -d' ' -f2 "$W/keys/owner.pub")" > .github/policy/allowed_signers
+  printf 'release@fosterstack ssh-rsa %s\n' "$(cut -d' ' -f2 "$W/keys/kms.pub")" > .github/policy/release_tag_signer
   cp "$W/keys/web.gpg" .github/policy/github-web-flow.gpg
   printf \
       '{"required_checks":[{"context":"ci","integration_id":15368,"scope":"push"},{"context":"review","integration_id":15368,"scope":"pull_request"}],"promotion_checks":[{"context":"scan","integration_id":15368,"scope":"push"},{"context":"analyze (go)","integration_id":15368,"scope":"push"}]}\n' \
@@ -481,6 +486,7 @@ commit_move() { # commit_move KEYMODE MSG : a new commit on main (signed per KEY
   local m=$1; shift
   case "$m" in
     owner) G -c user.signingkey="$W/keys/owner" commit -q -S --allow-empty -m "$1" ;;
+    kms) G -c user.signingkey="$W/keys/kms" commit -q -S --allow-empty -m "$1" ;;
     attacker) G -c user.signingkey="$W/keys/attacker" commit -q -S --allow-empty -m "$1" ;;
     none) G commit -q --allow-empty -m "$1" ;;
     web) GNUPGHOME="$W/gpg-web" G -c gpg.format=openpgp -c user.signingkey=noreply@github.com commit -q -S --allow-empty -m "$1" ;;
@@ -491,6 +497,7 @@ retag() { # retag KIND : move v0.3.0 to HEAD. KIND owner|attacker|none (annotate
   G tag -d v0.3.0 > /dev/null; case "$1" in
     owner) G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.0 -m "$APPROVAL" v0.3.0 ;;
     attacker) G -c user.signingkey="$W/keys/attacker" tag -s -m v0.3.0 -m "$APPROVAL" v0.3.0 ;;
+    kms) G -c user.signingkey="$W/keys/kms" tag -s -m v0.3.0 -m "$APPROVAL" v0.3.0 ;;
     none) G tag -a -m v0.3.0 -m "$APPROVAL" v0.3.0 ;;
     light) G tag v0.3.0 ;;
   esac; }
@@ -1165,6 +1172,100 @@ G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.1 v0.3.1; gh_fixtures "$W/c/
 mkfreeze
 run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
 expect_refuse "AC6 a PATCH tag whose chain files are not the bytes the marker names is refused, naming the bytes" rc-proof bytes
+# ---- the second signer: the release KMS key on a patch tag only (REQ-REL-009-AC6; fixture RSA key, never a real one)
+RELSIGNER=.github/policy/release_tag_signer
+python3 - "$BA" <<'PY' && ok "AC6 build-admit.py reads release_tag_signer from origin/main with the other policy files, and allowed_signers stays the owner's alone" || bad "AC6 POLICY_FILES lacks .github/policy/release_tag_signer"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ba", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+assert ".github/policy/release_tag_signer" in m.POLICY_FILES, m.POLICY_FILES
+assert ".github/policy/allowed_signers" in m.POLICY_FILES
+PY
+kms_patch() { # kms_patch KEY [VERSION] [EDIT-CMD] : main gets the approved baseline for VERSION (default v0.3.1) and EDIT-CMD; VERSION is tagged with KEY (kms|owner|attacker|kmsattacker)
+  local v=${2:-v0.3.1}
+  fresh; G checkout -q main
+  sed "s/^version: v0.3.0\$/version: $v/" "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/$v.yaml"
+  (cd "$W/c/repo" && eval "${3:-true}")
+  G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "patch baseline"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
+  G -c user.signingkey="$W/keys/$1" tag -s -m "$v" "$v"; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; mkfreeze; }
+run_kms() { run_admit GITHUB_REF=refs/tags/${1:-v0.3.1} GITHUB_REF_NAME=${1:-v0.3.1}; }
+refused_policy_or_sig() { # refused at tag-signature, or at policy-from-main when the policy file is absent
+  local first; first=$(head -1 "$W/c/err" 2> /dev/null || true)
+  [ "$RC" = 1 ] && [ ! -e "$W/c/repo/admission.json" ] && { [[ "$first" == "admission refused at tag-signature: "* ]] || [[ "$first" == "admission refused at policy-from-main: "* ]]; }; }
+kms_patch kms; run_kms
+expect_ok "AC6 a patch tag v0.3.1 signed by the release KMS key (release_tag_signer on main), with the marker, its baseline and green checks, is admitted"
+jq -e '.tag=="v0.3.1" and .tag_signature.method=="kms-release" and (.tag_signature.principal|length>0)
+       and (.tag_signature.key_fingerprint|startswith("SHA256:")) and .commit_signature=="owner-ssh" and .baseline_version=="v0.3.0" and .baseline=="requirements/releases/v0.3.0.yaml"' \
+  "$W/c/repo/admission.json" > /dev/null \
+  && ok "AC6 admission.json records method kms-release (distinct from owner-ssh), the signer principal, the key's SHA256 fingerprint and the line's owner-approved baseline v0.3.0 (REQ-REL-009-AC13), not the patch tag's own" \
+  || bad "AC6 kms admission.json content: $(head -c 300 "$W/c/repo/admission.json" 2> /dev/null)"
+kms_patch kms v0.3.2; run_kms v0.3.2
+expect_ok "AC6 the release key admits a later patch too (v0.3.2, Z >= 1)"
+kms_patch owner; run_kms
+jq -e '.tag_signature.method=="owner-ssh"' "$W/c/repo/admission.json" > /dev/null 2>&1 \
+  && ok "AC6 the owner's SSH signature on a patch tag is still admitted as owner-ssh" || bad "AC6 owner patch tag method"
+# ---- a CI patch uses its line's latest owner-approved baseline (REQ-REL-009-AC13): admission picks it as decide does (bin/admission-tag-signer.py owner-baselines, then baseline, against main's allowed signers and
+# the tagged commit's requirements.yaml), needs the tagged commit's copy to equal the owner-signed tag's, a freeze-ok line for that base, and records it. Owner-signed tags keep requirements/releases/<tag>.yaml.
+kms_nobase() { # kms_nobase KEY [VERSION] [EDIT-CMD] : like kms_patch, but main gets NO baseline file for VERSION (the line's owner-signed v0.3.0 is the baseline)
+  local v=${2:-v0.3.1}
+  fresh; G checkout -q main
+  (cd "$W/c/repo" && eval "${3:-true}")
+  G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S --allow-empty -m "patch, no baseline file"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
+  G -c user.signingkey="$W/keys/$1" tag -s -m "$v" "$v"; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; mkfreeze; }
+kms_nobase kms; run_kms
+expect_ok "AC13 a patch tag v0.3.1 signed by the release KMS key, with no requirements/releases/v0.3.1.yaml, is admitted on the line's owner-signed baseline v0.3.0"
+jq -e '.tag=="v0.3.1" and .tag_signature.method=="kms-release" and .baseline_version=="v0.3.0" and .baseline=="requirements/releases/v0.3.0.yaml"' "$W/c/repo/admission.json" > /dev/null 2>&1 \
+  && ok "AC13 admission.json records the baseline v0.3.0 the patch used" || bad "AC13 admission.json of a KMS patch without its own baseline: $(head -c 300 "$W/c/repo/admission.json" 2> /dev/null)"
+grep -q 'baseline v0.3.0' "$W/c/out" && grep -qx "freeze-ok $(headsha) v0.3.0" "$W/c/out" \
+  && ok "AC13 admission prints the baseline v0.3.0 and the freeze-ok line for it" || bad "AC13 admission printed: $(tr '\n' '|' < "$W/c/out" | head -c 300)"
+# the owner's tag of the baseline is not the owner's: an unsigned or other-key v0.3.0 supplies no baseline, whatever file the patch tag's own commit holds
+for what in none attacker; do
+  kms_patch kms; G tag -d v0.3.0 > /dev/null
+  case "$what" in none) G tag -a -m v0.3.0 v0.3.0 "$(G rev-parse "v0.3.1^{commit}")" ;; attacker) G -c user.signingkey="$W/keys/attacker" tag -s -m v0.3.0 v0.3.0 "$(G rev-parse "v0.3.1^{commit}")" ;; esac
+  run_kms
+  expect_refuse "AC13 a KMS patch whose line has no owner-approved baseline (v0.3.0 tag: $what) is refused at baseline, though its own v0.3.1.yaml exists" baseline
+done
+kms_patch kms v0.3.1 "sed -i 's/2026-10-09/2026-10-10/' requirements/releases/v0.3.0.yaml"; run_kms
+expect_refuse "AC13 a KMS patch whose tagged commit's copy of the baseline differs from the owner-signed v0.3.0's is refused at baseline" baseline v0.3.0
+kms_patch kms; mkfreeze "freeze-ok $(headsha) v0.3.1"; run_kms
+expect_refuse "AC13 a KMS patch with no freeze-ok line for the baseline it uses (v0.3.0) is refused at baseline" baseline freeze
+kms_nobase owner; run_kms
+expect_refuse "AC13 an owner-signed patch tag with no requirements/releases/v0.3.1.yaml is still refused at baseline (owner tags keep their own baseline file)" baseline v0.3.1.yaml
+# the release key on anything but a patch tag
+fresh; retag kms; run_admit
+expect_refuse "AC6 the release KMS key on the final tag v0.3.0 is refused at tag-signature (the owner signs vX.Y.0)" tag-signature
+fresh; G -c user.signingkey="$W/keys/kms" tag -s -m v0.3.0-rc2 v0.3.0-rc2; run_admit GITHUB_REF=refs/tags/v0.3.0-rc2 GITHUB_REF_NAME=v0.3.0-rc2
+expect_refuse "AC6 the release KMS key on a release candidate is refused at tag-signature" tag-signature
+fresh; G -c user.signingkey="$W/keys/kms" tag -s -m v1.0.0 v1.0.0; run_admit GITHUB_REF=refs/tags/v1.0.0 GITHUB_REF_NAME=v1.0.0
+expect_refuse "AC6 the release KMS key on a major tag is refused at tag-signature" tag-signature
+fresh; G -c user.signingkey="$W/keys/kms" tag -s -m v0.4.0 v0.4.0; run_admit GITHUB_REF=refs/tags/v0.4.0 GITHUB_REF_NAME=v0.4.0
+expect_refuse "AC6 the release KMS key on a minor tag is refused at tag-signature" tag-signature
+# other keys, formats and files
+kms_patch kmsattacker; run_kms
+expect_refuse "AC6 a patch tag signed by an RSA key that is in neither file is refused at tag-signature" tag-signature
+kms_patch attacker; run_kms
+expect_refuse "AC6 a patch tag signed by an ed25519 key that is in neither file is refused at tag-signature" tag-signature
+kms_patch kms
+G checkout -q -b side main 2> /dev/null; printf 'attacker@example.com ssh-rsa %s\n' "$(cut -d' ' -f2 "$W/keys/kmsattacker.pub")" > "$W/c/repo/$RELSIGNER"
+G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "the tagged commit swaps the release signer"; G tag -d v0.3.1 > /dev/null
+G -c user.signingkey="$W/keys/kmsattacker" tag -s -m v0.3.1 v0.3.1; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; mkfreeze; run_kms
+expect_refuse "AC6 a release_tag_signer changed in the TAGGED commit is not trusted (it is read from origin/main)" tag-signature
+kms_patch kms v0.3.1 "printf '' > $RELSIGNER"; run_kms
+refused_policy_or_sig && ok "AC6 the release key's signature with an EMPTY release_tag_signer on main is refused" || bad "AC6 empty release_tag_signer -> exit $RC: $(head -1 "$W/c/err")"
+kms_patch kms v0.3.1 "git rm -q $RELSIGNER"; run_kms
+refused_policy_or_sig && ok "AC6 the release key's signature with release_tag_signer MISSING from main is refused" || bad "AC6 missing release_tag_signer -> exit $RC: $(head -1 "$W/c/err")"
+# the owner key listed only in release_tag_signer admits no non-patch tag; and the KMS key listed there verifies no commit
+fresh; G checkout -q main
+: > "$W/c/repo/.github/policy/allowed_signers"
+printf 'owner@example.com ssh-ed25519 %s\n' "$(cut -d' ' -f2 "$W/keys/owner.pub")" > "$W/c/repo/$RELSIGNER"
+G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "owner key only in release_tag_signer"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
+retag owner; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; run_admit
+expect_refuse "AC6 the owner key listed only in release_tag_signer does not admit the final tag v0.3.0 (the file admits patch tags only)" tag-signature
+fresh; commit_move kms "kms-signed commit"; retag owner; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; run_admit
+expect_refuse "AC6 the release KMS key is no commit signer: a commit signed with it is refused at commit-signature" commit-signature
+# a second signature block next to the release key's signature is refused
+kms_patch kms; { G cat-file tag v0.3.1; printf -- '-----BEGIN SIGNED MESSAGE-----\nMIIBfake\n-----END SIGNED MESSAGE-----\n'; } > "$W/c/two.obj"
+obj=$(G mktag < "$W/c/two.obj"); G update-ref refs/tags/v0.3.1 "$obj"; run_kms
+expect_refuse "AC6 a release-key signature followed by a second (keyless) signature block is refused at tag-signature" tag-signature
 # ---- REQ-CHAIN-004-AC21: promotion and release-only contexts count only from a schedule or dispatch run of their one workflow file --------
 # runs CONTEXT FILE SPEC...: replace the check runs of CONTEXT on the tagged commit by the runs the SPECs (JSON objects) describe, and write the workflow
 # run behind each. SPEC keys: id (check-run id; its workflow run is 9000+id), conclusion (success; null = pending), event (schedule), file (FILE),

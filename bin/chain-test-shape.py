@@ -1280,6 +1280,8 @@ GUARD_S = ("inputs.mode != 'snapshot' && github.event_name == 'push' && startsWi
            "startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))")      # guard S: a v* tag push of release.yml itself, never in snapshot mode or under a workflow_call
 SIGN_IF = "${{ %s }}" % GUARD_S                                                    # sign, sign-rebuild, sign-check
 AFTER_IF = "${{ %s && !contains(github.ref_name, '-') }}" % GUARD_S                # release: a release candidate publishes nothing and never enters the environment release
+# check-govulncheck has no needs: it also names the runs that start the chain, so a push to main or the daily run (the patch tag jobs only) never starts it
+GV_IF = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true) }}"
 CHECK_IF = "${{ inputs.mode != 'snapshot' }}"                                     # check-govulncheck and check
 PERM_READ = {"contents": "read"}
 SIGN_PERMISSIONS = {"contents": "read", "id-token": "write"}
@@ -1291,7 +1293,7 @@ CHAIN_SPEC = {   # job -> exact needs, permissions, if and environment
     "rebuild-apk": dict(needs=["build-assemble"], perm=PERM_READ, if_=None, env=None),
     "rebuild-assemble": dict(needs=["rebuild-apk"], perm=PERM_READ, if_=None, env=None),
     "sign-rebuild": dict(needs=["build-assemble", "rebuild-assemble"], perm=SIGN_PERMISSIONS, if_=SIGN_IF, env="sign"),
-    "check-govulncheck": dict(needs=[], perm=PERM_READ, if_=CHECK_IF, env=None),
+    "check-govulncheck": dict(needs=[], perm=PERM_READ, if_=GV_IF, env=None),
     "check": dict(needs=["build-assemble", "check-govulncheck", "sign"], perm=PERM_READ, if_=CHECK_IF, env=None),
     "sign-check": dict(needs=["build-assemble", "check"], perm=SIGN_PERMISSIONS, if_=SIGN_IF, env="sign"),
     "release-compare": dict(needs=["check", "sign", "sign-check", "sign-rebuild"], perm=PERM_READ, if_=None, env=None),
@@ -1311,7 +1313,10 @@ STATUS_FUNCTION = re.compile(r"always\(\)|cancelled\(\)|failure\(\)|success\(\)"
 # secret: it cuts no tag since handoff 0713 P8), patch-notes and patch-failed exist today (automatic patch releases,
 # REQ-REL-009); the hostile-* jobs are PR 1's dry-run proof (contents: read, no environment,
 # no secrets). Anything else is a way to publish around Rebuild or Check.
-PATCH_NOTES_IF = "${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}"
+# The automatic patch release is three jobs after decide, in this order: sign-tag (the one signature, in the environment sign) -> cut (the one push of the signed tag, with the auditor App's
+# token) -> patch-notes (the changelog PR). decide's job output `tag` is the tag due, or empty: each of the three runs only when it is non-empty (decide's own if keeps a dry run, a snapshot call and every ref but main out).
+TAG_DUE_IF = "${{ needs.decide.outputs.tag != '' }}"
+PATCH_NOTES_IF = TAG_DUE_IF
 LIVE_TEST_RC_IF = "${{ inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}"
 LIVE_TEST_FINAL_IF = "${{ inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc') && !inputs.dry-run }}"
 PERSONA_RC_IF = "${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"
@@ -1320,7 +1325,7 @@ PERSONA_RC_IF = "${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 't
 # scoped to the test repository only) and the read-only Scout token with its user; the same four in both live-test jobs, nothing else
 LIVE_TEST_SECRETS = {"DOCKERHUB_USERNAME", "DOCKERHUB_TEST_USERNAME", "DOCKERHUB_TEST_PUSH_TOKEN", "DOCKERHUB_SCOUT_TOKEN"}
 PERSONA_SECRETS = {"PERSONA_UAT_MODEL", "PERSONA_UAT_COMPLIANCE_MODEL", "ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_SERVICE_ACCOUNT_ID", "ANTHROPIC_WORKSPACE_ID"}
-DECIDE_IF = "${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}"
+DECIDE_IF = "${{ inputs.mode != 'snapshot' && github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}"
 # The secrets context in any spelling (secrets.X, secrets['X'], toJSON(secrets), secrets ['X']): the word itself, not the dotted form only.
 # Contexts are case-insensitive and an expression may span lines or hold tabs, so every DECODED string of the job (keys too) is searched, never its JSON text.
 SECRETS_CONTEXT = re.compile(r"\bsecrets\b", re.IGNORECASE)
@@ -1347,7 +1352,11 @@ def names_secrets(obj):
     return False
 NON_CHAIN = {
     "decide": {"perm": {"contents": "read", "checks": "read", "issues": "write"}, "agent": False, "if": DECIDE_IF},
-    "patch-notes": {"perm": {"contents": "read"}, "agent": True, "needs": ["decide"], "if": PATCH_NOTES_IF},
+    # sign-tag holds the identity token for the one release KMS key, in the environment sign (the role's trust binds release.yml@refs/heads/main to this job alone), and no secret
+    "sign-tag": {"perm": {"contents": "read", "id-token": "write"}, "agent": False, "env": "sign", "needs": ["decide"], "if": TAG_DUE_IF},
+    # cut pushes the signed tag with the auditor App's token (environment agent holds the App's secrets): its own token reads contents only, it holds no id-token
+    "cut": {"perm": {"contents": "read"}, "agent": True, "needs": ["decide", "sign-tag"], "if": TAG_DUE_IF},
+    "patch-notes": {"perm": {"contents": "read"}, "agent": True, "needs": ["cut", "decide"], "if": PATCH_NOTES_IF},
     "patch-failed": {"perm": {"contents": "read", "issues": "write"}, "agent": False, "needs": CHAIN},
     # The rule-12 live tests of our VEX files (REQ-SCAN-012): federated into the dedicated live-test accounts only (environment live-test, whose trust names nothing
     # else), after Check on a release candidate and after Release on a final tag; they publish nothing, hold no secrets but the live-test environment's four Docker Hub test credentials (LIVE_TEST_SECRETS), and cannot run in the dry run.

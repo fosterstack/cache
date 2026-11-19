@@ -591,9 +591,10 @@ SECRET_VALUE = {"GH_TOKEN": "${{ github.token }}",
 # W1 (#822 round 1): the three NON-SECRET federation entries of the signing steps: the AWS role of the release Sign identity, its region and the release key's reference. They are step env
 # literals, allowed only where a step signs through bin/chain-verify.py sign-record or sign (the sign jobs of release.yml), reaching only the scripts below,
 # and each must be exactly the value below; the key reference is the verifier's own RELEASE_KEY_REF, read from bin/chain-verify.py beside this file.
-# the three sign jobs hold the three as their job env (judged beside the job keys); no step repeats them, so no step place is listed
+# the three sign jobs hold the three as their job env (judged beside the job keys); no step repeats them, so no step place is listed, but the one KMS call of sign-tag, whose
+# step names them as literals and reaches bin/tag-sign-kms.sh only
 SIGN_JOBS = {"sign", "sign-rebuild", "sign-check"}
-_FED_AT = {}
+_FED_AT = {(_R, "sign-tag"): {"bin/tag-sign-kms.sh"}}
 FED_ROWS = {"AWS_ROLE_ARN": _FED_AT, "AWS_REGION": _FED_AT, "RELEASE_KMS_KEY_REF": _FED_AT}
 
 
@@ -612,9 +613,12 @@ def fed_value(name):
 # the job that holds a named credential holds exactly these permissions (Build's apk job: read-only, no identity token since the Witness record is signed outside the build; Release: the three writes)
 PLACE_PERMS = {(_R, "build-apk"): {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read"},
                (_R, "release"): {"contents": "write", "packages": "write"}}
+# the one workflow-level group of release.yml: release.yml's own push and daily runs on main share 'patch-release' (queued, never cancelled); every other run has its own
+# (a tag push, a dispatch, and a snapshot call, whose ref and event are the caller's)
+RELEASE_CONCURRENCY = {"group": "${{ inputs.mode != 'snapshot' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) && 'patch-release' || github.run_id }}", "cancel-in-progress": "false"}
 CHAIN_STAGE_FILES = {_R}
 # the jobs of release.yml the stage grammar does not judge (they test or report the release, call another workflow, or run no chain script): only the direct signer-call scan reads them
-NON_CHAIN_JOBS = {"live-test", "live-test-release", "hostile-verify", "hostile-verdict", "persona-uat-rc", "patch-failed"}
+NON_CHAIN_JOBS = {"live-test", "live-test-release", "hostile-verify", "hostile-verdict", "persona-uat-rc", "patch-failed", "decide", "cut", "patch-notes"}
 CLOSED = "not in the closed secret list"
 
 # STATED LIMITS of the PR 1b mechanisms (round 1 (8)); none of them is closed by a judge of this kind:
@@ -1175,6 +1179,17 @@ def _reach(paths, rows):
         if isinstance(r, list): todo += [q for q in r if isinstance(q, str)]
     return seen
 
+def tag_job_errors(jobs):
+    """One job, one judge: job sign-tag of release.yml is judged by sign_tag_errors of bin/chain-tag-jobs-judge.py (the judge of
+    bin/chain-tag-jobs-test.sh). Never a skip: a judge that cannot be loaded is an error."""
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("chain_tag_jobs_judge", os.path.join(os.path.dirname(os.path.abspath(__file__)), "chain-tag-jobs-judge.py"))
+        m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+        return ["release.yml job sign-tag: the tag jobs judge (bin/chain-tag-jobs-judge.py) refuses: " + x for x in m.sign_tag_errors(jobs)]
+    except Exception as e:
+        return ["release.yml job sign-tag: the tag jobs judge (bin/chain-tag-jobs-judge.py) failed (%s: %s)" % (type(e).__name__, e)]
+
 def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
     """(errors, listed paths run) for a parsed stage workflow file (YAML via the caller). The grammar is FINITE over keys:
     workflow, job and step keys come from closed sets; step `uses` from a closed list; env names from a closed set; the run
@@ -1198,7 +1213,9 @@ def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
         holders = {pl for places in SECRET_ROWS.values() for pl in places}      # the jobs that bind a named secret: their step env is judged by the rows below
         if re.search(r"(?i)\bsecrets\b", json.dumps({k: _noenv(v, (full, k) in holders) for k, v in chain_jobs.items()})):
             errs.append("%s: a stored secret outside the named env entries of the jobs that hold one (rule 56: only Release holds a stored secret)" % rel)
-    extra = set(d) - STAGE_WF_KEYS
+    extra = set(d) - STAGE_WF_KEYS - ({"concurrency"} if full == _R else set())
+    if full == _R and "concurrency" in d and d["concurrency"] != RELEASE_CONCURRENCY:
+        errs.append("%s: the workflow concurrency must be exactly %r, found %r" % (rel, RELEASE_CONCURRENCY, d["concurrency"]))
     if extra: errs.append("%s: workflow keys %s are not allowed in a stage file (env, defaults, concurrency, run-name can reroute every step)" % (rel, sorted(extra)))
     for jn, j in chain_jobs.items():
         pre = "%s job %s" % (rel, jn)
@@ -1209,6 +1226,8 @@ def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
         errs += _runner_errors(pre, j)
         if closed and (full, jn) in PLACE_PERMS and j.get("permissions") != PLACE_PERMS[(full, jn)]:
             errs.append("%s: job %s must hold exactly the permissions %s, found %s" % (full, jn, PLACE_PERMS[(full, jn)], j.get("permissions")))
+        if full == _R and jn == "sign-tag":     # judged by the tag jobs judge as well as by the shared step checks below
+            errs += tag_job_errors(d["jobs"])
         for s in (j.get("steps") or []):
             pin = pins.get((full, jn, s.get("id"))) if isinstance(s.get("id"), str) else None
             if pin is not None:

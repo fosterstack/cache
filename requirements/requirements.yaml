@@ -1922,7 +1922,7 @@ requirements:
     title: Automatic patch releases
     statement: >
       Fix-only changes on main shall be released automatically as vX.Y.(Z+1): cut at once for a critical or high fix,
-      otherwise at most once a day, tagged only by a signer that source admission accepts (never by a keyless identity, and never unsigned), run through the full release chain,
+      otherwise at most once a day, tagged only by a signer that source admission accepts (the one release KMS key, through the Sign stage, on a patch tag; never by a keyless identity, and never unsigned), run through the full release chain,
       with generated notes, VEX updated, floating tags moved by the maintainer's rule, and a failed stage abandoned without
       retry. Minor and major releases stay the maintainer's.
     source: [.github/workflows/release.yml]
@@ -1964,11 +1964,8 @@ requirements:
       and key path; in the readers (a tag's notes, the changelog's notes, the history) two '- ' lines of one release
       block that publish the same line once cleaned as published ('- gpt' and '- claude'; a marker line and its
       escaped spelling) are refused, both named by their source lines; the same line in two release blocks is not a
-      collision. In a generated patch tag (heading naming the tag) a '-----BEGIN ' anywhere before the tag's last
-      signature is refused (exit 2, the line named); any other tag exits 1 as before. Source admission accepts a tag
-      only with the maintainer's SSH signature (REQ-REL-009-AC6): check_tag_signature (bin/build-admit.py:213-218)
-      lets through only the signer router's 'ssh' answer (:195-196) and verifies it against main's allowed signers
-      (:200-209); a keyless, unsigned or PGP signature is refused. Beyond the four forms, a free-text line holding the
+      collision. In a generated patch tag (release tagger, SSH signature last, heading naming the tag) a '-----BEGIN ' anywhere before
+      the tag's last signature is refused (exit 2, the line named); any other tag exits 1 as before. Beyond the four forms, a free-text line holding the
       redaction marker that continues the line above it (neither blank nor a heading) is refused in tag notes and
       changelog inputs (a construct spanning lines could hide the marker); --published (every v* tag message and
       CHANGELOG.md) is not a source and is not checked for
@@ -2008,15 +2005,15 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC5
-        given: "a patch that the patch decision has decided"
-        when: "the patch decision runs"
-        then: "the decision creates, signs and pushes no tag, holds no token that could push one and names no keyless signing tool; its output `tagged` is false until a signer that source admission accepts cuts the tag, and an unsigned tag is never cut"
+        given: "a patch that release.yml has decided"
+        when: "CI decides it"
+        then: "the deciding job creates, signs and pushes no tag, holds no token that could push one and names no keyless signing tool; its output `tag` names the patch tag due (empty when none); the sign-tag job signs that tag with the one release KMS key and holds no push right, the cut job pushes the signed tag with the auditor App's token and holds no key, source admission accepts the result, and an unsigned tag is never cut"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC6
         given: "a release tag"
         when: "source admission verifies it"
-        then: "it accepts only the maintainer's SSH signature (allowed-signers), for any tag; any other signer, a keyless identity included, is refused"
+        then: "it accepts the maintainer's SSH signature (allowed-signers) for any tag, and the signature of the one release KMS key (the SSH signature block of .github/policy/release_tag_signer, read from main) for a patch tag vX.Y.Z with Z at least 1 only; any other signer, a keyless identity included, is refused, and the release key never admits a minor, major or release-candidate tag"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC7

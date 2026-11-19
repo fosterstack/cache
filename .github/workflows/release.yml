@@ -5,11 +5,13 @@ name: Release
 # are sha256 digests emitted by the job that produced the bytes, never resolved from a registry after the fact. Tag mode is the only path that
 # pushes anything, and the job release is the only path that can make anything public, and only after it has verified every earlier
 # stage's record. Releases build ONLY here; nothing else builds or publishes a release.
-# The jobs that sign (sign, sign-rebuild, sign-check) are the only ones in the environment sign and the only ones that hold the identity token for the release
+# The jobs that sign (sign, sign-rebuild, sign-check, and sign-tag for an automatic patch release's tag) are the only ones in the environment sign and the only ones that hold the identity token for the release
 # key's KMS federation: the building and checking jobs hold no key, no token and no secret; their records are made under a throwaway key and trusted by nobody until a sign job checks and signs them.
 #
 # build-freeze -> build-apk -> build-assemble -> sign ; build-assemble -> { rebuild-apk -> rebuild-assemble } ; { build-assemble, sign } -> check (after check-govulncheck)
 # { build-assemble, rebuild-assemble } -> sign-rebuild ; { build-assemble, check } -> sign-check ; { check, sign, sign-rebuild, sign-check } -> release-compare -> release-verify -> release
+#
+# A push to main and the daily schedule run only decide -> sign-tag -> cut -> patch-notes (REQ-REL-009); every job of the chain is off there.
 #
 # In snapshot mode (workflow_call from scan.yml and main-candidate-rescan.yml) only Build and Rebuild run: the gate G starts Build, and every job that signs, publishes, checks or holds a
 # write or an identity token is guarded off (guard S, and inputs.mode != 'snapshot' on the others).
@@ -18,6 +20,12 @@ on:
   push:
     tags:
       - "v*"
+    # Automatic patch releases (REQ-REL-009): a push to main and a daily schedule run ONLY the
+    # decide, sign-tag, cut and patch-notes jobs below; the chain itself starts only on a v* tag.
+    branches:
+      - main
+  schedule:
+    - cron: '47 9 * * *'   # daily, after the rescan (07:41) and the auditor (08:23)
   # The dry run of the chain: a manual run on a branch; Build stops at admission (a branch is refused); it neither tags nor publishes.
   workflow_dispatch:
     inputs:
@@ -39,7 +47,414 @@ on:
 
 permissions: {}
 
+# One run at a time for release.yml's own push and daily runs on main, from the tag list decide reads to the tag cut pushes: they never decide the same
+# version twice (queued, never cancelled). Every other run has a group of its own: a tag push, a dispatch (a dry run too) and a snapshot call from
+# scan.yml or main-candidate-rescan.yml, whose ref and event are the caller's and must never queue behind a decision.
+concurrency:
+  group: ${{ inputs.mode != 'snapshot' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) && 'patch-release' || github.run_id }}
+  cancel-in-progress: false
+
 jobs:
+  # ---------------------------------------------------------------------------------------------------------------
+  # Automatic patch releases (REQ-REL-009).
+  # On main only: decides whether a patch is due (bin/patch-decide.py: fix-only since the latest tag; at once for
+  # a removed critical/high finding on push, else at most once a day), checks the ACs baseline and the tagged
+  # commit's required checks, and writes
+  # the notes. It holds no key and no push right and makes no tag: it only says which tag is due (its output `tag`, empty when none)
+  # and uploads the tag request. Then sign-tag (the one release KMS key) makes and signs the tag object, and cut
+  # (the auditor App's token) pushes that signed tag and nothing else; an unsigned tag is never cut.
+  decide:
+    if: ${{ inputs.mode != 'snapshot' && github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read              # wait for the tagged commit's required checks
+      issues: write             # the standing "main is not patch-clean" issue
+    outputs:
+      tag: ${{ steps.request.outputs.tag }}    # the patch tag due (vX.Y.Z), empty when none
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # REQ-CHAIN-001-AC6: no patch decision proceeds unless the committed marker names a recorded green rc-tag run of exactly these chain files (a missing marker
+      # fails this step, so the job ends before anything is decided, scanned or tagged)
+      - name: the rc-proof marker validates for this commit (otherwise no decision is made, and the job stays green)
+        id: rcproof
+        run: |
+          if python3 bin/patch-decide.py rc-proof --marker .github/policy/rc-proof.json --commit "$GITHUB_SHA"; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::no patch decision: the rc-proof marker is missing or does not validate for this commit"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: install the pinned tool (grype)
+        run: |
+          set -euo pipefail
+          ./bin/install-scanner.sh grype
+
+      - name: what changed since the latest tag (the PR labels of each commit) and whether a patch was cut today
+        id: facts
+        if: ${{ steps.rcproof.outputs.ok == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # the baseline is the latest PUBLISHED release: a tag whose release run failed is a used version number,
+          # never the baseline, so the next run releases what it held (REQ-REL-009-AC10; Codex #159 r1, B4)
+          gh release list --exclude-drafts --limit 1000 --json tagName,isPrerelease \
+            --jq '[.[] | select(.isPrerelease | not) | .tagName]' > "$RUNNER_TEMP/released.json"
+          since=$(jq -r '.[]' "$RUNNER_TEMP/released.json" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | while read -r t; do git rev-parse -q --verify "refs/tags/$t" > /dev/null && echo "$t"; done | sort -V | tail -1 || true)
+          echo "since=${since}" >> "$GITHUB_OUTPUT"
+          echo '{}' > "$RUNNER_TEMP/labels.json"
+          if [ -n "$since" ]; then
+            for sha in $(git rev-list "${since}..HEAD"); do
+              l=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/pulls" --jq '[.[0].labels[]?.name]' 2>/dev/null || echo '[]')
+              jq --arg s "$sha" --argjson l "$l" '. + {($s): $l}' "$RUNNER_TEMP/labels.json" > "$RUNNER_TEMP/l.tmp" && mv "$RUNNER_TEMP/l.tmp" "$RUNNER_TEMP/labels.json"
+            done
+          fi
+          today=$(date -u +%F)
+          cut=$(git for-each-ref --format='%(creatordate:short) %(refname:short)' 'refs/tags/v*' | awk -v t="$today" '$1==t' | grep -c . || true)
+          echo "cut_today=$([ "${cut:-0}" -gt 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      # every event scans: the decision uses the result on push only; the notes need it for a daily patch too (AC8)
+      - name: the latest release's findings this commit removes (release vs. HEAD)
+        if: ${{ steps.facts.outputs.since != '' }}
+        env:
+          SINCE: ${{ steps.facts.outputs.since }}
+        run: |
+          set -uo pipefail
+          # every variant of the release must scan: one that cannot is "unknown" (no at-once cut), never an empty
+          # release (Codex #159 r1, B2)
+          ver="${SINCE#v}"; rel=(); ok=1
+          for t in $(python3 bin/patch-decide.py variants --version "$ver"); do
+            if grype "ghcr.io/${GITHUB_REPOSITORY}:${t}" -o json > "$RUNNER_TEMP/rel-${t}.json"; then rel+=("$RUNNER_TEMP/rel-${t}.json")
+            else echo "::warning::the release image ${t} could not be scanned"; ok=0; fi
+          done
+          # each scan goes to the decision on its own and is validated there — no aggregation that turns a malformed
+          # document into an empty one; a base-image failure is the base's alone (Codex #159 r2, B2 / NEW-1)
+          rel_args=(); for f in "${rel[@]}"; do rel_args+=(--release-grype "$f"); done
+          # No base image exists (the image is assembled from committed locks), so none is scanned and no distribution package
+          # finding counts as removed (unknown never counts). The base inputs are the committed locks and records of .github/policy/base-inputs.json; the
+          # ones that moved since the release are printed here, and bin/patch-decide.py classifies a commit from the same list (the base-input-changed signal).
+          python3 bin/patch-decide.py base-moved --base-inputs .github/policy/base-inputs.json --since "$SINCE" > "$RUNNER_TEMP/base-moved.txt" || exit 1
+          cat "$RUNNER_TEMP/base-moved.txt" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$ok" != 1 ] || ! python3 bin/patch-decide.py removed "${rel_args[@]}" --gomod go.mod \
+               --out "$RUNNER_TEMP/removed.json"; then
+            touch "$RUNNER_TEMP/removed-unknown"
+          fi
+
+      - name: decide (bin/patch-decide.py)
+        id: decide
+        if: ${{ steps.rcproof.outputs.ok == 'true' }}
+        run: |
+          set -euo pipefail
+          removed=(); [ -f "$RUNNER_TEMP/removed.json" ] && removed=(--removed "$RUNNER_TEMP/removed.json")
+          [ ! -f "$RUNNER_TEMP/removed-unknown" ] || removed=(--removed-unknown)
+          python3 bin/patch-decide.py decide --event "${GITHUB_EVENT_NAME}" --cut-today '${{ steps.facts.outputs.cut_today }}' \
+            --released "$RUNNER_TEMP/released.json" --labels "$RUNNER_TEMP/labels.json" "${removed[@]}" --out "$RUNNER_TEMP/decision.json"
+          {
+            echo "cut=$(jq -r .cut "$RUNNER_TEMP/decision.json")"
+            echo "version=$(jq -r '.version // ""' "$RUNNER_TEMP/decision.json")"
+            echo "dirty=$(jq -r '(.not_clean | length) > 0' "$RUNNER_TEMP/decision.json")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: main is not patch-clean — the standing information issue (no vendor or model names)
+        if: ${{ steps.decide.outputs.dirty == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          title="auditor: main is not patch-clean"
+          # One body, entries whole (REQ-REL-009 AC1: "the commits and why"): as many complete lines as fit under 60000 bytes, never a line cut
+          # (so a redacted text is never split), then how many are left out; the decide job log lists them all. Handed over as a file: the whole
+          # list as one argument is past the kernel's limit and the step died with exit 126 (run 39989891074).
+          python3 - "$RUNNER_TEMP" <<'PY'
+          import json, sys
+          t = sys.argv[1]
+          d = json.load(open(t + "/decision.json"))
+          body = "No patch was cut: these commits since %s are not fix-only. A minor release, or a maintainer's patch-fix label on the PR, resolves each.\n\n" % (d.get("since") or "the latest tag")
+          LIMIT, total, placed = 60000, len(d["not_clean"]), 0
+          foot = lambda left: "\n... and %d more of %d commits; the decide job log lists them all\n" % (left, total)
+          for e in d["not_clean"]:
+              line = "- " + e + "\n"
+              if len((body + line).encode()) + len(foot(total).encode()) > LIMIT: break
+              body += line
+              placed += 1
+          if placed < total: body += foot(total - placed)
+          open(t + "/issue-body.md", "w").write(body)
+          PY
+          n=$(gh issue list --state open --search "$title in:title" --json number,title --jq "[.[] | select(.title == \"$title\")][0].number // empty")
+          if [ -n "$n" ]; then gh issue comment "$n" --body-file "$RUNNER_TEMP/issue-body.md"; else gh issue create --title "$title" --body-file "$RUNNER_TEMP/issue-body.md"; fi
+
+      # REQ-REL-009-AC13: a CI patch uses the latest maintainer-approved ACs baseline of its line, only
+      # if the requirements are byte-for-byte unchanged since it. Decide runs this rule over the same sources
+      # (maintainer-signed
+      # tags) and cuts no tag at all (no signer exists yet); admission accepts an maintainer-signed
+      # patch
+      # tag on the maintainers' baseline. Otherwise no cut: it waits for a maintainer.
+      - name: pre-check the ACs baseline admission will require (bin/admission-tag-signer.py baseline)
+        id: basecheck
+        if: ${{ steps.decide.outputs.cut == 'true' }}
+        env:
+          VERSION: ${{ steps.decide.outputs.version }}
+        run: |
+          set -euo pipefail
+          # baselines only from SSH-signed tags of the line, verified against protected main's allowed signers —
+          # exactly what admission reads (Codex #163 r1, B01)
+          git fetch -q --no-tags origin main
+          git show origin/main:.github/policy/allowed_signers > "$RUNNER_TEMP/allowed_signers"
+          python3 bin/admission-tag-signer.py owner-baselines --tag "${VERSION}" \
+            --allowed-signers "$RUNNER_TEMP/allowed_signers" --out "$RUNNER_TEMP/owner-baselines"
+          b=$(python3 bin/admission-tag-signer.py baseline --tag "${VERSION}" --owner-baselines "$RUNNER_TEMP/owner-baselines" \
+                --requirements requirements/requirements.yaml)
+          echo "$b"
+          case "$b" in
+            "use "*)
+              # admission will read the tagged commit's copy and refuse it unless it equals the signed tag's
+              base=$(cut -d' ' -f2 <<<"$b")
+              if git show "${base}:requirements/releases/${base}.yaml" | cmp -s - "requirements/releases/${base}.yaml"; then
+                echo "ok=true" >> "$GITHUB_OUTPUT"
+              else
+                echo "::notice::no cut: requirements/releases/${base}.yaml differs from the signed ${base}"
+                echo "ok=false" >> "$GITHUB_OUTPUT"
+              fi ;;
+            *) echo "::notice::no cut: ${b#no }"; echo "ok=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      # Admission requires every push-scoped required check green on the exact tagged commit; on a push, that commit's
+      # checks are still running when decide runs. Wait for them (bounded: a wait, never a retry); cut only if they
+      # are all green, judged as admission judges them. Otherwise no cut, and the daily run picks the patch up.
+      - name: wait for the tagged commit's required checks (as admission judges them; bounded)
+        id: checks
+        if: ${{ steps.basecheck.outputs.ok == 'true' }}
+        timeout-minutes: 65
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # the same query admission makes (filter=latest), against the same policy: protected main's, never the
+          # checked-out commit's (Codex #159 r1, B6; pin pass B01/B02) — so "ready" here is what admission will see
+          end=$((SECONDS + 3600))
+          while [ "$SECONDS" -lt "$end" ]; do
+            # re-read each time: a policy change on main during the wait applies, as it will at admission (pin pass B02)
+            git fetch -q --no-tags origin main
+            git show origin/main:.github/policy/required-checks.json > "$RUNNER_TEMP/required-checks.json"
+            gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?filter=latest&per_page=100" --paginate \
+              --jq '[.check_runs[] | {name, status, conclusion, app_id: .app.id}]' | jq -s 'add // []' > "$RUNNER_TEMP/runs.json"
+            v=$(python3 bin/patch-decide.py ready --required "$RUNNER_TEMP/required-checks.json" --check-runs "$RUNNER_TEMP/runs.json")
+            echo "$v"
+            case "${v%% *}" in
+              ready) echo "ready=true" >> "$GITHUB_OUTPUT"; exit 0 ;;
+              no) echo "::notice::no cut: ${v#no }; the daily run tries again once main is green"; echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0 ;;
+            esac
+            sleep 60
+          done
+          echo "::notice::no cut: the required checks did not finish within 60 minutes; the daily run tries again"
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+
+      # AC8: the fixes from the release scans, the VEX changes since the latest tag and the
+      # next-release entries no earlier patch published; an incomplete scan or an uncited entry fails here: no tag
+      - name: the patch notes (bin/patch-decide.py notes)
+        if: ${{ steps.decide.outputs.cut == 'true' }}
+        env:
+          SINCE: ${{ steps.facts.outputs.since }}
+          VERSION: ${{ steps.decide.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -f "$RUNNER_TEMP/removed-unknown" ]; then
+            echo "::error::the latest release could not be scanned: its fixes cannot be listed, so no patch"; exit 1
+          fi
+          ver="${SINCE#v}"
+          var=()
+          for t in $(python3 bin/patch-decide.py variants --version "$ver"); do
+            v="${t#"$ver"}"; var+=(--variant-grype "${v#-}=$RUNNER_TEMP/rel-${t}.json")   # "", "debug" or "fips": the variant name the notes use
+          done
+          old=(); if git show "${SINCE}:.vex/fosterstack-cache.openvex.json" > "$RUNNER_TEMP/vex-old.json" 2>/dev/null; then
+            old=(--vex-old "$RUNNER_TEMP/vex-old.json"); fi
+          { git for-each-ref 'refs/tags/v*' --format='%(contents)'; cat docs/quality/releases/CHANGELOG.md 2>/dev/null || true; } > "$RUNNER_TEMP/published.txt"
+          python3 bin/patch-decide.py notes --version "$VERSION" "${var[@]}" --gomod go.mod "${old[@]}" \
+            --vex-new .vex/fosterstack-cache.openvex.json --next-notes docs/next-release-notes.md \
+            --published "$RUNNER_TEMP/published.txt" --out "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: the tag request for sign-tag (the tag, the time and the notes)
+        id: request
+        if: ${{ steps.checks.outputs.ready == 'true' }}
+        env:
+          VERSION: ${{ steps.decide.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir tag-request
+          printf '%s' "$VERSION" > tag-request/tag
+          date -u +%s > tag-request/time
+          cp "$RUNNER_TEMP/notes.md" tag-request/notes.md
+          echo "tag=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: upload the tag request
+        if: ${{ steps.request.outputs.tag != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tag-request
+          path: tag-request
+          if-no-files-found: error
+
+  # Makes the annotated tag object of the tag decide asked for and signs it with the one release KMS key (no other job signs a tag). Its token's
+  # job_workflow_ref is release.yml@refs/heads/main, and the role's trust binds that to this job alone (environment sign).
+  sign-tag:
+    needs: decide
+    if: ${{ needs.decide.outputs.tag != '' }}
+    runs-on: ubuntu-24.04
+    environment: sign
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: tag-request
+          path: tag-request
+
+      - name: install the pinned aws CLI
+        run: bash bin/install-scanner.sh aws-cli
+
+      - name: make the tag object and the digest to sign
+        run: bash bin/tag-sign-prepare.sh
+
+      - name: sign the digest with the release key
+        env:
+          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          AWS_REGION: us-east-1
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
+        run: bash bin/tag-sign-kms.sh
+
+      - name: put the signature into the tag object
+        run: python3 -I bin/tag-sign.py assemble --object tag-work/tag.object --signature tag-work/tag.sig --signer-file .github/policy/release_tag_signer --out tag-work/tag.signed
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signed-tag
+          path: tag-work/tag.signed
+
+  # The only job that pushes a tag: the signed tag object sign-tag made, pushed with the auditor App's installation token (a tag pushed with
+  # GITHUB_TOKEN starts no workflow run, so the chain would never start). It holds no key; it makes no tag object and pushes none that does not verify
+  # against the release key's allowed-signers file on main.
+  cut:
+    needs: [decide, sign-tag]
+    if: ${{ needs.decide.outputs.tag != '' }}
+    runs-on: ubuntu-latest
+    environment: agent
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-tag
+          path: signed-tag
+
+      - name: mint the auditor App's token (contents on cache only)
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.AUDITOR_APP_ID }}
+          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
+          repositories: cache
+          permission-contents: write
+
+      - name: verify the signed tag against the release key, then push it
+        env:
+          TAG: ${{ needs.decide.outputs.tag }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          id=$(git hash-object -t tag -w signed-tag/tag.signed)
+          git update-ref "refs/tags/$TAG" "$id"
+          # the object is the tag decide asked for, of the commit that was decided, and its SSH SIGNATURE verifies against the release key's file on main
+          [ "$(git cat-file tag "$TAG" | sed -n 3p)" = "tag $TAG" ]
+          [ "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$GITHUB_SHA" ]
+          git -c gpg.ssh.allowedSignersFile=.github/policy/release_tag_signer verify-tag "$TAG"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin "refs/tags/$TAG"
+
+  # AC8: the pushed tag's notes go on top of docs/quality/releases/CHANGELOG.md and leave docs/next-release-notes.md,
+  # in one generated PR that auto-merges on green (required checks; never a push to main). Its own App token.
+  patch-notes:
+    needs: [decide, cut]
+    if: ${{ needs.decide.outputs.tag != '' }}
+    runs-on: ubuntu-latest
+    environment: agent
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: mint the auditor App's token (contents + pull requests on cache only)
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.AUDITOR_APP_ID }}
+          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
+          repositories: cache
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: the changelog-and-clear PR (auto-merge on green)
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          VERSION: ${{ needs.decide.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "+refs/tags/${VERSION}:refs/tags/${VERSION}"
+          git cat-file tag "$VERSION" | python3 bin/patch-decide.py tag-notes > "$RUNNER_TEMP/notes.md"
+          python3 bin/patch-decide.py changelog --notes "$RUNNER_TEMP/notes.md" --changelog docs/quality/releases/CHANGELOG.md \
+            --next-notes docs/next-release-notes.md
+          branch="patch-notes/${VERSION}"
+          # The commit is made through the GitHub API so GitHub signs it (main requires signed commits; a `git commit` here would be unsigned and
+          # its PR would stay blocked). Its parent is the commit the generated files were computed from: the checkout of main (a branch checkout,
+          # so HEAD is main's tip at checkout time). A newer main tip as parent would carry these files over edits made since.
+          base=$(git rev-parse HEAD)
+          paths=(--path docs/quality/releases/CHANGELOG.md)
+          [ ! -f docs/next-release-notes.md ] || paths+=(--path docs/next-release-notes.md)
+          oid=$(python3 .github/agent/bin/auditor-signed-commit.py --repo "$GITHUB_REPOSITORY" --branch "$branch" --base "$base" --prefix patch-notes/ \
+            --message "Release notes for ${VERSION}: docs/quality/releases/CHANGELOG.md, next-release-notes cleared" "${paths[@]}")
+          # RESIDUALS (documented, not handled here): (1) moving the live branch is not atomic: a writer between the head re-read and the forced
+          # ref update can be overwritten (inherited from the signed-commit helper, #190; one run per tag; so this is a residual);
+          # (2) a rerun after the notes were published and merged can prepend the same changelog entry again (no already-published detection).
+          # Re-runnable, bound to what THIS job made: the PR is the open one from this branch INTO main, in THIS repository (a fork PR with the same
+          # branch name is ignored), exactly one, kept by NUMBER, and its head must be the commit the helper just made ($oid); auto-merge is enabled
+          # only for that head (--match-head-commit). Any other state is a refusal.
+          own='[.[] | select(.isCrossRepository == false)]'
+          count=$(gh pr list --head "$branch" --base main --state open --json number,headRefOid,isCrossRepository --jq "$own | length")
+          [ "$count" -le 1 ] || { echo "more than one open PR from $branch into main; refusing" >&2; exit 1; }
+          if [ "$count" -eq 0 ]; then
+            gh pr create --base main --head "$branch" --title "Release notes for ${VERSION}" \
+              --body "Generated after the ${VERSION} patch tag (REQ-REL-009 AC8): its notes on top of docs/quality/releases/CHANGELOG.md, the published entries removed from docs/next-release-notes.md."
+          fi
+          number=$(gh pr list --head "$branch" --base main --state open --json number,headRefOid,isCrossRepository --jq "$own | .[0].number")
+          head=$(gh pr list --head "$branch" --base main --state open --json number,headRefOid,isCrossRepository --jq "$own | .[0].headRefOid")
+          [[ "$number" =~ ^[0-9]+$ ]] || { echo "no open PR from $branch into main; refusing" >&2; exit 1; }
+          [ "$head" = "$oid" ] || { echo "the open PR's head is not the commit this job made; refusing" >&2; exit 1; }
+          gh pr merge --auto --squash --match-head-commit "$oid" "$number"
+          # main's ruleset requires up-to-date branches: a PR that is BEHIND main is brought up to date (a failure of the update is not an error)
+          state=$(gh pr view "$number" --json mergeStateStatus --jq .mergeStateStatus) || state=unknown
+          if [ "$state" = "BEHIND" ]; then
+            gh pr update-branch "$number" || true
+          fi
+
   # ---------------------------------------------------------------------------------------------------------------
   # Build (REQ-CHAIN-004). The gate G is on build-freeze only; the rest of Build and Rebuild run through needs.
 
@@ -510,7 +925,7 @@ jobs:
   # Check (REQ-CHAIN-006): scanners, acceptance suites, the FIPS check and the customer-guide commands against the exact candidate digests. govulncheck publishes no release binary, so it is built from the committed
   # tools/govulncheck module in its own job, which holds no credential; the check job downloads it by artifact id after download-artifact's own digest check.
   check-govulncheck:
-    if: ${{ inputs.mode != 'snapshot' }}
+    if: ${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true) }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read

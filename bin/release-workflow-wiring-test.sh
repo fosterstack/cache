@@ -36,7 +36,7 @@ CHECK_JOBS = ["check-govulncheck", "check"]
 RELEASE_JOBS = ["release-compare", "release-verify", "release"]
 RELEASE_STEPS = [(x, "bin/%s.sh" % x) for x in ("release-verify", "release-apks", "release-publish", "release-sign", "release-postverify", "release-assets")]   # postverify before assets
 CHAIN = BUILD_JOBS + ["sign"] + REBUILD_JOBS + ["sign-rebuild"] + CHECK_JOBS + ["sign-check"] + RELEASE_JOBS
-OTHER_ALLOWED = {"decide", "patch-notes", "patch-failed", "live-test", "live-test-release"}   # and the hostile-* jobs; persona-uat has its own file
+OTHER_ALLOWED = {"decide", "sign-tag", "cut", "patch-notes", "patch-failed", "live-test", "live-test-release"}   # the four inline tag jobs of the automatic patch release by name (REQ-REL-009), and the hostile-* jobs; persona-uat has its own file
 KMS_ENV = ["AWS_ROLE_ARN", "AWS_REGION", "RELEASE_KMS_KEY_REF"]
 NEEDS = {   # exactly, as REQ-CHAIN-005-AC5 lists them
     "build-freeze": [], "build-apk": ["build-freeze"], "rebuild-apk": ["build-assemble"], "build-assemble": ["build-apk"], "sign": ["build-assemble"],
@@ -65,6 +65,8 @@ G = norm("(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
 S = norm("inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))")
 S_TAG = S + norm(" && !contains(github.ref_name, '-')")   # release: S, then the release-candidate rule, in the job's if
 NOT_SNAPSHOT = norm("inputs.mode != 'snapshot'")
+# check-govulncheck has no needs, so its own if keeps it off in a run on main (a push or the schedule): a tag push or a dry run only
+GV_IF = norm("inputs.mode != 'snapshot' && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true)")
 
 def load(p): return yaml.load(open(p), Loader=yaml.BaseLoader)
 def needs_of(j):
@@ -156,18 +158,28 @@ for jn in ("release",):
         if "contains(github.ref_name,'-')" in norm(s.get("if", "")):
             bad.append("candidate rule: a step of %s carries the release-candidate condition (it belongs in the job's if)" % jn)
 for jn in CHECK_JOBS:
-    if jn in jobs and norm(jobs[jn].get("if", "")) != NOT_SNAPSHOT:
-        bad.append("the Check job %s does not carry exactly inputs.mode != 'snapshot': %s" % (jn, jobs[jn].get("if")))
+    want = GV_IF if jn == "check-govulncheck" else NOT_SNAPSHOT
+    if jn in jobs and norm(jobs[jn].get("if", "")) != want:
+        bad.append("the Check job %s does not carry exactly %s: %s" % (jn, "the tag-push or dry-run guard after inputs.mode != 'snapshot'" if jn == "check-govulncheck" else "inputs.mode != 'snapshot'", jobs[jn].get("if")))
+st = jobs.get("sign-tag")
+if st is not None:      # the one tag job that holds the identity token: only in the environment sign, exactly contents read and id-token write
+    if st.get("environment") != "sign": bad.append("sign-tag is not in the environment sign: %s" % st.get("environment"))
+    if st.get("permissions") != {"contents": "read", "id-token": "write"}: bad.append("sign-tag does not hold exactly contents read and id-token write: %s" % st.get("permissions"))
+for jn in ("decide", "cut", "patch-notes"):
+    if jn in jobs and (jobs[jn].get("environment") == "sign" or "id-token" in (jobs[jn].get("permissions") or {})):
+        bad.append("the tag job %s is in the environment sign or holds an id-token: only sign-tag does" % jn)
 for jn in ["build-apk", "build-assemble"] + REBUILD_JOBS:
     if jn in jobs and "if" in jobs[jn]:
         bad.append("%s carries an if (Build and Rebuild run through needs; only build-freeze is gated)" % jn)
-for jn in ["patch-notes"]:
-    if jn in jobs and norm(jobs[jn].get("if", "")) != norm("${{ needs.decide.outputs.tagged == 'true' }}"):
-        bad.append("patch-notes does not run only if needs.decide.outputs.tagged == 'true'")
+TAG_DUE = norm("${{ needs.decide.outputs.tag != '' }}")
+TAG_NEEDS = {"sign-tag": ["decide"], "cut": ["decide", "sign-tag"], "patch-notes": ["cut", "decide"]}
+for jn, want in TAG_NEEDS.items():
+    if jn in jobs and norm(jobs[jn].get("if", "")) != TAG_DUE:
+        bad.append("%s does not run only if needs.decide.outputs.tag != '' (decide named a tag)" % jn)
+    if jn in jobs and sorted(needs_of(jobs[jn])) != want:
+        bad.append("%s must need exactly %s: %s" % (jn, want, needs_of(jobs[jn])))
 if "patch-failed" in jobs and not set(needs_of(jobs["patch-failed"])) <= set(CHAIN):
     bad.append("patch-failed needs a job that is not a chain job: %s" % needs_of(jobs["patch-failed"]))
-if "decide" in jobs and "patch-notes" in jobs and needs_of(jobs["patch-notes"]) != ["decide"]:
-    bad.append("patch-notes must need exactly decide: %s" % needs_of(jobs["patch-notes"]))
 
 # ---- every action pinned by full digest (REQ-CHAIN-001-AC1) ---------------------------------------------------------------------------------------
 for jn, j in jobs.items():
@@ -217,12 +229,14 @@ for jn in ("sign", "sign-rebuild", "sign-check"):
 for jn, j in jobs.items():
     if jn in SIGN_JOBS:
         continue
+    if jn == "sign-tag":      # the fourth job of the environment sign: judged above (environment sign, exactly contents read and id-token write)
+        continue
     t = text_of(j)
     if j.get("environment") == "sign":
-        bad.append("job %s is in the environment sign, which only the three sign jobs carry" % jn)
+        bad.append("job %s is in the environment sign, which only the sign jobs and sign-tag carry" % jn)
     for k in KMS_ENV:
         if re.search(r"\b%s\b" % k, t):
-            bad.append("job %s names %s: only the three sign jobs carry the KMS federation" % (jn, k))
+            bad.append("job %s names %s: only the sign jobs and sign-tag carry the KMS federation" % (jn, k))
     if SIGNING.search(runs_of(j)):
         bad.append("job %s runs a signing command (the signing subcommand and bin/release-signatures.sh belong to the sign jobs)" % jn)
 rel = jobs.get("release") or {}
@@ -289,7 +303,7 @@ def requests_write(j):
         return True
     return isinstance(p, dict) and any(v == "write" or k == "id-token" for k, v in p.items())
 for jn, j in jobs.items():
-    if requests_write(j) and NOT_SNAPSHOT not in norm(j.get("if", "")):
+    if requests_write(j) and NOT_SNAPSHOT not in norm(j.get("if", "")) and jn != "sign-tag":    # sign-tag runs only after decide named a tag, and decide's if keeps a snapshot call out
         bad.append("job %s requests a write or an id-token and is reachable in snapshot mode or under workflow_call (its if lacks inputs.mode != 'snapshot')" % jn)
 
 # ---- persona-uat.yml is called from one guarded job at most (REQ-UAT-001-AC6) -----------------------------------------------------------------------
@@ -574,10 +588,28 @@ done
 case_ check-no-snapshot-guard bad "Check job check does not carry" "$J['check'].pop('if')"
 case_ govulncheck-no-guard    bad "Check job check-govulncheck does not carry" "$J['check-govulncheck'].pop('if')"
 case_ check-guard-is-S        bad "Check job check does not carry" "$J['check']['if'] = $J['sign']['if']"
+case_ govulncheck-snapshot-only bad "Check job check-govulncheck does not carry" "$J['check-govulncheck']['if'] = \"\${{ inputs.mode != 'snapshot' }}\""
+case_ govulncheck-other-if    bad "Check job check-govulncheck does not carry" "$J['check-govulncheck']['if'] = \"\${{ inputs.mode != 'snapshot' && github.event_name != 'workflow_dispatch' }}\""
+case_ check-gets-the-tag-guard bad "Check job check does not carry" "$J['check']['if'] = $J['check-govulncheck']['if']"
+# the four inline tag jobs of the automatic patch release (REQ-REL-009) are allowed by name; only sign-tag holds the identity token, in the environment sign
+case_ tag-jobs-allowed        ok  "" ""
+case_ patch-notes-needs-only-decide bad "patch-notes must need exactly" "$J['patch-notes']['needs'] = 'decide'"
+case_ cut-needs-only-decide   bad "cut must need exactly" "$J['cut']['needs'] = 'decide'"
+case_ cut-ungated             bad "cut does not run only if" "$J['cut']['if'] = 'always()'"
+case_ sign-tag-ungated        bad "sign-tag does not run only if" "$J['sign-tag']['if'] = 'true'"
+case_ fifth-tag-job-refused   bad "is not a chain job nor on the allowed list" "$J['sign-notes'] = {'runs-on': 'ubuntu-24.04', 'needs': 'decide', 'permissions': {'contents': 'read'}, 'steps': []}"
+case_ sign-tag-no-environment bad "sign-tag is not in the environment sign" "$J['sign-tag'].pop('environment')"
+case_ sign-tag-agent-environment bad "sign-tag is not in the environment sign" "$J['sign-tag']['environment'] = 'agent'"
+case_ sign-tag-no-id-token    bad "sign-tag does not hold exactly contents read and id-token write" "$J['sign-tag']['permissions'].pop('id-token')"
+case_ sign-tag-packages-write bad "sign-tag does not hold exactly contents read and id-token write" "$J['sign-tag']['permissions']['packages'] = 'write'"
+for tj in decide cut patch-notes; do
+  case_ "$tj-in-environment-sign" bad "only sign-tag does" "$J['$tj']['environment'] = 'sign'"
+  case_ "$tj-holds-id-token"     bad "only sign-tag does" "$J['$tj'].setdefault('permissions', {})['id-token'] = 'write'"
+done
 for jn in build-apk build-assemble rebuild-apk rebuild-assemble; do
   case_ "$jn-has-if"          bad "$jn carries an if" "$J['$jn']['if'] = \"\${{ github.event_name == 'push' }}\""
 done
-case_ patch-notes-ungated     bad "patch-notes does not run only if" "$J['decide'] = {'runs-on': 'ubuntu-24.04', 'permissions': {'contents': 'read'}, 'steps': []}; $J['patch-notes'] = {'needs': 'decide', 'if': 'always()', 'runs-on': 'ubuntu-24.04', 'permissions': {'contents': 'read'}, 'steps': []}"
+case_ patch-notes-ungated     bad "patch-notes does not run only if" "$J['decide'] = {'runs-on': 'ubuntu-24.04', 'permissions': {'contents': 'read'}, 'steps': []}; $J['patch-notes'] = {'needs': ['decide', 'cut'], 'if': 'always()', 'runs-on': 'ubuntu-24.04', 'permissions': {'contents': 'read'}, 'steps': []}"
 
 # the three sign jobs and the key (REQ-CHAIN-001-AC9)
 for jn in sign sign-rebuild sign-check; do
