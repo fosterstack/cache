@@ -1,9 +1,10 @@
 # Releasing
 
 **Releases build only in CI.** No binary or image that ships to a user is
-ever produced on a developer machine, including the maintainers'. A maintainer
-makes only the signed release tag; CI builds everything else and signs it with
-the release signing key. This is a hard rule, not a preference: it's what makes the SLSA provenance and
+ever produced on a developer machine, including the maintainers'. The only thing
+made by hand is a maintainer's signed release tag, and the release workflow makes
+and signs the tag of an automatic patch release itself; CI builds everything else
+and signs it with the release signing key. This is a hard rule, not a preference: it's what makes the SLSA provenance and
 signatures on every release mean something (an attacker with a
 laptop cannot forge a release that GitHub's own runners never built).
 
@@ -67,7 +68,9 @@ rebuilds. Of the jobs above, Release is the only one that holds a registry crede
   against what was just published; and `release-assets` creates the GitHub
   release only after that. Every signature is made before publishing by Sign's
   third job, `sign-check`, on a final tag (`bin/release-signatures.sh`).
-  Release creates no tag.
+  The stages of Release create no tag: a tag is made before they start, by a
+  maintainer, or for an automatic patch release by the `sign-tag` and `cut` jobs
+  of `release.yml` (see "Cutting a release" below).
 - **Release candidates**: a tag matching exactly `vX.Y.Z-rcN` runs every stage
   and Release's `release-verify`, and then ends: no credential is read, nothing
   is pushed, no release is created, no floating tag moves. A tag that is
@@ -116,6 +119,12 @@ git push origin vX.Y.Z
 Sign the tag with SSH: set `gpg.format` to `ssh` and `user.signingkey` to the SSH key
 listed for you as a maintainer, then run `git tag -s`. Pushing it is the only trigger — there is no manual
 release path.
+
+An automatic patch release has no maintainer step. On a push to `main` or on the daily
+schedule, `release.yml` runs `decide`, which says which patch tag is due, then `sign-tag`,
+which makes the tag object and signs it with the release KMS key, then `cut`, which pushes
+that signed tag. Source admission accepts that key's signature on a patch tag only; a
+maintainer's SSH signature is accepted on any tag.
 
 ## What a release contains
 

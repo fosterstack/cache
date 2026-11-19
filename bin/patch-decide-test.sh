@@ -2009,6 +2009,10 @@ check("0135 + r5 (r8: the escaped form only, the older forms cut back): an entry
 # refused (as in round 3)
 for t_ in TERMS:
     body_ = "Patch release v0.2.2" + t_ + "\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n"
+    check("AC8 tag-notes heading (r5, B low): %r after the heading is refused" % t_, P.tag_notes(mktag("v0.2.2", body_)) is None,
+          P.tag_notes(mktag("v0.2.2", body_)))
+check("AC8 tag-notes heading (r5): the generated LF heading is still read",
+      P.tag_notes(mktag("v0.2.2", "Patch release v0.2.2\n\n### VEX\n- no change\n")) == "Patch release v0.2.2\n\n### VEX\n- no change\n")
 # r5 (A R4-1, B low): the changelog's existing history is copied unchanged, never rewritten; a history this code would not
 # have written (a line boundary other than LF, a vendor name, an unescaped marker) is refused, nothing written (fail closed)
 HIST_ = "# Changelog\n\n## v0.2.1 — patch release\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- \\(redacted\\)\\: fixed \\(added\\) — statement 2 of the new document\n"
@@ -2083,8 +2087,11 @@ for l_ in ("- (redacted): fixed (added) — statement 2 of the new document", "-
            '- `"(redacted)"`: fixed (added) — statement 1 of the new document'):
     # r10 (advisor decision Oct 11: no VEX exemption): a VEX line holding the marker is printed in the escape-whole-line
     # form like any line, and that form reads back unchanged; the bare form is not what the notes print and reads escaped
-    blk_ = "## v0.2.3 — patch release\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n%s\n" % P._clean_free(l_)
-    raw_ = "## v0.2.3 — patch release\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n%s\n" % l_
+    blk_ = "Patch release v0.2.3\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n%s\n" % P._clean_free(l_)
+    raw_ = "Patch release v0.2.3\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n%s\n" % l_
+    check("AC8 redaction marker (r10; was r6/r8): a VEX line holding the marker is printed escaped, reads back unchanged and "
+          "shows the marker: %r" % l_, P._clean_free(l_) != l_ and vshown(P._clean_free(l_)) == l_ and P._clean_lines(blk_) == blk_
+          and P.tag_notes(mktag("v0.2.3", blk_)) == blk_ and P._clean_lines(raw_) == blk_, P._clean_lines(blk_))
 R4T_ = ("## v0.2.2 — patch release\n\n### Fixes\n- CVE-1 in [click](redacted): v1 → v2 (severity high; variants: default)\n\n### VEX\n"
         "- (redacted): fixed (added) — statement 2 of the new document\n\n### Behavior changes\n- [click](redacted) (decided 2026-10-05).\n")
 try:
@@ -2170,6 +2177,9 @@ for what_, o_, n_ in (("a vulnerability name", None, vd(vs(vulnerability={"name"
                       ("a statement @id", None, vd(vs(products=[{"@id": PC}], **{"@id": SIG_}), vs(products=[{"@id": "pkg:b"}]))),
                       ("a field name", vd(VS), vd(vs(**{SIG_: 1}))), ("a long run of hyphens", None, vd(vs(vulnerability={"name": "------BEGIN X"})))):
     nt6_ = P.notes("v0.2.3", [], P.vex_changes(o_, n_))
+    check("AC8 VEX signature delimiter (r6, B F4): %s holding %r: no five-hyphen run printed, the tag of the notes reads back"
+          % (what_, SIG_), "-----" not in nt6_ and P.tag_notes(mktag("v0.2.3", nt6_)) == nt6_ and resolves(nt6_, o_, n_)[0],
+          (vex_part(nt6_), resolves(nt6_, o_, n_)))
 # B F4 (r7, B): a bare value next to a space the formatter prints ('CVE-1-----BEGIN' then ' [') never forms a delimiter
 for what_, o_, n_ in (("a CVE name before a product list", None, vd(vs(vulnerability={"name": "CVE-1-----BEGIN"}, products=[{"@id": "pkg:a"}]),
                                                                     vs(vulnerability={"name": "CVE-1-----BEGIN"}, products=[{"@id": "pkg:b"}]))),
@@ -2178,6 +2188,9 @@ for what_, o_, n_ in (("a CVE name before a product list", None, vd(vs(vulnerabi
                       ("an identifier before another", None, vd(vs(products=[{"identifiers": {"purl": "pkg:a-----BEGIN", "cpe23": "cpe:x"}}]),
                                                                   vs(products=[{"@id": PC}])))):
     nt6_ = refused(P.notes, "v0.2.3", [], P.vex_changes(o_, n_))
+    check("AC8 VEX signature delimiter (r7 B F4; r8): %s holding a bare-looking five-hyphen run: no '-----BEGIN ' printed, the tag of "
+          "the notes reads back" % what_, isinstance(nt6_, str) and not nt6_.startswith("ValueError") and "-----BEGIN " not in nt6_
+          and P.tag_notes(mktag("v0.2.3", nt6_)) == nt6_ and resolves(nt6_, o_, n_)[0], nt6_)
 # random generated notes read back as the changelog's notes (every VEX line a fixed point of the free-text cleaner)
 def ac14_hit(l):
     """the test's own reading of REQ-REL-009-AC14's four line forms (with the widening the implementation documents: a
@@ -2668,18 +2681,23 @@ for it_ in range(1500):
         ref_ += 1
         continue
     made_ += 1
+    outs_ = [nt_, P.tag_notes(mktag("v0.2.3", nt_)) or "", P.changelog(nt_, None, "")[0]]
     for o_ in outs_:
         for l_ in o_.split("\n"):
             if ac14_hit(l_):
                 bad_.append((it_, l_))
 check("AC14 property: 1500 random notes from fix and entry text built of the refused forms (%d generated, %d refused): no line "
-      "of the notes or the changelog holds a refused form" % (made_, ref_), bad_ == [] and made_ > 100 and ref_ > 100, bad_[:3])
+      "of the notes, the tag's notes or the changelog holds a refused form" % (made_, ref_), bad_ == [] and made_ > 100 and ref_ > 100, bad_[:3])
 # ===== round 7 findings (Codex #300 r7): each is refused or inert under REQ-REL-009-AC14 and the escape-whole-line rule
 A1_ = ["<!-- (decided 2026-10-05).", "gpt helper (decided 2026-10-06)."]
 A1_BODY = "## v0.2.3 — patch release\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n\n### Behavior changes\n- <!-- (decided 2026-10-05).\n- \\(redacted\\) helper \\(decided 2026-10-06\\)\\.\n"
 rc_, err_, out_, p_ = notes_cli("# Notes\n\n- <!-- (decided 2026-10-05).\n- gpt helper (decided 2026-10-06).\n")
 for l_ in ("-  [(redacted)]: /url", "-  [x]: (redacted)"):
-    body_ = "## v0.2.3 — patch release\n\n" + l_ + "\n"
+    body_ = "Patch release v0.2.3\n\n" + l_ + "\n"
+    check("r7 A medium / B F1: %r is refused in a tag's notes, as the changelog's notes and as history" % l_,
+          str(refused(P.tag_notes, mktag("v0.2.3", body_))).startswith("ValueError")
+          and str(refused(P.changelog, body_, None, "")).startswith("ValueError")
+          and str(refused(P.changelog, GOOD_NT, "# Changelog\n\n" + body_, "")).startswith("ValueError"))
 check("r7 A medium: notes() refuses the behavior entry ' [redacted]: /url (decided 2026-10-05)'",
       str(refused(P.notes, "v0.2.3", [], [], behavior=[" [redacted]: /url (decided 2026-10-05)"])).startswith("ValueError"))
 nt_ = P.notes("v0.2.3", [], [], behavior=["Update gpt (decided 2026-10-05). Follow-up (decided 2026-10-06)."])
@@ -3023,11 +3041,12 @@ for it_ in range(500):
     if is_ve(t_):
         bad_.append((it_, "notes refused its own lines", t_, new_)); continue
     made_ += 1
+    tn_, cl_ = refused(P.tag_notes, mktag("v0.2.3", t_)), refused(P.changelog, t_, None, "")
     cl2_ = refused(P.changelog, P.notes("v0.2.4", [], []), cl_[0], "") if not is_ve(cl_) else cl_
-    if is_ve(cl_) or is_ve(cl2_):
-        bad_.append((it_, cl_ if is_ve(cl_) else cl2_, t_))
+    if tn_ != t_ or is_ve(cl_) or is_ve(cl2_):
+        bad_.append((it_, tn_ if tn_ != t_ else (cl_ if is_ve(cl_) else cl2_), t_))
 check("r10 round trip property: 500 random VEX documents: every one notes() is handed prints, and its text reads back as the "
-      "the changelog's notes and as history (%d printed)" % made_, bad_ == [] and made_ > 200, bad_[:2])
+      "tag's notes byte for byte, as the changelog's notes and as history (%d printed)" % made_, bad_ == [] and made_ > 200, bad_[:2])
 # R10-3 (decision (2); A (a)(3) / B 1): go.mod is parsed (its grammar: blocks, single-line directives, '//' comments); the
 # version comes from the parsed require directives only, and the fix check reads that same require line, whole
 rc_, err_, out_, p_ = notes_cli(gomod="module example.org/test\n// golang.org/x/net v0.33.0\nrequire golang.org/x/net v0.33.0 // <b>\n")
@@ -3104,9 +3123,12 @@ for name_ in ("<b>x", "&amp;", "[x]: y", "-----BEGIN x"):
     ok_ = not is_ve(t_) and all(P._refused_form(l_) is None for l_ in t_.splitlines()) and ("- %s: fixed (added)\n" % lit_) in t_ \
         and json.loads(lit_[1:-1]) == name_
     if ok_:
+        rc_, err_, sout_ = cli(["tag-notes"], stdin=mktag("v0.2.3", t_))
         rc2_, err2_, cl_, nnout_, p_ = changelog_cli(sout_, None, "# Notes\n")
         rc3_, err3_, cl3_, _, _ = changelog_cli(P.notes("v0.2.4", [], []), cl_, "# Notes\n") if rc2_ == 0 else (rc2_, err2_, None, None, None)
         ok_ = rc_ == 0 and sout_ == t_ and rc2_ == 0 and rc3_ == 0 and lit_ in (cl3_ or "")
+    check("r10 cut: a statement named %r prints JSON-escaped (%s), holds no refused form, and goes notes -> tag-notes -> "
+          "changelog (notes, then history) with exit 0" % (name_, P._lit(name_, before_colon=True)), ok_, (t_, locals().get("err_")))
 check("r10 cut: _lit writes '<' and '&' as \\u003c and \\u0026 (the same JSON string)",
       P._lit("<b>&") == '`"\\u003cb>\\u0026"`' and json.loads(P._lit("<b>&")[1:-1]) == "<b>&", P._lit("<b>&"))
 FORGE_ = [GEN_B.replace("- no change", "- `\"<b>\"`: fixed (added)"), GEN_B.replace("- no change", "- CVE-1: fixed (changed: `\"&amp;\"`)"),
@@ -3497,10 +3519,11 @@ for it_ in range(500):
     if is_ve(t_):
         bad_.append((it_, "notes refused its own lines", t_)); continue
     made_ += 1
-    if is_ve(cl_):
-        bad_.append((it_, cl_))
+    tn_, cl_ = refused(P.tag_notes, mktag("v0.2.3", t_)), refused(P.changelog, t_, None, "")
+    if tn_ != t_ or is_ve(cl_):
+        bad_.append((it_, tn_, cl_))
 check("r12 R12-5: 500 random VEX documents (%d holding a marker form, %d printed): a marker form in any printed value is "
-      "refused naming its statement; every other document prints and reads back as the changelog"
+      "refused naming its statement; every other document prints and reads back as the tag's notes and changelog"
       % (refd_, made_), bad_ == [] and refd_ > 50 and made_ > 200, bad_[:2])
 # ===== r13 (Codex #300 b12, B Medium; advisor CUT, Oct 12): the decoding is deleted; the refusal covers the recognised forms
 # only (RECOGNISED_ above, refused in every field by R12-2); every cut form is an ordinary value: not refused, printed quoted

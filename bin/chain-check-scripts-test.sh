@@ -11,6 +11,7 @@ pass=0 failn=0
 command -v jq > /dev/null || { echo "FAIL jq is required"; exit 1; }
 ok()  { pass=$((pass + 1)); echo "ok   $1"; }
 bad() { failn=$((failn + 1)); echo "FAIL $1"; }
+skip() { if [ "${CI:-}" = true ] || [ "${GITHUB_ACTIONS:-}" = true ]; then bad "$1: skipped in CI, where Go must exist"; else ok "$1"; fi; }
 # AC15: the scan's `now`, given by a fake `date` first on PATH
 FAKE_NOW=$(jq -n '"2026-10-10T00:00:00Z" | fromdateiso8601'); export FAKE_NOW
 GDB_SUM=972de542534d3461cc3c3849a37a3f917b823de3b9c367e289db0d163519b42b
@@ -1917,12 +1918,12 @@ mkdir -p "$work/realmod" && printf 'module example.com/a\n\ngo 1.27\n\nignore ./
 if ( cd "$work/realmod" && GOFLAGS= GOTOOLCHAIN=local go mod edit -json > "$work/real-ignore.json" ) 2> /dev/null && grep -q '"Ignore"' "$work/real-ignore.json"; then
   gvrun GV_GO_JSON="$work/real-ignore.json" GV_OUT=clean -- "${GVARGS[@]}"
   if [ "$rc" != 0 ] && [ "$rc" != 127 ] && ! grep -q '^govulncheck ' "$work/gvlog" && grep -q 'decoy' <<< "$out"; then ok "G the real go mod edit -json output with an ignore directive is refused, naming the path"; else bad "G real ignore output accepted: rc=$rc $out"; fi
-else ok "G (no Go on this machine writes the ignore field: the real-output case is skipped)"; fi
+else skip "G (no Go on this machine writes the ignore field: the real-output case is skipped)"; fi
 printf 'module example.com/a\n\ngo 1.27\n' > "$work/realmod/go.mod"
 if ( cd "$work/realmod" && GOFLAGS= GOTOOLCHAIN=local go mod edit -json > "$work/real-plain.json" ) 2> /dev/null && ! grep -q '"Ignore"' "$work/real-plain.json"; then
   gvrun GV_GO_JSON="$work/real-plain.json" GV_OUT=clean -- "${GVARGS[@]}"
   if [ "$rc" = 0 ]; then ok "G the real go mod edit -json output of a module without ignore passes"; else bad "G real plain output refused: rc=$rc $out"; fi
-else ok "G (no Go on this machine: the real plain-output case is skipped)"; fi
+else skip "G (no Go on this machine: the real plain-output case is skipped)"; fi
 # go mod edit -json that prints JSON which is not an object cannot say whether an ignore directive is there: refused (REQ-CHAIN-006-AC18), never read as "no ignore"
 for nj in '[]' 'null' '"x"' '5'; do
   printf '%s\n' "$nj" > "$work/nonobj.json"

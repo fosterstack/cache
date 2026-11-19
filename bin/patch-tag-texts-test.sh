@@ -69,29 +69,33 @@ else:
     check(True, ".github/policy/release_tag_signer is not committed yet (it waits for a human to commit the real public key: REQ-BUILDAPK-001-AC8)")
 check(not os.path.exists(os.path.join(root, ".github/workflows/stage-admission.yml")), "stage-admission.yml stays gone")
 check(not os.path.exists(os.path.join(root, ".github/workflows/stage-sign.yml")), "stage-sign.yml stays gone (the signing jobs are jobs of release.yml)")
-# ---- bin/release-assets.sh posts the notes of a generated patch tag (the output of python3 -I -B bin/patch-decide.py tag-notes) with --notes-file, and the fixed text on every other tag ----
+# ---- bin/release-stage.sh writes the notes of a generated patch tag (the output of python3 -I -B bin/patch-decide.py tag-notes) and the fixed text for every other tag; bin/release-assets.sh posts that file with --notes-file ----
 import shutil, subprocess, tempfile
 ra = open(os.path.join(root, "bin/release-assets.sh")).read()
-check("python3 -I -B bin/patch-decide.py tag-notes" in ra and "--notes-file" in ra, "release-assets.sh reads the notes with python3 -I -B bin/patch-decide.py tag-notes and passes them with --notes-file")
+rs = open(os.path.join(root, "bin/release-stage.sh")).read()
+i0 = rs.find("status=0\n"); i1 = rs.find("esac\n", i0) + len("esac\n")
+stage = rs[i0:i1] if i0 >= 0 and i1 > i0 else ""
+check("python3 -I -B bin/patch-decide.py tag-notes" in stage and "> release-notes.txt" in stage, "release-stage.sh reads the notes with python3 -I -B bin/patch-decide.py tag-notes into release-notes.txt")
+check("--notes-file release-notes.txt" in ra and "tag-notes" not in ra, "release-assets.sh passes release-notes.txt with --notes-file and reads no tag")
 FIXED = "Evidence: see docs/verify-release.md for the verification commands of this release."
-NOTES = "## v0.3.1 \u2014 patch release\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n"
+NOTES = "Patch release v0.3.1\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n"
 SIGBLOCK = "-----BEGIN SSH SIGNATURE-----\nAAAA\n-----END SSH SIGNATURE-----\n"
 TAGGER = "fosterstack release <release@users.noreply.github.com>"
 scratch = tempfile.mkdtemp(prefix="patch-tag-texts.")
 ENV = {"PATH": os.environ["PATH"], "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null", "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com", "HOME": scratch}
 def git(cwd, *a, inp=None): return subprocess.run(["git", *a], cwd=cwd, env=ENV, input=inp, capture_output=True, text=True, check=True).stdout.strip()
-def release_run(name, tagger, notes, signed=True, tag_object=True, script=None):
-    """run the real bin/release-assets.sh in a scratch repository whose tag v0.3.1 is the given object, with a stub gh that logs its arguments (and keeps the --notes-file bytes); returns (exit, log, notes file text)"""
+def release_run(name, tagger, notes, signed=True, tag_object=True, stage_block=None):
+    """run the notes block of the real bin/release-stage.sh, then the real bin/release-assets.sh, in a scratch repository whose tag v0.3.1 is the given object, with a stub gh that logs its arguments (and keeps the --notes-file bytes); returns (exit, log, notes file text, stderr)"""
     r = os.path.join(scratch, name); os.makedirs(r + "/bin"); os.makedirs(r + "/release-upload"); os.makedirs(r + "/stub")
-    open(r + "/bin/release-assets.sh", "w").write(ra if script is None else script); shutil.copy(os.path.join(root, "bin/patch-decide.py"), r + "/bin/")
-    open(r + "/bin/release-metadata.py", "w").write("import sys\n"); open(r + "/release-upload/a.json", "w").write("{}")
+    open(r + "/bin/release-assets.sh", "w").write(ra); shutil.copy(os.path.join(root, "bin/patch-decide.py"), r + "/bin/")
+    open(r + "/bin/release-gate.py", "w").write("import sys\n"); open(r + "/release-upload/a.json", "w").write("{}")
     open(r + "/stub/gh", "w").write("""#!/usr/bin/env bash
 echo "gh $*" >> "$LOGF"
 case "$1 $2" in
-  "release view") echo "release not found" >&2; exit 1 ;;
+  "release list") echo "[]" ;;
   "release create") while [ $# -gt 0 ]; do [ "$1" = --notes-file ] && cp "$2" "$LOGF.notes"; shift; done ;;
-  "release download") mkdir -p "$4" ;;
+  "release download") mkdir -p release-published ;;
 esac
 exit 0
 """)
@@ -103,31 +107,29 @@ exit 0
     else:
         git(r, "tag", "v0.3.1")
     e = dict(ENV, PATH=r + "/stub:" + ENV["PATH"], GH_TOKEN="x", GITHUB_REF_NAME="v0.3.1", LOGF=r + "/log")
-    p = subprocess.run(["bash", "bin/release-assets.sh"], cwd=r, env=e, capture_output=True, text=True)
+    p = subprocess.run(["bash", "-c", "set -euo pipefail\nrel=v0.3.1\n" + (stage if stage_block is None else stage_block)], cwd=r, env=e, capture_output=True, text=True)
+    if p.returncode == 0: p = subprocess.run(["bash", "bin/release-assets.sh"], cwd=r, env=e, capture_output=True, text=True)
     log = open(r + "/log").read() if os.path.exists(r + "/log") else ""
     nf = open(r + "/log.notes").read() if os.path.exists(r + "/log.notes") else None
     return p.returncode, log, nf, p.stderr
 creates = lambda log: [l for l in log.splitlines() if l.startswith("gh release create")]
 rc, log, nf, err = release_run("gen", TAGGER, NOTES)
 def gen_ok(rc, log, nf): return rc == 0 and len(creates(log)) == 1 and "--notes-file" in creates(log)[0] and FIXED not in log and nf is not None and nf.rstrip("\n") == NOTES.rstrip("\n")
-def other_ok(rc, log, nf): return rc == 0 and len(creates(log)) == 1 and FIXED in creates(log)[0] and "--notes-file" not in log and nf is None
-check(gen_ok(rc, log, nf), "release-assets.sh on a generated patch tag creates the release with --notes-file holding the notes the tag carries, not the fixed text (exit %s)" % rc)
+def other_ok(rc, log, nf): return rc == 0 and len(creates(log)) == 1 and nf == FIXED
+check(gen_ok(rc, log, nf), "release-stage.sh and release-assets.sh on a generated patch tag create the release with --notes-file holding the notes the tag carries, not the fixed text (exit %s)" % rc)
 rc, log, nf, err = release_run("owner", "Some Owner <owner@example.com>", NOTES)
-check(other_ok(rc, log, nf),
-      "release-assets.sh on a tag signed by someone else (the owner's tag) keeps the fixed notes text and no --notes-file (exit %s)" % rc)
+check(other_ok(rc, log, nf), "on a tag signed by someone else (the owner's tag) the release notes are the fixed text (exit %s)" % rc)
 rc, log, nf, err = release_run("unsigned", TAGGER, NOTES, signed=False)
-check(rc == 0 and len(creates(log)) == 1 and FIXED in creates(log)[0] and "--notes-file" not in log,
-      "release-assets.sh on a tag object without a signature keeps the fixed notes text (exit %s)" % rc)
+check(other_ok(rc, log, nf), "on a tag object without a signature the release notes are the fixed text (exit %s)" % rc)
 rc, log, nf, err = release_run("light", TAGGER, NOTES, tag_object=False)
-check(rc == 0 and len(creates(log)) == 1 and FIXED in creates(log)[0] and "--notes-file" not in log,
-      "release-assets.sh on a lightweight tag (no tag object) keeps the fixed notes text (exit %s)" % rc)
+check(other_ok(rc, log, nf), "on a lightweight tag (no tag object) the release notes are the fixed text (exit %s)" % rc)
 rc, log, nf, err = release_run("refused", TAGGER, NOTES.replace("no change", "-----BEGIN x"))
-check(rc != 0 and not creates(log), "release-assets.sh on a generated tag whose notes hold a refused form stops with no release created (exit %s)" % rc)
-# a check that cannot fail shows nothing: a copy of the script that always posts the fixed text, and one that posts the notes file on every tag, are both refused by the cases above
-m1 = ra.replace('0) gh release create "$rel" --title "fscache $rel" --notes-file "$notes" --verify-tag ;;', '0) gh release create "$rel" --title "fscache $rel" --notes "' + FIXED + '" --verify-tag ;;')
-m2 = ra.replace('1) gh release create "$rel" --title "fscache $rel" --notes "Evidence: see docs/verify-release.md for the verification commands of this release." --verify-tag ;;', '1) gh release create "$rel" --title "fscache $rel" --notes-file "$notes" --verify-tag ;;')
-check(m1 != ra and not gen_ok(*release_run("mut1", TAGGER, NOTES, script=m1)[:3]), "a release-assets.sh that always posts the fixed text is refused by the generated-tag case")
-check(m2 != ra and not other_ok(*release_run("mut2", "Some Owner <owner@example.com>", NOTES, script=m2)[:3]), "a release-assets.sh that posts the notes file on every tag is refused by the other-tag case")
+check(rc != 0 and not creates(log), "on a generated tag whose notes hold a refused form the notes step stops with no release created (exit %s)" % rc)
+# a check that cannot fail shows nothing: a notes block that always writes the fixed text, and one that leaves the notes empty on every other tag, are both refused by the cases above
+m1 = stage.replace("  0) ;;", "  0) printf '%s' \"" + FIXED + "\" > release-notes.txt ;;")
+m2 = stage.replace("  1) printf '%s' \"" + FIXED + "\" > release-notes.txt ;;", "  1) ;;")
+check(m1 != stage and not gen_ok(*release_run("mut1", TAGGER, NOTES, stage_block=m1)[:3]), "a notes block that always writes the fixed text is refused by the generated-tag case")
+check(m2 != stage and not other_ok(*release_run("mut2", "Some Owner <owner@example.com>", NOTES, stage_block=m2)[:3]), "a notes block that leaves the notes empty on every other tag is refused by the other-tag case")
 shutil.rmtree(scratch)
 print("pass=%d fail=%d" % (passed, failed))
 sys.exit(1 if failed else 0)
