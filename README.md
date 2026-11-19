@@ -84,9 +84,11 @@ The Compliance tier sells the authored analysis, the vendor signature, and the h
 ## Quickstart (Docker)
 
 ```sh
-docker run -d -p 8080:8080 ghcr.io/fosterstack/cache:latest
+docker run -d -p 127.0.0.1:8080:8080 ghcr.io/fosterstack/cache:latest
 curl localhost:8080/healthz   # -> ok
 ```
+
+The port is open to this machine only. To serve other machines, turn on Basic Auth first: see [One-command Docker deploy](docs/docker-deploy.md).
 
 Pin a specific version for anything beyond a first look. The badge above shows the current version, and [`docs/docker-deploy.md`](docs/docker-deploy.md) covers pinning by digest.
 
@@ -121,7 +123,7 @@ There is no debug image from v0.3.0 <!-- pinned: historical -->. See
 [the images have no shell](docs/verify-images.md#the-images-have-no-shell) and
 [troubleshooting without a shell](docs/docker-deploy.md#troubleshooting-without-a-shell-in-the-image).
 
-The fscache-fips build uses the Go Cryptographic Module. The module is validated to FIPS 140-3 under CMVP certificate #5247, and FIPS mode is on by default. The certificate's vendor-affirmed operating environments include Linux on x86-64 and ARM64, where our images run, so the module keeps its validation inside our images.
+The fscache-fips build uses the Go Cryptographic Module. The module is validated to FIPS 140-3 under CMVP certificate #5247, and FIPS mode is on by default. The certificate's vendor-affirmed operating environments include Linux on x86-64 and ARM64, where our images run. Our base operating system, Wolfi, is not a named platform, so the module's validation there rests on vendor affirmation. See [FIPS 140-3](docs/fips.md).
 
 That gives you a FIPS-validated cryptographic module for control SC-13 in the NIST SP 800-53B low, moderate and high baselines (FedRAMP Low, Moderate and High), where FedRAMP accepts FIPS-validated modules. Details: [FIPS 140-3](docs/fips.md).
 

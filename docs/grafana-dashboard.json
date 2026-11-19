@@ -112,7 +112,7 @@
       "id": 6,
       "type": "timeseries",
       "title": "Requests by status",
-      "description": "401 here means clients are missing or sending wrong credentials. 400 means an invalid cache key — most often a browser or probe hitting a path that is not a key.",
+      "description": "401 is not counted here: the client reports it. 400 means an invalid cache key — most often a browser or probe hitting a path that is not a key.",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
       "fieldConfig": { "defaults": { "unit": "reqps" } },
