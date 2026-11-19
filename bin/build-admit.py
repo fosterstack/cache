@@ -17,6 +17,7 @@ is left. Exit 2: usage or environment error.
 """
 import argparse
 import datetime
+import fnmatch
 import hashlib
 import json
 import os
@@ -58,6 +59,16 @@ PATCH_TAG = re.compile(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.[1-9][0-9]*")
 FREEZE_FILE = "freeze/freeze.txt"
 FREEZE_CAP = 65536
 FREEZE_LINE = re.compile(r"freeze-ok ([0-9a-f]{40}) (%s)" % TAG_PATTERN)
+# REQ-CHAIN-004-AC21: each promotion or release-only context, by glob, and the one workflow file that produces it. A check run of
+# such a context counts only from a schedule or dispatch run of that file on the tagged commit. A literal of pairs, read as data by others.
+BOUND_CONTEXTS = (
+    ("analyze (go)", "codeql.yml"),
+    ("reproducibility", "scan.yml"),
+    ("scan", "scan.yml"),
+    ("allowlist-chain", "full-suite.yml"),
+    ("acceptance / *", "full-suite.yml"),
+)
+BOUND_EVENTS = ("schedule", "workflow_dispatch")
 RC_MARKER = ".github/policy/rc-proof.json"      # read from origin/main with bin/chain-bytes-sha.py of origin/main, only for a final or patch tag (REQ-CHAIN-001-AC6)
 RC_BYTES = "bin/chain-bytes-sha.py"
 SIGNER = "bin/admission-tag-signer.py"
@@ -351,16 +362,16 @@ def gh_get(path, paginate=False):
         raise Refusal("required-checks", "gh api %s returned unreadable JSON" % path.split("?")[0])
 
 
-def fetch_check_runs(ctx, sha):
-    """Every latest check run of a commit (all pages) as {name, conclusion, app_id, id, head_sha}."""
+def fetch_check_runs(ctx, sha, which="latest"):
+    """Every check run of a commit (all pages; the latest of each name, or every run) as {name, conclusion, app_id, id, head_sha, url}."""
     runs = []
-    for page in gh_get("repos/%s/commits/%s/check-runs?filter=latest&per_page=100" % (ctx.repo, sha), paginate=True):
+    for page in gh_get("repos/%s/commits/%s/check-runs?filter=%s&per_page=100" % (ctx.repo, sha, which), paginate=True):
         if not isinstance(page, dict) or not isinstance(page.get("check_runs"), list):
             raise Refusal("required-checks", "the check-runs answer for %s has no check_runs list" % sha)
         for r in page["check_runs"]:
             app = r.get("app") if isinstance(r.get("app"), dict) else {}
             runs.append({"name": r.get("name"), "conclusion": r.get("conclusion"), "app_id": app.get("id"),
-                         "id": r.get("id"), "head_sha": r.get("head_sha")})
+                         "id": r.get("id"), "head_sha": r.get("head_sha"), "url": r.get("details_url")})
     return runs
 
 
@@ -394,39 +405,90 @@ def one_green_run(runs, req, sha):
     return mine[0], None
 
 
-def read_required_policy(ctx):
-    """Main's required-checks.json and release-only-checks.json, validated: an unknown scope is a policy error, not a skipped check."""
+def read_required_policy(ctx, rc):
+    """Main's required-checks.json (with its promotion_checks) and release-only-checks.json, validated: an empty or unknown-scope list is a
+    policy error, not a skipped check. The release-only list counts on every tag, promotion_checks on a release candidate tag only."""
     out = []
-    for name in ("required-checks.json", "release-only-checks.json"):
+    for name, keys in (("required-checks.json", ("required_checks", "promotion_checks")), ("release-only-checks.json", ("required_checks",))):
         try:
             with open(os.path.join(ctx.policy, name), encoding="utf-8") as fh:
-                reqs = json.load(fh)["required_checks"]
+                doc = json.load(fh)
+            lists = [(key, doc[key]) for key in keys]
         except (ValueError, KeyError, TypeError, OSError) as e:
             raise Refusal("required-checks", "main's %s is unreadable: %s" % (name, one_line(str(e), 100)))
-        if not isinstance(reqs, list) or not reqs:
-            raise Refusal("required-checks", "main's %s required_checks is not a non-empty list" % name)
-        for r in reqs:
-            if not isinstance(r, dict) or not isinstance(r.get("context"), str) or not isinstance(r.get("integration_id"), int):
-                raise Refusal("required-checks", "a required check entry in main's policy is malformed: %s" % one_line(json.dumps(r), 100))
-            scope = r.get("scope", "push")
-            if scope not in ("push", "pull_request"):
-                raise Refusal("required-checks", "unknown scope %r for required check %r: policy error" % (scope, r["context"]))
-            out.append({"context": r["context"], "integration_id": r["integration_id"], "scope": scope})
+        for key, reqs in lists:
+            if not isinstance(reqs, list) or not reqs:
+                raise Refusal("required-checks", "main's %s %s is not a non-empty list" % (name, key))
+            for r in reqs:
+                if not isinstance(r, dict) or not isinstance(r.get("context"), str) or not isinstance(r.get("integration_id"), int):
+                    raise Refusal("required-checks", "a required check entry in main's policy is malformed: %s" % one_line(json.dumps(r), 100))
+                scope = r.get("scope", "push")
+                if scope not in ("push", "pull_request"):
+                    raise Refusal("required-checks", "unknown scope %r for required check %r: policy error" % (scope, r["context"]))
+                if key != "promotion_checks" or rc:
+                    out.append({"context": r["context"], "integration_id": r["integration_id"], "scope": scope,
+                                "bound": name != "required-checks.json" or key == "promotion_checks"})
     return out
 
 
+def producing_file(context):
+    """The workflow file BOUND_CONTEXTS binds a context to, or None."""
+    for pattern, file in BOUND_CONTEXTS:
+        if fnmatch.fnmatchcase(context, pattern):
+            return file
+    return None
+
+
+def bound_run(ctx, runs, req, file):
+    """The newest run of a bound context that qualifies decides: (run, None), or (None, why). A run qualifies when its workflow run has the
+    path of the producing file, an event of BOUND_EVENTS and the tagged commit; one that cannot be read is a refusal, never skipped."""
+    prefix = "https://github.com/%s/actions/runs/" % ctx.repo
+    mine = sorted((r for r in runs if r["name"] == req["context"] and r["app_id"] == req["integration_id"]
+                   and isinstance(r["id"], int)), key=lambda r: -r["id"])
+    for r in mine:
+        url = r["url"] if isinstance(r["url"], str) and r["url"].startswith(prefix) else ""
+        run_id = url[len(prefix):].split("/")[0]
+        if not run_id.isascii() or not run_id.isdigit():
+            continue
+        gone = "cannot read workflow run %s behind required check '%s'" % (run_id, req["context"])
+        rc, out, _ = run([GH, "api", "repos/%s/actions/runs/%s" % (ctx.repo, run_id)])
+        try:
+            facts = json.loads(text(out)) if rc == 0 else None
+        except ValueError:
+            facts = None
+        if not isinstance(facts, dict) or not all(isinstance(facts.get(k), str) for k in ("path", "event", "head_sha")):
+            raise Refusal("required-checks", gone)
+        if facts["path"] != ".github/workflows/" + file or facts["event"] not in BOUND_EVENTS or facts["head_sha"] != ctx.sha:
+            continue
+        if r["conclusion"] is None:
+            return None, "required check '%s' (app %s) is pending: its run %s has not finished" % (req["context"], req["integration_id"], run_id)
+        if r["conclusion"] != "success":
+            return None, "required check '%s' (app %s) is not green on %s: its run %s is %s" % (req["context"], req["integration_id"], ctx.sha, run_id, r["conclusion"])
+        return r, None
+    return None, "required check '%s' (app %s) has no schedule or dispatch run of %s on %s" % (req["context"], req["integration_id"], file, ctx.sha)
+
+
 def check_required_checks(ctx):
-    reqs = read_required_policy(ctx)
+    reqs = read_required_policy(ctx, "-rc" in ctx.tag)
     sha_runs = fetch_check_runs(ctx, ctx.sha)
+    all_runs = fetch_check_runs(ctx, ctx.sha, "all") if any(r["bound"] and r["scope"] == "push" for r in reqs) else []
     ctx.statuses = fetch_statuses(ctx)
     pr = find_merged_pr(ctx)
     pr_runs = fetch_check_runs(ctx, pr["head_sha"]) if pr and any(r["scope"] == "pull_request" for r in reqs) else []
     for req in reqs:
         ctx_name = req["context"]
         if req["scope"] == "push":
-            hit, why = one_green_run(sha_runs, req, ctx.sha)
-            if not hit:
-                raise Refusal("required-checks", "required check '%s' %s" % (ctx_name, why))
+            file = producing_file(ctx_name) if req["bound"] else None
+            if req["bound"] and not file:
+                raise Refusal("required-checks", "required check '%s' has no producing workflow file in the admission table" % ctx_name)
+            if file:
+                hit, why = bound_run(ctx, all_runs, req, file)
+                if not hit:
+                    raise Refusal("required-checks", why)
+            else:
+                hit, why = one_green_run(sha_runs, req, ctx.sha)
+                if not hit:
+                    raise Refusal("required-checks", "required check '%s' %s" % (ctx_name, why))
             ctx.verified.append({"context": ctx_name, "source": "check-run-on-tagged-sha", "evidence_sha": ctx.sha, "id": hit["id"],
                                  "conclusion": "success"})
         else:

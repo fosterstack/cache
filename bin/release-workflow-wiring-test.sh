@@ -338,8 +338,8 @@ if "build-apk" in jobs:
     j = jobs["build-apk"]
     if matrix_runners(j) != RUNNERS:
         bad.append("build-apk is not a matrix over the two native runners %s: %s" % (RUNNERS, matrix_runners(j)))
-    if j.get("permissions") != {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read"}:
-        bad.append("build-apk does not hold exactly contents, checks, statuses and pull-requests read: %s" % j.get("permissions"))
+    if j.get("permissions") != {"contents": "read", "actions": "read", "checks": "read", "statuses": "read", "pull-requests": "read"}:
+        bad.append("build-apk does not hold exactly contents, checks, statuses and pull-requests read, and actions read for admission: %s" % j.get("permissions"))
 if "build-assemble" in jobs:
     j = jobs["build-assemble"]
     if j.get("runs-on") != "ubuntu-24.04" or j.get("permissions") != READ or "strategy" in j:
@@ -636,6 +636,7 @@ case_ release-verify-step-env bad "a step of the release job other than release-
 case_ release-publish-env-extra bad "does not carry exactly DOCKERHUB_USERNAME, DOCKERHUB_TOKEN and GH_TOKEN" "hit(s['env'].__setitem__('X', 'y') for s in $J['release']['steps'] if 'witnessed.sh release-publish' in (s.get('run') or ''))"
 case_ release-job-local-witness bad "through bin/witnessed.sh" "hit(s.__setitem__('run', s['run'].replace('witnessed.sh', 'witnessed-local.sh')) for s in $J['release']['steps'] if 'witnessed.sh release-publish' in (s.get('run') or ''))"
 case_ release-job-no-publish bad "does not run exactly release-verify, release-apks, release-publish" "$J['release']['steps'] = [s for s in $J['release']['steps'] if 'release-publish' not in (s.get('run') or '')]"
+case_ release-job-verify-step bad "does not run exactly release-verify, release-apks, release-publish" "i = [i for i, s in enumerate($J['release']['steps']) if 'witnessed.sh release-publish' in (s.get('run') or '')][0]; $J['release']['steps'].insert(i, {'name': 'release-sign-verify', 'run': 'bash bin/witnessed.sh release-sign-verify bin/release-sign-verify.sh'})"
 case_ release-job-assets-first bad "does not run exactly release-verify, release-apks, release-publish" "a = [i for i, s in enumerate($J['release']['steps']) if 'release-assets.sh' in (s.get('run') or '')][0]; b = [i for i, s in enumerate($J['release']['steps']) if 'release-postverify.sh' in (s.get('run') or '')][0]; $J['release']['steps'][a], $J['release']['steps'][b] = $J['release']['steps'][b], $J['release']['steps'][a]"
 case_ release-runs-signatures bad "job release runs a signing command" "$J['release']['steps'].append({'run': 'bash bin/release-signatures.sh'})"
 case_ sign-check-no-signatures bad "sign-check does not run" "$J['sign-check']['steps'] = [s for s in $J['sign-check']['steps'] if 'release-signatures.sh' not in (s.get('run') or '')]"

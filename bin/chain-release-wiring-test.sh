@@ -122,15 +122,17 @@ BODY = {
  "release-verify": "set -euo pipefail\npython3 bin/chain-verify.py verify --stage build\n",
  "release-compare": "set -euo pipefail\npython3 -I -B bin/release-compare.py\n",
  "release-apks": 'set -euo pipefail\npython3 -I -B bin/apk-tool.py digest apks/a.apk\npython3 -I -B bin/release-postverify.py --before-publish\nbash bin/release-sign-apks.sh --build-dir b --signatures release-signed/apks\n',
- "release-publish": 'set -euo pipefail\npython3 bin/release-layout.py images/x "$digest"\ncrane copy "src@$digest" "dst:$tag"\ncrane digest "dst:$tag" | jq -R .\n',
- "release-sign": 'set -euo pipefail\npython3 -I -B bin/chain-verify.py bundle-check --bundle b --digest d --public-key build/keys/release.rsa.pub --signing-config c\ncosign login ghcr.io -u x --password-stdin <<< "$GH_TOKEN"\ncosign attach signature --payload p --signature s --rekor-response r "ghcr.io/x@$digest"\ncosign verify --key build/keys/release.rsa.pub "ghcr.io/x@$digest"\njq . policy.bundle\n',
+ "release-publish": 'set -euo pipefail\nbash bin/release-sign-verify.sh\npython3 bin/release-layout.py images/x "$digest"\ncrane copy "src@$digest" "dst:$tag"\ncrane digest "dst:$tag" | jq -R .\n',
+ "release-sign": 'set -euo pipefail\nbash bin/release-sign-verify.sh\npython3 -I -B bin/chain-verify.py bundle-check --bundle b --digest d --public-key build/keys/release.rsa.pub --signing-config c\ncosign login ghcr.io -u x --password-stdin <<< "$GH_TOKEN"\ncosign attach signature --payload p --signature s --rekor-response r "ghcr.io/x@$digest"\ncosign verify --key build/keys/release.rsa.pub "ghcr.io/x@$digest"\njq . policy.bundle\n',
+ "release-sign-verify": 'set -euo pipefail\npython3 -I -B bin/chain-verify.py bundle-check --bundle b --digest d --public-key build/keys/release.rsa.pub --signing-config c\njq -er .messageSignature.signature b\nsha256sum f\ntrap \'rm -rf "$scratch"\' EXIT\n',
  "release-signatures": 'set -euo pipefail\ndate=$(git log -1 --format=%ct "$GITHUB_SHA")\npython3 -I -B bin/vendor-provenance.py evidence --out evidence\nbash bin/with-aws-token.sh kms-sign --digest d --out s --bundle b\njq . policy.bundle\n',
  "release-stage": 'set -euo pipefail\npython3 -I -B bin/release-gate.py --dir release-upload\n',
  "release-postverify": 'set -euo pipefail\nbash bin/release-stage.sh\npython3 -I bin/release-postverify.py\n',
  "release-assets": 'set -euo pipefail\ngh release create "$GITHUB_REF_NAME" --verify-tag\ngh release upload "$GITHUB_REF_NAME" release-upload/*.json\ngh release download "$GITHUB_REF_NAME" -D release-published\npython3 -I -B bin/release-gate.py --dir release-published --same-as release-upload\n',
 }
 ROWS = {"release-verify": (["python3"], False, ["bin/build-admit.py", "bin/chain-verify.py"]), "release-compare": (["python3"], False, ["bin/apk-tool.py", "bin/release-compare.py"]), "release-apks": (["bash", "jq", "python3"], False, ["bin/apk-tool.py", "bin/build-admit.py", "bin/release-postverify.py", "bin/release-sign-apks.sh"]),
-        "release-publish": (["crane", "jq", "python3", "trap"], False, ["bin/release-layout.py"]), "release-sign": (["cosign", "git", "jq", "python3", "sha256sum", "trap"], False, ["bin/chain-verify.py"]),
+        "release-publish": (["bash", "crane", "jq", "python3", "trap"], False, ["bin/release-layout.py", "bin/release-sign-verify.sh"]), "release-sign": (["bash", "cosign", "git", "jq", "python3", "sha256sum", "trap"], False, ["bin/chain-verify.py", "bin/release-sign-verify.sh"]),
+        "release-sign-verify": (["jq", "python3", "sha256sum", "trap"], False, ["bin/chain-verify.py"]),
         "release-signatures": (["bash", "git", "jq", "python3", "sha256sum", "trap"], "other", ["bin/apk-tool.py", "bin/build-admit.py", "bin/chain-verify.py", "bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py", "bin/with-aws-token.sh"]),
         "release-assets": (["gh", "python3"], False, ["bin/release-gate.py"]), "release-stage": (["git", "python3"], False, ["bin/build-admit.py", "bin/patch-decide.py", "bin/release-gate.py", "bin/release-metadata.py"]),
         "release-postverify": (["bash", "python3"], False, ["bin/release-postverify.py", "bin/release-stage.sh"])}
@@ -173,7 +175,7 @@ rm -rf "$work/o_scout"; cp -r "$work/o" "$work/o_scout"; printf '      DOCKERHUB
 expect ok "fixture: the rescan's own read-only Scout token and username are a different credential" "" others "$work/o_scout"
 expect ok "fixture: the known-good release.yml graph" "" graph "$work/release.yml"
 expect ok "fixture: the known-good bin/release-verify.sh" "" verify "$work/verify.sh"
-for n in release-verify release-apks release-publish release-sign release-assets release-postverify; do
+for n in release-verify release-apks release-publish release-sign release-sign-verify release-assets release-postverify; do
   expect ok "fixture: bin/$n.sh is plain (only its tools)" "" scan "$work/s/bin/$n.sh" "$work/s/.github/policy/chain-scripts.json"
 done
 expect ok "fixture: all release scripts and the helper are listed with tools, signs and runs" "" listed "$work/s/.github/policy/chain-scripts.json" "$work/s"
@@ -596,6 +598,16 @@ lm l_signs2    x 'rows["bin/release-signatures.sh"]["signs"] = False'           
 lm l_reason    x 'rows["bin/release-signatures.sh"]["reason"] = ""'                                                'reason'       "AC10 a signer without a reason"
 lm l_runs      x 'rows["bin/release-verify.sh"]["runs"].append("bin/other.py")'                              'may start'    "AC10 a script allowed to start another one"
 lm l_pvmiss    x 'd["scripts"] = [r for r in d["scripts"] if r["path"] != "bin/release-postverify.sh"]'     'not listed'   "AC10 (rule 79) the post-publish script not listed"
+# row 2 (REQ-CHAIN-007-AC10): bin/release-sign-verify.sh is listed with exactly jq, python3, sha256sum, trap; release-publish and release-sign run it
+lm l_sv_gone    x 'd["scripts"] = [r for r in d["scripts"] if r["path"] != "bin/release-sign-verify.sh"]'          'not listed'   "AC10 row 2 the bin/release-sign-verify.sh row is dropped from chain-scripts.json"
+lm l_sv_tools   x 'rows["bin/release-sign-verify.sh"]["tools"].append("curl")'                                    'exactly the tools' "AC10 row 2 the row of release-sign-verify.sh gains a tool"
+lm l_sv_tools2  x 'rows["bin/release-sign-verify.sh"]["tools"].remove("sha256sum")'                               'exactly the tools' "AC10 row 2 the row of release-sign-verify.sh loses a tool"
+lm l_sv_signs   x 'rows["bin/release-sign-verify.sh"]["signs"] = "other"'                                         'signs:'       "AC10 row 2 release-sign-verify.sh listed as a signer"
+lm l_sv_runs    x 'rows["bin/release-sign-verify.sh"]["runs"].append("bin/build-admit.py")'                       'may start'    "AC10 row 2 the row of release-sign-verify.sh lists bin/build-admit.py in its runs"
+lm l_pub_noverify x 'rows["bin/release-publish.sh"]["runs"].remove("bin/release-sign-verify.sh")'                 'may start'    "AC10 row 2 the row of release-publish.sh no longer lists bin/release-sign-verify.sh in its runs"
+lm l_sign_noverify x 'rows["bin/release-sign.sh"]["runs"].remove("bin/release-sign-verify.sh")'                   'may start'    "AC10 row 2 the row of release-sign.sh no longer lists bin/release-sign-verify.sh in its runs"
+lm l_pub_nobash x 'rows["bin/release-publish.sh"]["tools"].remove("bash")'                                        'exactly the tools' "AC10 row 2 the row of release-publish.sh loses bash (it starts release-sign-verify.sh with it)"
+lm l_sign_nobash x 'rows["bin/release-sign.sh"]["tools"].remove("bash")'                                          'exactly the tools' "AC10 row 2 the row of release-sign.sh loses bash (it starts release-sign-verify.sh with it)"
 lm l_sigruns   x 'rows["bin/release-signatures.sh"]["runs"].remove("bin/chain-verify.py")'                       'may start'    "G2 the row of release-signatures.sh loses chain-verify.py from its runs (policy make needs it)"
 lm l_sigtools  x 'rows["bin/release-signatures.sh"]["tools"].append("curl")'                                 'exactly the tools' "G2 the row of release-signatures.sh gains a tool"
 # REQ-CHAIN-004-AC20: the coverage gate is bin/release-gate.py, listed with no tools and no runs; release-assets.sh (a secret holder) runs it and nothing else; release-stage.sh keeps its own tag-ok call
@@ -706,9 +718,22 @@ for r in ("ubuntu-24.04", "ubuntu-24.04-arm"):
     assert " --build-apk witness-apk-%s/apk-collection.json" % r in t, r
 assert t.count("--build-apk") == 2
 PY
-for n in release-verify release-apks release-publish release-sign release-signatures release-stage release-assets release-postverify; do
+for n in release-verify release-apks release-publish release-sign release-sign-verify release-signatures release-stage release-assets release-postverify; do
   expect ok "the real bin/$n.sh is plain" "" scan "$root/bin/$n.sh" "$root/.github/policy/chain-scripts.json"
 done
+python3 - "$root/.github/policy/chain-scripts.json" "$root/bin/release-sign-verify.sh" <<'PY' && ok "row 2: the real chain-scripts.json lists bin/release-sign-verify.sh (jq, python3, sha256sum, trap; signs false; a reason; no env reads) and the rows of release-publish and release-sign run it" || bad "row 2: the real chain-scripts.json rows of bin/release-sign-verify.sh, release-publish and release-sign are not as ratified"
+import json, os, sys
+rows = {r["path"]: r for r in json.load(open(sys.argv[1]))["scripts"]}
+v = rows.get("bin/release-sign-verify.sh"); assert v, "bin/release-sign-verify.sh is not listed"
+assert os.path.isfile(sys.argv[2]), "bin/release-sign-verify.sh does not exist"
+assert sorted(v["tools"]) == ["jq", "python3", "sha256sum", "trap"], v["tools"]
+assert v["signs"] is False and v.get("reason", "").strip(), "signs/reason"
+assert not v.get("reads_env"), v.get("reads_env")
+p, s = rows["bin/release-publish.sh"], rows["bin/release-sign.sh"]
+assert "bin/release-sign-verify.sh" in p["runs"] and "bin/release-sign-verify.sh" in s["runs"], "runs"
+assert sorted(p["tools"]) == ["bash", "crane", "jq", "python3", "trap"], p["tools"]
+assert sorted(s["tools"]) == ["bash", "cosign", "git", "jq", "python3", "sha256sum", "trap"], s["tools"]
+PY
 expect ok "the real release scripts are listed in chain-scripts.json" "" listed "$root/.github/policy/chain-scripts.json" "$root"
 expect ok "the old authorization machinery is gone from the real repository" "" removed "$root"
 # the requirement text and the stage file's header say only what is enforced about credentials (no job holds a

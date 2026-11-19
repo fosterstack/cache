@@ -644,6 +644,13 @@
           "line": "BASH = \"/usr/bin/bash\"          # TEST-SUBST",
           "count": 1,
           "why": "admission runs first, so it runs bash at its fixed location and never searches PATH (a path constant, the test suites substitute it)"
+        },
+        {
+          "rule": "deny",
+          "line": "    (\"analyze (go)\", \"codeql.yml\"),",
+          "line_sha256": "cd2a382e70104aafa8c00bf998ed9130cf7378fe26a6848ce7e2fa1bd1dd6205",
+          "count": 1,
+          "why": "the name of a CodeQL context in the table of bound contexts (analyze (go)), a string read as data; no go command is named or run"
         }
       ]
     },
@@ -1754,13 +1761,15 @@
     {
       "path": "bin/release-publish.sh",
       "tools": [
+        "bash",
         "crane",
         "jq",
         "python3",
         "trap"
       ],
       "runs": [
-        "bin/release-layout.py"
+        "bin/release-layout.py",
+        "bin/release-sign-verify.sh"
       ],
       "signs": false,
       "reason": "Release, step release-publish: pushes the exact image bytes by digest to ghcr.io and Docker Hub and reads each registry back (REQ-CHAIN-007-AC7, REQ-REL-009-AC11); it signs nothing",
@@ -1793,8 +1802,29 @@
     {
       "path": "bin/release-sign.sh",
       "tools": [
+        "bash",
         "cosign",
         "git",
+        "jq",
+        "python3",
+        "sha256sum",
+        "trap"
+      ],
+      "runs": [
+        "bin/chain-verify.py",
+        "bin/release-sign-verify.sh"
+      ],
+      "signs": false,
+      "reason": "Release, step release-sign: holds no key. It checks the detached KMS signatures Sign made (release-signed/, each with its Rekor entry) against build/keys/release.rsa.pub and pushes them: the images signatures and the release manifest attestations attached by digest in both registries (cosign attach signature and attestation, then cosign verify --key on each), the blobs bundles placed beside the blobs (REQ-CHAIN-007-AC8)",
+      "reads_env": [
+        "DOCKERHUB_USERNAME",
+        "DOCKERHUB_TOKEN",
+        "GH_TOKEN"
+      ]
+    },
+    {
+      "path": "bin/release-sign-verify.sh",
+      "tools": [
         "jq",
         "python3",
         "sha256sum",
@@ -1804,12 +1834,7 @@
         "bin/chain-verify.py"
       ],
       "signs": false,
-      "reason": "Release, step release-sign: holds no key. It checks the detached KMS signatures Sign made (release-signed/, each with its Rekor entry) against build/keys/release.rsa.pub and pushes them: the images signatures and the release manifest attestations attached by digest in both registries (cosign attach signature and attestation, then cosign verify --key on each), the blobs bundles placed beside the blobs (REQ-CHAIN-007-AC8)",
-      "reads_env": [
-        "DOCKERHUB_USERNAME",
-        "DOCKERHUB_TOKEN",
-        "GH_TOKEN"
-      ]
+      "reason": "Release, before release-publish's login: checks every signature Sign made (release-signed/, each with its Rekor entry) against build/keys/release.rsa.pub and exits 1 naming the file on a bad or missing one (REQ-CHAIN-007-AC7, AC8); it changes nothing and holds no credential"
     },
     {
       "path": "bin/release-stage.sh",
