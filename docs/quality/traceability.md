@@ -843,7 +843,7 @@ A pull request into the release carries a passed-audit record for its exact head
 
 ### REQ-CI-007 — The long suites and the acceptance tests run before a release-candidate tag and nightly
 
-Every tracked test suite that no step of ci.yml runs, and both acceptance suites, never run on a pull request. They run in full-suite.yml before a release-candidate tag and nightly on main (docs/ratify/2026-11-10-full-suite-at-promotion.md rule 2). A failed nightly run opens a fix item and never blocks a merge (rule 3).
+Every tracked test suite that no step of ci.yml runs, and both acceptance suites, never run on a pull request. They run in full-suite.yml before a release-candidate tag and nightly on main. A failed nightly run opens a fix item and never blocks a merge.
 
 *Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/full-suite.yml; .github/workflows/ci.yml; .github/workflows/acceptance.yml; .github/workflows/scan.yml; .github/workflows/codeql.yml; .github/policy/required-checks.json; bin/build-admit.py*
 
