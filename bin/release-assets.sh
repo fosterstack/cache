@@ -12,7 +12,7 @@ for f in release-upload/*.apk release-upload/*.json release-upload/*.txt release
 done
 if [ "${#files[@]}" = 0 ]; then echo "release-assets: nothing to attach" >&2; exit 1; fi
 # A tag with any release, a draft a failed run left included, stops here: nothing is deleted or overwritten, an operator deletes the draft by hand.
-listed=$(gh release list --limit 1000 --json tagName,isDraft | python3 -I -c 'import json, sys; print(any(r["tagName"] == sys.argv[1] for r in json.load(sys.stdin)))' "$rel")
+listed=$(gh release list --limit 1000 --json tagName,isDraft | python3 -I -B -c 'import json, sys; print(any(r["tagName"] == sys.argv[1] for r in json.load(sys.stdin)))' "$rel")
 [ "$listed" = False ] || { echo "release-assets: $rel already has a release or a draft: delete it by hand before a re-run" >&2; exit 1; }
 # the notes are release-stage's (a generated patch tag's notes, else the fixed evidence text); this step reads no tag object
 [ -f release-notes.txt ] && [ ! -L release-notes.txt ] || { echo "release-assets: release-notes.txt, written by release-stage, is missing" >&2; exit 1; }
