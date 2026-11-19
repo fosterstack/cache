@@ -23,17 +23,22 @@ type scrubWriter struct{ h slog.Handler }
 
 func (w scrubWriter) Write(p []byte) (int, error) {
 	msg := scrubAddrs(strings.TrimRight(string(p), "\n"))
-	if w.h.Enabled(context.Background(), slog.LevelDebug) {
+	level := slog.LevelError
+	if strings.HasPrefix(msg, "http: TLS handshake error") {
+		level = slog.LevelDebug
+	}
+	if w.h.Enabled(context.Background(), level) {
 		var pcs [1]uintptr
-		r := slog.NewRecord(time.Now(), slog.LevelDebug, msg, pcs[0])
+		r := slog.NewRecord(time.Now(), level, msg, pcs[0])
 		_ = w.h.Handle(context.Background(), r)
 	}
 	return len(p), nil
 }
 
 // NewErrorLog is the logger for http.Server.ErrorLog: Go's own server errors
-// (TLS handshake failures and the like) reach the process handler at DEBUG,
-// with every socket address in the line replaced, since those lines name the
+// reach the process handler: TLS handshake failures, which any scanner can
+// cause, at DEBUG, and every other line (handler panics, accept errors) at
+// ERROR, with every socket address in the line replaced, since those lines name the
 // connecting client and REQ-OBS-006 forbids a client address in any log.
 func NewErrorLog(h slog.Handler) *log.Logger {
 	return log.New(scrubWriter{h}, "", 0)
