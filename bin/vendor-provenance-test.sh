@@ -190,7 +190,8 @@ for f in subprocess.run(["git", "ls-files", "bin", "build", ".github/workflows"]
     if f.startswith(".github/workflows/") and not f.startswith(".github/workflows/stage-"):
         continue                      # CI tool installs are not a product build; the release stages are
     for n, l in enumerate(open(f, errors="replace"), 1):
-        if re.match(r"\s*(run:\s*)?go (mod download|get)\b", l):
+        # the command anywhere in the line: a `- run:` value, after `&&` or `;`, inside a shell block (a comment line names no command)
+        if re.search(r"(^|[\s;&|(])go\s+(mod\s+download|get)\b", l) and not l.lstrip().startswith("#"):
             bad.append("%s:%d" % (f, n))
 assert not bad, bad
 PY

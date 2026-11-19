@@ -642,6 +642,22 @@ case "$u" in
   *) case " $* " in *" -X DELETE "*) echo "$u" >> "$RUNNER_TEMP/deleted" ;; esac; echo '{}' ;; esac"""})
 check("SEC-169-09 sweep pages through the notes and deletes every one of the test repository's",
       "notes/one" in out and "notes/two" in out, out[-400:])
+# SEC-169-09: the sweep deletes with the runner's credentials, so it leaves alone every note that is not on the test repository: our production image on ghcr.io, our
+# production Artifact Registry repository, and repositories whose name only begins like the test one
+def note(name, uri):
+    return json.dumps({"name": "projects/p/notes/" + name, "vulnerabilityAssessment": {"product": {"genericUri": uri}}})
+GARH = "https://us-east1-docker.pkg.dev/fosterstack-cache/"
+SPARED = {"prod-ghcr": "https://ghcr.io/fosterstack/cache@sha256:c", "prod-gar": GARH + "cache/cache@sha256:d",
+          "look-alike": GARH + "cache-live-test-prod/cache@sha256:e", "look-alike-dot": GARH + "cache-live-test.evil/cache@sha256:f"}
+LISTING = lambda rows: "{\"notes\": [" + ", ".join(rows) + "]}"
+both = [note("test-note", GARH + "cache-live-test/cache@sha256:a")] + [note(n, u) for n, u in SPARED.items()]
+rc, out = sh("sweep; cat \"$RUNNER_TEMP/deleted\"", {"aws": OKAWS, "gcloud": OKGC, "ca-transport": r"""for a in "$@"; do u=$a; done
+case "$u" in
+  *notes\?*) if [ -s "$RUNNER_TEMP/deleted" ]; then echo '%s'; else echo '%s'; fi ;;
+  *) case " $* " in *" -X DELETE "*) echo "$u" >> "$RUNNER_TEMP/deleted" ;; esac; echo '{}' ;; esac""" % (LISTING(both[1:]), LISTING(both))})
+gone = [l.rsplit("/", 1)[1] for l in out.split("\n") if "/v1/projects/p/notes/" in l]
+check("SEC-169-09 sweep deletes the test repository's note and none of a production or look-alike note", rc == 0 and gone == ["test-note"], (rc, gone, out[-300:]))
+
 # Codex #169 r2 (SEC-169-08): every inventory is parsed strictly; a malformed or unparseable listing fails the sweep
 NOTE_OK = '{"name": "projects/p/notes/stale", "vulnerabilityAssessment": {"product": {"genericUri": "https://us-east1-docker.pkg.dev/fosterstack-cache/cache-live-test/cache@sha256:a"}}}'
 for why, aws_s, gc_s, curl_s in [
@@ -697,9 +713,12 @@ rc, out = sh('export PUSHED_LOG="$RUNNER_TEMP/p"; copy_candidate "$RUNNER_TEMP/l
              {"crane": 'case "$1" in push) exit 1 ;; esac'})
 check("SEC-170-01 a candidate push is journaled before it starts, so a failed push is still swept", out.strip().endswith("dst/cache:x"), out)
 # SEC-169-07: one live test at a time, across both workflows, never cancelled midway
-for name, job in (("release.yml rc", RJ), ("release.yml post-publish", PJ)):
-    check("SEC-169-07 %s: the live-test job is serialized with every other live test" % name,
-          job.get("concurrency") == {"group": "vex-live-test", "cancel-in-progress": "false"}, job.get("concurrency"))
+# read typed: BaseLoader gives every scalar as text, so it cannot tell the boolean `false` from a quoted 'false' (a string)
+rel_typed = yaml.safe_load(open(os.path.join(root, ".github/workflows/release.yml")))
+for name, key in (("release.yml rc", "live-test"), ("release.yml post-publish", "live-test-release")):
+    conc = rel_typed["jobs"][key].get("concurrency")
+    check("SEC-169-07 %s: the live-test job is serialized with every other live test, and cancel-in-progress is the boolean false" % name,
+          isinstance(conc, dict) and conc.get("group") == "vex-live-test" and conc.get("cancel-in-progress") is False and len(conc) == 2, conc)
 # --- the fixture carries, by construction, a CVE active in two package names (advisor Oct 17: the run must not discover on its first try that the fixture lacks one):
 # docs/using-our-vex.live-fixture.json pins the image and the two packages (libc6 and libc-bin, both built from glibc 2.36-9, so every glibc CVE is reported on both);
 # the manifest must name exactly the digest the runner copies, and the runner checks the real image's package list against it before it pushes anything

@@ -1378,9 +1378,12 @@ o="$WORK/r16n"; shim="$WORK/r16n.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER
 env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$FX/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
 delivered="$(grep -cE 'gh pr create --draft --base main --head auditor/2026-09-24-' "$shim" 2>/dev/null)"; delivered="${delivered:-0}"
 names="$(grep -iE 'git checkout -B auditor/|git commit -m|gh pr create' "$shim" | grep -ciE 'anthropic|claude|openai|codex|sonnet|opus|gpt|chatgpt')"; names="${names:-0}"
-rptnames="$(sed -n '/## 6\./,/^$/p' "$o/report.md" | grep -ciE 'anthropic|claude|openai|codex|sonnet|opus|gpt|chatgpt')"; rptnames="${rptnames:-0}"
-{ [ "$delivered" -ge 1 ] 2>/dev/null && eq "$names" "0" && eq "$rptnames" "0"; } \
-  && ok || no "delivery occurred with no vendor/model name in branch/commit/PR or §6" "delivered=$delivered in_shim=$names in_section6=$rptnames"
+# the delivered PRs are listed under "## PRs and issues this run" (the old §6 is gone, REQ-AUD-15-AC8): that section, up to the next "## " heading, and it must hold its PR line
+rptsec="$(awk '/^## PRs and issues this run/ { f = 1; print; next } /^## / { f = 0 } f' "$o/report.md")"
+rptlines="$(grep -c '/pull/' <<<"$rptsec")"; rptlines="${rptlines:-0}"
+rptnames="$(grep -ciE 'anthropic|claude|openai|codex|sonnet|opus|gpt|chatgpt' <<<"$rptsec")"; rptnames="${rptnames:-0}"
+{ [ "$delivered" -ge 1 ] 2>/dev/null && [ "$rptlines" -ge 1 ] 2>/dev/null && eq "$names" "0" && eq "$rptnames" "0"; } \
+  && ok || no "delivery occurred with no vendor/model name in branch/commit/PR or the report's PR list" "delivered=$delivered in_shim=$names pr_lines_in_section=$rptlines in_section=$rptnames"
 
 ########################################################################
 echo "=== Round 16 corrections — issues token, test-image PR gating ==="
