@@ -148,7 +148,7 @@ func TestDeleteEmptyDirsConcurrentWithPut(t *testing.T) {
 					return
 				}
 				b, _ := io.ReadAll(rc)
-				rc.Close()
+				_ = rc.Close()
 				if string(b) != want {
 					errs <- fmt.Errorf("Get %s = %q", key, b)
 					return
