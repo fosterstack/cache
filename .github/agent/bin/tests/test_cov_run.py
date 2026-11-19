@@ -983,17 +983,22 @@ class MergeConsolidate(Base):
                  "timestamp": "t", "version": version, "statements": statements})
         return out, supp
 
-    def test_two_retained_statements_without_an_id_are_made_separately_addressable(self):
-        # AC2 safety net: statements of DIFFERENT scopes that arrive with no @id (or the same one) never leave the merge sharing an @id
+    def test_req13_ac11_dedupe_only_existing_ids(self):
+        # REQ-AUD-13 AC11: the delivery's de-duplication changes only a statement that already has an @id and shares it
         ws = self.d("ws"); a = self._stmt("CVE-2099-30", ["pkg:deb/a@1"]); b = self._stmt("CVE-2099-30", ["pkg:deb/b@1"])
-        a.pop("@id"); b.pop("@id")
+        a.pop("@id"); b.pop("@id")                                                       # no @id: delivered as it is, never given "", "0" or "00"
+        c = self._stmt("CVE-2099-32", ["pkg:deb/c@1"]); d = self._stmt("CVE-2099-33", ["pkg:deb/d@1"])
+        c["@id"] = d["@id"] = "V#shared"                                                 # two scopes sharing one existing @id: still made distinct
         self.wj(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json"),
-                {"@context": "c", "@id": policy.VEX_BASE, "author": "a", "role": "vendor", "timestamp": "t", "version": 2, "statements": [a, b]})
-        _out, supp = self._supp([self._stmt("CVE-2099-31", ["pkg:deb/c@1"])], version=3)
+                {"@context": "c", "@id": policy.VEX_BASE, "author": "a", "role": "vendor", "timestamp": "t", "version": 2, "statements": [a, b, c, d]})
+        _out, supp = self._supp([self._stmt("CVE-2099-31", ["pkg:deb/e@1"])], version=3)
         R._merge_suppressions(ws, supp)
         got = json.load(open(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json")))["statements"]
-        ids = [s["@id"] for s in got]
-        self.assertEqual(len(got), 3)
+        self.assertEqual(len(got), 5)
+        self.assertEqual([s for s in got if (s["vulnerability"]["name"] == "CVE-2099-30")], [a, b])
+        self.assertTrue(all("@id" not in s for s in got if s["vulnerability"]["name"] == "CVE-2099-30"), got)
+        ids = [s["@id"] for s in got if "@id" in s]
+        self.assertEqual(len(ids), 3)
         self.assertEqual(len(set(ids)), 3, ids)
 
     def test_corrupt_existing_vex_stops_the_run(self):
@@ -3018,6 +3023,87 @@ class OwnerIssueSearch(Base):
         self.assertEqual(res, (True, "skipped"))
         self.assertIn("would open/update owner issue (real gh disabled): " + self.T, out)
         self.assertEqual(fr.argvs(), [])
+
+
+class CoveredFindingKeepsScannerData(Base):
+    """REQ-AUD-13 AC7: a finding our own published VEX hides from a scanner is routed on what that scanner reported for
+    it (carried from the panel's vex_covered entry), end to end from the verdict file through the run."""
+    CVE, PURL = "CVE-2099-81", "pkg:deb/debian/libfoo@1.0.0"
+
+    def drive(self, entry):
+        ws = self.d("ws"); os.environ["GITHUB_WORKSPACE"] = ws
+        prior = {"@id": "V#libfoo", "vulnerability": {"name": self.CVE}, "status": "not_affected",
+                 "justification": "vulnerable_code_not_present", "products": [{"@id": PROD, "subcomponents": [{"@id": self.PURL}]}]}
+        self.wj(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json"), {"@context": "c", "@id": policy.VEX_BASE, "author": "a",
+                                                                          "role": "vendor", "timestamp": "t", "version": 4, "statements": [prior]})
+        m = dict({"commit": "abcdef1234567890", "candidate_digests": {"production": "sha256:d"}}, **panel_manifest_fields(self.tmp))
+        v = json.load(open(m["panel"]["verdict"]))
+        image = next(im for im, st in sorted(v["images"].items()) if "inspector" in st["ran"])
+        v["vex_covered"] = [dict({"image": image, "scanner": "inspector", "id": self.CVE, "package": "libfoo", "version": "1.0.0"}, **entry)]
+        path = self.wj(os.path.join(self.tmp, "verdict-covered.json"), v)
+        m["panel"]["verdict"] = path
+        m["scanner_reports"] = {x: path for x in m["scanner_reports"]}
+        mpath = self.wj(os.path.join(self.tmp, "manifest.json"), m)
+        out = self.d("out")
+        adj = os.path.join(self.d("adj"), "stub-adjudicator.py"); open(adj, "w").write("# a stand-in adjudicator\n")
+        ask = mock.Mock(side_effect=lambda adjudicator, fid, **kw: {"narrative": ""} if fid == "CONCLUSION" else {"category": "under_investigation"})
+        with mock.patch.object(R, "_consistency", return_value={"problems": []}), mock.patch.object(R.cli, "ask_model", ask):
+            _complete, _printed = self.quiet(R.run, mpath, True, out, "2026-09-22", kevpath=None, adjudicator=adj)
+        cls = json.load(open(os.path.join(out, "classification.json")))
+        row = {f["id"]: f for f in cls["findings"]}.get(self.CVE)
+        written = []
+        for dp, _, fs in os.walk(out):
+            for fn in fs:
+                if fn.endswith(".openvex.json"):
+                    written += [x for x in json.load(open(os.path.join(dp, fn))).get("statements", [])
+                                if (x.get("vulnerability") or {}).get("name") == self.CVE]
+        return row, written
+
+    def test_req13_ac7_covered_keeps_scanner_data(self):
+        row, written = self.drive({"severity": "high", "fixed_version": "1.0.1", "aliases": []})
+        self.assertIsNotNone(row, "the hidden finding is routed, not dropped")
+        self.assertNotEqual(row["disposition"], "carried (POA&M)")
+        self.assertEqual(row["section"], 1)                                           # the scanner named a fix: the prior statement is lifted like a visible finding's
+        self.assertTrue(row["disposition"].startswith("lifted"), row["disposition"])
+        self.assertFalse([x for x in written if x["status"] == "affected" or "no upstream fix" in (x.get("action_statement") or "")], written)
+
+    def test_req13_ac7_covered_without_any_scanner_data_is_kept_as_published(self):
+        row, written = self.drive({"severity": None, "fixed_version": None, "aliases": []})
+        self.assertIsNotNone(row)
+        self.assertNotEqual(row["disposition"], "carried (POA&M)")
+        self.assertIn("as published", " ".join(str(row.get(k) or "") for k in ("disposition", "reason", "action")))      # the row says the statement was kept as published
+        self.assertFalse([x for x in written if x["status"] == "affected" or "no upstream fix" in (x.get("action_statement") or "")], written)
+
+
+class StatementCarriesVerifiedAliases(Base):
+    """REQ-AUD-13 AC10: the ids the scanners' own records name for a finding ride in the statement's vulnerability.aliases."""
+    def test_req13_ac10_vex_carries_verified_aliases(self):
+        c, ghsa, purl = "CVE-2099-90", "GHSA-aaaa-bbbb-cccc", "pkg:deb/debian/libz@1.0"
+        # Inspector reports the finding under its GHSA id, which aliases the CVE; the known-defect log has a false-positive row for that exact key
+        f = dict(F(ghsa, purl, "libz", scanner="inspector"), aliases=[ghsa, c])
+        log = self.wj(os.path.join(self.tmp, "log.json"), {"defects": [{"keys": [{"scanner": "inspector", "finding_id": ghsa, "purl": purl}],
+                                                                       "package": "libz", "disposition": "false_positive"}]})
+        env = self.env(logpath=log)
+        with mock.patch.object(R.cli, "ask_model", return_value={"category": "false_positive", "token_usage": 3}):
+            row, _mi = R._dispose(c, [f], [c, ghsa], env, [])
+        self.assertEqual(row["section"], 5)
+        st = json.load(open(os.path.join(env["out"], "vex", c + ".openvex.json")))["statements"][0]
+        self.assertEqual(st["vulnerability"]["name"], c)
+        self.assertIn(ghsa, st["vulnerability"].get("aliases", []))
+        self.assertNotIn(c, st["vulnerability"].get("aliases", []))                     # never the CVE itself
+
+    def test_req13_ac10_vex_write_and_doc_take_the_verified_aliases(self):
+        from auditorlib import vex
+        d = vex.doc("CVE-2099-91", "not_affected", "2026-09-22T00:00:00Z", justification="vulnerable_code_not_present",
+                    aliases={"GHSA-zzzz-yyyy-xxxx", "CVE-2099-91", "GHSA-aaaa-bbbb-cccc"})
+        self.assertEqual(d["statements"][0]["vulnerability"], {"name": "CVE-2099-91", "aliases": ["GHSA-aaaa-bbbb-cccc", "GHSA-zzzz-yyyy-xxxx"]})
+        vex.validate(d)                                                                  # still OpenVEX-conformant
+        out = self.d("w")
+        path = vex.write(out, "CVE-2099-91", "not_affected", "2026-09-22T00:00:00Z", justification="vulnerable_code_not_present",
+                         aliases=["GHSA-aaaa-bbbb-cccc"])
+        self.assertEqual(json.load(open(path))["statements"][0]["vulnerability"]["aliases"], ["GHSA-aaaa-bbbb-cccc"])
+        bare = vex.doc("CVE-2099-91", "affected", "2026-09-22T00:00:00Z", action="x")["statements"][0]["vulnerability"]
+        self.assertEqual(bare, {"name": "CVE-2099-91"})                                  # no aliases, no key
 
 
 if __name__ == "__main__":

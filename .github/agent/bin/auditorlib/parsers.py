@@ -97,7 +97,7 @@ _FINDING_KEYS = frozenset(("image", "id", "package", "version", "seen_by", "of",
                            "details"))
 _DETAIL_KEYS = frozenset(("severity", "fixed_version", "aliases", "known_exploited", "purl"))
 _SEVERITIES = ("negligible", "low", "medium", "high", "critical")       # bin/panel.py SEVERITIES, in rising order
-_VEX_KEYS = frozenset(("image", "scanner", "id", "package", "version"))
+_VEX_KEYS = frozenset(("image", "scanner", "id", "package", "version", "severity", "fixed_version", "aliases"))
 # Text with no control character and no backtick, because the issue text quotes with a backtick; "libc6 2.36"
 # matches, "libc6\n2.36" and "`libc6`" are refused.
 _TEXT = re.compile(r"[^\x00-\x1f\x7f`]*")
@@ -243,6 +243,13 @@ def _validate_panel_verdict(d):
                 and c["scanner"] in st_all[c["image"]]["ran"]):
             raise ParseError("panel verdict: a vex_covered entry is incomplete, names an unknown image or a scanner "
                              "the tally does not filter, or one that did not run there")
+        al = c["aliases"]
+        if (c["severity"] is not None and c["severity"] not in _SEVERITIES) \
+                or (c["fixed_version"] is not None
+                    and not (isinstance(c["fixed_version"], str) and c["fixed_version"]
+                             and _TEXT.fullmatch(c["fixed_version"]))) \
+                or not (isinstance(al, list) and all(isinstance(a, str) and _ID.fullmatch(a) for a in al)):
+            raise ParseError("panel verdict: a vex_covered severity, fixed version or alias list is not valid")
         if not _ID.fullmatch(c["id"]) or not _TEXT.fullmatch(c["package"]) or not _TEXT.fullmatch(c["version"]):
             raise ParseError("panel verdict: a vex_covered id, package or version holds a character outside the "
                              "allowed set")
@@ -308,6 +315,12 @@ def parse_panel(path, scanner):
                                       {"images": [], "version": c["version"], "by_image": {}, "carried": True})
         if c["image"] not in rec["extra"]["images"]:
             rec["extra"]["images"].append(c["image"])
+        if c["severity"] and (rec["severity"] is None
+                              or _SEVERITIES.index(c["severity"]) > _SEVERITIES.index(rec["severity"])):
+            rec["severity"] = c["severity"]
+        if c["fixed_version"] and not rec["fixed_version"]:
+            rec["fixed_version"] = c["fixed_version"]
+        rec["aliases"] = sorted(set(rec["aliases"]) | set(c["aliases"]))
     for rec in seen.values():
         rec["extra"]["images"].sort()
     return list(seen.values())

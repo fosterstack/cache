@@ -110,8 +110,8 @@ def _resolve_carried(groups, carried_stmts):
                         pn, pv = PARS.panel_module().purl_name_version(p)
                         if name(pn) == name(f.get("package")) and pv == ((f.get("extra") or {}).get("version") or ""):
                             keep.setdefault((f["scanner"], f["finding_id"], p), PARS.finding(
-                                f["scanner"], f["finding_id"], p, f.get("aliases") or (), f.get("package"), None, None,
-                                dict(f["extra"], carried=True)))
+                                f["scanner"], f["finding_id"], p, f.get("aliases") or (), f.get("package"), f.get("fixed_version"),
+                                f.get("severity"), dict(f["extra"], carried=True)))
         grp["findings"] = list(keep.values())
         if not keep:
             del groups[cid]
@@ -1166,7 +1166,9 @@ def _merge_suppressions(ws, supp, base=None):
     # never deliver two statements sharing an @id
     seen = {}
     for s in survivors:
-        sid = s.get("@id") or ""
+        sid = s.get("@id")
+        if not sid:
+            continue
         while sid in seen and seen[sid] is not s:
             sid += "0"
         seen[sid] = s
@@ -1766,6 +1768,9 @@ def _dispose(c, findings, aliases, env, would, name=None):
     vn = name or c
     gf = _group_facts(c, {"findings": findings, "aliases": aliases})
     ids = sorted(aliases) + [c]
+    # the ids this subset's own (non-lineage) scanner records give the finding: what its statement may carry as aliases
+    vex_aliases = sorted({a for f in findings if not f.get("_lineage_only") for a in f["aliases"]} - {c})
+    vwrite = lambda *a, **k: vex.write(*a, aliases=vex_aliases, **k)
     # A not_affected closure clears only the packages its evidence names: scope every closure to this subset's
     # exact PURLs so a Go unreachability never suppresses a sibling OS package product-wide.
     subs = sorted({f["purl"] for f in findings if f.get("purl") and not f.get("_lineage_only")}) or None
@@ -1797,7 +1802,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
             # group whose only records are lineage, gets NO closure (REQ-AUD-13 AC5).
             go_subs = sorted({f["purl"] for f in _go_covered(findings, ev)[0]})
             if go_subs:
-                vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_in_execute_path",
+                vwrite(out, c, "not_affected", ts, justification="vulnerable_code_not_in_execute_path",
                           evidence=ev, vex_name=vn, subcomponents=go_subs)
                 row.update(section=5, disposition="not_affected (unreachable)", action="closed",
                            reason="govulncheck: imported, not called",
@@ -1805,6 +1810,16 @@ def _dispose(c, findings, aliases, env, would, name=None):
                            ignore_files=["vex", "evidence"], carried=(_cstat == "not_affected"))
                 return row, 1
             # evidence covers no scanned version (or only lineage) — do not close; route below.
+    # Our own statement hides every record here and no scanner gave a severity or a fix (REQ-AUD-13 AC7): missing
+    # data is not "no upstream fix". The statement stays as published; nothing is written.
+    nonlin = [f for f in findings if not f.get("_lineage_only")]
+    if (nonlin and _cstat and all((f.get("extra") or {}).get("carried") for f in nonlin)
+            and gf["severity"] in (None, "unknown") and not gf["fixed"]):
+        row.update(section=(5 if _cstat == "not_affected" else 2), disposition="kept as published",
+                   action="no scanner data this run; the published statement stays", vex_id=this_scope_id,
+                   reason="hidden by our statement, and no scanner gave a severity or a fix",
+                   scope_purls=_purls, ignore_files=["vex"], carried=True)
+        return row, 0
     m_inc = 0
     # An expired carried acceptance for THIS scope reopens the finding into §3 BEFORE any FP
     # suspicion — a model refusal must never hide the lapsed time box (REQ-AUD-13 AC6). A now-
@@ -1831,7 +1846,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
         if cat == "false_positive":
             fev = C.fp_verified(ids, env["logpath"], findings)
             if fev:
-                vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_present", evidence=fev,
+                vwrite(out, c, "not_affected", ts, justification="vulnerable_code_not_present", evidence=fev,
                           vex_name=vn, subcomponents=subs)
                 row.update(section=5, disposition="not_affected (false positive)", action="closed",
                            reason="model FP, evidence-verified",
@@ -1934,7 +1949,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
                   "bump_attempted": pull.get("bump_attempted"), "bump_result": pull.get("bump_result"),
                   "repo_version": pull.get("repo_version"), "base_release": pull.get("base_release"),
                   "evidence": pull.get("evidence")}
-            vex.write(out, c, "affected", ts,
+            vwrite(out, c, "affected", ts,
                       action="fix exists but is not pullable (%s); tracked; re-checked daily" % hold,
                       evidence=ev, target_date=this_exp2, lift_trigger=lift_trigger, vex_name=vn, subcomponents=subs)
             if hold == "policy-held":
@@ -2002,7 +2017,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
             ev = {"check": "fix-not-pullable", "hold": hold, "recheck": "deferred", "cause": cause,
                   "component": gf["package"], "installed": gf["installed"], "component_fixed": gf["fixed"],
                   "lift_trigger": deferred_trigger}
-            vex.write(out, c, "affected", ts,
+            vwrite(out, c, "affected", ts,
                       action="fix exists but is not pullable (%s); recheck deferred (%s); suppression retained"
                       % (hold, cause),
                       evidence=ev, target_date=this_exp3, lift_trigger=deferred_trigger,
@@ -2079,7 +2094,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
     if not at and not env.get("kev_ok", True):
         # KEV membership could not be checked -> do not downgrade; escalate (fail closed).
         at = True; reason = "kev-unavailable (fail-closed)"
-    vex.write(out, c, "affected", ts, action="no fix upstream; tracked; re-checked daily",
+    vwrite(out, c, "affected", ts, action="no fix upstream; tracked; re-checked daily",
               evidence={"check": "reachable-no-fix", "source_file": "manifest", "detail": gf["nofix_reason"]},
               target_date=this_exp, vex_name=vn, subcomponents=subs)
     action = "POA&M: affected VEX + ignores, expiry %s" % this_exp
@@ -2283,7 +2298,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             ev = {"check": "known-defect-log", "source_file": logpath,
                   "detail": "trusted false_positive for %s" % covpkgs}
             vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_present", evidence=ev,
-                      subcomponents=subs or None)
+                      subcomponents=subs or None,
+                      aliases=sorted({a for f in covered for a in f["aliases"]} - {c}))
             _fp_sid = policy.scope_id(c, policy.VEX_PRODUCT, subs or None)
             # carried: this exact scope's not_affected is already in force on main (unchanged from a prior
             # day) -> "in force (main)" with its published link; a fresh FP, or a scope whose published

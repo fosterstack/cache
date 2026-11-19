@@ -32,7 +32,7 @@ def good():
           f("production-amd64", "CVE-2099-0002", "zlib", "1.3", ["inspector"])]
     d = {"images": images, "not_counted": [], "scanner_failures": [], "findings": fs,
          "unique": [x for x in fs if x["unique"]],
-         "vex_covered": [{"image": "production-amd64", "scanner": "inspector", "id": "CVE-2099-0009", "package": "busybox", "version": "1.36"}],
+         "vex_covered": [{"image": "production-amd64", "scanner": "inspector", "id": "CVE-2099-0009", "package": "busybox", "version": "1.36", "severity": None, "fixed_version": None, "aliases": []}],
          "issue": pm.render_issue([x for x in fs if x["status"] == "report"]), "exit": 1}
     return d
 
@@ -198,6 +198,22 @@ class Loader(unittest.TestCase):
         self.assertEqual((i["severity"], i["fixed_version"], i["aliases"]), ("critical", None, ["CVE-2099-0001"]))
         low = copy.deepcopy(d); low["findings"][0]["details"]["grype"]["severity"] = "low"; low["findings"][2]["details"]["grype"]["severity"] = "negligible"
         self.assertEqual(P.parse_panel(self.write(json.dumps(low)), "grype")[0]["severity"], "low")      # a lower one later never lowers it
+
+    def test_req13_ac7_covered_keeps_scanner_data(self):        # REQ-AUD-13 AC7: severity, fixed version and aliases ride along on a hidden sighting
+        d = good()
+        d["vex_covered"][0].update(severity="high", fixed_version="1.36.1", aliases=["GHSA-aaaa-bbbb-cccc"])
+        d["vex_covered"].append({"image": "production-amd64", "scanner": "inspector", "id": "CVE-2099-0010", "package": "zlib", "version": "1.3",
+                                 "severity": None, "fixed_version": None, "aliases": []})       # the scanner gave it neither: null, never guessed
+        P.validate_panel_verdict(d)
+        insp = {f["finding_id"]: f for f in P.parse_panel(self.write(json.dumps(d)), "inspector") if f["extra"].get("carried")}
+        rich, bare = insp["CVE-2099-0009"], insp["CVE-2099-0010"]
+        self.assertEqual((rich["severity"], rich["fixed_version"]), ("high", "1.36.1"))
+        self.assertIn("GHSA-aaaa-bbbb-cccc", rich["aliases"])
+        self.assertEqual((bare["severity"], bare["fixed_version"]), (None, None))
+        for bad in ({"severity": "urgent"}, {"fixed_version": ""}, {"fixed_version": 3}, {"aliases": "GHSA-aaaa-bbbb-cccc"}, {"aliases": [7]}):
+            worse = copy.deepcopy(d); worse["vex_covered"][0].update(bad)
+            with self.assertRaises(P.ParseError, msg=repr(bad)):
+                P.validate_panel_verdict(worse)
 
     def test_a_repeated_key_at_any_depth_is_refused(self):
         with self.assertRaisesRegex(P.ParseError, "appears twice"):

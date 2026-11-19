@@ -103,6 +103,10 @@ def _fake_urlopen(url, timeout=None):
     return _Resp(json.dumps(EOL[prod]).encode())
 
 
+def _fake_eol(product):
+    return EOL.get(product)
+
+
 class Harness(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="covmanifest-")
@@ -397,7 +401,7 @@ class MainDegraded(Harness):
         self.assertEqual({v["reason"] for v in m["scanner_status"].values()}, {"no panel-evidence directory was given"})
         self.assertIsNone(m["panel"]["not_counted"])
         self.assertIsNone(m["govulncheck"])
-        self.assertEqual(m["base_os"], "debian")
+        self.assertEqual(m["base_os"], "unknown")                                # syft did not run: no distro is assumed
         self.assertEqual(m["candidate_digests"]["production"], "sha256:abc")
         self.assertEqual((m["eol"], m["base"], m["carriers"]), ([], {}, []))
         self.assertEqual(m["provenance"]["source"], "test-image")
@@ -409,6 +413,22 @@ class MainDegraded(Harness):
         self.assertIn("syft did not run (rc 1); the carriers and base OS stay unknown", out)
         self.assertIn("lifecycle lookup failed: eol down", out)
         self.assertIn("image scanners that ran: NONE", out)
+
+    def test_req14_ac8_syft_failure_base_os_unknown(self):          # REQ-AUD-14 AC8: no syft distro, no lifecycle lookup for the base
+        no_distro = {"artifacts": _pkgs(3)}
+        for name, syft_rule in (("syft failed", {"tool": "syft", "rc": 1}), ("syft gave no distro", {"tool": "syft", "stdout_json": no_distro})):
+            self.rules([r for r in GOOD_RULES if r["tool"] != "syft"] + [syft_rule])
+            with mock.patch.object(M, "_eol_fetch", side_effect=lambda product: [{"cycle": "12", "eol": "2020-01-01", "latest": "12.7"}]) as fetch:
+                self.run_main(self.base_args("--commit", C40))
+            m = _rj(self.out)
+            self.assertEqual(m["base_os"], "unknown", name)
+            self.assertNotIn("debian", [c.args[0] for c in fetch.call_args_list], name)       # never judged against another distribution's lifecycle
+            self.assertEqual((m["eol"], m["base"]), ([], {}), name)
+        self.rules(GOOD_RULES)                                                                 # when syft names the distro nothing changes
+        with mock.patch.object(M, "_eol_fetch", side_effect=_fake_eol) as fetch:
+            self.run_main(self.base_args("--commit", C40))
+        self.assertEqual(_rj(self.out)["base_os"], "debian 12.0")
+        self.assertIn("debian", [c.args[0] for c in fetch.call_args_list])
 
     def test_syft_parse_failure_oci_digest_and_today_fallback(self):
         rules = [
@@ -428,9 +448,9 @@ class MainDegraded(Harness):
         with mock.patch("datetime.date", _NoToday), mock.patch.object(M, "_lifecycle", wraps=M._lifecycle) as lc:
             out = self.run_main(self.base_args("--commit", C40), env_extra={}, drop=("AUDITOR_TODAY",))
         self.assertEqual(lc.call_args.args[3], "1970-01-01")
-        self.assertEqual(lc.call_args.args[0], "debian")
+        self.assertEqual(lc.call_args.args[0], "unknown")
         m = _rj(self.out)
-        self.assertEqual((m["carriers"], m["base_os"]), ([], "debian"))        # an unreadable SBOM yields no carriers and the default base OS
+        self.assertEqual((m["carriers"], m["base_os"]), ([], "unknown"))       # an unreadable SBOM yields no carriers and an unknown base OS
         self.assertEqual(m["candidate_digests"]["production"], "sha256:ocid")
         self.assertEqual([c[-1] for c in self.argv() if c[:2] == ["skopeo", "inspect"]],
                          ["docker-archive:" + self.tar, "oci-archive:" + self.oci])
@@ -442,7 +462,7 @@ class MainDegraded(Harness):
         # clock fallback 1970-01-01: debian 12's LTS date has not "passed" yet, so no maintenance flag
         # (with the real date it would be flagged — see test_full_run_rescan_dir)
         self.assertEqual(m["eol"], [])
-        self.assertEqual(m["base"]["days_behind"], (date(1970, 1, 1) - date(2026, 8, 31)).days)
+        self.assertEqual(m["base"], {})         # REQ-AUD-14 AC8: an unknown base OS has no release to lag, so no pin-lag block
 
 
 class Helpers(Harness):
