@@ -41,7 +41,7 @@ INSTALLER_INPUTS = {
 }
 # NOT here, on purpose (rule 1, amendment 2): actions/setup-go's go-version and go.mod's toolchain line; the standard library ships in our binary.
 _GO_INSTALL = re.compile(r"\bgo\s+install\b([^\n;&|]*)")
-_GO_TARGET = re.compile(r"(?<![\w.\-/@])((?:\$\{var\}|[\w.\-/])+)@((?:\$\{\{expression\}\}|\$\{var\}|[\w.\-+()]|\$(?!\{\{))+)")
+_GO_TARGET = re.compile(r"(?<![\w.\-/@])((?:\$\{var\}|[\w.\-/])+)@(.+)", re.S)    # the version is the whole word after @: a leftover character makes it not exact
 _GH_DOWNLOAD = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/download/(v?)((?:\$\{\{expression\}\}|\$\{var\}|[\w.+()-]|\$(?!\{\{))+)/([^\s/'\x22?#;|&]+)")
 _GH_LATEST = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/latest/download/")
 _GO_RUN_GET = re.compile(r"\bgo\s+(?:run|get)\b([^\n;&|]*)")
@@ -113,6 +113,10 @@ def _hide(text):
         return text
     text = _strip_expressions(text)
     return re.sub(r"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?", "${var}", text)  # a shell variable's name (an env var, maybe a secret's) never prints either
+
+
+class Unparseable(RuntimeError):
+    """A workflow or action file whose YAML does not parse (the history walk reports an old one and goes on)."""
 
 
 class Item:
@@ -603,6 +607,14 @@ def _step(node, out, labels):
                 it.step = legacy_tag # a placeholder (variable, @latest, @main, unpinned; a release asset's NAME that holds a variable or expression) is identified by the step it sits in, so a NEW or EDITED one is a new key and is refused: _hide() folds two spellings of the name into one
 
 
+def _shell_words(text):
+    """The words the shell makes of `text`, quotes removed by its quote state; an unbalanced quote stays in the words, so it fails closed."""
+    try:
+        return shlex.split(text)
+    except ValueError:
+        return text.split()
+
+
 _STEP_MEMO = {}     # (the step as a script line, the context it reads) -> the items _step made for it
 
 
@@ -635,13 +647,14 @@ def _step_items(node, out, labels):
     if isinstance(run, str):
         run = _cap(_hide(re.sub(r"\\\n\s*", " ", run)))  # a backslash continuation is one command; an expression becomes a placeholder before any pattern can cut it
         for m in list(_GO_INSTALL.finditer(run)) + list(_GO_RUN_GET.finditer(run)):
-            for t in _GO_TARGET.finditer(m.group(1)):
-                out.append(Item("gotool", t.group(1), t.group(2)))
-            for tok in m.group(1).split():
-                tok = tok.strip("'\"")
+            words = _shell_words(m.group(1))
+            for word in words:
+                for t in _GO_TARGET.finditer(word):
+                    out.append(Item("gotool", t.group(1), t.group(2)))
+            for tok in words:
                 if not tok.startswith("-") and "@" not in tok and re.fullmatch(r"[\w.\-]+\.[\w.\-]+/[\w.\-/]+", tok):
                     out.append(Item("gotool", tok, "(unversioned)"))     # go install with no @version: a placeholder, refused when added
-                elif not tok.startswith("-") and "$" in tok:
+                elif not tok.startswith("-") and ("$" in tok or "`" in tok):
                     out.append(Item("gotool", "(variable)", "(unversioned)"))   # go install "$TOOL": the target is a variable, so it cannot be proven
         for m in _GH_LATEST.finditer(run):  # "latest" is not a pin: an item that cannot be proven, so adding one fails closed
             it = Item("tool", m.group(1), "latest")
@@ -828,7 +841,7 @@ def _file_found(path, text):
             doc = yaml.load(text, Loader=yaml.BaseLoader)
         except yaml.YAMLError as e:
             mark = getattr(e, "problem_mark", None)  # the line number only: the message would quote source text (names that must stay private)
-            raise RuntimeError(f"{path} does not parse (line {mark.line + 1 if mark else '?'})")
+            raise Unparseable(f"{path} does not parse (line {mark.line + 1 if mark else '?'})")
         if isinstance(doc, dict) and isinstance(doc.get("runs"), dict):
             _INPUT_CTX[0] = json.dumps(doc.get("inputs"), sort_keys=True, default=str)   # a composite action's input defaults select what its steps download
         try:
@@ -850,8 +863,12 @@ def _file_found(path, text):
     return found
 
 
+_UNREAD = [None]   # set only by the history walk: a list that gets the message of each file that does not parse
+
+
 def inventory(files):
-    """The items of one tree's files ({path: text}). Raises on a workflow that does not parse: a pin we cannot read is never skipped."""
+    """The items of one tree's files ({path: text}). Raises on a workflow that does not parse: a pin we cannot read is never skipped.
+    Only the history walk sets _UNREAD: then that file alone is left out and its message is listed."""
     items = {}
     _TREE[0] = frozenset(n for n in files if any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS))
     _FILES[0] = files
@@ -863,7 +880,13 @@ def inventory(files):
         if hit is not None:
             found = [copy.copy(it) for it in hit[0]]      # the de-duplication below renames steps: it must never touch the remembered items
         else:
-            found = _file_found(path, text)
+            try:
+                found = _file_found(path, text)
+            except Unparseable as e:
+                if _UNREAD[0] is None:
+                    raise
+                _UNREAD[0].append(str(e))
+                continue
             if mk is not None:                              # a raise left nothing here: only a completed file is remembered; each different set of reads is kept
                 _FILE_MEMO.setdefault(mk, []).append(([copy.copy(it) for it in found], tuple(_READS)))
         for it in found:

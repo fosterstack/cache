@@ -44,3 +44,21 @@ unmapped:
     reason: "the patch-release rule for a changed VEX belongs to the chain's pipeline; main's releases are unchanged. Evidenced where the chain lands (bin/chain-build-wiring-test.sh)"
   - ac: REQ-REL-010-AC6
     reason: "a live check: Docker Scout scans an attested index by tag and by exact digest with our author and applies our VEX. On main it is proven by the daily rescan's Scout self-check on an attested fixture and its scan of the six attested candidates; on our real published image it can run only after the first release candidate with the attestation children exists, and the customer guide's Scout claim waits for that"
+  - ac: REQ-REL-005-AC2
+    reason: Pins are a markdown rule; reviewers and the release audit check them (docs/ratify/2026-11-19-pins-markdown-no-checker.md:5).
+  - ac: REQ-REL-005-AC3
+    reason: Pins are a markdown rule; reviewers and the release audit check them (docs/ratify/2026-11-19-pins-markdown-no-checker.md:5).
+  - ac: REQ-REL-005-AC4
+    reason: Pins are a markdown rule; reviewers and the release audit check them (docs/ratify/2026-11-19-pins-markdown-no-checker.md:5).
+  - ac: REQ-REL-005-AC5
+    reason: Pins are a markdown rule; reviewers and the release audit check them (docs/ratify/2026-11-19-pins-markdown-no-checker.md:5).
+  - ac: REQ-REL-013-AC2
+    reason: Pins are a markdown rule; reviewers and the release audit check them (docs/ratify/2026-11-19-pins-markdown-no-checker.md:5).
+  - ac: REQ-REL-013-AC3
+    reason: Pins are a markdown rule; reviewers and the release audit check them (docs/ratify/2026-11-19-pins-markdown-no-checker.md:5).
+  - ac: REQ-REL-013-AC4
+    reason: Pins are a markdown rule; reviewers and the release audit check them (docs/ratify/2026-11-19-pins-markdown-no-checker.md:5).
+  - ac: REQ-SCAN-015-AC2
+    reason: Pins are a markdown rule; reviewers and the release audit check them (docs/ratify/2026-11-19-pins-markdown-no-checker.md:5).
+  - ac: REQ-SUP-001-AC13
+    reason: Pins are a markdown rule; reviewers and the release audit check them (docs/ratify/2026-11-19-pins-markdown-no-checker.md:5).

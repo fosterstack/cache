@@ -34,7 +34,7 @@ if m and c:
     if not any("gremlins" in (s.get("run") or "") for s in m.get("steps") or []):
         bad.append("the mutation job does not run gremlins")
     import re as _re
-    # EVERY `go install` target, one by one: module@<full commit> (a tag, a branch, @latest or no version fails). The run
+    # Every tool installed by go, one by one: pinned to a full commit (a tag, a branch, @latest or no version fails). The run
     # text is split into words the way the shell splits them (escapes and quotes undone: g\o is go), command by command.
     import shlex
     targets, unparsed = [], []
