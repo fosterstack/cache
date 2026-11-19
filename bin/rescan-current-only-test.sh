@@ -18,7 +18,10 @@ python3 - "$wf" "$work/collect.sh" <<'PY'
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 step = [s for s in d["jobs"]["manifests"]["steps"] if s.get("id") == "collect"][0]
-open(sys.argv[2], "w").write(step["run"])
+# the manifest lands at /tmp/m-<tag>.json; the test points that path at its own RUNNER_TEMP, so no case touches the host's /tmp
+run = step["run"].replace('"/tmp/m-', '"$RUNNER_TEMP/m-')
+assert '"$RUNNER_TEMP/m-${tag}.json"' in run, "collect no longer downloads to a manifest path under /tmp or RUNNER_TEMP"
+open(sys.argv[2], "w").write(run)
 # the pattern step (REQ-CHAIN-004-AC20): its own step before collect; absent today means the file is not written
 pat = [s for s in d["jobs"]["manifests"]["steps"] if s.get("id") == "pattern"]
 if pat:
@@ -232,8 +235,7 @@ setup "$CURL" v0.2.2; touch "$FIX/dl-fails"; run
 chk "a failed manifest download" 'could not be downloaded'
 setup "$CURL" v0.2.2; touch "$FIX/dl-fails-after-write"; run   # gh writes a VALID manifest, then exits non-zero
 chk "a download that fails AFTER writing a valid manifest" 'could not be downloaded'
-setup "$CURL" v0.2.2; touch "$FIX/dl-fails"; cp "$FIX/m-v0.2.2.json" /tmp/m-v0.2.2.json; run   # a stale valid file is already at the path
-rm -f /tmp/m-v0.2.2.json
+setup "$CURL" v0.2.2; touch "$FIX/dl-fails"; cp "$FIX/m-v0.2.2.json" "$work/rt/m-v0.2.2.json"; run   # a stale valid file is already at the path collect downloads to
 chk "a failed download with a stale valid manifest already at the path" 'could not be downloaded'
 setup "$CURL" v0.2.2; printf 'not json {' > "$FIX/m-v0.2.2.json"; run
 chk "an invalid manifest (not JSON)" 'is not valid JSON'

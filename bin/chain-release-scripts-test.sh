@@ -109,7 +109,10 @@ echo "gh $*" >> "$LOG"
 [ -z "${GH_FAIL:-}" ] || { echo "gh failed" >&2; exit 1; }
 [ -z "${GH_FAIL_ON:-}" ] || case "$*" in *"$GH_FAIL_ON"*) echo "gh failed" >&2; exit 1;; esac
 [ -z "${GH_VIEW_ERR:-}" ] || [ "$1 $2" != "release view" ] || { echo "$GH_VIEW_ERR" >&2; exit 1; }
-if [ "$1 $2" = "release create" ]; then a=("$@"); for i in "${!a[@]}"; do
+# release list answers the releases made by this run's create calls plus GH_LIST (a JSON array of {tagName,isDraft}); GH_LIST_FAIL fails it
+if [ "$1 $2" = "release list" ]; then [ -z "${GH_LIST_FAIL:-}" ] || { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
+  { echo "${GH_LIST:-[]}"; [ ! -f "$LOG.rels" ] || cat "$LOG.rels"; } | jq -s '[.[][]]'; exit 0; fi
+if [ "$1 $2" = "release create" ]; then printf '[{"tagName":"%s","isDraft":true}]\n' "$3" >> "$LOG.rels"; a=("$@"); for i in "${!a[@]}"; do
   [ "${a[$i]}" = --notes ] && printf %s "${a[$((i+1))]}" > "$LOG.notes"
   [ "${a[$i]}" = --notes-file ] && cp "${a[$((i+1))]}" "$LOG.notes"; done; fi
 pub="$LOG.published"
@@ -1346,54 +1349,64 @@ for n in ("release-key-manifest.json", "release-key-manifest.sig"):
 for n in ("release-key-manifest.json", "release-key-manifest.sig"):
     t = full_assets(); os.remove(os.path.join(t, ".github/policy", n)); rc, so, se = staged_assets(t)
     check(rc != 0 and n in se and not [l for l in log(t) if l.startswith("gh release")], "REQ-CHAIN-008-AC2 without %s nothing is created or uploaded, the file is named" % n, "rc=%s %s" % (rc, first(se)))
-t2 = full_assets(); rc2, so2, se2 = staged_assets(t2, env={"GH_VIEW_ERR": "release not found"})
-check(rc2 == 0 and [l for l in log(t2) if l.startswith("gh release create")] and all(" --verify-tag" in l and "--draft" not in l for l in log(t2) if l.startswith("gh release create")), "AC9 a missing release is created, public, only with --verify-tag", se2)
-check(not [l for l in log(t2) if "--draft" in l or "release edit" in l or "--notes-from-tag" in l], "AC9 no undraft and no gh-generated notes")
+t2 = full_assets(); rc2, so2, se2 = staged_assets(t2)
+check(rc2 == 0 and [l for l in log(t2) if l.startswith("gh release create")] and all(" --draft" in l and " --verify-tag" in l for l in log(t2) if l.startswith("gh release create")), "AC9 a missing release is created as a draft, only with --verify-tag", se2)
+E2 = [l for l in log(t2) if l.startswith("gh release edit")]
+check(E2 == ["gh release edit v0.3.0 --draft=false"] and not [l for l in log(t2) if "--notes-from-tag" in l], "AC9 exactly one undraft, gh release edit TAG --draft=false, and no gh-generated notes", repr(E2))
+L2 = [l.split(" ")[2] for l in log(t2) if l.startswith("gh ")]
+check(L2 == ["list", "create", "upload", "download", "edit"] and [l for l in log(t2) if l.startswith("gh release list")] == ["gh release list --limit 1000 --json tagName,isDraft"], "AC9 the order is list, create, upload, download, edit (the edit is the last gh call, after the gate)", repr(L2))
+D2 = [i for i, l in enumerate(log(t2)) if l.startswith("gh release download")]
+check(bool(E2) and bool(D2) and log(t2).index(E2[0]) > D2[0], "AC9 the undraft comes after the download")
+# the draft stays whenever the list, the upload, the download or the gate fails: gh release edit is never called
+for what, env in (("the list", {"GH_LIST_FAIL": "1"}), ("the upload", {"GH_FAIL_ON": "release upload"}), ("the download", {"GH_FAIL_ON": "release download"}), ("the gate (a file the release lost)", {"GH_DROP": "release-files.sha256.bundle"}), ("the gate (a file the release altered)", {"GH_ALTER": "release-manifest.json"})):
+    tf = full_assets(); rcf, sof, sef = staged_assets(tf, env=env)
+    Lf = log(tf)
+    check(rcf != 0 and not [l for l in Lf if l.startswith("gh release edit")] and not [l for l in Lf if "--clobber" in l or l.startswith("gh release delete")], "AC9 a failed %s exits non-zero and gh release edit is never called" % what, "rc=%s %s" % (rcf, first(sef)))
+    if what == "the list": check(not [l for l in Lf if re.match(r"gh release (create|upload|download)", l)], "AC9 a failed release list creates and uploads nothing")
 # a created release carries the fixed evidence text, except for a generated patch tag: its notes are `git cat-file tag` read by `python3 bin/patch-decide.py tag-notes` (REQ-REL-009-AC8), given with --notes-file; `gh release edit` is gone
 FIXED = "Evidence: see docs/verify-release.md for the verification commands of this release."
 def notes_of(t): p = os.path.join(t, "calls.log.notes"); return open(p).read() if os.path.exists(p) else None
 check(notes_of(t2) == FIXED, "AC9 rule 3 a missing release (an owner's tag) is created with the fixed evidence text", repr(notes_of(t2)))
 GEN = ("object 0123\ntype commit\ntag v0.3.0\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n"
-       "## v0.3.0 \u2014 patch release\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n"
+       "Patch release v0.3.0\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n"
        "-----BEGIN SSH SIGNATURE-----\nU1NIU0lH\n-----END SSH SIGNATURE-----\n")
-GEN_NOTES = "## v0.3.0 \u2014 patch release\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n"
+GEN_NOTES = "Patch release v0.3.0\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n"
 pdr = subprocess.run(["python3", os.path.join(BIN, "patch-decide.py"), "tag-notes"], input=GEN, capture_output=True, text=True)
 check(pdr.returncode == 0 and pdr.stdout.strip() == GEN_NOTES.strip(), "AC9 rule 3 (fixture) patch-decide tag-notes reads the generated tag's notes", "rc=%s %r" % (pdr.returncode, pdr.stdout[:80]))
-# an existing release is only uploaded to: no edit, no creation, whatever the tag object holds
-for what, obj in (("a generated patch tag", GEN), ("a tag with a generated-looking message under x509", GEN.replace("SSH SIGNATURE-----", "SIGNED MESSAGE-----")), ("a tag with no readable message", None)):
+# a release that exists under the tag, published or a leftover draft, stops the step before anything is created, uploaded or edited (REQ-CHAIN-007-AC9); nothing is deleted
+for what, dr in (("published", "false"), ("a leftover draft", "true")):
     t6 = full_assets()
-    if obj: open(os.path.join(t6, "tagobj"), "w").write(obj)
-    rc6, so6, se6 = staged_assets(t6, env={"TAG_OBJECT": os.path.join(t6, "tagobj")} if obj else None)
+    rc6, so6, se6 = staged_assets(t6, env={"GH_LIST": '[{"tagName":"v0.2.9","isDraft":false},{"tagName":"v0.3.0","isDraft":%s}]' % dr})
     L6 = log(t6)
-    check(rc6 == 0 and not [l for l in L6 if l.startswith("gh release edit") or l.startswith("gh release create")] and [l for l in L6 if l.startswith("gh release upload")] and notes_of(t6) is None,
-          "AC9 rule 3 an existing release (%s) is just uploaded to: no gh release edit, no creation" % what, "rc=%s %s" % (rc6, first(se6)))
+    check(rc6 == 1 and "release-assets:" in se6 and "v0.3.0" in se6 and not [l for l in L6 if re.match(r"gh release (create|upload|edit|delete|download)", l)] and notes_of(t6) is None,
+          "AC9 a release under the tag (%s) is refused, naming the tag: nothing is created, uploaded, edited or deleted" % what, "rc=%s %s" % (rc6, first(se6)))
 # a created release for a generated patch tag gets patch-decide's notes through --notes-file, the tag object read with git cat-file tag
 t3 = full_assets(); open(os.path.join(t3, "tagobj"), "w").write(GEN)
-rc3, so3, se3 = staged_assets(t3, env={"GH_VIEW_ERR": "release not found", "TAG_OBJECT": os.path.join(t3, "tagobj")})
+rc3, so3, se3 = staged_assets(t3, env={"TAG_OBJECT": os.path.join(t3, "tagobj")})
 C3 = [l for l in log(t3) if l.startswith("gh release create")]
-check(rc3 == 0 and len(C3) == 1 and " --notes-file " in C3[0] and " --notes " not in C3[0] and " --verify-tag" in C3[0] and notes_of(t3) is not None and notes_of(t3).strip() == GEN_NOTES.strip() and "git cat-file tag v0.3.0" in log(t3) and not [l for l in log(t3) if l.startswith("gh release edit")],
+check(rc3 == 0 and len(C3) == 1 and " --notes-file " in C3[0] and " --notes " not in C3[0] and " --verify-tag" in C3[0] and notes_of(t3) is not None and notes_of(t3).strip() == GEN_NOTES.strip() and "git cat-file tag v0.3.0" in log(t3) and len([l for l in log(t3) if l.startswith("gh release edit")]) == 1,
       "AC9 rule 3 a created release for a generated patch tag carries patch-decide's notes through --notes-file", "rc=%s %r %s %s" % (rc3, notes_of(t3), C3, first(se3)))
 # another tagger's message, or an owner's tag: tag-notes exits 1, the fixed text stays
 for what, obj in (("another tagger's message", GEN.replace("fosterstack release <release@users.noreply.github.com>", "Someone Else <x@example.com>")), ("a tag with a generated heading and no signature block", GEN.split("-----BEGIN")[0])):
     t3b = full_assets(); open(os.path.join(t3b, "tagobj"), "w").write(obj)
-    rc3b, so3b, se3b = staged_assets(t3b, env={"GH_VIEW_ERR": "release not found", "TAG_OBJECT": os.path.join(t3b, "tagobj")})
+    rc3b, so3b, se3b = staged_assets(t3b, env={"TAG_OBJECT": os.path.join(t3b, "tagobj")})
     C3b = [l for l in log(t3b) if l.startswith("gh release create")]
-    check(rc3b == 0 and len(C3b) == 1 and " --notes-file " in C3b[0] and " --notes " not in C3b[0] and notes_of(t3b) == FIXED and not [l for l in log(t3b) if l.startswith("gh release edit")],
+    check(rc3b == 0 and len(C3b) == 1 and " --notes-file " in C3b[0] and " --notes " not in C3b[0] and notes_of(t3b) == FIXED and len([l for l in log(t3b) if l.startswith("gh release edit")]) == 1,
           "AC9 rule 3 a tag object with %s keeps the fixed text" % what, "rc=%s %r %s" % (rc3b, notes_of(t3b), first(se3b)))
 # a generated tag whose notes hold a refused form (a signature-shaped line, REQ-REL-009-AC14): tag-notes exits 2, the step fails, nothing is created or uploaded
 t3c = full_assets(); open(os.path.join(t3c, "tagobj"), "w").write(GEN.replace("### VEX", "-----BEGIN SIGNED MESSAGE-----\n### VEX"))
-rc3c, so3c, se3c = staged_assets(t3c, env={"GH_VIEW_ERR": "release not found", "TAG_OBJECT": os.path.join(t3c, "tagobj")})
+rc3c, so3c, se3c = staged_assets(t3c, env={"TAG_OBJECT": os.path.join(t3c, "tagobj")})
 check(rc3c != 0 and not [l for l in log(t3c) if l.startswith("gh release create") or l.startswith("gh release upload") or l.startswith("gh release edit")] and notes_of(t3c) is None,
       "AC9 rule 3 a generated tag whose notes patch-decide refuses fails the step: no release is created, nothing uploaded", "rc=%s %s" % (rc3c, first(se3c)))
 src3 = open(os.path.join(BIN, "release-assets.sh")).read(); src3s = open(os.path.join(BIN, "release-stage.sh")).read()
-check("release edit" not in src3 and "patch-decide" not in src3 and "git " not in src3 and "--notes-file release-notes.txt" in src3 and "python3 -I -B bin/patch-decide.py tag-notes" in src3s,
-      "AC9 rule 3 release-stage.sh reads the notes with python3 -I -B bin/patch-decide.py tag-notes; release-assets.sh runs no git and no patch-decide and holds no gh release edit")
+check(len(re.findall(r"gh release edit", src3)) == 1 and "gh release edit \"$rel\" --draft=false" in src3 and "patch-decide" not in src3 and "git " not in src3 and "--notes-file release-notes.txt" in src3 and "python3 -I -B bin/patch-decide.py tag-notes" in src3s,
+      "AC9 rule 3 release-stage.sh reads the notes with python3 -I -B bin/patch-decide.py tag-notes; release-assets.sh runs no git and no patch-decide and holds exactly one gh release edit, the --draft=false")
 # only a definite 'release not found' creates; any other failure of the view stops before creation and upload
 for err in ("HTTP 401: Bad credentials", "HTTP 502: Bad Gateway", "dial tcp: connection refused"):
-    t4 = full_assets(); rc4, so4, se4 = staged_assets(t4, env={"GH_VIEW_ERR": err})
+    t4 = full_assets(); rc4, so4, se4 = staged_assets(t4, env={"GH_LIST_FAIL": err})
     check(
         rc4 != 0 and not [l for l in log(t4) if l.startswith("gh release create") or l.startswith("gh release upload")],
-        "AC9 a failed release view (%s) is not 'no release': nothing is created or uploaded" % err,
+        "AC9 a failed release list (%s) is not 'no release': nothing is created or uploaded" % err,
         "rc=%s %s" % (rc4, first(se4))
     )
 # A re-run of the job: release-sign signs again (new bundles, the run attempt in the
@@ -1406,8 +1419,8 @@ def pub_bytes(t):
     return {n: open(os.path.join(pub_of(t), n), "rb").read() for n in sorted(os.listdir(pub_of(t)))}
 tb = full_assets(); rcb1, sob, seb = staged_assets(tb); before = pub_bytes(tb)
 rcb, sob, seb = staged_assets(tb)
-check(rcb1 == 0 and rcb != 0 and "already exists" in seb,
-      "AC9 a second run on a release that holds the assets fails, naming them (gh refuses)",
+check(rcb1 == 0 and rcb != 0 and "release-assets:" in seb and "v0.3.0" in seb,
+      "AC9 a second run on a release that holds the assets fails, naming the tag (the list shows it)",
       "rc=%s/%s %s" % (rcb1, rcb, first(seb)))
 check(before and pub_bytes(tb) == before,
       "AC9 a refused second run leaves every attached file as it was and copies nothing")
@@ -1423,8 +1436,8 @@ rcs, sos, ses = run(tc, "release-sign", creds=REG, env={"GITHUB_RUN_ATTEMPT": "2
 man2 = open(mpath, "rb").read()
 rcc, soc, sec = staged_assets(tc)
 check(rcc1 == 0 and rcs == 0 and man2 != man1 and b"attempts/2" in man2 and len(three) == 3
-      and rcc != 0 and "already exists" in sec,
-      "AC9 a re-signed re-run over a release that holds three of the files fails, naming them",
+      and rcc != 0 and "release-assets:" in sec and "v0.3.0" in sec,
+      "AC9 a re-signed re-run over a release that holds three of the files fails, naming the tag",
       "rc=%s/%s/%s %s" % (rcc1, rcs, rcc, first(sec)))
 check(pub_bytes(tc) == three,
       "AC9 that refused re-run attaches nothing of its new evidence: the release holds exactly its three files")
@@ -1445,7 +1458,7 @@ check(rc != 0 and "release-manifest.json" in se, "AC13 the gate after publishing
 t = full_assets(); rcs_, sos_, ses_ = run(t, "release-stage")
 for f_ in os.listdir(os.path.join(t, "bin")):
     if f_.endswith(".py") and f_ != "release-gate.py": os.remove(os.path.join(t, "bin", f_))
-rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"], env={"GH_VIEW_ERR": "release not found"})
+rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"])
 check(rcs_ == 0 and os.path.exists(os.path.join(t, "bin", "release-gate.py")) and not os.path.exists(os.path.join(t, "bin", "build-admit.py")) and rc == 0 and any(l.startswith("gh release upload") for l in log(t)),
       "AC20 release-assets publishes with only bin/release-gate.py among the Python files of bin/ (no build-admit.py, no release-metadata.py, no chain_common.py)", "rc=%s/%s %s" % (rcs_, rc, first(se)))
 t = full_assets(); rcs_, sos_, ses_ = run(t, "release-stage")
@@ -1482,7 +1495,7 @@ for r_, _, _ in RUNNERS:
         t = full_assets(); os.remove(os.path.join(t, "witness-check/%s/witness-%s/%s-collection.json" % (r_, n, n))); refused_before_upload(t, "the Check record %s of %s missing (the six named records are attached)" % (n, r_), n)
 # exactly one <stem>.rekor.json beside each record, in the staging list, the upload list and the coverage gate
 RECS = ["witness-build/build", "witness-rebuild/rebuild"] + ["witness-check/%s/witness-%s/%s" % (r_, n, n) for r_, _, _ in RUNNERS for n in ("scanners", "acceptance", "runtime")]
-t = full_assets(); rc, so, se = staged_assets(t, env={"GH_VIEW_ERR": "release not found"}); L = " ".join(log(t)) + " "
+t = full_assets(); rc, so, se = staged_assets(t); L = " ".join(log(t)) + " "
 for r in RECS:
     nm = (r.split("/")[1] + "-" if r.startswith("witness-check/") else "") + r.rsplit("/", 1)[1] + "-collection.rekor.json"      # Check's records are attached under their runner's name
     check(
@@ -1495,7 +1508,7 @@ for r in RECS:
 t = full_assets(); open(os.path.join(t, "witness-build/other-collection.rekor.json"), "w").write("{}"); refused_before_upload(t, "an entries file with no record (other-collection.rekor.json)", "other-collection.rekor.json")
 t = full_assets(); open(os.path.join(t, "release-evidence/build-collection.rekor.json"), "w").write("{}"); refused_before_upload(t, "a second source for the release name build-collection.rekor.json", "build-collection.rekor.json")
 def gate_of(t, mutate):
-    rc0, so0, se0 = staged_assets(t, env={"GH_VIEW_ERR": "release not found"})
+    rc0, so0, se0 = staged_assets(t)
     try: mutate(os.path.join(t, "release-upload"))
     except OSError: pass      # the run was refused before this file was staged
     r = subprocess.run(["python3", "-I", "-B", "bin/release-gate.py", "--dir", "release-upload"], cwd=t, capture_output=True, text=True)
@@ -1524,7 +1537,7 @@ t = full_assets(); shutil.rmtree(os.path.join(t, "witness-check")); refused_befo
 # before anything is staged
 t5 = full_assets(); open(os.path.join(t5, "witness-build/policy.json"), "w").write("REPLACED POLICY"); refused_before_upload(t5, "an extra witness-build/policy.json (it would replace the signed policy)", "policy.json")
 t5 = full_assets(); open(os.path.join(t5, "witness-rebuild/verdict.json"), "w").write("{}")
-rc5, so5, se5 = staged_assets(t5, env={"GH_VIEW_ERR": "release not found"})
+rc5, so5, se5 = staged_assets(t5)
 check(
     rc5 == 0 and not os.path.exists(os.path.join(t5, "release-upload/verdict.json")),
     "AC9 Rebuild's own verdict.json beside its record is allowed and is not attached (the inventory names what is "
@@ -1545,8 +1558,8 @@ src = open(os.path.join(t, "bin", "release-stage.sh")).read()
 check("GH_TOKEN" not in src and not re.search(r"\bgh\b", re.sub(r"#[^\n]*", "", src)), "B-F22 release-stage.sh names no token and no gh call in its code")
 t = full_assets(); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"])
 check(rc == 1 and "nothing to attach" in se and not [l for l in log(t) if l.startswith("gh ")], "B-F22 release-assets stages nothing itself: with no release-upload/ it refuses, naming that, and makes no gh call", "rc=%s %s" % (rc, first(se)))
-t = full_assets(); rc, so, se = staged_assets(t, env={"GH_VIEW_ERR": "release not found"})
-check(rc == 0 and [l.split(" ")[2] for l in log(t) if l.startswith("gh ")][:4] == ["view", "create", "upload", "download"], "B-F22 release-assets views, creates (only when none exists), uploads, then downloads the release back", "rc=%s %s" % (rc, first(se)))
+t = full_assets(); rc, so, se = staged_assets(t)
+check(rc == 0 and [l.split(" ")[2] for l in log(t) if l.startswith("gh ")][:5] == ["list", "create", "upload", "download", "edit"], "B-F22 release-assets lists, creates (only when none exists), uploads, downloads the release back, then undrafts it", "rc=%s %s" % (rc, first(se)))
 t = full_assets(); rcs, sos, ses = run(t, "release-stage"); open(os.path.join(t, "release-upload", "stray.json"), "w").write("{}"); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"], env={"GH_DROP": "stray.json"})
 check(rcs == 0 and rc != 0 and "stray.json" in se, "B-F22 the gate after publishing compares the release with release-upload/ (--same-as): a file that did not reach the release fails the run", "rc=%s %s" % (rc, first(se)))
 # ---- REQ-CHAIN-006-AC7: the post-publish verification, release-postverify.sh -----------------------------------

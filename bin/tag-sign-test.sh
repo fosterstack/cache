@@ -32,7 +32,7 @@ cp "$W/kms" "$W/kms.pem"; ssh-keygen -q -p -m PEM -N "" -f "$W/kms.pem" > /dev/n
 printf 'release@fosterstack ssh-rsa %s\n' "$(cut -d' ' -f2 "$W/kms.pub")" > "$W/signer"
 printf 'release@fosterstack ssh-rsa %s\n' "$(cut -d' ' -f2 "$W/other.pub")" > "$W/signer-other"
 git init -q "$W/repo"; git -C "$W/repo" commit -q --allow-empty -m c; SHA=$(git -C "$W/repo" rev-parse HEAD)
-NOTES_TXT=$'## v0.3.1 — patch release\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n'
+NOTES_TXT=$'Patch release v0.3.1\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n'
 printf '%s' "$NOTES_TXT" > "$W/notes.md"
 TAGGER='fosterstack release <release@users.noreply.github.com>'
 prep() { python3 "$TS" prepare --tag "${1:-v0.3.1}" --commit "${2:-$SHA}" --notes "${3:-$W/notes.md}" --tagger "${4:-$TAGGER}" --time "${5:-1700000000}" \

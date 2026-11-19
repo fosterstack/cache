@@ -486,7 +486,7 @@ risky = {"BASH_ENV", "ENV", "PATH", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME",
          "PROMPT_COMMAND", "CDPATH", "GLOBIGNORE", "TMPDIR", "HOME", "XDG_CONFIG_HOME"}
 def is_risky(k):
     return k in risky or re.match(r"(GIT_|GITHUB_|LD_|DYLD_|PYTHON|BASH_|RUNNER_)", k) is not None
-_PINNED_ACTIONS = ("actions/checkout", "actions/setup-python")
+_PINNED_ACTIONS = ("actions/checkout", "actions/setup-go", "actions/setup-python")
 for _jid, _j in (d.get("jobs") or {}).items():
     if not isinstance(_j, dict):
         continue
@@ -565,6 +565,13 @@ JUDGED = json.loads(r'''{
     "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
     "with": {
      "python-version": "3.12"
+    }
+   },
+   {
+    "name": "set up Go (the suites that run the real go, whose cases fail in CI when Go is missing)",
+    "uses": "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e",
+    "with": {
+     "go-version": "1.27.4"
     }
    },
    {
@@ -1056,8 +1063,8 @@ case_msg allowlist-uses-setup-python-commit-placeholder "d['jobs']['allowlist'][
 case_msg allowlist-uses-extra-action-step "d['jobs']['allowlist']['steps'].insert(3, {'name': 'x', 'uses': 'actions/cache@0123456789abcdef0123456789abcdef01234567'})" "the allowlist step 4 (x) is not a judged action step"
 case_msg allowlist-uses-checkout-tag "s = d['jobs']['allowlist']['steps'][0]; s.pop('name', None); s['uses'] = 'actions/checkout@v4'" "the allowlist step 1 (actions/checkout@v4) is not a judged action step"
 case_msg_fs suites-uses-tag-names-job "d['jobs']['suites']['steps'][0]['uses'] = 'actions/checkout@v4'" "the suites step 1 (actions/checkout@v4) uses an action that is not a pinned one of full-suite.yml"
-RUNX="d['jobs']['suites']['steps'][2]['run'] += ' || true'"
-case_msg_fs run-changed-names-step "$RUNX" "the suites step 3 ("
+RUNX="d['jobs']['suites']['steps'][3]['run'] += ' || true'"
+case_msg_fs run-changed-names-step "$RUNX" "the suites step 4 ("
 case_msg_fs run-changed-names-key  "$RUNX" "differs in: run"
 case_msg counting-step-key-names-the-step "w = $CW; w['if'] = 'false'" "has \`if\` (a counting step has no key but name and run)"
 case_msg counted-twice-names-the-suite "d['jobs']['test']['steps'].append(dict($CW))" "the suite bin/check-file-allowlist-test.sh is counted by more than one step"

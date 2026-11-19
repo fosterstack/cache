@@ -1264,15 +1264,15 @@ PIN = "55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
 norm = lambda s: " ".join((s or "").split())
 FORKP = "(" + FORK + ")"
 if which == "scan":
-    triggers = {"pull_request": "", "push": {"branches": ["main"], "tags": ["v*"]}}
+    triggers = {"pull_request": "", "schedule": [{"cron": "47 4 * * *"}], "workflow_dispatch": "", "push": {"branches": ["main"], "tags": ["v*"]}}
     IF_SCAN = None                         # the Inspector job (the Witness adversarial pass): its own job, no matrix, so no matrix condition on any step
     IF_REST = FORK
     IF_SDAY = "always()"
     IF_SAVE = "always() && steps.insp-scan.outputs.fresh != '' && steps.insp-scan.outputs.fresh != '0' && " + FORKP
     job, scan_name, marker = "inspector", "Amazon Inspector scan every image tar", "python3 bin/inspector-gate.py"
-    perms = {"top": {"contents": "read"}, "build": {"contents": "write", "packages": "write", "id-token": "write", "issues": "write", "checks": "read", "statuses": "read", "pull-requests": "read"},
+    perms = {"top": {"contents": "read"}, "build": {"contents": "write", "packages": "write", "id-token": "write", "issues": "write", "actions": "read", "checks": "read", "statuses": "read", "pull-requests": "read"},
              "reproducibility": None,
-             "scanner": {"contents": "read"}, "inspector": {"contents": "read", "id-token": "write"}, "scan": None}
+             "scanner": {"contents": "read"}, "inspector": {"contents": "read", "id-token": "write"}, "scan": None, "report-failure": {"issues": "write"}}
 else:
     triggers = {"schedule": [{"cron": "41 7 * * *"}], "workflow_dispatch": {}}
     IF_SCAN = None
@@ -1280,7 +1280,7 @@ else:
     IF_SDAY = "always()"
     IF_SAVE = "always() && steps.insp-scan.outputs.fresh != '' && steps.insp-scan.outputs.fresh != '0' && " + FORKP
     job, scan_name, marker = "panel-inspector", "Amazon Inspector every image", None
-    perms = {"top": {"contents": "read"}, "build": {"contents": "write", "packages": "write", "id-token": "write", "issues": "write", "checks": "read", "statuses": "read", "pull-requests": "read"},
+    perms = {"top": {"contents": "read"}, "build": {"contents": "write", "packages": "write", "id-token": "write", "issues": "write", "actions": "read", "checks": "read", "statuses": "read", "pull-requests": "read"},
              "panel-grype": {"contents": "read"}, "panel-scout": {"contents": "read"},
              "panel-inspector": {"contents": "read", "id-token": "write"},
              "panel-google": {"contents": "read", "id-token": "write"}, "panel": {"contents": "read", "issues": "write"},
@@ -1288,7 +1288,7 @@ else:
 # the triggers, exactly: a PR's saved entry is never restored by a main or tag run (the cache scope is the ref)
 if d.get("on") != triggers:
     bad.append("the workflow triggers changed: %s" % json.dumps(d.get("on")))
-# permissions: unchanged, and nothing anywhere grants actions
+# permissions: unchanged; only the build caller grants actions: read (release.yml's build-apk job asks for it, and a caller's grant is the ceiling), nothing else grants actions
 got = {"top": d.get("permissions")}
 got.update({j: v.get("permissions") for j, v in d["jobs"].items()})
 if got != perms:
@@ -1316,8 +1316,8 @@ if which == "scan":
         bad.append("the aggregate scan job must need scanner and inspector, run under always(), assert the Inspector result, and the Inspector job must be named scan (inspector)")
     if "inspector" in json.dumps(d["jobs"]["scanner"]["steps"]).replace("inspector-evidence", ""):
         bad.append("the grype job still carries an Inspector step")
-if re.search(r"^\s*actions\s*:\s*(write|read)", raw, re.M):
-    bad.append("an actions: permission is granted")
+if re.search(r"^\s*actions\s*:\s*write", raw, re.M) or len(re.findall(r"^\s*actions\s*:\s*read", raw, re.M)) != 1:
+    bad.append("an actions: permission is granted beyond the build caller's read")
 # the stock actions/cache restore and save only: exactly one of each, in the call-site job, nothing else cache-like
 uses_all = re.findall(r"uses:\s*(\S+)", raw)
 cache_uses = [u for u in uses_all if "actions/cache" in u]
@@ -1514,6 +1514,7 @@ for pair in "scan.yml scan" "main-candidate-rescan.yml rescan"; do
   wf "$f" "$k" restore-key-can-match-exactly bad "t = t.replace('github.run_id }}-miss', 'github.run_id }}', 1)"
   wf "$f" "$k" save-key-without-date bad "t = t.replace('key: inspector-\${{ steps.insp-save-day.outputs.date }}-\${{ github.run_id }}\n', 'key: inspector-\${{ github.run_id }}\n', 1)"
   wf "$f" "$k" actions-write-added bad "t = re.sub(r'(?m)^( +)id-token: write', lambda m: m.group(0) + '\n' + m.group(1) + 'actions: write', t, count=1)"
+  wf "$f" "$k" actions-read-added-on-the-call-site bad "i = t.index('  ' + ('inspector' if '$k' == 'scan' else 'panel-inspector') + ':\n'); j = t.index('contents: read', i); t = t[:j] + 'contents: read\n      actions: read' + t[j+14:]"
   wf "$f" "$k" call-site-contents-write bad "i = t.index('  ' + ('inspector' if '$k' == 'scan' else 'panel-inspector') + ':\n'); j = t.index('contents: read', i); t = t[:j] + 'contents: write' + t[j+14:]"
   wf "$f" "$k" restore-pinned-by-tag bad "t = t.replace('actions/cache/restore@$PINX # v6.1.0', 'actions/cache/restore@v6', 1)"
   wf "$f" "$k" save-pinned-by-tag bad "t = t.replace('actions/cache/save@$PINX # v6.1.0', 'actions/cache/save@v6', 1)"

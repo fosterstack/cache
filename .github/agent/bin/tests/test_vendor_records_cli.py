@@ -1,7 +1,7 @@
 # proves: REQ-VEND-001-AC16, REQ-VEND-001-AC17, REQ-VEND-001-AC21
 """auditor-vendor-records.py: which branches the sweep visits and what its exit code says. The per-branch work is
 auditorlib.vendor_records (its own tests)."""
-import importlib.util, io, os, subprocess, sys, unittest
+import importlib.util, io, os, re, subprocess, sys, unittest
 from contextlib import redirect_stdout, redirect_stderr
 from unittest import mock
 
@@ -101,7 +101,10 @@ class Workflow(unittest.TestCase):
     """The vendor-records job in dependabot-reviewer.yml (AC21): main's copy only, a read-only job token, one App token
     with contents:write for this repository."""
     TEXT = open(os.path.join(BIN, "..", "..", "workflows", "dependabot-reviewer.yml")).read()
-    JOB = TEXT[TEXT.index("\n  vendor-records:\n"):]
+    # the job's own text: from its key to the next job key (or the end of the file), so a later job's lines never satisfy these checks
+    _start = TEXT.index("\n  vendor-records:\n")
+    _next = re.search(r"\n  [A-Za-z0-9_-]+:\n", TEXT[_start + 1:])
+    JOB = TEXT[_start:_start + 1 + _next.start()] if _next else TEXT[_start:]
 
     def test_the_job_runs_in_the_agent_environment_whose_branch_policy_keeps_it_on_main(self):
         self.assertIn("    environment: agent\n", self.JOB)

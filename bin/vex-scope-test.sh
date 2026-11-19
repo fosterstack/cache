@@ -66,7 +66,7 @@ check "fosterstack published (tag + repo-digest)"         ghcr.io/fosterstack/ca
 check "fosterstack release-candidate repository"          ghcr.io/fosterstack/cache-candidates ghcr.io/fosterstack/cache-candidates:snapshot        ""                                              1.37.0 SUPPRESS
 check "foreign vendor, different product"                 ghcr.io/another-vendor/downloader    ghcr.io/another-vendor/downloader:1.0                ""                                              1.37.0 FLAG
 check "foreign vendor, SAME basename (cache)"             ghcr.io/another-vendor/cache         ghcr.io/another-vendor/cache:1.0                     ""                                              1.37.0 FLAG
-check "changed component version (busybox 1.36.0)"        ghcr.io/fosterstack/cache            ghcr.io/fosterstack/cache:v0.2.1                     ""                                              1.36.0 FLAG no
+check "changed component version (busybox 1.36.0)"        ghcr.io/fosterstack/cache            ghcr.io/fosterstack/cache:v0.2.1                     ""                                              1.36.0 FLAG
 check "missing image identity (no tags, no digests)"      ghcr.io/fosterstack/cache            ""                                                   ""                                              1.37.0 FLAG
 # rc-5a I (handoff 0666, ruling R1): the CHECK stage's own path. Real grype scans each image child of an OCI layout (bin/check-scan.sh, the script Check runs), and a
 # VEX statement for the cache image must apply there exactly as it does in the cases above. An oci-dir: layout carries no tag and no repo digest, so grype derives no

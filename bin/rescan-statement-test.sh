@@ -94,6 +94,22 @@ child "$mf" 1 linux/amd64 1 "$GRYPE_CLEAN"
 child "$mf" 2 linux/arm64 0 "$GRYPE_CLEAN"
 assert_stmt "grype operational exit 1 (valid JSON)" grype "$mf" error false 0
 
+# exit 3 is no grype code of findings either: operational, with a clean-shaped report and with a report that lists findings
+mf=$D/m; : >"$mf"
+child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN"
+child "$mf" 2 linux/arm64 3 "$GRYPE_CLEAN"
+assert_stmt "grype operational exit 3 (clean-shaped JSON)" grype "$mf" error false 0
+
+mf=$D/m; : >"$mf"
+child "$mf" 1 linux/amd64 3 "$GRYPE_FIND"
+child "$mf" 2 linux/arm64 0 "$GRYPE_CLEAN"
+assert_stmt "grype operational exit 3 (a report that lists a finding is not read as exit 2)" grype "$mf" error false 0
+
+mf=$D/m; : >"$mf"
+child "$mf" 1 linux/amd64 1 "$GRYPE_FIND"
+child "$mf" 2 linux/arm64 0 "$GRYPE_CLEAN"
+assert_stmt "grype operational exit 1 (a report that lists a finding is not read as exit 2)" grype "$mf" error false 0
+
 mf=$D/m; : >"$mf"
 child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN"
 child "$mf" 2 linux/arm64 137 "$GRYPE_CLEAN"

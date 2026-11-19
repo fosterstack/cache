@@ -366,7 +366,9 @@ def tally(root, vexidx, dirs):
                 if purl and not purl_ok(purl):
                     purl = None           # a package URL outside the verdict's grammar is dropped, never written (the finding still counts)
                 if s in FILTER_HERE and _gate.covered(vexidx[img], vid, (name.lower(), ver), typ=typ):
-                    covered_log.append({"image": img, "scanner": s, "id": vid, "package": name, "version": ver})
+                    covered_log.append({"image": img, "scanner": s, "id": vid, "package": name, "version": ver,
+                                        "severity": extra.get("severity"), "fixed_version": extra.get("fixed_version"),
+                                        "aliases": list(extra.get("aliases") or [])})
                     continue
                 key = key_of(img, vid, name, ver)
                 f = findings.setdefault(key, {"image": img, "id": vid, "package": name, "version": ver, "seen_by": [],

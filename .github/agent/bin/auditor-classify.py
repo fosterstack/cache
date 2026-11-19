@@ -25,8 +25,11 @@ SECT = {"false_positive": [5], "not_affected_unreachable": [2],
 TS = "2026-09-22T00:00:00-04:00"
 
 
+_CVE = re.compile(r"CVE-\d{4}-\d+")
+
+
 def canon(fid, aliases):
-    for a in [fid] + list(aliases):
+    for a in [fid] + sorted(aliases):
         if re.fullmatch(r"CVE-\d{4}-\d+", a):
             return a
     return fid
@@ -61,7 +64,8 @@ def gvc_verdict(gvc_path, ids, expected_module=None, usable=True):
         g = P.parse_govulncheck(gvc_path)
     except P.ParseError:
         return "no-evidence", {"reason": "unparseable govulncheck"}
-    present = [i for i in ids if i in g["by_osv"]]
+    # the stream names a finding by its GO- advisory; that advisory's own aliases carry the CVE and GHSA ids
+    present = sorted(i for i, e in g["by_osv"].items() if i in ids or set(e.get("aliases") or ()) & set(ids))
     if not present:
         return "no-evidence", {"reason": "no finding message for any id"}
     if g["scan_level"] != "symbol":
@@ -190,15 +194,30 @@ def manifest_findings(manifest):
 
     # Every record unions by its own id and aliases, so a reachability id (e.g. a Go advisory's own id)
     # stays attached to its CVE.
+    # An advisory that co-reports several distinct CVEs joins none of them: each CVE keeps its own group and the
+    # advisory is attached to each as lineage only (REQ-AUD-13 AC4, AC9).
+    cves = lambda f: sorted({a for a in f["aliases"] if _CVE.fullmatch(a)})
+    bundles = [f for f in allf if not _CVE.fullmatch(f["finding_id"]) and len(cves(f)) > 1]
+    bundle_ids = {f["finding_id"] for f in bundles}
+    is_bundle = {id(f) for f in bundles}
     for f in allf:
-        ids = [f["finding_id"]] + list(f["aliases"])
+        if id(f) in is_bundle:
+            continue
+        ids = [f["finding_id"]] + [a for a in f["aliases"] if a not in bundle_ids]
         for i in ids[1:]:
             _union(ids[0], i)
     comps = {}
     for f in allf:
+        if id(f) in is_bundle:
+            continue
         root = _find(f["finding_id"])
         g = comps.setdefault(root, {"aliases": set(), "findings": []})
         g["aliases"].update(f["aliases"]); g["aliases"].add(f["finding_id"]); g["findings"].append(f)
+    for f in bundles:
+        for cve in cves(f):
+            g = comps.setdefault(_find(cve), {"aliases": {cve}, "findings": []})
+            g["aliases"].update((cve, f["finding_id"]))
+            g["findings"].append(dict(f, _lineage_only=True))
     groups = {}
     for g in comps.values():
         cid = canon(sorted(g["aliases"])[0], g["aliases"])   # a CVE from the connected union

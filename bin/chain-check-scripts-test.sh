@@ -11,6 +11,7 @@ pass=0 failn=0
 command -v jq > /dev/null || { echo "FAIL jq is required"; exit 1; }
 ok()  { pass=$((pass + 1)); echo "ok   $1"; }
 bad() { failn=$((failn + 1)); echo "FAIL $1"; }
+skip() { if [ "${CI:-}" = true ] || [ "${GITHUB_ACTIONS:-}" = true ]; then bad "$1: skipped in CI, where Go must exist"; else ok "$1"; fi; }
 # AC15: the scan's `now`, given by a fake `date` first on PATH
 FAKE_NOW=$(jq -n '"2026-10-10T00:00:00Z" | fromdateiso8601'); export FAKE_NOW
 GDB_SUM=972de542534d3461cc3c3849a37a3f917b823de3b9c367e289db0d163519b42b
@@ -274,8 +275,16 @@ docs_root="$(cd "$(dirname "$0")/.." && pwd)"
 if ! grep -E '^\| (FIPS binaries|Binaries) .*(darwin|windows)' "$docs_root/README.md" > /dev/null 2>&1; then ok "PLAT-001-AC1 the README binary table lists no darwin or windows platform"; else bad "PLAT-001-AC1 the README binary table lists no darwin or windows platform"; fi
 if [ ! -f "$docs_root/docs/next-release-notes.md" ] || [ "$(grep -c 'No macOS or Windows binaries are shipped; use the container image' "$docs_root/docs/next-release-notes.md")" = 1 ]; then ok "PLAT-001-AC1 the next release's notes carry the Linux-only line once (or the release flow has moved it to the changelog)"; else bad "PLAT-001-AC1 the next release's notes carry the Linux-only line once (or the release flow has moved it to the changelog)"; fi
 mkdist "${FOUR[@]}"
-mkfake grype 1 120
-want_fail "AC4 a scanner reports findings: the script fails naming it" grype "${SCAN[@]}"
+# grype's own exit codes (probed on the pinned v0.118.0 with --fail-on negligible): 0 no findings, 2 findings at or above the threshold, 1 a runtime error
+# (an input it cannot resolve) and any other number the same: it did not run. osv-scanner reads differently (1 = findings, below).
+mkfake grype 2 120
+want_fail "AC4 a scanner reports findings (grype exit 2): the script fails with the findings message" "does not except" "${SCAN[@]}"
+for grc in 1 3; do
+  mkfake grype "$grc" 120
+  want_fail "AC4 grype exit $grc is a scan that did not run: the script fails with the could-not-run message" "could not run" "${SCAN[@]}"
+  if grep -Fq "does not except" <<< "$out"; then bad "AC4 grype exit $grc is not read as findings: the output must not say the VEX does not except them: ${out:0:140}"; else ok "AC4 grype exit $grc is not read as findings (no findings message)"; fi
+  if grep -Fq "(exit $grc)" <<< "$out"; then ok "AC4 grype exit $grc: the message names the exit code"; else bad "AC4 grype exit $grc: the could-not-run message names (exit $grc): ${out:0:140}"; fi
+done
 # REQ-REL-004-AC1 (owner rule, register rows 18 and 38: block at any severity, the published VEX the only exception): grype's own --fail-on negligible does not fail
 # on a finding of UNKNOWN severity, so the script judges grype's JSON result: any match that survived the VEX fails, whatever its severity, and a result with no
 # readable matches list is a scan that did not run.
@@ -1909,12 +1918,12 @@ mkdir -p "$work/realmod" && printf 'module example.com/a\n\ngo 1.27\n\nignore ./
 if ( cd "$work/realmod" && GOFLAGS= GOTOOLCHAIN=local go mod edit -json > "$work/real-ignore.json" ) 2> /dev/null && grep -q '"Ignore"' "$work/real-ignore.json"; then
   gvrun GV_GO_JSON="$work/real-ignore.json" GV_OUT=clean -- "${GVARGS[@]}"
   if [ "$rc" != 0 ] && [ "$rc" != 127 ] && ! grep -q '^govulncheck ' "$work/gvlog" && grep -q 'decoy' <<< "$out"; then ok "G the real go mod edit -json output with an ignore directive is refused, naming the path"; else bad "G real ignore output accepted: rc=$rc $out"; fi
-else ok "G (no Go on this machine writes the ignore field: the real-output case is skipped)"; fi
+else skip "G (no Go on this machine writes the ignore field: the real-output case is skipped)"; fi
 printf 'module example.com/a\n\ngo 1.27\n' > "$work/realmod/go.mod"
 if ( cd "$work/realmod" && GOFLAGS= GOTOOLCHAIN=local go mod edit -json > "$work/real-plain.json" ) 2> /dev/null && ! grep -q '"Ignore"' "$work/real-plain.json"; then
   gvrun GV_GO_JSON="$work/real-plain.json" GV_OUT=clean -- "${GVARGS[@]}"
   if [ "$rc" = 0 ]; then ok "G the real go mod edit -json output of a module without ignore passes"; else bad "G real plain output refused: rc=$rc $out"; fi
-else ok "G (no Go on this machine: the real plain-output case is skipped)"; fi
+else skip "G (no Go on this machine: the real plain-output case is skipped)"; fi
 # go mod edit -json that prints JSON which is not an object cannot say whether an ignore directive is there: refused (REQ-CHAIN-006-AC18), never read as "no ignore"
 for nj in '[]' 'null' '"x"' '5'; do
   printf '%s\n' "$nj" > "$work/nonobj.json"

@@ -1797,6 +1797,49 @@ if openssl genpkey -algorithm ed25519 -out "$sk/proto.pem" > /dev/null 2>&1; the
 else
   bad "S2 key search needs openssl genpkey (ed25519)"; bad "S2 key search needs openssl genpkey (ed25519)"; bad "S2 key search needs openssl genpkey (ed25519)"; bad "S2 key search needs openssl genpkey (ed25519)"
 fi
+# REQ-CHAIN-001-AC5: the default search roots (no arguments) are HOME, RUNNER_TEMP, /tmp and /dev/shm and never the repository checkout, even when it sits under HOME
+ws_run() { # ws_run HOME RT WORKSPACE: the real attempt with NO arguments, cwd the workspace, a clean environment; prints its transcript
+  rm -rf "$3/attempts"; mkdir -p "$3/attempts" "$2"
+  ( cd "$3" && env -i PATH="$PATH" HOME="$1" RUNNER_TEMP="$2" GITHUB_WORKSPACE="$3" bash -c "$(fn_of "$root/bin/chain-hostile-step.sh" attempt_read_sign_key); attempt_read_sign_key" > /dev/null 2>&1 ) || true
+  cat "$3/attempts/read_sign_key.txt" 2> /dev/null
+}
+# the probe folders sit in /var/tmp, outside every search root but the ones under test (a folder in /tmp is searched through /tmp); a stray key-shaped file
+# elsewhere in /tmp may add an unreadable-key line for ITS path, which ac5_keep drops, so the grade rests on the probe's own files
+ac5=$(mktemp -d -p /var/tmp chain-ac5.XXXXXX 2> /dev/null) || ac5=
+ac5_keep() { grep -v -e '^unreadable-key: ' -e '^pubkey-sha256: ' <<< "$1"; grep -e "^unreadable-key: $ac5/" -e "^pubkey-sha256: $ac5h1$" -e "^pubkey-sha256: $ac5h2$" <<< "$1" || true; }   # only the probe's own lines
+ac5h1=; ac5h2=
+if [ -n "$ac5" ] && openssl genpkey -algorithm ed25519 -out "$ac5/k1.pem" > /dev/null 2>&1 && openssl genpkey -algorithm ed25519 -out "$ac5/k2.pem" > /dev/null 2>&1; then
+  ac5h1=$(openssl pkey -in "$ac5/k1.pem" -pubout -outform DER 2> /dev/null | sha256sum | cut -d' ' -f1)
+  ac5h2=$(openssl pkey -in "$ac5/k2.pem" -pubout -outform DER 2> /dev/null | sha256sum | cut -d' ' -f1)
+  pk='PRIVATE'
+  # the workspace under HOME holds key-shaped text that is not a key; a real key sits elsewhere under HOME
+  wh="$ac5/home"; rm -rf "$wh"; wsp="$wh/work/cache/cache"; mkdir -p "$wsp/bin" "$wh/.ssh"
+  printf -- '-----BEGIN RSA %s KEY-----\nnot a key at all\n-----END RSA %s KEY-----\n' "$pk" "$pk" > "$wsp/bin/some-test-fixture.txt"
+  cp "$ac5/k1.pem" "$wh/.ssh/id_test"
+  st=$(ac5_keep "$(ws_run "$wh" "$wh/rt" "$wsp")")
+  if ! grep -q "^unreadable-key: $wsp/" <<< "$st"; then ok "001-AC5 key search: key-shaped text in the checkout, which sits under HOME, is not searched (no unreadable-key line naming it)"
+  else bad "001-AC5 key search: the workspace under HOME was searched: $(grep '^unreadable-key:' <<< "$st" | head -3 | tr '\n' '|')"; fi
+  if grep -qx "pubkey-sha256: $ac5h1" <<< "$st"; then ok "001-AC5 key search: a real private key elsewhere under HOME is still found and its public-key sha256 recorded"
+  else bad "001-AC5 key search: the real key under HOME was not recorded: $(head -c 300 <<< "$st" | tr '\n' '|')"; fi
+  printf '%s\nsearched: 42 files\npubkey-sha256: %s\n' "$KR" "$ac5h1" > "$work/ac5_key.txt"   # the header and the probe key's row, as key_other is built
+  mrc=0; cvx hostile-material --kind key --file "$work/ac5_key.txt" --policy "$work/keypol.json" || mrc=$?
+  if [ "$mrc" = 1 ] && grep -F -q "refused at runner" "$work/xerr"; then ok "001-AC5 hostile-material: that transcript (a found key that is not Sign's) is refused at runner, not an error"
+  else bad "001-AC5 hostile-material: wanted exit 1 'refused at runner', got exit $mrc: $(head -c 200 "$work/xerr" | tr '\n' ' ')"; fi
+  # a checkout that is not under HOME behaves the same
+  wh2="$ac5/home2"; wsp2="$ac5/ws2/cache"; mkdir -p "$wsp2/bin" "$wh2/.ssh"
+  cp "$wsp/bin/some-test-fixture.txt" "$wsp2/bin/"; cp "$ac5/k1.pem" "$wh2/.ssh/id_test"
+  st=$(ac5_keep "$(ws_run "$wh2" "$wh2/rt" "$wsp2")")
+  if ! grep -q "^unreadable-key: $wsp2/" <<< "$st" && grep -qx "pubkey-sha256: $ac5h1" <<< "$st"; then ok "001-AC5 key search: a checkout outside HOME gives the same result (real key found, checkout text not searched)"
+  else bad "001-AC5 key search: checkout outside HOME: $(head -c 300 <<< "$st" | tr '\n' '|')"; fi
+  # documented limit: a real key inside the checkout is not searched either
+  cp "$ac5/k2.pem" "$wsp/bin/inside.pem"
+  st=$(ac5_keep "$(ws_run "$wh" "$wh/rt" "$wsp")")
+  if ! grep -qx "pubkey-sha256: $ac5h2" <<< "$st" && grep -qx "pubkey-sha256: $ac5h1" <<< "$st"; then ok "001-AC5 key search: a real key inside the checkout is not searched (documented limit); the key under HOME still is"
+  else bad "001-AC5 key search: a key inside the checkout was recorded or the HOME key lost: $(head -c 300 <<< "$st" | tr '\n' '|')"; fi
+else
+  bad "001-AC5 default-roots key search needs openssl genpkey (ed25519)"; bad "001-AC5 default-roots key search needs openssl genpkey (ed25519)"; bad "001-AC5 default-roots key search needs openssl genpkey (ed25519)"; bad "001-AC5 default-roots key search needs openssl genpkey (ed25519)"; bad "001-AC5 default-roots key search needs openssl genpkey (ed25519)"
+fi
+[ -n "$ac5" ] && [ -d "$ac5" ] && rm -rf -- "$ac5"
 # the grader: an unreadable-key line is an ERROR (exit 2), never isolation, whatever else the transcript holds
 printf '%s\nsearched: 42 files\nunreadable-key: /home/runner/k.pem\n' "$KR" > "$work/key_unread.txt"
 printf '%s\nsearched: 42 files\npubkey-sha256: %s\nunreadable-key: /home/runner/k.pem\n' "$KR" "$H2" > "$work/key_unread2.txt"

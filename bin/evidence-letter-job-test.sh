@@ -281,6 +281,11 @@ case "$1 $2" in
   "release view")
     [ -z "$FAIL_VIEW" ] || { echo "HTTP 500: boom" >&2; echo "second line" >&2; exit 1; }
     echo "$LATEST" ;;
+  "release download")
+    d=; while [ $# -gt 0 ]; do [ "$1" = --dir ] && d=$2; shift; done
+    [ -z "$FAIL_DOWNLOAD" ] || { echo "HTTP 404: no asset release-key-manifest.json" >&2; exit 1; }
+    [ -d "$d" ] || { echo "no --dir" >&2; exit 1; }
+    if [ -e "$FIX/dl-manifest.json" ]; then cp "$FIX/dl-manifest.json" "$d/release-key-manifest.json"; else cp "$REPO_DIR/.github/policy/release-key-manifest.json" "$d/"; fi ;;
   "release upload")
     kind=letter; case "$4" in *.bundle) kind=bundle ;; esac
     if [ "$kind" = "$FAIL_UPLOAD" ]; then
@@ -349,7 +354,7 @@ def sandbox(tmp):
     env = dict(os.environ, PATH=bins + ":" + os.environ["PATH"], FIX=fix, LOG=os.path.join(tmp, "log"), GH_TOKEN="x",
                REAL_PYTHON=sys.executable, REAL_CHECKLIST="", REPO_DIR=repo, KEY_LINE=key_line,
                TLOG="[{}]", LATEST="v0.9.9", FAIL_UPLOAD="", FAIL_DELETE="", FAIL_VIEW="",
-               FAIL_VERIFY="", FAIL_VERIFY_AFTER="", RELEASE_KMS_KEY_REF="awskms:///stand-in-key",
+               FAIL_VERIFY="", FAIL_DOWNLOAD="", FAIL_VERIFY_AFTER="", RELEASE_KMS_KEY_REF="awskms:///stand-in-key",
                RUNNER_TEMP="/home/runner/work/_temp", AWS_ROLE_ARN="arn:aws:iam::821302803867:role/fosterstack-cache-release-signing", AWS_REGION="us-east-1")
     return fix, env
 
@@ -685,6 +690,31 @@ check("F2: the verify names no identity, issuer or ignored log",
 idx = lambda needle: next((i for i, l in enumerate(log) if needle in l), -1)
 check("F2: the order is manifest key, sign, verify, upload",
       0 <= idx("policy make") < idx("kms-sign") < idx("verify-blob") < idx("release upload"), log)
+# REQ-REL-015-AC10: the latest release is read, and its own manifest names the key the policy holds, BEFORE anything is signed
+dl_ = [l for l in log if l.startswith("gh release download")]
+check("AC10: the latest release's manifest is fetched with exactly gh release download TAG --repo REPO --pattern release-key-manifest.json --dir DIR",
+      len(dl_) == 1 and re.fullmatch(r"gh release download v0\.9\.9 --repo fosterstack/cache --pattern release-key-manifest\.json --dir \S+", dl_[0]) is not None, dl_)
+check("AC10: with equal keys the order is release view, manifest download, then sign, verify and upload",
+      p.returncode == 0 and 0 <= idx("gh release view") < idx("gh release download") < idx("kms-sign") < idx("verify-blob") < idx("gh release upload"), (p.stderr, log))
+
+
+def other_key_manifest(fix, env):      # the release's own manifest names another key than the policy of main
+    k = os.path.join(os.path.dirname(env["REPO_DIR"]), "other-ec.key")
+    openssl("genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", k)
+    m = json.load(open(os.path.join(env["REPO_DIR"], ".github/policy/release-key-manifest.json")))
+    m["public_key"] = openssl("pkey", "-in", k, "-pubout").decode()
+    json.dump(m, open(os.path.join(fix, "dl-manifest.json"), "w"))
+
+
+pdk, ldk, updk, _l = publish(edit=other_key_manifest)
+check("AC10: a release whose manifest names another key refuses in one line starting evidence-letter-publish: and saying so; no kms-sign call, no Rekor entry, no upload",
+      pdk.returncode == 1 and one_line(pdk) and pdk.stderr.startswith("evidence-letter-publish:") and "manifest" in pdk.stderr and "key" in pdk.stderr and updk == []
+      and any(x.startswith("gh release download") for x in ldk)
+      and not any("kms-sign" in x or "Rekor" in x or "release upload" in x for x in ldk), (pdk.returncode, pdk.stderr, ldk))
+pdf, ldf, updf, _l = publish(FAIL_DOWNLOAD="1")
+check("AC10: a manifest that cannot be fetched refuses in one line starting evidence-letter-publish:, before anything is signed or uploaded",
+      pdf.returncode == 1 and one_line(pdf) and pdf.stderr.startswith("evidence-letter-publish:") and updf == []
+      and any(x.startswith("gh release download") for x in ldf) and not any("kms-sign" in x or "Rekor" in x or "release upload" in x for x in ldf), (pdf.returncode, pdf.stderr, ldf))
 signed = [l.split()[-1] for l in log if l.startswith("signed-sha256:")]
 sent = [l.split()[-1] for l in log if l.startswith("uploaded-sha256 letter:")]
 check("F-bytes: the letter uploaded is the exact bytes that were signed, so nothing edits it after signing",

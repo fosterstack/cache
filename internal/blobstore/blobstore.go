@@ -20,6 +20,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 	"syscall"
 )
 
@@ -91,6 +92,10 @@ var (
 type Store struct {
 	root   *os.Root
 	rootAt string // for diagnostics only; never used to build paths directly
+	// dirMu orders a Put's directory creation and rename (read side) against
+	// Delete's removal of the directories it emptied (write side), so a Put
+	// never renames into a directory removed after it was made.
+	dirMu sync.RWMutex
 }
 
 // New creates (if necessary) and returns a Store rooted at dir.
@@ -158,9 +163,6 @@ func (s *Store) Put(key string, r io.Reader) (int64, error) {
 		return 0, err
 	}
 	dir := path.Dir(dest)
-	if err := s.root.MkdirAll(dir, dirPerm); err != nil {
-		return 0, fmt.Errorf("blobstore: create dir: %w", err)
-	}
 
 	if err := s.root.MkdirAll(tempDirName, dirPerm); err != nil {
 		return 0, fmt.Errorf("blobstore: create temp dir: %w", err)
@@ -193,6 +195,11 @@ func (s *Store) Put(key string, r io.Reader) (int64, error) {
 	}
 	if err := fileClose(tmp); err != nil {
 		return 0, fmt.Errorf("blobstore: close temp file: %w", err)
+	}
+	s.dirMu.RLock()
+	defer s.dirMu.RUnlock()
+	if err := s.root.MkdirAll(dir, dirPerm); err != nil {
+		return 0, fmt.Errorf("blobstore: create dir: %w", err)
 	}
 	if err := s.root.Rename(tmpRel, dest); err != nil {
 		return 0, fmt.Errorf("blobstore: rename: %w", err)
@@ -285,7 +292,25 @@ func (s *Store) Delete(key string) error {
 	if err := s.root.Remove(rel); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("blobstore: remove: %w", err)
 	}
+	s.removeEmptyDirs(path.Dir(rel))
 	return nil
+}
+
+// removeEmptyDirs removes dir and then each parent that is left empty, up to
+// but not including the store root, and stops at the first one that is not an
+// empty directory. Keys from a Maven build cache carry a new directory per
+// build, so without this an evicted key leaves its directories behind, outside
+// the size cap. Only a directory is removed: another key's blob can sit where
+// this key's directory would go.
+func (s *Store) removeEmptyDirs(dir string) {
+	s.dirMu.Lock()
+	defer s.dirMu.Unlock()
+	for ; dir != "."; dir = path.Dir(dir) {
+		info, err := s.root.Lstat(dir)
+		if err != nil || !info.IsDir() || s.root.Remove(dir) != nil {
+			return
+		}
+	}
 }
 
 // Root returns the store's root directory path (for diagnostics/tests).

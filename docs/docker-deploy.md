@@ -128,7 +128,9 @@ to be writable by uid 65532; see the mount note above, and
 This is the production shape, and it is authenticated on purpose: it
 publishes on every interface so CI runners can reach it, and a cache that
 untrusted parties can write to can feed bytes into your builds — so the
-port never opens beyond loopback without the credential.
+port never opens beyond loopback without the credential. It also serves
+HTTPS, because over plain HTTP anyone on the network path reads the password
+from every request and can then write to your cache.
 
 ```yaml
 services:
@@ -139,7 +141,10 @@ services:
       - "8080:8080"                    # all interfaces — which is why auth is on
     volumes:
       - fscache-data:/home/nonroot     # see "The one command" for why this path
+      - /etc/fscache/tls:/etc/fscache/tls:ro   # your certificate and key
     environment:
+      FSCACHE_TLS_CERT: /etc/fscache/tls/tls.crt
+      FSCACHE_TLS_KEY: /etc/fscache/tls/tls.key
       FSCACHE_MAX_BYTES: "53687091200"   # 50 GiB — size to your CI volume
       FSCACHE_USERNAME: gradle
       FSCACHE_PASSWORD: change-me        # generate one: openssl rand -base64 24
@@ -155,7 +160,7 @@ A container-internal `HEALTHCHECK: [...]` directive would have nothing
 valid to execute. Probe `/healthz` from *outside* the container instead —
 your container platform's own HTTP healthcheck (Kubernetes `livenessProbe` with
 `httpGet`, an external monitoring check, or `curl -f
-http://localhost:8080/healthz` from the host/CI runner). This is a direct
+https://HOST:8080/healthz` from the host/CI runner). This is a direct
 consequence of the minimal-image design; see
 [the images have no shell](verify-images.md#the-images-have-no-shell).
 
