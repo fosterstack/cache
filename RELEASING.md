@@ -9,8 +9,8 @@ laptop cannot forge a release that GitHub's own runners never built).
 
 ## Pipeline (`.github/workflows/release.yml`)
 
-From v0.3.0 the release is five stages, each one reusable workflow file with its <!-- pinned: historical -->
-own job, on a fresh GitHub-hosted runner (Sign is called three times: for Build's, Rebuild's and Check's
+From v0.3.0 the release is five stages in one workflow file, each made of its <!-- pinned: historical -->
+own jobs, each on a fresh GitHub-hosted runner (Sign is three jobs: for Build's, Rebuild's and Check's
 records). The jobs that build or run workloads (Build, Rebuild and Check)
 hold no signing identity; the Sign stage signs their Witness records:
 
@@ -27,7 +27,7 @@ digest the exact bytes Build made and Rebuild and Check judged, and never
 rebuilds. Of the jobs above, Release is the only one that holds a registry credential or
 `packages: write`.
 
-- **Build** (`stage-build.yml`): admits the tagged commit (tag signature,
+- **Build** (`build-freeze`, `build-apk`, `build-assemble`): admits the tagged commit (tag signature,
   ancestry of `main`, required checks, approved requirements baseline), builds
   the apks on two native runners (amd64 and arm64) and assembles the images
   and archives. Witness (pinned by checksum, set up first) wraps every
@@ -39,16 +39,16 @@ rebuilds. Of the jobs above, Release is the only one that holds a registry crede
   and the committed VEX file: the platform manifests plus one VEX attestation
   child per platform. The final index's digest is the one that is signed,
   attested, tested and promoted.
-- **Sign** (`stage-sign.yml`): its own job and workflow file; it never runs
-  code from the build. It receives Build's records and the artifacts they name,
+- **Sign** (`sign`, `sign-rebuild`, `sign-check`): its own jobs, in the `sign`
+  environment; it never runs code from the build. It receives Build's records and the artifacts they name,
   checks each record against them, signs the records with the release
-  key (the KMS key), and writes and signs the SLSA provenance. A second call of the same
-  file signs Rebuild's records; it receives no Rebuild apk or image. A third call
+  key (the KMS key), and writes and signs the SLSA provenance. The second job
+  signs Rebuild's records; it receives no Rebuild apk or image. The third job
   signs Check's records; it receives only those records and the results they name.
-- **Rebuild** (`stage-reproducibility.yml`): builds the same commit on fresh
+- **Rebuild** (`rebuild-apk`, `rebuild-assemble`): builds the same commit on fresh
   machines and compares every item with Build's; any difference blocks the
   release. Its records are signed by the Sign stage, not by Rebuild.
-- **Check** (`stage-verify.yml`): runs every scanner of
+- **Check** (`check-govulncheck`, `check`): runs every scanner of
   [`.github/policy/scanners.json`](.github/policy/scanners.json), the Gradle
   and Maven suites, the no-phone-home and Kubernetes suites, the FIPS check
   and the customer-guide commands against the exact candidate digests, as
@@ -79,8 +79,8 @@ rebuilds. Of the jobs above, Release is the only one that holds a registry crede
 
 Releases before v0.3.0 were built by the earlier eight-stage chain (source <!-- pinned: historical -->
 admission, build, image assembly, reproducibility, scans and acceptance,
-release authorization, promotion); the image signer of those releases is
-`stage-promote.yml` too.
+release authorization, promotion); the image signer of those releases was that
+chain's promotion workflow, which the v0.3.0 chain replaced.
 
 ## Cutting a release
 
@@ -93,6 +93,20 @@ release, once the key exists, a person commits its public half as
 `cosign public-key --key awskms:///alias/fosterstack-release-signing`).
 
 The release APKs are signed with the same key. Until the public half is committed, the placeholder stays and the APK signing step refuses every release.
+
+Before you push the release candidate tag (`vX.Y.Z-rcN`), run the full suite,
+the CodeQL analysis and the scan on the commit you will tag, and wait until all
+three are green:
+
+```sh
+for wf in full-suite.yml codeql.yml scan.yml; do
+  gh workflow run "$wf" --ref <branch whose head is that commit>
+done
+```
+
+Admission refuses the release candidate tag unless each of those runs, made by
+a dispatch or a schedule on that exact commit, is green. The release workflow
+does not start them for you.
 
 ```sh
 git tag -s -m "..." vX.Y.Z
@@ -107,11 +121,11 @@ release path.
 
 From v0.3.0, with every file below made by the Release stage from what Build <!-- pinned: historical -->
 made (nothing is rebuilt). The images and the release files are signed with
-the release signing key, a key held in a cloud key service that the Release job
-reaches with short-lived credentials, each with an entry in Rekor. Sign's
+the release signing key, a key held in a cloud key service that the Sign jobs
+reach with short-lived credentials, each with an entry in Rekor. Sign's
 records and provenance are signed with the same key through the cloud key
-service (entry in Rekor). The apks are signed in Release's `release-apks` step with
-the same key; no apk key is stored anywhere:
+service (entry in Rekor). The apks are signed by `sign-check` with
+the same key, and Release's `release-apks` step attaches the signatures; no apk key is stored anywhere:
 
 - Two image variants, `production` and `-fips`, each a `linux/amd64` +
   `linux/arm64` index holding the `fscache` binary and a few packages (base layout and
@@ -122,8 +136,8 @@ the same key; no apk key is stored anywhere:
   only when the release is the highest released version. Releases before
   v0.3.0 also had a `-debug` variant; v0.3.0 and later do not. <!-- pinned: historical -->
 - Per image: a cosign signature by digest in both registries, made with the
-  release signing key by the Release stage. Sign's SLSA provenance, signed under
-  `stage-sign.yml`, is verified by Release before anything is published.
+  release signing key by the Sign stage (`sign-check`) and pushed by the Release stage. Sign's SLSA provenance, signed by the
+  `sign` job, is verified by Release before anything is published.
 - The apks of both architectures, re-signed with the release key and attached
   as `<arch>-<name>` (both architectures carry the same file names).
 - The Linux archives with `checksums.txt` and its bundle
@@ -223,7 +237,7 @@ a file that anyone could have written.
 | `checksums.txt`, `release-files.sha256`, SBOMs, lock files, vendor evidence, dependency list, release policy | cosign `sign-blob` bundle each, with the release signing key | its own bundle |
 | `release-manifest.json`, OpenVEX, CSAF, Inspector filters | via the signed `release-files.sha256` | `release-files.sha256` |
 | apks | the release key, inside the file | the apk signature |
-| Witness records | Witness envelope, signed with the KMS key; its Rekor entry is recorded | Build's, Rebuild's and Check's: `stage-sign.yml` at the tag; Release's: the Release stage (`stage-promote.yml`) |
+| Witness records | Witness envelope, signed with the KMS key; its Rekor entry is recorded | Build's, Rebuild's and Check's: the Sign jobs at the tag; Release's own six steps: a throwaway key (no release-key signature) |
 
 ### VEX statements
 

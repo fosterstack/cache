@@ -2282,7 +2282,7 @@ requirements:
       - id: REQ-CI-007-AC1
         given: "every workflow file"
         when: "bin/workflow-consolidation-test.sh judges them"
-        then: "full-suite.yml triggers only on a schedule and workflow_dispatch (acceptance.yml's own trigger is REQ-REL-014-AC1's); scan.yml triggers on pull_request, push (main and tags v*), one schedule and workflow_dispatch and still cannot be called (REQ-SCAN-015); codeql.yml keeps its triggers and adds workflow_dispatch"
+        then: "full-suite.yml triggers only on a schedule and workflow_dispatch (acceptance.yml's own trigger is REQ-REL-014-AC1's); scan.yml triggers on pull_request, push (main and tags v*), one schedule and workflow_dispatch and still cannot be called (REQ-SCAN-015); its job reproducibility runs on push, schedule and workflow_dispatch and never on pull_request, so a schedule or dispatch run of it exists for a release-candidate tag, and it is not skipped on a schedule run; codeql.yml keeps its triggers and adds workflow_dispatch"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-CI-007-AC2
@@ -2322,7 +2322,7 @@ requirements:
         then: >-
           each reads required-checks.json and release-only-checks.json on its own, and refuses unless that file is an object whose required_checks is a non-empty array;
           a missing, empty, null or malformed file never lowers the requirement, whatever the other file holds;
-          the requirement is the two lists together
+          the requirement is the two lists together, and no context is in both files (auditor-review-gate is in release-only-checks.json only, since docs/ratify/2026-11-12-cache-required-checks-trimmed-by-hand.md:11)
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-013-AC2

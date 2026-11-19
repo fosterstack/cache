@@ -36,19 +36,21 @@ that the bytes are unchanged. It says nothing more.
 
 ```sh
 # The public image signature is made with the FosterStack release key by
-# the Release stage. Fetch the release public key from the release tag and
+# the Sign stage (the sign-check job of release.yml). Fetch the release public key from the release tag and
 # check the image against it.
 curl -fsSLO "https://raw.githubusercontent.com/fosterstack/cache/v${VER}/build/keys/release.rsa.pub"
 cosign verify --key release.rsa.pub ghcr.io/fosterstack/cache:${VER}
 ```
 
-The release key lives in a cloud key service and never leaves it. The
-Release stage can ask the service to sign, but nothing in the workflow can
-read the key. Each signature is also recorded in Rekor, a public
+The release key lives in a cloud key service and never leaves it. Only the
+Sign jobs of `release.yml` can ask the service to sign, and nothing in the
+workflow can read the key. The Release stage holds no key: it pushes the
+signatures the Sign stage made, after checking each against the public key.
+Each signature is also recorded in Rekor, a public
 transparency log.
 
 A release before v0.3.0 carries a short-lived certificate instead of a key. <!-- pinned: historical -->
-Verify it against the exact identity of the signing workflow, tied to the
+The command below is for v0.2.x. Verify it against the exact identity of the signing workflow, tied to the
 release tag, and not against "any workflow in this repo":
 
 ```sh
@@ -57,9 +59,10 @@ cosign verify ghcr.io/fosterstack/cache:${VER} \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
 ```
 
-The signing workflow depends on the release. The releases of the earlier chain <!-- pinned: historical -->
-were signed by `stage-promote.yml` (the one in the command above). The earliest release
-was signed by the old `release.yml`. For that release, use
+The signing workflow depends on the release. The v0.2.x releases of the earlier chain <!-- pinned: historical -->
+were signed by `stage-promote.yml` (the one in the command above), a workflow file
+that exists in those releases' tags and not in v0.3.0 and later. The earliest release,
+v0.1.0, was signed by the old `release.yml`. For that release, use
 `--certificate-identity-regexp='^https://github.com/fosterstack/cache/.github/workflows/release.yml@'` instead. <!-- pinned: historical -->
 
 Sigstore's Fulcio (its certificate service) issued that certificate from a
@@ -74,7 +77,7 @@ which workflow file and which run. That is more than a signature over the
 artifact. A valid signature with no provenance tells you who signed, but not
 how the thing was built.
 
-From v0.3.0 the Sign stage (`stage-sign.yml`) writes and signs the provenance. <!-- pinned: historical -->
+From v0.3.0 the Sign stage (the `sign` job of `release.yml`) writes and signs the provenance. <!-- pinned: historical -->
 It signs with the release key, through the cloud key service (the `kms-sign` step).
 The Release stage verifies the provenance before anything is published.
 
@@ -111,8 +114,8 @@ Witness records (Witness is the tool that records what each job did):
 - Check: the `scanners`, `acceptance` and `runtime` collections of each of the two runners, attached as `ubuntu-24.04-scanners-collection.json`, `ubuntu-24.04-arm-scanners-collection.json` and so on
 
 The jobs that build or run workloads hold no signing identity. The Sign stage
-(`stage-sign.yml` at the release tag) signs Build's, Rebuild's and Check's
-records with the KMS key (the key in the cloud key service).
+(the `sign`, `sign-rebuild` and `sign-check` jobs of `release.yml` at the release tag)
+signs Build's, Rebuild's and Check's records with the KMS key (the key in the cloud key service).
 
 Two signed lists cover the other release files. The signed `release-files.sha256`
 covers `release-manifest.json`, the OpenVEX file, the CSAF file and the
@@ -126,8 +129,9 @@ cosign verify-blob --key release.rsa.pub --bundle release-files.sha256.bundle re
 
 ### The signed evidence files
 
-Besides the images, the Release stage's `release-sign` step signs each of the
-files below with the release key (the same key as the images). Each signature
+Besides the images, the Sign stage (the `sign-check` job) signs each of the
+files below with the release key (the same key as the images); the Release stage
+checks each signature and attaches it. Each signature
 has a Rekor entry, and the release carries each file with its bundle:
 
 - `<variant>.sbom.json` and `<variant>.full.lock.json`, for `production` and `fips`
@@ -145,8 +149,8 @@ To verify one, use the release public key `release.rsa.pub` that you fetched in
 section 1: `cosign verify-blob --key release.rsa.pub
 --bundle NAME.bundle FILE`.
 
-The Witness records themselves are the `*-collection.json` files. `stage-sign.yml`
-signs Build's, Rebuild's and Check's. They are extra evidence that anyone with
+The Witness records themselves are the `*-collection.json` files. The Sign jobs of
+`release.yml` sign Build's, Rebuild's and Check's. They are extra evidence that anyone with
 Witness can check. The release guide,
 [`docs/verify-release.md`](verify-release.md), does not cover them.
 [`RELEASING.md`](../RELEASING.md) describes the stages that make them.
@@ -154,7 +158,7 @@ Witness can check. The release guide,
 ### The release manifest
 
 **Verifying the release manifest.** Before the GitHub release is published, the
-promotion workflow attaches the release manifest to each public image digest
+Release stage attaches the release manifest to each public image digest
 (production and `-fips`; releases before v0.3.0 also `-debug`). <!-- pinned: historical -->
 It attaches the manifest as a cosign attestation (predicate type
 `https://fosterstack.com/attestations/release-manifest/v1`), signed with the
@@ -164,7 +168,7 @@ authoritative, and to the Docker Hub mirror, on a best-effort basis.
 
 The attestation exists from v0.2.1 on. v0.1.0 has none, so the command below fails there. <!-- pinned: historical -->
 v0.3.0 and later attach it too, signed with our release key. <!-- pinned: historical -->
-`release-manifest.json` is also a release file, covered by the signed `release-files.sha256`.
+The Sign stage made that signature, with the release key. `release-manifest.json` is also a release file, covered by the signed `release-files.sha256`.
 
 The `release-manifest.json` on the release page has the same content. It has
 no separate signature file, and `gh attestation verify <file>` does not apply
@@ -178,7 +182,7 @@ cosign verify-attestation --key release.rsa.pub \
 ```
 
 `release.rsa.pub` is the release public key that you fetched in section 1. For a
-release before v0.3.0, whose attestation carries a certificate, replace <!-- pinned: historical -->
+v0.2.x release, whose attestation carries a certificate made for `stage-promote.yml`, replace <!-- pinned: historical -->
 `--key release.rsa.pub` with `--certificate-identity
 "https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}"
 --certificate-oidc-issuer https://token.actions.githubusercontent.com`.
@@ -225,7 +229,9 @@ any free Docker account or pull from GHCR.
 ### Releases before v0.3.0 <!-- pinned: historical -->
 
 The rest of this section, and the `-debug` image in section 3, describe the
-earlier eight-stage chain. It signed one predicate (a signed statement) per
+earlier eight-stage chain, releases v0.2.x. Its stages were the `stage-*.yml`
+workflow files in those releases' tags; v0.3.0 and later have no such files, and
+`release.yml` signs everything. It signed one predicate (a signed statement) per
 stage on the image digest.
 
 Every stage of the release chain signs its own statement about the exact
@@ -437,8 +443,8 @@ spec:
 
 This policy is for v0.3.0 and later, whose images are signed with the release key. <!-- pinned: historical -->
 A release before v0.3.0 carries a certificate. <!-- pinned: historical -->
-For those releases, use a certificate attestor with the
-signing workflow's identity and the issuer
+For v0.2.x, use a certificate attestor with the identity of
+`stage-promote.yml` at the release tag and the issuer
 `https://token.actions.githubusercontent.com` instead.
 
 This is a starting point, not a turnkey compliance artifact. Review it against
