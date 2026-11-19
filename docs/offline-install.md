@@ -121,10 +121,12 @@ There is no disconnected-specific install procedure.
 ```sh
 # Docker
 docker load -i fscache-X.Y.Z.tar
-docker run -d -p 8080:8080 -v fscache-data:/home/nonroot ghcr.io/fosterstack/cache:X.Y.Z
+docker run -d -p 127.0.0.1:8080:8080 -v fscache-data:/home/nonroot ghcr.io/fosterstack/cache:X.Y.Z
 
 # containerd/nerdctl or podman: same idea, their own `load` equivalent
 ```
+
+The port is open to this machine only. To serve other machines, set `FSCACHE_USERNAME` and `FSCACHE_PASSWORD`: see [docker-deploy.md](docker-deploy.md).
 
 See [One-command Docker deploy](docker-deploy.md) for why the volume mounts
 where it does, and for the compose form.

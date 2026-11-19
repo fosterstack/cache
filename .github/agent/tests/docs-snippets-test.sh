@@ -171,7 +171,7 @@ ok(all(c in rel_cmds for c in cnr_cos), "%s: every cosign command of the cannot-
 # verify-key.md; no other such line; and the fenced text of each file is the text it had before the pointer (a hash), so no command changed.
 import hashlib
 POINTER = re.compile(r"\]\((?:\./|docs/)?verify-key\.md(#[^)]*)?\)")
-for var, steps, digest in (("INSTALL_DOC", 1, "8693fd7ace7dc0be"), ("OFFLINE_DOC", 1, "34fb5a1b3891b96c"), ("VEX_DOC", 1, "78465f536ebd9e2d")):
+for var, steps, digest in (("INSTALL_DOC", 1, "6b6b650e5b71a45d"), ("OFFLINE_DOC", 1, "c75993fe0923fc77"), ("VEX_DOC", 1, "78465f536ebd9e2d")):
     path = os.environ[var]
     text = open(path).read()
     lines = text.split("\n")

@@ -88,9 +88,11 @@ curl -fsSLO "https://github.com/fosterstack/cache/releases/download/v${VERSION}/
 tar xzf "${BIN}_${VERSION}_${PLATFORM}.tar.gz"
 sudo install -m 0755 "${BIN}" "/usr/local/bin/${BIN}"
 
-"${BIN}" &                                   # starts on :8080 by default
+FSCACHE_ADDR=127.0.0.1:8080 "${BIN}" &       # listens on this machine only
 curl -fsS localhost:8080/healthz             # -> ok
 ```
+
+To serve other machines, set `FSCACHE_USERNAME` and `FSCACHE_PASSWORD` first: see [docker-deploy.md](docker-deploy.md).
 
 `BIN` carries through the shell commands in this section and the next one, "Verify what
 you downloaded"; the systemd unit names its binary itself, so for the FIPS build you
@@ -126,7 +128,7 @@ The signature proves that we signed the checksums file with our release key. The
 
 To check that this key is the one the release names, follow [Check the release key](verify-key.md).
 
-Releases v0.2.x carry a short-lived certificate instead of a key, made for the `stage-promote.yml` workflow at the release tag: <!-- pinned: historical -->
+Releases before v0.3.0 carry a short-lived certificate instead of a key. For v0.2.x it names the `stage-promote.yml` workflow at the release tag (for v0.1.0, see [Verify our images](verify-images.md)): <!-- pinned: historical -->
 
 ```sh
 cosign verify-blob \
@@ -154,7 +156,7 @@ After=network.target
 [Service]
 # fscache-fips for the FIPS build: must match what you installed
 ExecStart=/usr/local/bin/fscache
-Environment=FSCACHE_ADDR=:8080
+Environment=FSCACHE_ADDR=127.0.0.1:8080
 Environment=FSCACHE_DATA_DIR=/var/lib/fscache
 Environment=FSCACHE_MAX_BYTES=53687091200
 DynamicUser=yes
