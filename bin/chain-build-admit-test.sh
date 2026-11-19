@@ -783,6 +783,7 @@ for t in v0.3.1 v0.3.12; do
       "AC7 patch tag $t -> exit $RC, first line '$(head -1 "$W/c/err")', record reads $(audit_calls)"
 done
 fresh; sig_tag v0.3.0; run_admit AUDIT_MODE=good GITHUB_REF_NAME=v0.3.0
+expect_refuse "AC7 v0.3.0 is not a patch tag: with a good record and no approval line it is refused at audit-approval" audit-approval Audit-approved
 fresh; sig_tag v0.3.1 "$APPROVAL"; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
 [ "$(audit_calls)" = 0 ] && ok "AC7 a patch tag with an approval line anyway still reads no record" || bad "AC7 a patch tag read the record"
 # order: after the on-main check, before the required checks
