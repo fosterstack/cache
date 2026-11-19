@@ -295,6 +295,11 @@ jobs:
           fi
           echo "VEX tripwire: golang-jwt absent from go.sum, as the published statement asserts."
 
+      - name: >-
+          no wait for new versions — no text of it, Dependabot proposes at once, the pin-age context stays,
+          no job holds actions write (REQ-SUP-001 AC30, AC32, AC33)
+        run: bash .github/agent/tests/release-age-gone-test.sh
+
   # REQ-CHAIN-001-AC6, "whose CI verifies" (slice 4b-6). On a pull request that commits .github/policy/rc-proof.json this job requires the change to
   # be exactly the marker and the removal of the one KR-CUTOVER entry of test-evidence/known-red.json, and verifies the run the marker names with the verifier of the BASE
   # checkout (bin/marker-pr-gate.py runs `chain-verify.py rc-proof` on the run's artifacts). Any other pull request passes it without a read. Three read permissions, no
