@@ -194,7 +194,7 @@ _BLOBS = {}  # blob id -> text: a history scan reads each distinct file version 
 
 def _wanted(n, agent=True):
     return not n.startswith(("vendor/", ".github/agent/tests/")) and (any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS)
-        or n == "bin/install-scanner.sh" or n == PERSONA_TOOLS or n == KERNEL_LOCK or re.search(r"(^|/)action\.ya?ml$",
+        or n == "bin/install-scanner.sh" or n == PERSONA_TOOLS or n == KERNEL_LOCK or n in GOVULN_FILES or re.search(r"(^|/)action\.ya?ml$",
         n)
             or (n.endswith(".sh") and (agent or not n.startswith(".github/agent/")))
             or n.rsplit("/", 1)[-1] in VERSION_FILES
@@ -293,6 +293,8 @@ r"(?::[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}")
 # (REQ-SUP-001-AC2)
 PERSONA_TOOLS = "bin/persona-uat-tools.json"
 KERNEL_LOCK = "build/locks/vm-kernel.lock"
+GOVULN_MOD = "tools/govulncheck/go.mod"     # the installed govulncheck: its `tool` line and require pin, and go.sum's hashes
+GOVULN_FILES = (GOVULN_MOD, "tools/govulncheck/go.sum")
 _PLAIN_FILES = (PERSONA_TOOLS, KERNEL_LOCK)
 KERNEL_ROWS_MAX = 500
 
@@ -1093,6 +1095,31 @@ def _req_sums(text):
     return out
 
 
+def _go_mod_tool_items(text):
+    """One gotool item per `tool` directive: the package path, at the version of the module that holds it."""
+    tools, mods, block = [], {}, None
+    for ln in text.split("\n"):
+        words = ln.split("//", 1)[0].split()
+        if block:
+            if words == [")"]:
+                block = None
+            elif block == "tool" and len(words) == 1:
+                tools.append(words[0])
+            elif block == "require" and len(words) == 2:
+                mods[words[0]] = words[1]
+        elif len(words) == 2 and words[1] == "(" and words[0] in ("tool", "require"):
+            block = words[0]
+        elif len(words) == 2 and words[0] == "tool":
+            tools.append(words[1])
+        elif len(words) == 3 and words[0] == "require":
+            mods[words[1]] = words[2]
+    out = []
+    for t in tools:
+        mod = max((m for m in mods if t == m or t.startswith(m + "/")), key=len, default=None)
+        out.append(Item("gotool", t, mods[mod] if mod else "(unversioned)"))
+    return out
+
+
 def _file_found(path, text):
     """The items one file yields (before the tree-wide de-duplication of inventory()). A function of the path and the
     text, and of the local
@@ -1139,7 +1166,9 @@ def _file_found(path, text):
         found = _persona_tool_items(path, text)
     elif path == KERNEL_LOCK:
         found = _kernel_lock_items(path, text)
-    elif path.rsplit("/", 1)[-1] in VERSION_FILES or (re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1])
+    elif path == GOVULN_MOD:
+        found = _go_mod_tool_items(text)
+    elif path.rsplit("/", 1)[-1] in VERSION_FILES or path in GOVULN_FILES or (re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1])
             and not path.startswith(".github/workflows/") and not path.endswith((".sh", ".yml", ".yaml", ".py"))):
         found = [Item("tool", "file:" + path, "(file)")]
         # a version file or a checksum file: its content is the identity (a replaced asset behind the same URL moves the

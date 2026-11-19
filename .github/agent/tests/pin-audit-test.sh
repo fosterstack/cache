@@ -1413,7 +1413,20 @@ def run(mod, r, skip=()):
     return dump({k: i for k, i in d.items() if k not in skip})
 want = {r: run(parent, r) for r in revs}
 inv._MEMO_ON[0] = False
-plain = {r: run(inv, r, lock_keys(r)) for r in revs}
+GV_FILES = ("tools/govulncheck/go.mod", "tools/govulncheck/go.sum")
+def gv_keys(r):      # the items the Go tool module of that revision adds (its tool directives and its go.sum): the memo-time oracle predates them
+    out = set()
+    for f in GV_FILES:
+        p = subprocess.run(["git", "-C", root, "show", r + ":" + f], capture_output=True)
+        if p.returncode != 0:
+            continue                          # no such file at this revision: nothing the oracle cannot see
+        try:
+            out |= set(inv.inventory({f: p.stdout.decode("utf-8")}))
+        except inv.Unparseable:
+            pass                              # a reader that does not know the file yet names no keys
+    return out
+skipkeys = lambda r: lock_keys(r) | gv_keys(r)
+plain = {r: run(inv, r, skipkeys(r)) for r in revs}
 def same_but_go_tools(a, b):      # a go install version is now the whole word after @: the one reading that changed since the memo was added
     if a == b:
         return True
@@ -1425,7 +1438,7 @@ for r in revs:
     assert same_but_go_tools(want[r], plain[r]), r
 inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
 for r in revs + list(reversed(revs)):
-    assert run(inv, r, lock_keys(r)) == plain[r], r
+    assert run(inv, r, skipkeys(r)) == plain[r], r
 PY
 
 CASE="no vendor or model name anywhere in the checks (the daily check is plain code, no AI; this repo is public)"
@@ -2586,6 +2599,132 @@ git -C "$work/r-go-mix" add -A; git -C "$work/r-go-mix" -c user.name=t -c user.e
 run go-mix "$CLEAN" "$work/r-go-mix"
 CASE="AC34: one unpinned and one pinned go install in one tree: exit 1, only the unpinned module path (example.com/loose) is named, no issue call"
 check test "$rc" -eq 1; check bash -c "grep -v '^  gotool:' '$work/go-mix.out' | grep -q 'example\.com/loose'"; check bash -c "! grep -v '^  gotool:' '$work/go-mix.out' | grep -q 'example\.com/tight'"; check no_issue_call go-mix
+
+# --- the Go tool module (tools/govulncheck/go.mod): its `tool` directives are gotool items versioned by the module's require line; its go.sum moves the inventory ---
+GVMOD=$'module fosterstack.com/cache/tools/govulncheck\n\ngo 1.27.2\n\ntool golang.org/x/vuln/cmd/govulncheck\n\nrequire (\n\tgolang.org/x/mod v0.39.0 // indirect\n\tgolang.org/x/vuln v1.7.0 // indirect\n)\n'
+GVITEM="gotool:golang.org/x/vuln/cmd/govulncheck@v1.7.0"
+CASE="go tool module: a tool directive is one gotool item named by the package path and versioned by the require line of the module that holds it; a tool block, a one-line require and the longest module prefix are read; no tool directive is no item; a tool with no require is an (unversioned) placeholder"
+check python3 - "$here/../supply-chain/pin-inventory.py" "$GVMOD" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pi", sys.argv[1]); pi = importlib.util.module_from_spec(spec); spec.loader.exec_module(pi)
+P = "tools/govulncheck/go.mod"
+def keys(text):
+    return sorted(k for k in pi.inventory({P: text}) if k.startswith("gotool:"))
+assert keys(sys.argv[2]) == ["gotool:golang.org/x/vuln/cmd/govulncheck@v1.7.0"], keys(sys.argv[2])
+assert all(i.kind == "gotool" for i in pi.inventory({P: sys.argv[2]}).values() if i.name.endswith("govulncheck"))
+block = "module m\n\ngo 1.27\n\ntool (\n\texample.com/m/sub/cmd/x\n\tgolang.org/x/tools/cmd/stringer\n)\n\nrequire example.com/m v1.0.0\nrequire (\n\texample.com/m/sub v2.0.0\n\tgolang.org/x/tools v0.49.0 // indirect\n)\n"
+assert keys(block) == ["gotool:example.com/m/sub/cmd/x@v2.0.0", "gotool:golang.org/x/tools/cmd/stringer@v0.49.0"], keys(block)
+assert keys("module m\n\ngo 1.27\n\nrequire golang.org/x/mod v0.39.0\n") == [], "no tool directive, no gotool item"
+assert keys("module m\n\ngo 1.27\n\ntool example.com/none/cmd/y\n\nrequire golang.org/x/mod v0.39.0\n") == ["gotool:example.com/none/cmd/y@(unversioned)"], keys("module m\n\ngo 1.27\n\ntool example.com/none/cmd/y\n")
+PY
+CASE="go tool module: tools/govulncheck/go.sum is read as a file item whose identity is its content (another content is another item), and both files are read from a tree and from the repository's own"
+check python3 - "$here/../supply-chain/pin-inventory.py" "$root" "$work/r-gvsum" "$GVMOD" <<'PY'
+import importlib.util, os, subprocess, sys
+spec = importlib.util.spec_from_file_location("pi", sys.argv[1]); pi = importlib.util.module_from_spec(spec); spec.loader.exec_module(pi)
+S = "tools/govulncheck/go.sum"
+def sums(text):
+    return sorted(k for k in pi.inventory({S: text}) if "tools/govulncheck/go.sum" in k)
+a, b = sums("golang.org/x/vuln v1.7.0 h1:aaa=\n"), sums("golang.org/x/vuln v1.7.0 h1:bbb=\n")
+assert len(a) == 1 and len(b) == 1 and a != b, (a, b)
+assert sums("golang.org/x/vuln v1.7.0 h1:aaa=\n") == a, "the same content is the same item"
+assert pi._wanted("tools/govulncheck/go.sum") and pi._wanted("tools/govulncheck/go.mod")
+repo = sys.argv[3]; os.makedirs(repo + "/tools/govulncheck")
+open(repo + "/tools/govulncheck/go.mod", "w").write(sys.argv[4]); open(repo + "/" + S, "w").write("x v1 h1:aaa=\n")
+for c in (["init", "-q"], ["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@x", "commit", "-q", "-m", "t"]):
+    subprocess.run(["git", "-C", repo] + c, check=True)
+got = pi.load_at(repo, None)
+assert "gotool:golang.org/x/vuln/cmd/govulncheck@v1.7.0" in got and any("tools/govulncheck/go.sum" in k for k in got), sorted(got)
+own = pi.load_at(sys.argv[2], None)
+assert any(k.startswith("gotool:golang.org/x/vuln/cmd/govulncheck@v") for k in own), "the repository's own govulncheck tool is not in its inventory"
+assert any("tools/govulncheck/go.sum" in k for k in own), "the repository's own go.sum is not in its inventory"
+PY
+# the 90-day history: a revision that touched only go.sum, and one that touched only go.mod, are each found
+r="$work/r-gvhist"; mkrepo "$r" "100:$CLEANSHA"; mkdir -p "$r/tools/govulncheck"
+gvcommit() { # <days-ago> <message>
+  git -C "$r" add -A; GIT_AUTHOR_DATE="$(dago "$1")" GIT_COMMITTER_DATE="$(dago "$1")" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "$2"
+}
+printf '%s' "${GVMOD//v1.7.0/v1.6.0}" >"$r/tools/govulncheck/go.mod"; printf 'x v1 h1:s1=\n' >"$r/tools/govulncheck/go.sum"; gvcommit 60 "both"
+printf 'x v1 h1:s2=\n' >"$r/tools/govulncheck/go.sum"; gvcommit 40 "sum only"
+printf '%s' "${GVMOD//v1.7.0/v1.7.1}" >"$r/tools/govulncheck/go.mod"; gvcommit 30 "mod only"
+printf 'x v1 h1:s3=\n' >"$r/tools/govulncheck/go.sum"; gvcommit 20 "sum only again"
+printf '%s' "$GVMOD" >"$r/tools/govulncheck/go.mod"; gvcommit 10 "mod only again"
+CASE="go tool module: the history of the last 90 days finds a revision that touched only go.mod (v1.6.0 and v1.7.1 are gone from the tip) and one that touched only go.sum (the sum of the middle revisions is gone from the tip)"
+check python3 - "$aud" "$r" <<'PY'
+import datetime as dt, importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+got = pa.history_items(sys.argv[2], "HEAD", dt.datetime(2026, 10, 5, tzinfo=dt.timezone.utc))
+g = "gotool:golang.org/x/vuln/cmd/govulncheck@"
+for v in ("v1.6.0", "v1.7.0", "v1.7.1"):
+    assert g + v in got, (v, sorted(got))
+want = {pa.inv.inventory({"tools/govulncheck/go.sum": t}).popitem()[0] for t in ("x v1 h1:s1=\n", "x v1 h1:s2=\n", "x v1 h1:s3=\n")}
+assert want <= set(got), (sorted(want - set(got)), sorted(got))
+PY
+# end to end: the nightly audit of a tree holding the Go tool module
+r="$work/r-gvaud"; mkrepo "$r" "5:$CLEANSHA"; mkdir -p "$r/tools/govulncheck"
+printf '%s' "$GVMOD" >"$r/tools/govulncheck/go.mod"; printf 'x v1 h1:s1=\n' >"$r/tools/govulncheck/go.sum"
+git -C "$r" add -A; git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "govulncheck tool module"
+run gvclean "$CLEAN" "$r"
+CASE="go tool module: with no advisory against golang.org/x/vuln v1.7.0 the nightly audit stays clean: exit 0, the clean line, no issue"
+check test "$rc" -eq 0; check grep -q 'no known-compromised' "$work/gvclean.out"; check test "$(creates "$work/gvclean.gh")" -eq 0
+run gvhit "{\"lists\": {\"$GVITEM\": {\"github\": [{\"id\": \"GHSA-gvgv-gvgv-gvgv\", \"incident\": \"INC-GV\", \"affected\": true, \"modified\": \"$(dago 3)\"}], \"osv\": []}}, \"upstream\": {}, \"nested\": {}, \"versions\": {}, \"prs\": []}" "$r"
+CASE="go tool module: an advisory covering golang.org/x/vuln v1.7.0 is a hit in the nightly audit: exit 1, no clean line, an issue naming govulncheck and the advisory"
+check test "$rc" -eq 1; check none_match 'no known-compromised' "$work/gvhit.out"; check test "$(creates "$work/gvhit.gh")" -eq 1
+check grep -q 'govulncheck' "$work/gvhit.gh.bodies"; check grep -q 'GHSA-gvgv-gvgv-gvgv' "$work/gvhit.gh.bodies"
+
+# --- rollback(): a nested reference pinned by a TAG is resolved with the audit's own resolver and asked about advisories; no proof, no recommendation ---
+CASE="rollback: a candidate whose nested child is pinned by a tag that resolves to an affected commit is not recommended (the next clean candidate is, or None); the commit item is labelled with the tag; an unresolvable tag (raises, or no commit) withholds the candidate; a clean tag, a 40-hex child, a local and a docker:// child behave as before"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+BAD, GOOD = "c" * 40, "d" * 40
+def net(children, resolve, only_newest=False):
+    class N:
+        asked, resolved = [], []
+        def versions(self, item):
+            out = [{"version": "v2", "sha": "b" * 40, "published": "2026-10-03T00:00:00Z", "lists": {"github": [], "osv": []},
+                    "_item": pa.inv.Item("action", "o/cand", "b" * 40, "v2")}]
+            if not only_newest:
+                out.append({"version": "v1", "sha": "a" * 40, "published": "2026-06-01T00:00:00Z", "lists": {"github": [], "osv": []},
+                            "_item": pa.inv.Item("action", "o/old", "a" * 40, "v1")})
+            return out
+        def lists(self, item):
+            N.asked.append((item.name, item.version, item.label))
+            return ([{"id": "G", "affected": True, "incident": "I", "modified": "t"}], []) if item.version == BAD else ([], [])
+        def nested(self, item):
+            return children if item.name == "o/cand" else []
+        def resolve_ref(self, repo, tag):
+            N.resolved.append((repo, tag))
+            return resolve(repo, tag)
+    return N()
+item = pa.inv.Item("action", "o/r", "x" * 40, "v3")
+def ver(n):
+    r = pa.rollback(item, n)
+    return r and r["version"]
+tag = [{"ref": "o/child@v1", "pinned": False}]
+n = net(tag, lambda r, t: BAD)
+assert ver(n) == "v1", "a tag at an affected commit: the candidate is not recommended"
+assert ("o/child", "v1") in n.resolved, n.resolved
+assert ("o/child", BAD, "v1") in n.asked, ("the commit item, labelled with the tag, is asked about advisories", n.asked)
+assert ver(net(tag, lambda r, t: BAD, only_newest=True)) is None, "no clean candidate left: None"
+n = net(tag, lambda r, t: GOOD)
+assert ver(n) == "v2" and ("o/child", GOOD, "v1") in n.asked, (ver(n), n.asked)
+def boom(r, t): raise pa.Fail("simulated")
+assert ver(net(tag, boom)) == "v1", "a tag that cannot be resolved withholds the candidate"
+assert ver(net(tag, boom, only_newest=True)) is None
+assert ver(net(tag, lambda r, t: None)) == "v1", "a tag with no commit withholds the candidate"
+assert ver(net(tag, lambda r, t: None, only_newest=True)) is None
+# a 40-hex child is as before: asked directly, resolver untouched
+hexc = [{"ref": "o/child@" + BAD, "pinned": True}]
+n = net(hexc, boom)
+assert ver(n) == "v1" and n.resolved == [], (ver(n), n.resolved)
+hexok = [{"ref": "o/child@" + GOOD, "pinned": True}]
+n = net(hexok, boom)
+assert ver(n) == "v2" and n.resolved == [], n.resolved
+# local and docker:// children are skipped, never resolved
+skip = [{"ref": "./local-action", "pinned": False}, {"ref": "docker://alpine:3", "pinned": False}]
+n = net(skip, boom)
+assert ver(n) == "v2" and n.resolved == [], (ver(n), n.resolved)
+PY
 
 echo "pin-audit: $pass passed, $failn failed"
 test "$failn" -eq 0

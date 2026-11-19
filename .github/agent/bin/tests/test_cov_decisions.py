@@ -417,6 +417,40 @@ class PoamAcceptGuard(TmpCase):
                              {"accepted": False, "reason": "not a reachable-no-fix item"})
 
 
+class PoamAcceptThenRecheck(TmpCase):
+    """The package.json that accept writes is the one recheck reads: one key for the expiry date."""
+    def _accepted_package(self):
+        finding = self.put("finding.json", {"cve": "CVE-1", "package": "apt", "reachable": True, "fix_pullable": False})
+        kev = self.put("kev.json", {"vulnerabilities": []})
+        poam.accept(finding, kev, None, None, "2026-09-22", self.p("acc"))
+        return self.p("acc", "package.json")
+
+    def _removed(self, pkg, today, name):
+        out = self.p(name)
+        poam.recheck(pkg, None, today, out)
+        removed = self.rj(name, "recheck.json")["ignore_removed"]
+        self.assertEqual(os.path.exists(self.p(name, "ignores", "still-active.json")), not removed)
+        return removed
+
+    def test_accepted_suppression_is_active_before_its_expiry_and_expired_from_it(self):
+        pkg = self._accepted_package()
+        exp = poam._expiry("2026-09-22")
+        self.assertEqual(exp, "2026-10-22")
+        self.assertFalse(self._removed(pkg, "2026-10-21", "before"))
+        self.assertTrue(self._removed(pkg, exp, "on"))                      # the expiry date itself counts as expired
+        self.assertTrue(self._removed(pkg, "2026-10-23", "after"))
+
+    def test_record_with_the_old_ignore_expiry_key_is_read_the_same_way(self):
+        pkg = self.put("old.json", {"cve": "CVE-1", "ignore_expiry": "2026-10-22"})
+        self.assertFalse(self._removed(pkg, "2026-10-21", "before"))
+        self.assertTrue(self._removed(pkg, "2026-10-22", "on"))
+        self.assertTrue(self._removed(pkg, "2026-10-23", "after"))
+
+    def test_record_with_neither_key_is_expired(self):
+        pkg = self.put("none.json", {"cve": "CVE-1"})
+        self.assertTrue(self._removed(pkg, "2026-09-22", "none"))
+
+
 # --------------------------------------------------------------------------- suppress
 class SuppressMain(TmpCase):
     PURLS = {"grype": "pkg:golang/golang.org/x/text@v0.3.0"}
