@@ -21,7 +21,7 @@ func newLockTestCache(t *testing.T) *Cache {
 	if err != nil {
 		t.Fatalf("metadata.Open: %v", err)
 	}
-	t.Cleanup(func() { meta.Close() })
+	t.Cleanup(func() { _ = meta.Close() })
 	return New(blobs, meta)
 }
 

@@ -85,7 +85,7 @@ func TestDeleteKeepsNonEmptyParent(t *testing.T) {
 		t.Fatalf("Get after sibling delete: %v", err)
 	}
 	b, _ := io.ReadAll(rc)
-	rc.Close()
+	_ = rc.Close()
 	if n != 1 || string(b) != "2" {
 		t.Errorf("sibling = %q (%d)", b, n)
 	}
@@ -108,7 +108,7 @@ func TestDeleteMissingKeyNeverRemovesOtherBlob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get(ab): %v", err)
 	}
-	rc.Close()
+	_ = rc.Close()
 }
 
 // Rule 1: deleting a missing key leaves the directories of other keys alone.
@@ -121,7 +121,7 @@ func TestDeleteMissingKeyLeavesOtherDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	rc.Close()
+	_ = rc.Close()
 	mustExist(t, filepath.Join(s.Root(), "x", "y", "ke"))
 }
 
