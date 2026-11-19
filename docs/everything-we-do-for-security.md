@@ -102,7 +102,7 @@ describe that chain.
 - **The signer never receives an apk or an image that Rebuild made.** The
   release job publishes Build's exact artifacts, after checking each
   against the digest Build attested; the rebuilt files only feed the comparison. Only
-  the three Sign jobs can use the signing key; the release job, builds and pull
+  the three Sign jobs and the evidence letter's `sign` job can use the signing key; the release job, builds and pull
   requests never can
   (same page, section 3).
 - **Assembled twice and compared.** The image assembly is repeated on a fresh runner
@@ -156,7 +156,7 @@ describe that chain.
   anything it verifies the tag, the release policy and each earlier stage's signed
   record, in order ([release jobs](../.github/workflows/release.yml)).
 - **Builds and signing are kept apart.** Every build is its own job on its own
-  virtual machine, only the Sign stage's jobs can use the signing
+  virtual machine, only the Sign stage's jobs and the evidence letter's `sign` job can use the signing
   key (the release job, builds and pull requests never can), and the comparison of the rebuilt files
   runs in a job with no secrets
   ([build and signing-key isolation](build-and-signing-isolation.md)).
