@@ -3030,12 +3030,13 @@ class CoveredFindingKeepsScannerData(Base):
     it (carried from the panel's vex_covered entry), end to end from the verdict file through the run."""
     CVE, PURL = "CVE-2099-81", "pkg:deb/debian/libfoo@1.0.0"
 
-    def drive(self, entry):
+    def drive(self, entry, cves=None):
         ws = self.d("ws"); os.environ["GITHUB_WORKSPACE"] = ws
-        prior = {"@id": "V#libfoo", "vulnerability": {"name": self.CVE}, "status": "not_affected",
-                 "justification": "vulnerable_code_not_present", "products": [{"@id": PROD, "subcomponents": [{"@id": self.PURL}]}]}
+        priors = [{"@id": "V#libfoo-%s" % c, "vulnerability": {"name": c}, "status": "not_affected",
+                   "justification": "vulnerable_code_not_present", "products": [{"@id": PROD, "subcomponents": [{"@id": self.PURL}]}]}
+                  for c in (cves or [self.CVE])]
         self.wj(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json"), {"@context": "c", "@id": policy.VEX_BASE, "author": "a",
-                                                                          "role": "vendor", "timestamp": "t", "version": 4, "statements": [prior]})
+                                                                          "role": "vendor", "timestamp": "t", "version": 4, "statements": priors})
         m = dict({"commit": "abcdef1234567890", "candidate_digests": {"production": "sha256:d"}}, **panel_manifest_fields(self.tmp))
         v = json.load(open(m["panel"]["verdict"]))
         image = next(im for im, st in sorted(v["images"].items()) if "inspector" in st["ran"])
@@ -3050,7 +3051,8 @@ class CoveredFindingKeepsScannerData(Base):
         with mock.patch.object(R, "_consistency", return_value={"problems": []}), mock.patch.object(R.cli, "ask_model", ask):
             _complete, _printed = self.quiet(R.run, mpath, True, out, "2026-09-22", kevpath=None, adjudicator=adj)
         cls = json.load(open(os.path.join(out, "classification.json")))
-        row = {f["id"]: f for f in cls["findings"]}.get(self.CVE)
+        self.rows = {f["id"]: f for f in cls["findings"]}
+        row = self.rows.get(self.CVE)
         written = []
         for dp, _, fs in os.walk(out):
             for fn in fs:
@@ -3074,6 +3076,24 @@ class CoveredFindingKeepsScannerData(Base):
         self.assertIn("as published", " ".join(str(row.get(k) or "") for k in ("disposition", "reason", "action")))      # the row says the statement was kept as published
         self.assertFalse([x for x in written if x["status"] == "affected" or "no upstream fix" in (x.get("action_statement") or "")], written)
 
+    def test_req13_ac7_covered_with_only_a_severity_is_kept_as_published(self):
+        # a severity is no evidence of applicability: the reviewed not_affected is never rewritten as "no upstream fix"
+        row, written = self.drive({"severity": "high", "fixed_version": None, "aliases": []})
+        self.assertIsNotNone(row)
+        self.assertNotEqual(row["disposition"], "carried (POA&M)")
+        self.assertIn("as published", " ".join(str(row.get(k) or "") for k in ("disposition", "reason", "action")))
+        self.assertFalse([x for x in written if x["status"] == "affected" or "no upstream fix" in (x.get("action_statement") or "")], written)
+
+    def test_req13_ac4_hidden_two_cve_advisory_stays_lineage_through_carried_resolution(self):
+        # grouping makes the advisory lineage for each CVE; resolving it as carried must not turn it into per-CVE evidence
+        a, b = "CVE-2099-81", "CVE-2099-82"
+        self.CVE = a
+        self.drive({"id": "DSA-9000-1", "severity": "high", "fixed_version": "1.0.1", "aliases": [a, b]}, cves=[a, b])
+        for c in (a, b):
+            row = self.rows[c]
+            self.assertIsNone(row.get("fixed"), (c, row))                             # the advisory's fix is no CVE's own
+            self.assertNotEqual(row["section"], 1, (c, row))                          # so it lifts nothing
+
 
 class StatementCarriesVerifiedAliases(Base):
     """REQ-AUD-13 AC10: the ids the scanners' own records name for a finding ride in the statement's vulnerability.aliases."""
@@ -3091,6 +3111,29 @@ class StatementCarriesVerifiedAliases(Base):
         self.assertEqual(st["vulnerability"]["name"], c)
         self.assertIn(ghsa, st["vulnerability"].get("aliases", []))
         self.assertNotIn(c, st["vulnerability"].get("aliases", []))                     # never the CVE itself
+
+    def test_req13_ac10_statement_carries_no_other_cve_and_no_bundle_id(self):
+        # a CVE-A statement may not carry GHSA-x, an advisory that also names CVE-B, nor CVE-B itself: the Inspector
+        # gate indexes a statement under every alias, so CVE-B would pass unreviewed on CVE-A's not_affected
+        c, other, ghsa, own = "CVE-2099-92", "CVE-2099-93", "GHSA-aaaa-bbbb-cccc", "GHSA-dddd-eeee-ffff"
+        purl = "pkg:deb/debian/liby@1.0"
+        f = dict(F(c, purl, "liby", scanner="inspector"), aliases=[c, own, other, ghsa])
+        bundle = dict(F(ghsa, purl, "liby", scanner="inspector"), aliases=[c, other], _lineage_only=True)
+        self.assertEqual(R._vex_aliases(c, [f, bundle]), [own])
+        log = self.wj(os.path.join(self.tmp, "log.json"), {"defects": [{"keys": [{"scanner": "inspector", "finding_id": c, "purl": purl}],
+                                                                       "package": "liby", "disposition": "false_positive"}]})
+        env = self.env(logpath=log)
+        with mock.patch.object(R.cli, "ask_model", return_value={"category": "false_positive", "token_usage": 3}):
+            row, _mi = R._dispose(c, [f, bundle], [c, own, other, ghsa], env, [])
+        self.assertEqual(row["section"], 5)
+        doc = json.load(open(os.path.join(env["out"], "vex", c + ".openvex.json")))
+        self.assertEqual(doc["statements"][0]["vulnerability"].get("aliases"), [own])
+        spec = importlib.util.spec_from_file_location("inspector_gate_t", os.path.join(BIN, "..", "..", "..", "bin", "inspector-gate.py"))
+        G = importlib.util.module_from_spec(spec); spec.loader.exec_module(G)
+        idx = G.vex_index(doc)
+        self.assertTrue(G.covered(idx, own, ("liby", "1.0")))                          # the statement's own alias still finds it
+        for vid in (ghsa, other):
+            self.assertFalse(G.covered(idx, vid, ("liby", "1.0")), vid)                # the shared advisory and CVE-B are not covered
 
     def test_req13_ac10_vex_write_and_doc_take_the_verified_aliases(self):
         from auditorlib import vex

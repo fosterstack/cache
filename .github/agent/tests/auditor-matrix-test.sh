@@ -4825,8 +4825,10 @@ def run(cov,tag):
         R.run(mp2,True,out,"2026-09-24",adjudicator="offline-probe")
     rep=open(out+"/report.md").read()
     if "consistency check did not complete" in rep: raise SystemExit("the run's consistency check did not complete")
-    return os.path.exists(out+"/vex/%s.openvex.json"%c), [l for l in rep.split("\n") if "Not re-checkable" in l], vp2
-cov=[{"image":"production-amd64","scanner":"inspector","id":c,"package":"libmed","version":"1","severity":"medium","fixed_version":None,"aliases":[]}]
+    rows=[r for r in json.load(open(out+"/classification.json"))["findings"] if r["id"]==c]
+    routed=len(rows)==1 and "as published" not in (rows[0]["disposition"]+" "+rows[0]["action"]).lower()   # a hidden finding with a scanner fix is routed on it; "kept as published" is the no-fix route
+    return routed, [l for l in rep.split("\n") if "Not re-checkable" in l], vp2
+cov=[{"image":"production-amd64","scanner":"inspector","id":c,"package":"libmed","version":"1","severity":"medium","fixed_version":"2","aliases":[]}]
 rejudged,hid,vp=run(cov,"a")
 recs=[r for r in parsers.parse_panel(vp,"inspector") if r["finding_id"]==c]
 parsed_ok = len(recs)==1 and recs[0]["extra"].get("carried") is True and recs[0]["extra"]["images"]==["production-amd64"] and not [r for r in parsers.parse_panel(vp,"google") if r["finding_id"]==c]

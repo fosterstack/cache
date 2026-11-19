@@ -109,9 +109,11 @@ def _resolve_carried(groups, carried_stmts):
                     for p in purls:
                         pn, pv = PARS.panel_module().purl_name_version(p)
                         if name(pn) == name(f.get("package")) and pv == ((f.get("extra") or {}).get("version") or ""):
-                            keep.setdefault((f["scanner"], f["finding_id"], p), PARS.finding(
-                                f["scanner"], f["finding_id"], p, f.get("aliases") or (), f.get("package"), f.get("fixed_version"),
-                                f.get("severity"), dict(f["extra"], carried=True)))
+                            rec = PARS.finding(f["scanner"], f["finding_id"], p, f.get("aliases") or (), f.get("package"),
+                                               f.get("fixed_version"), f.get("severity"), dict(f["extra"], carried=True))
+                            if f.get("_lineage_only"):                     # an advisory's record stays lineage after the rebuild
+                                rec["_lineage_only"] = True
+                            keep.setdefault((f["scanner"], f["finding_id"], p), rec)
         grp["findings"] = list(keep.values())
         if not keep:
             del groups[cid]
@@ -119,6 +121,18 @@ def _resolve_carried(groups, carried_stmts):
     for grp in groups.values():
         seen_ids |= set(grp["aliases"]) | {grp["id"]}
     return sorted({nm for nm, ids in primaries if not (ids & seen_ids)})
+
+
+_CVE_ID = re.compile(r"CVE-\d{4}-\d+")
+
+
+def _vex_aliases(c, findings):
+    """The ids a statement for `c` may carry in vulnerability.aliases: those its own (non-lineage) scanner records give
+    that name `c` alone. Never another CVE, nor an advisory a lineage record stands for (the Inspector gate indexes a
+    statement under each alias, so such an id would pass the other CVE unreviewed)."""
+    lineage = {i for f in findings if f.get("_lineage_only") for i in [f["finding_id"], *f["aliases"]]}
+    own = {a for f in findings if not f.get("_lineage_only") for a in f["aliases"]}
+    return sorted(a for a in own - lineage - {c} if not _CVE_ID.fullmatch(a))
 
 
 def _scope_key(statement):
@@ -1768,8 +1782,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
     vn = name or c
     gf = _group_facts(c, {"findings": findings, "aliases": aliases})
     ids = sorted(aliases) + [c]
-    # the ids this subset's own (non-lineage) scanner records give the finding: what its statement may carry as aliases
-    vex_aliases = sorted({a for f in findings if not f.get("_lineage_only") for a in f["aliases"]} - {c})
+    vex_aliases = _vex_aliases(c, findings)
     vwrite = lambda *a, **k: vex.write(*a, aliases=vex_aliases, **k)
     # A not_affected closure clears only the packages its evidence names: scope every closure to this subset's
     # exact PURLs so a Go unreachability never suppresses a sibling OS package product-wide.
@@ -1810,14 +1823,14 @@ def _dispose(c, findings, aliases, env, would, name=None):
                            ignore_files=["vex", "evidence"], carried=(_cstat == "not_affected"))
                 return row, 1
             # evidence covers no scanned version (or only lineage) — do not close; route below.
-    # Our own statement hides every record here and no scanner gave a severity or a fix (REQ-AUD-13 AC7): missing
-    # data is not "no upstream fix". The statement stays as published; nothing is written.
+    # Our own statement hides every record here and no scanner gave a fix (REQ-AUD-13 AC7): missing data is not
+    # "no upstream fix", whatever severity a scanner gave. The statement stays as published; nothing is written.
     nonlin = [f for f in findings if not f.get("_lineage_only")]
     if (nonlin and _cstat and all((f.get("extra") or {}).get("carried") for f in nonlin)
-            and gf["severity"] in (None, "unknown") and not gf["fixed"]):
+            and not gf["fixed"]):
         row.update(section=(5 if _cstat == "not_affected" else 2), disposition="kept as published",
                    action="no scanner data this run; the published statement stays", vex_id=this_scope_id,
-                   reason="hidden by our statement, and no scanner gave a severity or a fix",
+                   reason="hidden by our statement, and no scanner gave a fix",
                    scope_purls=_purls, ignore_files=["vex"], carried=True)
         return row, 0
     m_inc = 0
@@ -2299,7 +2312,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                   "detail": "trusted false_positive for %s" % covpkgs}
             vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_present", evidence=ev,
                       subcomponents=subs or None,
-                      aliases=sorted({a for f in covered for a in f["aliases"]} - {c}))
+                      aliases=_vex_aliases(c, covered + [f for f in grp["findings"] if f.get("_lineage_only")]))
             _fp_sid = policy.scope_id(c, policy.VEX_PRODUCT, subs or None)
             # carried: this exact scope's not_affected is already in force on main (unchanged from a prior
             # day) -> "in force (main)" with its published link; a fresh FP, or a scope whose published
