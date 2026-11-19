@@ -1636,9 +1636,10 @@ run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx
 t "rule 21" "AC18: a lock that is already current with recipes that are not (an interrupted run) is repaired by the next run: exit 0 and the recipes carry zlib=1.3.2-r0" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -q 'zlib=1.3.2-r0' '$work/rp/build/melange.yaml' && grep -q 'zlib=1.3.2-r0' '$work/rp/build/melange-fips.yaml'"
 t "rule 21" "AC18: ...after the repair the generator --check passes" gcheck "$work/rp"
 # the archive directory itself is not a symlink (every directory on the way into the archive is a real directory)
-mkrepo; mkdir -p "$work/ar-root-out"; mv "$work/ar" "$work/ar-root-out/real"; ln -s "$work/ar-root-out/real" "$work/ar"; before=$(treehash "$work/rp")
+mkrepo; mkdir -p "$work/ar-root-out"; mv "$work/ar" "$work/ar-root-out/real"; ln -s "$work/ar-root-out/real" "$work/ar"; before=$(treehash "$work/ar-root-out/real" "$work/rp")
 run_s2 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
-t "rule 31" "AC18: an archive directory that is itself a symlink is refused before any write (exit 1, names symlink)" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'symlink' '$work/log' && test \"\$(treehash '$work/ar-root-out/real' '$work/rp' 2>/dev/null | wc -l)\" -ge 0"
+t "rule 31" "AC18: an archive directory that is itself a symlink is refused before any write (exit 1, names symlink)" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'symlink' '$work/log'"
+t "rule 31" "AC18: ...and the archive and repository are byte-identical afterwards" test "$(treehash "$work/ar-root-out/real" "$work/rp")" = "$before"
 rm -f "$work/ar"; mv "$work/ar-root-out/real" "$work/ar"
 # AC23 (rule 4): no utility is called by bare name anywhere in the script (rm, mkdir, dirname, cat and sed included; builtins or fixed paths)
 t "rule 4" "AC23: bin/refresh-inputs.sh calls no utility by bare name (rm, mkdir, dirname, cat, sed, ls, wc are fixed paths, builtins or parameter expansions)" python3 - "$RF_PROD" <<'P'
@@ -1667,7 +1668,6 @@ for path in open-changed open-same none-same; do
   t "rule 31" "AC22 probe B ($path): an unsigned legacy plain pointer equal to the record stops the job (exit 1, names the legacy index), never 'wait' or 'nothing changed'" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'legacy' '$work/log' && ! grep -Eqi 'nothing changed|still open' '$work/log'"
 done
 mkrepo
-t "rule 31" "AC22 probe B (B0): the signed legacy plain pointer of the fixture is still accepted (the run in mkrepo's state is exit 0)" bash -c "run() { :; }; true"
 run_s4 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "rule 31" "AC22 probe B (B0): a SIGNED legacy plain pointer equal to the record is accepted (exit 0, nothing changed)" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -qi 'nothing changed' '$work/log'"
 
@@ -1741,7 +1741,7 @@ t "AC29" "open-pr without an archive digest opens the pull request without a poi
 # Codex #345 r3 (AC29): two overlapping runs both pass the staging check; open-pr asks again immediately before it creates a branch and a pull request
 mkrepo; rm -rf "$work/plan"; run_s2 "${rfn[@]}" "$RF" refresh --plan-dir "$work/plan" --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 run_s4 env GH_STUB_OPEN="refresh/0badc0de" "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/plan" --repo-dir "$work/rp"
-t "AC29" "open-pr asks for the open pull requests again just before creating one: with a refresh/ pull request open it creates no branch, pushes nothing, opens no second (exit 0, the stall is named)" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -c '^gh pr list' '$CALLS' | grep -q . && ! grep -Eq '^gh pr create|^git( -C [^ ]+)? (push|checkout)' '$CALLS' && grep -qi 'already open' '$work/log'"
+t "AC29" "open-pr asks for the open pull requests again just before creating one: with a refresh/ pull request open it creates no branch, pushes nothing, opens no second (exit 0, the stall is named)" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -q '^gh pr list' '$CALLS' && ! grep -Eq '^gh pr create|^git( -C [^ ]+)? (push|checkout)' '$CALLS' && grep -qi 'already open' '$work/log'"
 mkrepo; rm -rf "$work/plan"; run_s2 "${rfn[@]}" "$RF" refresh --plan-dir "$work/plan" --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 run_s4 env GH_STUB_FAIL=1 "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/plan" --repo-dir "$work/rp"
 t "AC29" "open-pr: when the list of open pull requests cannot be read it opens nothing (exit 1, an unknown state is not no pull request)" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -Eq '^gh pr create|^git( -C [^ ]+)? push' '$CALLS'"
