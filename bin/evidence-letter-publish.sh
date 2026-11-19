@@ -35,14 +35,20 @@ work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 refusal=$(python3 -I bin/chain-verify.py policy make --template .github/policy/release-policy.template.json \
   --ref refs/heads/main --out "$work/policy.json" 2>&1 > /dev/null) ||
   die "the key manifest is not accepted ($(head -n 1 <<< "$refusal")): nothing is signed"
+# the letter goes to the latest published release, and that release's own manifest must name the key that signs it: the presence
+# check verifies a copy by its release's manifest, so after a rotation a letter signed with the new key could not be attached here
+tag=$(gh release view --repo "$repo" --json tagName --jq .tagName 2>&1) ||
+  die "the latest release could not be read ($(first_line "$tag")): nothing is signed"
+refusal=$(gh release download "$tag" --repo "$repo" --pattern release-key-manifest.json --dir "$work" 2>&1 > /dev/null) ||
+  die "the key manifest of $tag could not be fetched ($(first_line "$refusal")): nothing is signed"
+[ "$(jq -r .public_key "$work/release-key-manifest.json")" = "$(jq -r .release_key.public_key "$work/policy.json")" ] ||
+  die "the key manifest of $tag names another key than the one that signs: nothing is signed"
 # KA-2: the letter is signed by chain-verify.py kms-sign (RSASSA_PKCS1_V1_5_SHA_256 named on the KMS call, the one Rekor entry posted by the same call), not by cosign
 read -r dg _ < <(sha256sum "$letter") && [ -n "$dg" ] || die "cannot hash $letter: nothing is signed"
 bash bin/with-aws-token.sh kms-sign --aws "$RUNNER_TEMP/aws-cli/aws" --key-ref "$RELEASE_KMS_KEY_REF" --digest "$dg" --signing-config .github/policy/cosign-signing-config.json \
   --public-key build/keys/release.rsa.pub --out "$work/letter.signature" --bundle "$letter.bundle" || die "kms-sign refused to sign the letter: not published"
 refusal=$(bash bin/evidence-letter-verify.sh "$work/policy.json" "$letter" 2>&1) ||
   die "${refusal#evidence-letter-verify: }: not published"
-tag=$(gh release view --repo "$repo" --json tagName --jq .tagName 2>&1) ||
-  die "the latest release could not be read ($(first_line "$tag")): not published"
 refusal=$(gh release upload "$tag" "$letter.bundle" --repo "$repo" 2>&1 > /dev/null) ||
   die "the upload to $tag was refused ($(first_line "$refusal")): not published"
 refusal=$(gh release upload "$tag" "$letter" --repo "$repo" 2>&1 > /dev/null) || {

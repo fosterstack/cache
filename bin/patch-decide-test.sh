@@ -273,6 +273,39 @@ with contextlib.redirect_stdout(io.StringIO()):
     P.main(["decide", "--event", "schedule", "--repo", repo, "--cut-today", "false", "--released", RL, "--out", out])
 raw = open(out).read()
 check("decision.json names no vendor or model (the issue body reads it)", "openai" not in raw.lower() and "<redacted>" in raw, raw)
+
+# REQ-REL-009-AC3: on a push, nothing is cut while a tag above the latest published release exists whose newest release run has not failed (decide --runs FILE)
+rr_ = tempfile.mkdtemp()
+g(rr_, "init", "-q", "-b", "main"); open(os.path.join(rr_, "go.mod"), "w").write("module x\n\nrequire golang.org/x/sys v0.46.0\n")
+g(rr_, "add", "-A"); g(rr_, "commit", "-q", "-m", "base"); g(rr_, "tag", "v0.2.0"); g(rr_, "tag", "v0.2.1")
+open(os.path.join(rr_, "go.mod"), "w").write("module x\n\nrequire golang.org/x/sys v0.47.0\n")
+g(rr_, "commit", "-qam", "bump"); g(rr_, "tag", "v0.2.2")
+RRL_ = os.path.join(rr_, "released.json"); json.dump(["v0.2.1"], open(RRL_, "w"))
+RRM_ = os.path.join(rr_, "removed.json"); json.dump([REL[0]], open(RRM_, "w"))
+def decide_runs(event, runs=None):
+    o = os.path.join(rr_, "d.json")
+    if os.path.exists(o): os.remove(o)
+    a = [sys.executable, sys.argv[1], "decide", "--event", event, "--repo", rr_, "--cut-today", "false", "--released", RRL_, "--removed", RRM_, "--out", o]
+    if runs is not None:
+        rf = os.path.join(rr_, "runs%d.json" % len(os.listdir(rr_))); json.dump(runs, open(rf, "w")); a += ["--runs", rf]
+    r = subprocess.run(a, capture_output=True, text=True)
+    return (json.load(open(o)) if os.path.exists(o) else {}), r
+D, r_ = decide_runs("push")
+check("AC3 push, an unpublished tag v0.2.2 above the latest release and no --runs -> no cut, the reason names v0.2.2", D.get("cut") is False and "v0.2.2" in D.get("reason", ""), (D, r_.stderr[-200:]))
+for what_, runs_ in (("no run (empty conclusion)", {"v0.2.2": ""}), ("a run that succeeded but is not published", {"v0.2.2": "success"}), ("no entry in the map", {"v0.2.9": "failure"})):
+    D, r_ = decide_runs("push", runs_)
+    check("AC3 push, v0.2.2 with %s is in flight -> no cut, the reason names v0.2.2" % what_, D.get("cut") is False and "v0.2.2" in D.get("reason", ""), (D, r_.stderr[-200:]))
+for concl_ in ("failure", "cancelled", "timed_out"):
+    D, r_ = decide_runs("push", {"v0.2.2": concl_})
+    check("AC3 push, the newest release run of v0.2.2 is %s -> the decision is as before: cut v0.2.3 for the removed critical finding" % concl_, D.get("cut") is True and D.get("version") == "v0.2.3", (D, r_.stderr[-200:]))
+D, r_ = decide_runs("schedule")
+check("AC3 the guard is the push event's only: a schedule decision with the same unpublished tag is as before", D.get("cut") is True and D.get("version") == "v0.2.3", (D, r_.stderr[-200:]))
+g(rr_, "tag", "v0.2.3")
+D, r_ = decide_runs("push", {"v0.2.2": "failure"})
+check("AC3 push, v0.2.2 failed but v0.2.3 has no entry -> no cut, the reason names v0.2.3", D.get("cut") is False and "v0.2.3" in D.get("reason", ""), (D, r_.stderr[-200:]))
+D, r_ = decide_runs("push", {"v0.2.2": "failure", "v0.2.3": "failure"})
+check("AC3 push, every tag above the latest release failed -> cut v0.2.4", D.get("cut") is True and D.get("version") == "v0.2.4", (D, r_.stderr[-200:]))
+g(rr_, "tag", "-d", "v0.2.3")
 # --- rules 61 and 65: the base inputs are ONE committed list, read by the decide job and by this script (advisor Oct 12)
 real_list = os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), "..", ".github", "policy", "base-inputs.json")
 check("the committed list names exactly the base locks, the melange lock, the archive records, the fips module record and the Gradle wrapper jar checksum (the list the repository commits)",
@@ -394,6 +427,31 @@ buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
     rc = P.main(["ready", "--required", pol, "--check-runs", cr])
 check("ready CLI: prints the verdict first", rc == 0 and buf.getvalue().split()[0] == "ready", buf.getvalue())
+
+# REQ-REL-013-AC1: `ready` judges the combined list, one --required per policy file (required-checks.json and release-only-checks.json), as admission does
+rd_ = tempfile.mkdtemp()
+def jf_(obj):
+    f = os.path.join(rd_, "f%d.json" % len(os.listdir(rd_))); open(f, "w").write(obj if isinstance(obj, str) else json.dumps(obj)); return f
+RO_ = {"required_checks": [{"context": "allowlist-chain", "integration_id": 15368, "scope": "push"},
+                           {"context": "auditor-review-gate", "integration_id": 5054756, "scope": "pull_request"}]}
+def ready_files(files, runs):
+    r = subprocess.run([sys.executable, sys.argv[1], "ready"] + [x for f in files for x in ("--required", f)] + ["--check-runs", jf_(runs)], capture_output=True, text=True)
+    return (r.stdout.split() or [""])[0], r.stdout
+REQF_, ROF_ = jf_(REQ), jf_(RO_)
+v_, o_ = ready_files([REQF_, ROF_], [run("test"), run("scan"), run("allowlist-chain")])
+check("AC1 ready: both files' push contexts green (the pull_request one of either skipped) -> ready", v_ == "ready", o_)
+v_, o_ = ready_files([REQF_, ROF_], [run("test"), run("scan")])
+check("AC1 ready: a release-only push context with no run -> wait, naming it", v_ == "wait" and "allowlist-chain" in o_, o_)
+v_, o_ = ready_files([REQF_, ROF_], [run("allowlist-chain")])
+check("AC1 ready: a required-checks context with no run (the release-only one green) -> wait, naming it", v_ == "wait" and "test" in o_, o_)
+v_, o_ = ready_files([ROF_, REQF_], [run("test"), run("scan"), run("allowlist-chain", conclusion="failure")])
+check("AC1 ready: a release-only context finished red -> no", v_ == "no", o_)
+v_, o_ = ready_files([REQF_, ROF_], [run("test"), run("scan"), run("allowlist-chain", app=999)])
+check("AC1 ready: a release-only context green from another app does not count -> wait", v_ == "wait", o_)
+for what_, bad_ in (("no required_checks", {"comment": []}), ("an empty required_checks", {"required_checks": []}), ("malformed JSON", "{"), ("a list instead of an object", [])):
+    for pos_, files_ in (("second", [REQF_, jf_(bad_)]), ("first", [jf_(bad_), REQF_])):
+        v_, o_ = ready_files(files_, [run("test"), run("scan"), run("allowlist-chain")])
+        check("AC1 ready: a policy file (%s) with %s is a policy error -> no, never a lower requirement" % (pos_, what_), v_ == "no", o_)
 # a queued decide run recomputes the version from the tags its own checkout sees (advisor 0063): after an earlier run
 # pushed v0.2.2, the next one cuts v0.2.3, never a second v0.2.2
 check("a queued run after v0.2.2 was cut computes v0.2.3", P.decide("push", FIX, ["v0.2.1", "v0.2.2"], cut_today=True,
@@ -1264,7 +1322,7 @@ def structure(nt, fixes=(), behavior=()):
     secs = nt[:-1].split("\n\n")
     if len(secs) != 4:
         return "%d sections, want 4" % len(secs)
-    if not re.fullmatch(r"## \S+ — patch release", secs[0]):
+    if not re.fullmatch(r"Patch release v\d+\.\d+\.\d+", secs[0]):
         return "heading: %r" % secs[0]
     if secs[1].split("\n") != ["### Fixes"] + want_f:
         return "fixes section: %r" % secs[1]
@@ -1459,7 +1517,7 @@ check("AC8 VEX line-local redaction (r3, B1): 'urn:chat' then a CVE named 'gpt':
       vlines(nt_) == ["- CVE-7 [pkg:oci/cache]: fixed (changed: status_notes) — statement urn:chat",
                       "- (redacted): fixed (added) — statement 3 of the new document"]
       and resolves(nt_, o_, n_) == (True, [("new", 1), ("new", 3)]), (vex_part(nt_), resolves(nt_, o_, n_)))
-raw_ = "## v0.2.2 — patch release\n\n### VEX\n- CVE-1: fixed (changed: x) — statement urn:chat\n- gpt: fixed (added)\n"
+raw_ = "Patch release v0.2.2\n\n### VEX\n- CVE-1: fixed (changed: x) — statement urn:chat\n- gpt: fixed (added)\n"
 cl_, _ = P.changelog(raw_, None, "")
 check("AC8 VEX line-local redaction (r3, B1): the changelog cleans line by line, never across a line break "
       "(r5: the redacted line is written escaped, A R4-4)",
@@ -1717,7 +1775,7 @@ check("AC8 VEX oracle (r5): a redacted product resolves; the same marker on a pr
 # r4 (A R3-4, B low): redaction never consumes ANY line boundary str.splitlines() knows; each is written back as LF
 TERMS = ["\r", "\r\n", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"]
 for t_ in TERMS:
-    raw_ = "## v0.2.2 — patch release\n\n### VEX\n- CVE-1: fixed (changed: x) — statement urn:chat" + t_ + "- gpt: fixed (added)\n"
+    raw_ = "Patch release v0.2.2\n\n### VEX\n- CVE-1: fixed (changed: x) — statement urn:chat" + t_ + "- gpt: fixed (added)\n"
     want_ = "— statement urn:chat\n- \\(redacted\\)\\: fixed \\(added\\)\n"      # r5: the redacted line escaped (A R4-4)
     got_ = P._clean_lines("urn:chat" + t_ + "- gpt: fixed (added)")
     check("AC8 line-local redaction (r4, A R3-4): %r between two lines: both kept, the boundary written as LF" % t_,
@@ -1801,6 +1859,21 @@ def mktag(tag, body):
     return ("object 0123\ntype commit\ntag %s\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n" % tag + body
             + "-----BEGIN SSH SIGNATURE-----\nU1NIU0lH\n-----END SSH SIGNATURE-----\n")
 nt_ = P.notes("v0.2.3", [], [], behavior=["[click]gpt (decided 2026-10-05)."])
+
+# REQ-REL-009-AC8 / REQ-REL-015-AC2: the first line of the notes is `Patch release vX.Y.Z`; tag-notes reads that line, not the old heading
+nt3_ = P.notes("v0.2.4", [], [])
+check("AC8 the first line of the notes is `Patch release vX.Y.Z` (no ## and no dash)", nt3_.split("\n")[0] == "Patch release v0.2.4" and "## v0.2.4" not in nt3_, nt3_[:60])
+tn3_ = mktag("v0.2.4", nt3_)
+check("AC8 tag-notes accepts a generated tag whose notes start with that line for the same tag, and returns the notes", P.tag_notes(tn3_) == nt3_, P.tag_notes(tn3_))
+check("AC8 tag-notes: a first line for another version is no generated heading", P.tag_notes(mktag("v0.2.5", nt3_)) is None)
+old3_ = nt3_.replace("Patch release v0.2.4", "## v0.2.4 \u2014 patch release")
+check("AC8 tag-notes no longer takes the old heading `## vX.Y.Z \u2014 patch release` as a generated tag's heading", P.tag_notes(mktag("v0.2.4", old3_)) is None)
+r3_ = subprocess.run([sys.executable, sys.argv[1], "tag-notes"], input=mktag("v0.2.4", old3_), capture_output=True, text=True)
+check("AC8 tag-notes CLI: the old heading is exit 1 and nothing printed", r3_.returncode == 1 and r3_.stdout == "", (r3_.returncode, r3_.stdout[:60]))
+r3_ = subprocess.run([sys.executable, sys.argv[1], "tag-notes"], input=tn3_, capture_output=True, text=True)
+check("AC8 tag-notes CLI: the new first line is exit 0 and the notes are printed", r3_.returncode == 0 and r3_.stdout == nt3_, (r3_.returncode, r3_.stdout[:60]))
+cl3_, _ = P.changelog(nt3_, "# Changelog\n\n## v0.2.1 \u2014 patch release\n\nold\n", "")
+check("AC8 changelog keeps working with the new first line: the notes go on top, the history below", cl3_.startswith("# Changelog\n\nPatch release v0.2.4\n") and cl3_.endswith("\n## v0.2.1 \u2014 patch release\n\nold\n"), cl3_)
 check("AC8 redaction marker (r5, A R4-4 / B F3): '[click]gpt' in a behavior entry prints '\\[click\\]\\(redacted\\)', never a link",
       "- \\[click\\]\\(redacted\\) \\(decided 2026\\-10\\-05\\)\\.\n" in nt_ and "](redacted)" not in nt_, nt_)
 # r8: '<gpt>' and '<!-- gpt -->' left this list: a '<' before a letter or '!' is refused in a source (REQ-REL-009-AC14)
@@ -1834,13 +1907,13 @@ check("0135 + r5 (r8: the escaped form only, the older forms cut back): an entry
 # r5 (B low): a generated tag's heading ends in LF and nothing else: CR, CRLF, VT, FF, FS, GS, RS, NEL, LS or PS after it is
 # refused (as in round 3)
 for t_ in TERMS:
-    body_ = "## v0.2.2 — patch release" + t_ + "\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n"
+    body_ = "Patch release v0.2.2" + t_ + "\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n"
 # r5 (A R4-1, B low): the changelog's existing history is copied unchanged, never rewritten; a history this code would not
 # have written (a line boundary other than LF, a vendor name, an unescaped marker) is refused, nothing written (fail closed)
 HIST_ = "# Changelog\n\n## v0.2.1 — patch release\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- \\(redacted\\)\\: fixed \\(added\\) — statement 2 of the new document\n"
 cl_, _ = P.changelog(nt_, HIST_, "")     # r10: a VEX line holding the marker is in the escape-whole-line form (no exemption)
 check("AC8 changelog history (r5): a clean history is copied byte for byte below the new notes",
-      cl_.endswith("\n" + HIST_[len("# Changelog\n\n"):]) and cl_.startswith("# Changelog\n\n## v0.2.3"), cl_)
+      cl_.endswith("\n" + HIST_[len("# Changelog\n\n"):]) and cl_.startswith("# Changelog\n\nPatch release v0.2.3"), cl_)
 check("AC8 changelog history (r5): the changelog this code writes is clean history for the next one",
       P.changelog(nt_.replace("v0.2.3", "v0.2.4"), cl_, "")[0].endswith(cl_[len("# Changelog\n\n"):]))
 for what_, h_ in (("a CR line end", HIST_.replace("\n### VEX", "\r\n### VEX")), ("A's CR then a vendor line", HIST_ + "x\r- gpt: fixed (added)\n"),
@@ -2064,7 +2137,7 @@ try:
 except TypeError:
     got_ = "TypeError"
 check("AC8 VEX oracle (r6): a count in place of the inputs is not accepted", got_ == "TypeError", got_)
-pub ="## v0.2.2 — patch release\n\n### Behavior changes\n- Go 1.27: a request with more than 500 header values is rejected with 431 before it reaches the cache (decided 2026-10-03).\n"
+pub ="Patch release v0.2.2\n\n### Behavior changes\n- Go 1.27: a request with more than 500 header values is rejected with 431 before it reaches the cache (decided 2026-10-03).\n"
 check("0135 an entry an earlier patch published is not published again (tag message or CHANGELOG.md)",
       P.unpublished(ents, pub) == ["Second change, one line (decided 2026-10-05)."], P.unpublished(ents, pub))
 check("0135 nothing published yet: every entry stays", P.unpublished(ents, "") == ents)
@@ -2076,11 +2149,11 @@ check("AC8w tag-notes: an owner's tag message is not taken as notes",
 check("AC8w tag-notes: a look-alike heading for another version is refused",
       P.tag_notes(tagraw.replace("tag v0.2.2", "tag v0.2.3")) is None)
 cl, nn = P.changelog(pub, "# Changelog\n\n## v0.2.1 — patch release\n\nold\n", NRN)
-check("AC8w changelog: the notes go on top, newest first", cl.startswith("# Changelog\n\n## v0.2.2 — patch release\n") and cl.index("v0.2.2") < cl.index("v0.2.1"), cl)
+check("AC8w changelog: the notes go on top, newest first", cl.startswith("# Changelog\n\nPatch release v0.2.2\n") and cl.index("v0.2.2") < cl.index("v0.2.1"), cl)
 check("0130 changelog: the published entry leaves next-release-notes, an unpublished one stays",
       "Go 1.27" not in nn and "Second change, one line (decided 2026-10-05)." in nn and nn.startswith("# Notes for the next release"), nn)
 cl0, _ = P.changelog(pub, None, NRN)
-check("AC8w changelog: a missing CHANGELOG.md is created with its heading", cl0.startswith("# Changelog\n\n## v0.2.2"), cl0)
+check("AC8w changelog: a missing CHANGELOG.md is created with its heading", cl0.startswith("# Changelog\n\nPatch release v0.2.2"), cl0)
 nts = P.notes("v0.2.2", fx, vc, behavior=["Gemini helper changed (decided 2026-10-05)."])
 check("AC8w/row 48 the built notes name no vendor or model", not re.search(r"(?i)gemini|claude|openai", nts), nts)
 # the signed tag keeps the notes' markdown headings: git tag's default cleanup would strip every '#' line
@@ -2140,7 +2213,7 @@ args = ["notes", "--version", "v0.2.3", "--variant-grype", "=" + J_("r.json", gr
         "--published", os.path.join(cd_, "pub.txt"), "--out", os.path.join(cd_, "notes.md")]
 rc = P.main(args); out_ = open(os.path.join(cd_, "notes.md")).read() if rc == 0 else ""
 check("AC8w CLI notes: heading, the fix with its variants, the VEX change, only the unpublished entry",
-      rc == 0 and out_.startswith("## v0.2.3 — patch release\n") and "CVE-2099-1 in golang.org/x/net: v0.30.0 → v0.33.0 (severity High; variants: default, fips)" in out_
+      rc == 0 and out_.startswith("Patch release v0.2.3\n") and "CVE-2099-1 in golang.org/x/net: v0.30.0 → v0.33.0 (severity High; variants: default, fips)" in out_
       and "CVE-1: not_affected (changed from affected)" in out_ and "- Second change, one line (decided 2026-10-05)." in out_ and "Go 1.27" not in out_, out_)
 os.remove(os.path.join(cd_, "notes.md"))
 args_null_ = [x if x != os.path.join(cd_, "o.json") else J_("null.json", None) for x in args]
@@ -2154,7 +2227,7 @@ check("0130 CLI notes: no next-release-notes file means no behavior entries, not
 open(os.path.join(cd_, "n2.md"), "w").write(pub)
 P.main(["changelog", "--notes", os.path.join(cd_, "n2.md"), "--changelog", os.path.join(cd_, "CL.md"), "--next-notes", os.path.join(cd_, "nrn.md")])
 check("0130 CLI changelog: no next-release-notes file is not created", not os.path.exists(os.path.join(cd_, "nrn.md"))
-      and open(os.path.join(cd_, "CL.md")).read().startswith("# Changelog\n\n## v0.2.2"))
+      and open(os.path.join(cd_, "CL.md")).read().startswith("# Changelog\n\nPatch release v0.2.2"))
 # Sonnet #158 r2: the citation is enforced where the notes are made (SEC-2); a vendor name split by the line wrap or a
 # space is refused, not redacted (SEC-1)
 for bad_b in (["Some change nobody judged."], ["A change (owner said so)."]):
@@ -2254,7 +2327,7 @@ for ver, want in (("0.2.2", ["0.2.2", "0.2.2-debug", "0.2.2-fips"]), ("0.1.0", [
 for bad in ("v0.3.0", "0.3", "0.3.0-rc1", "", "0.3.0 -debug", "x.y.z"):
     rc, got = variants(bad); check("AC3 a version that is not X.Y.Z (%r) is refused and prints nothing" % bad, rc != 0 and got == [], (rc, got))
 # a tag with a SIGNED MESSAGE (keyless) block is not the release key's: tag-notes gives it no notes (exit 1)
-tn_in = "object 0123\ntype commit\ntag v0.2.2\ntagger x <x@x> 1 +0000\n\n## v0.2.2 — patch release\n-----BEGIN SIGNED MESSAGE-----\nM\n"
+tn_in = "object 0123\ntype commit\ntag v0.2.2\ntagger x <x@x> 1 +0000\n\nPatch release v0.2.2\n-----BEGIN SIGNED MESSAGE-----\nM\n"
 r_ = subprocess.run([sys.executable, sys.argv[1], "tag-notes"], input=tn_in, capture_output=True, text=True)
 check("tag-notes: a tag with SIGNED MESSAGE notes text is not accepted as notes (exit 1, nothing printed)",
       r_.returncode == 1 and r_.stdout == "", (r_.returncode, r_.stdout))
@@ -2579,7 +2652,7 @@ for l_ in ("- <!--", "- [x]: /url", "- &amp;", "- -----BEGIN injected"):
 for what_, body_ in (("no Fixes section before it", "## v0.2.3 — patch release\n\n### VEX\n- `\"<b>\"`: fixed (added)\n"),
                      ("a second '### VEX' after the behavior section",
                       GEN_B + "\n### VEX\n- `\"<b>\"`: fixed (added)\n"),
-                     ("a heading that is not the generated one", GEN_B.replace("## v0.2.3 — patch release", "## v0.2.3 — release")
+                     ("a heading that is not the generated one", GEN_B.replace("Patch release v0.2.3", "Release v0.2.3")
                       .replace("- no change", "- `\"<b>\"`: fixed (added)"))):
     check("r9 A High: a '### VEX' heading with %s is not the generated one: its '<b>' line is refused (changelog notes and history)" % what_,
           is_ve(refused(P.changelog, body_, None, "")) and is_ve(refused(P.changelog, GOOD_NT, "# Changelog\n\n" + body_, "")),

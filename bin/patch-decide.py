@@ -474,7 +474,7 @@ def _refuse_text(text, name):
 
 
 def _no_dup_bullets(text, name):
-    """refuse (ValueError naming both name:line) two '- ' lines of one release block (from one '## ' heading to the next)
+    """refuse (ValueError naming both name:line) two '- ' lines of one release block (from one '## ' heading or generated first line to the next)
     that publish the same line, trailing whitespace ignored (REQ-REL-009-AC14 (5) in the readers: a tag's notes, the
     changelog's notes, the history; Codex #300 r9, B 4). Each line is compared as it is published, cleaned by _clean_free
     ('- gpt' and '- claude' publish the same line; so do a marker line and its escaped spelling: Codex #300 r10, A medium /
@@ -483,7 +483,7 @@ def _no_dup_bullets(text, name):
     seen = {}
     for n, ln in enumerate(str(text).splitlines(), 1):
         c = _clean_free(ln)                 # the line as published: compared cleaned, named by its source line (r10, A / B 2)
-        if c.startswith("## "):
+        if c.startswith("## ") or PATCH_HEAD.match(c):      # a patch's notes open with "Patch release vX.Y.Z"
             seen = {}
         elif c.startswith("- "):
             k = c.rstrip()
@@ -711,7 +711,7 @@ def notes(version, fixes, vex_changes, behavior=(), fix_locs=None, behavior_locs
             raise ValueError("%s %s" % (loc, why))
     fl = [_clean_free(_fix_raw(f)) for f in fixes]
     published = list(zip(fl, fix_locs))
-    lines = [_clean_free("## %s — patch release" % _oneline(version)), "", "### Fixes"] + fl
+    lines = [_clean_free("Patch release %s" % _oneline(version)), "", "### Fixes"] + fl
     if not fixes:
         lines.append("- none (dependency or VEX maintenance only)")
         published.append((lines[-1], "the Fixes section:"))
@@ -1078,7 +1078,9 @@ def unpublished(entries, published_text):
     return [e for e in entries if _entry_line(e).rstrip() not in pub]
 
 
-PATCH_HEAD = re.compile(r"^## (v\d+\.\d+\.\d+) — patch release$")
+# the first line is the reason the release manifest and the evidence letter quote, so it stays inside the letter's plain
+# characters: "Patch release v0.3.1" matches; the old "## v0.3.1 — patch release" does not
+PATCH_HEAD = re.compile(r"^Patch release (v\d+\.\d+\.\d+)$")
 
 
 RELEASE_TAGGER = "fosterstack release <release@users.noreply.github.com>"   # decide's git identity (release.yml)
@@ -1165,7 +1167,18 @@ def changelog(notes_text, changelog_text, next_notes_text, names=("notes", "CHAN
     return new_cl, "".join(keep)
 
 
-def decide(event, commits, tags, cut_today, removed, base_inputs=None):
+FAILED_RUNS = ("failure", "cancelled", "timed_out")
+
+
+def in_flight(tags, since, runs):
+    """The patch tags above the latest published release whose newest release run has not failed: their releases are
+    still due. A tag with no entry in runs counts as in flight."""
+    if not since:
+        return []
+    return [t for t in tags if _semver(t) and _semver(t) > _semver(since) and runs.get(t) not in FAILED_RUNS]
+
+
+def decide(event, commits, tags, cut_today, removed, base_inputs=None, since=None, runs=None):
     """{cut, version, reason, not_clean}: rule 1 (patch-clean, fix-only), rule 2 (a critical/high fix at once on push;
     otherwise at most one daily patch on the schedule)."""
     version = next_patch(tags)
@@ -1177,6 +1190,9 @@ def decide(event, commits, tags, cut_today, removed, base_inputs=None):
         out["reason"] = "main is not patch-clean"
     elif not clean:
         out["reason"] = "nothing shipped since the latest tag"
+    elif event == "push" and in_flight(tags, since, runs or {}):
+        out["reason"] = "the patch %s is still being released: no second patch for the same fix" % max(
+            in_flight(tags, since, runs or {}), key=_semver)
     elif event == "push":
         if removed is None:
             out["reason"] = "the latest release could not be scanned: no at-once cut (the daily run decides)"
@@ -1201,12 +1217,16 @@ def ready(required, check_runs):
     """(verdict, why) for the tagged commit's push-scoped required checks, judged as source admission judges them
     (stage-admission.yml): a check counts only as a success from its pinned app. "ready": every one has one. "wait": none
     is red with nothing left to run (a run is missing, queued or in progress). "no": a check finished without success and
-    no run of it is still pending. pull_request-scoped checks are admission's to read on the merged PR head."""
-    waiting, red = [], []
-    reqs = required.get("required_checks") if isinstance(required, dict) else None
-    # a policy admission would reject is never ready (Codex #159 r1, B6): admission fails on these
-    if not isinstance(reqs, list) or not reqs:
-        return "no", "policy error: no required_checks list"
+    no run of it is still pending. pull_request-scoped checks are admission's to read on the merged PR head.
+    `required` is one policy file or a list of them (required-checks.json and release-only-checks.json): admission
+    requires both, and a bad file never lowers the requirement."""
+    waiting, red, reqs = [], [], []
+    for policy in required if isinstance(required, list) else [required]:
+        part = policy.get("required_checks") if isinstance(policy, dict) else None
+        # a policy admission would reject is never ready (Codex #159 r1, B6): admission fails on these
+        if not isinstance(part, list) or not part:
+            return "no", "policy error: no required_checks list"
+        reqs += part
     for req in reqs:
         if not isinstance(req, dict) or not req.get("context") or not isinstance(req.get("integration_id"), int):
             return "no", "policy error: a required check without a context or integration_id"
@@ -1596,8 +1616,15 @@ def cmd_changelog(a):
     return 0
 
 
+def _policy(path):
+    try:
+        return json.load(open(path))
+    except (ValueError, OSError):
+        return None             # ready judges it: a policy file that cannot be read is a policy error, never a lower requirement
+
+
 def cmd_ready(a):
-    verdict, why = ready(json.load(open(a.required)), json.load(open(a.check_runs)))
+    verdict, why = ready([_policy(f) for f in a.required], json.load(open(a.check_runs)))
     print(verdict, _clean(why))
     return 0
 
@@ -1637,7 +1664,8 @@ def cmd_decide(a):
     except ValueError as e:
         print("decide: %s — no patch decision" % _clean(str(e)), file=sys.stderr)
         return 2
-    dec = decide(event, commits, tags if since else [], a.cut_today == "true", removed, base_inputs)
+    runs = json.load(open(a.runs)) if a.runs else {}
+    dec = decide(event, commits, tags if since else [], a.cut_today == "true", removed, base_inputs, since, runs)
     dec["since"] = since
     # decision.json feeds a public issue (the "not patch-clean" list): every string in it is redacted as stdout is
     dec = {k: ([_clean(x) for x in v] if isinstance(v, list) else _clean(v) if isinstance(v, str) else v)
@@ -1681,6 +1709,7 @@ def main(argv=None):
                         "tag whose release failed (Codex #159 r1, B4)")
     d.add_argument("--labels", help="JSON {sha: [labels]} of the PRs that merged each commit")
     d.add_argument("--base-inputs", help="the list of base inputs (default: .github/policy/base-inputs.json beside this script)")
+    d.add_argument("--runs", help="JSON {tag: conclusion of its newest release run}: a push cuts nothing while a tag above the baseline has no failed run")
     d.add_argument("--out", required=True)
     bm = sub.add_parser("base-moved", help="the listed base inputs that differ between a release tag and HEAD (the base-input-changed signal)")
     bm.add_argument("--since", required=True, help="the latest release's tag")
@@ -1691,7 +1720,8 @@ def main(argv=None):
     q.add_argument("--commit", required=True)
     q.add_argument("--repo", default=".")
     k = sub.add_parser("ready")
-    k.add_argument("--required", required=True, help=".github/policy/required-checks.json")
+    k.add_argument("--required", required=True, action="append",
+                   help="a policy file, once each: required-checks.json and release-only-checks.json")
     k.add_argument("--check-runs", required=True, help="JSON list of the commit's check runs {name, status, conclusion, app_id}")
     r = sub.add_parser("removed")
     r.add_argument("--release-grype", required=True, action="append", help="one per scanned release image")

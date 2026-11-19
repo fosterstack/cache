@@ -552,6 +552,7 @@ mappings:
   - ac: REQ-REL-013-AC1
     evidence:
       - { type: shell-test, ref: "bin/chain-build-admit-test.sh" }
+      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
   - ac: REQ-REL-013-AC6
     evidence:
       - { type: shell-test, ref: "bin/full-suite-wiring-test.sh" }
