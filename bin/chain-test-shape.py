@@ -1351,7 +1351,7 @@ def names_secrets(obj):
         return any(names_secrets(v) for v in obj)
     return False
 NON_CHAIN = {
-    "decide": {"perm": {"contents": "read", "checks": "read", "issues": "write"}, "agent": False, "if": DECIDE_IF},
+    "decide": {"perm": {"actions": "read", "contents": "read", "checks": "read", "issues": "write"}, "agent": False, "if": DECIDE_IF},
     # sign-tag holds the identity token for the one release KMS key, in the environment sign (the role's trust binds release.yml@refs/heads/main to this job alone), and no secret
     "sign-tag": {"perm": {"contents": "read", "id-token": "write"}, "agent": False, "env": "sign", "needs": ["decide"], "if": TAG_DUE_IF},
     # cut pushes the signed tag with the auditor App's token (environment agent holds the App's secrets): its own token reads contents only, it holds no id-token

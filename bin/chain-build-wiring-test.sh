@@ -1543,6 +1543,7 @@ text = ("name: Release\non:\n  push:\n    tags: [\"v*\"]\n  workflow_dispatch:\n
     permissions:
       contents: read
       checks: read
+      actions: read
       issues: write
     steps:
       - run: echo decide
@@ -1699,7 +1700,7 @@ gr g15b "005-AC5 a job that calls a reusable workflow of another repository" '  
 gr g16b "005-AC5 an allowed non-chain job (decide) given a job-level uses" '  decide:\n    if:' '  decide:\n    uses: ./.github/workflows/ci.yml\n    if:' "job-level uses"
 gr g17 "005-AC5 decide with a write it does not need (packages)" 'issues: write' 'issues: write\n      packages: write' "exactly the permissions"
 gr g18 "005-AC5 decide with no permissions block of its own (it would inherit less than it needs: refused)" \
-       '    permissions:\n      contents: read\n      checks: read\n      issues: write\n' '' "exactly the permissions"
+       '    permissions:\n      contents: read\n      checks: read\n      actions: read\n      issues: write\n' '' "exactly the permissions"
 gr g19 "005-AC5 a hostile-* job that can write" '  hostile-verify:\n    needs: sign\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read' \
        '  hostile-verify:\n    needs: sign\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write' "exactly the permissions"
 gr g27 "005-AC5 hostile-verify with environment: agent" "  hostile-verify:\n    needs: sign" "  hostile-verify:\n    environment: agent\n    needs: sign" "may not name an environment"
@@ -3935,7 +3936,7 @@ if [ "$rc" = 0 ] \
 else bad "AC2 witness-sign-staged.sh: exit $rc, sign calls: $(cat "$wss/log" 2> /dev/null), ${out:0:100}"; fi
 # bin/release-publish.sh stops on the first pushed tag whose registry digest is not the attested one
 rp="$work/rp"; mkdir -p "$rp/bin" "$rp/witness-build" "$rp/fake"
-cp "$root/bin/release-publish.sh" "$root/bin/build-admit.py" "$rp/bin/"; : > "$rp/bin/release-layout.py"
+cp "$root/bin/release-publish.sh" "$root/bin/build-admit.py" "$rp/bin/"; : > "$rp/bin/release-layout.py"; : > "$rp/bin/release-sign-verify.sh"
 printf '{"image-production": "%s", "image-fips": "%s"}\n' "$DA" "$DB" > "$rp/witness-build/digests.json"
 for v in production fips; do
   mkdir -p "$rp/images/$v"; : > "$rp/images/$v/oci-layout"; : > "$rp/images/$v/index.json"
