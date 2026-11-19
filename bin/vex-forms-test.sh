@@ -367,8 +367,8 @@ named = lambda s: any(p.get("subcomponents") for p in s["products"] if "pkg:oci/
 wsup = sorted({s["vulnerability"]["name"] for s in real["statements"] if applies(s, IMAGES) and s["status"] in ("not_affected", "fixed") and named(s)})
 rcv = sorted({r["filterCriteria"]["vulnerabilityId"][0]["value"] for r in V.inspector(real, IMAGES, "v0.3.0")["filters"]})
 check("AC2 the real file: the Inspector file has a rule for each suppressible statement that applies and names a package, and no other", rcv == wsup, (rcv, wsup))
-check(f"the real file's CSAF passes the loader's checks; its jwt/v4 statement stays scoped to that module and the stdlib@1.27.2 statement is absent (the build ships go{BUILD_GO})",
-      bool(google_validate(rc)) and {r["product_reference"] for r in rc["product_tree"]["relationships"]} == {"component-github.com%2Fgolang-jwt%2Fjwt%2Fv4@"}
+check(f"the real file's CSAF passes the loader's checks; its jwt/v4 statement stays scoped to that module, the busybox statements add only busybox@1.37.0, and the stdlib@1.27.2 statement is absent (the build ships go{BUILD_GO})",
+      bool(google_validate(rc)) and {r["product_reference"] for r in rc["product_tree"]["relationships"]} == {"component-github.com%2Fgolang-jwt%2Fjwt%2Fv4@", "component-busybox@1.37.0"}
       and "CVE-2026-111943" not in {v["cve"] for v in rc["vulnerabilities"]} and "CVE-2024-51744" in {v["cve"] for v in rc["vulnerabilities"]}
       and "go1.27.2" not in json.dumps(rc))
 # cache#772 round 1 (A2, ruled): the relationship SET above does not say which statement points at which component. For every vulnerability of the real
@@ -666,7 +666,8 @@ check("G a Go module and a generic package of the same last segment stay distinc
 gj = V.inspector({"statements": [scoped("CVE-G4", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": JWT}]}])]}, IMAGES, "v0.3.0")["filters"]
 check("G the Inspector rule names the Go module by its full path", [f["filterCriteria"]["vulnerablePackages"] for f in gj] == [[{"name": {"comparison": "EQUALS", "value": "github.com/golang-jwt/jwt/v4"}}]], gj)
 sts = real["statements"]
-check("G the published document holds exactly two statements, CVE-2024-51744 and CVE-2026-111943", [s_["vulnerability"]["name"] for s_ in sts] == ["CVE-2024-51744", "CVE-2026-111943"])
+check("G the published document holds exactly five statements in order: CVE-2024-51744, the three busybox CVEs, CVE-2026-111943",
+      [s_["vulnerability"]["name"] for s_ in sts] == ["CVE-2024-51744", "CVE-2025-60876", "CVE-2025-46394", "CVE-2024-58251", "CVE-2026-111943"])
 oci = [p_ for s_ in sts if s_["vulnerability"]["name"] == "CVE-2024-51744" for p_ in s_["products"]]
 check("G every product of that statement (the image products AND the Go product) names the jwt/v4 module, and nothing else, as its subcomponent",
       oci and all([x["@id"] for x in p_.get("subcomponents", [])] == [JWT] for p_ in oci), oci)
@@ -724,8 +725,15 @@ for what, impact in (("a 2000-character impact statement", LONG), ("no impact st
           len(d_) <= 200 and all(x in d_ for x in ("v0.3.0", "CVE-D1", "not_affected", "busybox", "1.37.0", "CSAF")), d_)
     check("D the description with %s has balanced parentheses and no piece of the impact statement" % what,
           d_.count("(") == d_.count(")") and not (impact and any(impact[i:i + 40] in d_ for i in range(len(impact) - 39))), d_)
-check("G the published document no longer describes a :debug image or busybox",
-      "busybox" not in json.dumps(real).lower() and ":debug" not in json.dumps(real) and "distroless" not in json.dumps(real).lower())
+_BB = ["pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache", "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates"]
+_bbs = [s_ for s_ in sts if s_["vulnerability"]["name"] in ("CVE-2025-60876", "CVE-2025-46394", "CVE-2024-58251")]
+check("G the three temporary busybox statements are not_affected, vulnerable_code_not_in_execute_path, on both repositories with busybox@1.37.0 and speak of the :debug images",
+      len(_bbs) == 3 and all(s_["status"] == "not_affected" and s_["justification"] == "vulnerable_code_not_in_execute_path"
+                             and [p_["@id"] for p_ in s_["products"]] == _BB
+                             and all(p_.get("subcomponents") == [{"@id": "pkg:generic/busybox@1.37.0"}] for p_ in s_["products"])
+                             and ":debug" in s_.get("impact_statement", "") for s_ in _bbs), _bbs)
+check("G outside the busybox statements the published document names no busybox or :debug image",
+      all("busybox" not in json.dumps(s_).lower() and ":debug" not in json.dumps(s_) for s_ in sts if s_ not in _bbs))
 check("G the document's version moved past the fixture's (6)", real["version"] > json.load(open(BBVEX))["version"], real["version"])
 check("G the busybox fixture keeps the three retired statements for the generator's tests",
       sorted(s_["vulnerability"]["name"] for s_ in json.load(open(BBVEX))["statements"]) == ["CVE-2024-51744", "CVE-2024-58251", "CVE-2025-46394", "CVE-2025-60876"])

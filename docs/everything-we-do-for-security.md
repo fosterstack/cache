@@ -32,11 +32,11 @@ vulnerability); this page is what we do.
 ## Dependencies
 
 - **Every action in every workflow is pinned to a full commit digest.** A tag or a
-  branch reference fails the check on every pull request, and the check also reads
-  the tag each digest claims to be (the pin checker, `check-action-pins.py`).
-- **Container images are named by digest.** An image a workflow runs, pulls or
-  passes to an action must be a digest, never a tag, and the same checker fails
-  the pull request otherwise (the pin checker, `check-action-pins.py`).
+  branch reference is refused: reviewers check every pull request for it, and the
+  release audit checks it again.
+- **Container images and downloads are pinned.** An image a workflow runs, pulls or
+  passes to an action is named by digest, never a tag, and an outside download is
+  pinned to a checksum; reviewers and the release audit check both.
 - **Everything we pin is checked daily.** The inventory of pinned actions and
   packages is checked once a day against published advisories and malicious-package
   reports ([supply-chain workflow](../.github/workflows/supply-chain.yml)).

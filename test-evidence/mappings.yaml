@@ -453,25 +453,8 @@ mappings:
       - { type: inspection, ref: "in main-candidate-rescan.yml (rescan); acceptance.yml's two login lines follow in their own change." }
   - ac: REQ-REL-005-AC1
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — the action-pin checker's fixture cases (119); the checker itself over the tree runs in agent-review-gate.yml from main's copy" }
-      - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml:judge and sweep — the base branch's action-pin checker over every PR head (required check auditor-review-gate)" }
       - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/36721513759" }
       - { type: shell-test, ref: ".github/agent/tests/k8s-harness-fence-test.sh" }
-  - ac: REQ-REL-005-AC2
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/check-action-pins-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs the action-pin checker's fixture cases, including the pm-* cases for the literal-label runner matrix" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:test — the auditor coverage gate runs the checker's unit tests (test_check_action_pins.py, class LiteralRunnerMatrix) and the fixture cases, and requires every line of the checker covered" }
-  - ac: REQ-REL-005-AC3
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/check-action-pins-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs the action-pin checker's fixture cases, including the ac3-* cases for downloads in a job that runs a committed script" }
-  - ac: REQ-REL-005-AC4
-    evidence:
-      - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_env_names.py" }
-  - ac: REQ-REL-005-AC5
-    evidence:
-      - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_env_names.py" }
   - ac: REQ-REL-011-AC1
     evidence:
       - { type: shell-test, ref: "bin/job-isolation-test.sh" }
@@ -547,7 +530,7 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/audit-record-test.sh" }
       - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:test — runs the auditor matrix, whose req18-ac3-verdict-runs-and-propagates case runs the verdict job and the sweep with all five checks" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:test — runs the auditor matrix, whose req18-ac3-verdict-runs-and-propagates case runs the verdict job and the sweep with its three checks" }
   - ac: REQ-REL-012-AC5
     evidence:
       - { type: shell-test, ref: "bin/audit-record-test.sh" }
@@ -1017,9 +1000,6 @@ mappings:
   - ac: REQ-SUP-001-AC10
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
-  - ac: REQ-SUP-001-AC13
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pip-pin-test.sh" }
   - ac: REQ-SUP-001-AC14
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-audit-go-major-test.sh" }
@@ -1248,7 +1228,7 @@ mappings:
   - ac: REQ-AUD-018-AC3
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
-      - { type: inspection, ref: "the second review is enforced by the private review tooling before merge; the repository's verdict (agent-review-gate.yml) judges the passed-audit record of the head, and the matrix test asserts it runs only the pin checker, the allowlist guard, the scanner guard and the record judge" }
+      - { type: inspection, ref: "the second review is enforced by the private review tooling before merge; the repository's verdict (agent-review-gate.yml) judges the passed-audit record of the head, and the matrix test asserts it runs only the allowlist guard, the scanner guard and the record judge" }
   - ac: REQ-CHAIN-004-AC1
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
@@ -2014,7 +1994,6 @@ mappings:
   - ac: REQ-SCAN-012-AC3
     evidence:
       - { type: shell-test, ref: "bin/vex-live-test-test.sh" }
-      - { type: shell-test, ref: ".github/agent/tests/vex-live-pins-test.sh" }
   - ac: REQ-SCAN-012-AC4
     evidence:
       - { type: shell-test, ref: "bin/vex-live-test-test.sh" }

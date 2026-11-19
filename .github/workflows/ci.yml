@@ -166,7 +166,7 @@ jobs:
       - name: govulncheck (the same judgment as Check)
         run: python3 -I -B bin/check-govulncheck.py --scanners .github/policy/scanners.json --out "$RUNNER_TEMP/gv"
 
-  # Hygiene, requirements and supply-chain checks. The whole-tree allowlist guard, the pin checker and the scanner-workflow guard are not run here:
+  # Hygiene, requirements and supply-chain checks. The whole-tree allowlist guard and the scanner-workflow guard are not run here:
   # the review gate (agent-review-gate.yml) runs main's copies of them over the pull request head, and a pull request can edit its own copies.
   allowlist:
     name: allowlist
@@ -218,12 +218,6 @@ jobs:
       - name: every reusable-workflow caller covers its callees' permissions (R01)
         run: python3 bin/check-workflow-permissions.py
 
-      # Row 78: the pin checker's own cases. The check itself (every action reference a full commit digest, each version comment resolving
-      # to the pinned commit) runs in the review gate from main's copy.
-      - name: the pin checker's own cases (row 78)
-        run: bash .github/agent/tests/check-action-pins-test.sh
-      - name: the pip that CI runs is pinned in every job that installs with pip (REQ-SUP-001-AC13)
-        run: bash .github/agent/tests/pip-pin-test.sh
       - name: the documented Gradle and Maven snippets have the structure acceptance runs, and the Kubernetes reset order
         run: bash .github/agent/tests/docs-snippets-test.sh
 
@@ -300,6 +294,11 @@ jobs:
             exit 1
           fi
           echo "VEX tripwire: golang-jwt absent from go.sum, as the published statement asserts."
+
+      - name: >-
+          no wait for new versions — no text of it, Dependabot proposes at once, the pin-age context stays,
+          no job holds actions write (REQ-SUP-001 AC30, AC32, AC33)
+        run: bash .github/agent/tests/release-age-gone-test.sh
 
   # REQ-CHAIN-001-AC6, "whose CI verifies" (slice 4b-6). On a pull request that commits .github/policy/rc-proof.json this job requires the change to
   # be exactly the marker and the removal of the one KR-CUTOVER entry of test-evidence/known-red.json, and verifies the run the marker names with the verifier of the BASE

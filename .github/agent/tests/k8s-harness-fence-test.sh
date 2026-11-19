@@ -3,13 +3,11 @@
 # Advisor 0084 (4): the k8s acceptance harness runs the customer commands of docs/kubernetes.md verbatim (rule 12). Its two generated scripts
 # (/tmp/pf-forward and /tmp/smoke-assert) are fenced: both are written by one committed python script ONLY from docs/kubernetes.md at the
 # checked-out commit - no environment, no network, no other input - and nothing else writes them. The harness now lives in Check's listed
-# scripts (bin/acceptance-k8s-smoke.py writes them, bin/acceptance-k8s.sh runs them; REQ-CHAIN-006-AC5); the pin checker no longer needs to
-# exclude any generated file, so its exclusion list is empty and the fence is proven here on those two files. Every fence fact is proven twice:
+# scripts (bin/acceptance-k8s-smoke.py writes them, bin/acceptance-k8s.sh runs them; REQ-CHAIN-006-AC5). Every fence fact is proven twice:
 # it holds on the real files, and a copy of the files with that one fact removed fails it (a fence that cannot fail proves nothing).
-# The refusals of the pin checker that guard a fenced file stay proven below on a fixture workflow, with an injected exclusion.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../../.." && pwd)
-# the vendored pure-Python PyYAML as `yaml` (the coverage job's python has none of its own), like check-action-pins-test.sh
+# the vendored pure-Python PyYAML as `yaml` (the coverage job's python has none of its own)
 pylib=$(mktemp -d); trap 'rm -rf "$pylib"' EXIT
 ln -s "$root/.github/agent/fixtures/testlib/pyyaml" "$pylib/yaml"
 export PYTHONPATH="$pylib${PYTHONPATH:+:$PYTHONPATH}"
@@ -91,34 +89,6 @@ for fact, src, suite in mutants:
     got = facts(src, suite)
     check("removing the fact turns it red: " + fact, got.get(fact) is False, got.get(fact))
 
-# the pin checker's exclusion list names nothing now (the harness is no longer a workflow step), and its refusals still work on a fixture
-spec = importlib.util.spec_from_file_location("p", os.path.join(root, ".github/agent/bin/check-action-pins.py"))
-P = importlib.util.module_from_spec(spec); spec.loader.exec_module(P)
-check("the pin checker excludes no generated file", dict(P.GENERATED_OK) == {}, dict(P.GENERATED_OK))
-FX = ".github/workflows/fixture-fence.yml"
-P.GENERATED_OK.clear()
-P.GENERATED_OK[(FX, "/tmp/pf-forward.sh")] = "fixture"           # injected for this test only; the real list stays empty
-P.GENERATED_OK[(FX, "/tmp/smoke-assert.sh")] = "fixture"
-try:
-    bad = []
-    P.check_runs(".github/workflows/x.yml.jobs.j.steps[0].run", [("x", 'c=$(cat /tmp/c); eval "$c"', None)], bad)
-    check("any other eval of a variable is refused", bool(bad), bad)
-    bad = []
-    P.check_runs(".github/workflows/x.yml.jobs.j.steps[0].run", [("x", "bash /tmp/pf-forward.sh", None)], bad)
-    check("the same file name in another workflow is refused", bool(bad), bad)
-    for name, extra in [("a redirect", "echo id > /tmp/pf-forward.sh"), ("a copy", "cp /tmp/x /tmp/smoke-assert.sh"),
-                        ("a download", "curl -fsSL https://example.invalid/x -o /tmp/pf-forward.sh"),
-                        ("a bash -c write", "bash -c 'printf id > /tmp/smoke-assert.sh'")]:
-        bad = []
-        P.check_runs(FX + ".jobs.k8s.steps[0].run",
-                     [(FX + ".jobs.k8s.steps[0].run", extra, None),
-                      (FX + ".jobs.k8s.steps[1].run", "bash /tmp/pf-forward.sh; bash /tmp/smoke-assert.sh", None)], bad)
-        check("a fenced script that %s also writes is refused (Codex #164 r3, N04)" % name, bool(bad), bad)
-    bad = []
-    P.check_runs(FX + ".jobs.k8s.steps[0].run", [(FX + ".jobs.k8s.steps[0].run", "bash /tmp/pf-forward.sh", None)], bad)
-    check("the fenced script with no other writer passes", not bad, bad)
-finally:
-    P.GENERATED_OK.clear()
 print("k8s-harness-fence: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

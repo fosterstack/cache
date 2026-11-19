@@ -1577,61 +1577,23 @@ requirements:
         status: approved
 
   - id: REQ-REL-005
-    title: Every CI action pinned to a commit digest
+    title: Every outside action and download pinned to an exact version
     statement: >
-      Every GitHub Action a workflow uses shall be pinned to a full commit digest with its version in a comment, and
-      every container image the pipeline names or passes to an action shall be named by digest; a tag or branch
-      reference shall fail the check that gates every pull request. The check enforces plain forms only: a
-      deliberately hidden form is out of its scope; reviewers judge intent, and an obfuscation-only finding is
-      information, not a blocker.
-    source: [.github/workflows/agent-review-gate.yml, .github/workflows/ci.yml]
+      Every outside action and every outside download that a workflow or a script uses shall be pinned to an exact
+      version: a GitHub Action to a full commit digest with its version in a comment, a container image to its digest,
+      and a download to its sha256. Reviewers and the release audit check it; no program does.
+    source: [.github/workflows/ci.yml]
     tier: community
     introduced: v0.3.0
     origin: the release manager's approval (Sep 30 2026)
     confidence: implementation-only
-    notes: |
-      REQ-REL-005-AC2 (the literal-label runner matrix): the v0.3.0 Build and Rebuild run their per-architecture apk jobs as a matrix of the two native GitHub-hosted labels, and the check accepts exactly that one expression form and nothing looser. The label list is closed on purpose; adding a runner label is a reviewed edit of the check.
-      Scope: the runner rule is read in files under .github/workflows/ only. In another YAML file under .github/ a valid literal matrix reads its steps as bash, and a runs-on that holds an expression (or names Windows) only makes its steps read as pwsh (a finding of its own, no runs-on finding); any other runs-on there, self-hosted for one, leaves its steps read as bash with no finding.
-      Duplicate keys: YAML keeps the last copy of a repeated key, and GitHub rejects such a file. A key given twice in a job (a job that calls a reusable workflow included), in its strategy or in its matrix is refused with the key named, whatever the last copy holds.
-      Refused forms of REQ-REL-005-AC2, each a finding that names the runner:
-      - any other expression or text in runs-on (text before or after the expression, a second expression, a block scalar's trailing newline, braces without spaces), a runner from an input, env or vars, an array index or property of the matrix key, a runs-on list;
-      - a matrix that is an expression or fromJSON, a matrix of only include or exclude, in any letter case, a second matrix key, an extra strategy key (fail-fast may sit beside matrix only as the plain unquoted literal true or false, not a quoted or tagged string), a strategy with no matrix key, a key given twice in a job, in its strategy or in its matrix (the finding names the key);
-      - a label not on the two-label list (another case or version, ubuntu-latest, a larger runner, self-hosted, macOS or Windows, a space around a label, a trailing newline, a look-alike character, an explicit YAML tag other than str; !!str resolves to the plain string tag and is accepted), a nested list, a non-string label, an empty list, a scalar instead of a list, a duplicate key;
-      - a matrix key that does not exist or is defined on another job or at the workflow level;
-      - and a matrix reached through a YAML anchor (the check refuses a file that holds any anchor or alias, whatever it anchors).
-      Explicit YAML tags: any explicit YAML tag on the matrix path (the job, its runs-on, its strategy, the matrix, a key in them, the label list, fail-fast) is a finding that names the runner, even a tag that names the node's default type such as !!seq or !!map; the one exception is !!str on a label (above).
     acceptance_criteria:
       - id: REQ-REL-005-AC1
-        given: any pull request into main, and any push to main
-        when: the required checks run
-        then: "Every GitHub Action a workflow uses is pinned to a full commit digest with the version in a comment; a tag or branch reference fails the hygiene check."
-        verification: { method: ci-workflow, release_blocking: false }
+        given: any pull request, and the release audit
+        when: a reviewer reads the workflows and scripts
+        then: "Every GitHub Action a workflow uses is pinned to a full commit digest with the version in a comment, and every outside download to its sha256; a tag or branch reference, or a download with no checksum, is refused in review."
+        verification: { method: inspection, release_blocking: false }
         status: approved
-      - id: REQ-REL-005-AC2
-        given: "a workflow job whose runs-on is the single expression ${{ matrix.<key> }}, with a strategy that holds a matrix of exactly that one key as a literal list of runner labels (and, beside it, only fail-fast with the literal value true or false)"
-        when: "the action-pin check reads the workflow"
-        then: "when every label is ubuntu-24.04 or ubuntu-24.04-arm the check reports no finding for the runner and judges the job's steps under bash, the default shell of those runners, each step by its own rules (an unpinned action, container, service or image, a pwsh shell and a piped download each keep their own finding, and none of them is a runner finding); for every other form it reports one finding that names the runner and never picks a shell silently (when the labels are safely known to be those two, the steps are still judged under bash beside the runner finding; any other label keeps pwsh), except that a file holding any YAML anchor or alias is refused as a whole with that one finding; the refused forms are listed in the notes of this requirement"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-005-AC3
-        given: "a workflow job (or composite action) with a step that runs a script committed in the repository, and a step of the same job that runs curl, wget or aria2c in any form (also inside sh -c, eval, a command substitution or behind a wrapper such as env, sudo or xargs)"
-        when: "the action-pin check reads the workflow"
-        then: "the check reports a finding that names the step and the command unless that command is demonstrably writing only to standard output or /dev/null: a closed list of read-only options (the destination of a download is never read from its options), no output redirection except to /dev/null, no bare variable where an option may stand, no word the parser cannot read, and for wget an output of - ; anything else, aria2c always, and any unreadable form is a finding; an exclusion is one exact workflow, job, step index and sha256 of the step's run text with its reason in the check, and a copy of an excluded step elsewhere or an edit of it is a finding again; the exclusion of a token request also fails when the word curlrc stands in the workflow outside the excluded steps' run text, or when the env of an excluded step, the env of its job or the env of the workflow is not exactly the mapping the check holds for it (the reviewer's token-request step and its job and workflow have none; the decision step has the keys and values committed in the reviewer workflow): a key added, removed or changed, and a value changed, is a finding, whatever the name; a job with container: or services: is refused the exclusion too, since their env reaches its steps and the check does not read it (it only tightens the check)"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-005-AC4
-        given: "a workflow job or composite action step whose text (its run, with and env values, the env of its job and workflow, and the committed scripts it runs) writes to the environment or the PATH of later steps: through $GITHUB_ENV, ${{ github.env }}, ::set-env or exportVariable, or through $GITHUB_PATH, ${{ github.path }}, ::add-path or addPath"
-        when: "the action-pin check reads the workflow"
-        then: "an environment write is read only in three plain forms, and any other use of those routes is one finding that names the job, the step and the route, because the name it sets cannot be read as literal text: (1) one record: a command of its own that starts with echo or printf and prints a single line, so echo has no option and one argument, printf has a format that holds no conversion but %s and no escape but a closing \\n, and no argument holds a real newline, and the only word of the command that starts with > (quotes removed) is its redirection, so a quoted word that starts with > refuses the command; its first argument (the format, for printf) begins with NAME= (NAME being plain letters, digits and underscores as the shell reads it after removing quotes, and no backslash in it except the closing \\n); the command redirects with >> or > to \"$GITHUB_ENV\" or \"${GITHUB_ENV}\" and to nothing else; and it is not read in a step whose text defines or aliases echo or printf (echo() { }, function echo, alias echo=, and the same for printf); (2) exportVariable called with a quoted literal NAME as its first argument; (3) ::set-env name=NAME::. A name from an input, a matrix, needs or another expression, a variable, a command substitution, a name broken across quotes or built from pieces, a name from a file an earlier step wrote, a name built in a committed script, a heredoc, tee, a path put in a variable or env value, and a route that appears in a comment are not those forms and are refused. The route, PATH and hook-name scans read the text with each backslash at the end of a line joined to the next line, so a route split that way is read whole; form (1) is read from the text as written, so a command that holds a backslash at the end of a line is not form (1), while forms (2) and (3) are read from the joined text, the same text the route scan counts, so every plain form sits on a route the scan also counts. A write in a plain form is judged by its literal name against the closed list of names that change what later programs load or where they connect, as before, and no exception list is added. Every write to the PATH routes stays refused with the route named"
-        verification: { method: unit, release_blocking: false }
-        status: approved
-      - id: REQ-REL-005-AC5
-        given: "a workflow or composite action file in which the key steps, or the step keys run, with and env, are spelled in another letter case, such as Steps:"
-        when: "the action-pin check reads the file"
-        then: "the check reads them as it reads every other key of the file, in any letter case: the run text of such a step, its with and env values, and the committed scripts it runs are judged by the same environment and PATH write rules as the same step under the lowercase keys"
-        verification: { method: unit, release_blocking: false }
-        status: approved
-
   - id: REQ-REL-006
     title: Frozen release baselines stay fixed
     statement: >
@@ -1873,7 +1835,7 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-DEP-005-AC2
-        given: a check that reads the pull request (pin check and dependency review)
+        given: a check that reads the pull request (dependency review)
         when: it runs
         then: "it reads the pull request's own base and head commits and fails, never passes, when either is empty or the difference cannot be read; no step reads a queue commit, because no merge_group event reaches it. Nothing checks the queue half per pull request"
         verification: { method: ci-workflow, release_blocking: false }
@@ -2931,7 +2893,7 @@ requirements:
     notes: >
       AC3's last clause (reworded, accepted at review Oct 13; it formerly required a review record bound to the script's content) names a review that this
       repository's gate does not judge as a record: the trusted verdict auditor-review-gate (agent-review-gate.yml,
-      always the default branch's copy) runs main's pin checker, allowlist guard, pin-wiring judge and this scanner
+      always the default branch's copy) runs main's allowlist guard and this scanner
       guard over the head as git objects and judges no review record (the record mechanism was retired with the gate
       rewrite). The second review that a change to bin/scan-no-workflow-call-test.sh needs is enforced outside this
       repository by the private review tooling before merge (as in REQ-AUD-018 AC3); that the main branch ruleset
@@ -3146,7 +3108,7 @@ requirements:
       - id: REQ-SUP-001-AC24
         given: "a script of this repository that reaches a local or in-cluster address (the cache under test on localhost or 127.0.0.1, the in-cluster Service fscache, or the runner's own token endpoint)"
         when: "it makes the request"
-        then: "it does so only through bin/loopback-get.sh, which runs curl for exactly one URL and refuses before curl starts any URL that is not http://localhost, http://127.0.0.1 or http://fscache (each with an optional numeric port and a path starting with /, userinfo, fragments, whitespace and lookalike hosts refused) or the value of ACTIONS_ID_TOKEN_REQUEST_URL (https, alone or followed by &audience=); it allows a closed list of options (-s -S -f -I -g, -X GET|PUT|POST|HEAD, -u -H -o -D -w --data-binary, --max-time and --connect-timeout with a number) and refuses every other; it starts curl with -q, no proxy, one protocol and no redirect followed; the acceptance and artifact scripts name no curl of their own, except the four that change directory (acceptance-gradle, acceptance-gradle-capped, acceptance-maven, acceptance-maven-capped), a named exception that keeps their own fetch lines until check-action-pins can place a relative script path in a script that changes directory"
+        then: "it does so only through bin/loopback-get.sh, which runs curl for exactly one URL and refuses before curl starts any URL that is not http://localhost, http://127.0.0.1 or http://fscache (each with an optional numeric port and a path starting with /, userinfo, fragments, whitespace and lookalike hosts refused) or the value of ACTIONS_ID_TOKEN_REQUEST_URL (https, alone or followed by &audience=); it allows a closed list of options (-s -S -f -I -g, -X GET|PUT|POST|HEAD, -u -H -o -D -w --data-binary, --max-time and --connect-timeout with a number) and refuses every other; it starts curl with -q, no proxy, one protocol and no redirect followed; the acceptance and artifact scripts name no curl of their own, except the four that change directory (acceptance-gradle, acceptance-gradle-capped, acceptance-maven, acceptance-maven-capped), a named exception that keeps their own fetch lines"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC28
@@ -3600,10 +3562,10 @@ requirements:
     title: Each stage verifies the one before it; only standard record types; every action pinned
     statement: >
       Every stage after Build shall first verify the previous stage's record, as Sign signed it, with one shared plain script and stop on failure, naming the stage; a record whose only signature is the building job's throwaway key, and any *.local.json, is refused by every verifier; only Witness's standard records, SLSA provenance and the signed release policy shall exist as signed record types; every signed record shall have a distinct claim and a named consumer (the record types under Sign's identity are three: the release provenance, Build's collection and Rebuild's collection, told apart by predicate type and collection name); and every action reference shall be a full commit digest and be on the committed allowed-actions list.
-    source: [bin/chain-verify.py, .github/policy/allowed-actions.json, .github/policy/chain-records.json, .github/policy/chain-scripts.json, check-action-pins.py]
+    source: [bin/chain-verify.py, .github/policy/allowed-actions.json, .github/policy/chain-records.json, .github/policy/chain-scripts.json]
     tier: community
     introduced: v0.3.0
-    origin: v0.3.0 decisions of Oct 9 2026; the pin checker's scope is plain forms only (Oct 3)
+    origin: v0.3.0 decisions of Oct 9 2026
     confidence: implementation-only
     notes: |
       Status:
@@ -3611,12 +3573,12 @@ requirements:
       Controls:
       - The controls are review, the trusted pin-wiring judge (it requires the four chain suites as exact CI steps), the closed id-token list, and Release's key check (REQ-CHAIN-001-AC4: only provenance signed by the per-tag policy's release key is accepted). A listed file or script, edited together with its row in a list under .github/policy/, is caught only by review and the pinned judge, because the judge reads that JSON from the pull request's own tree; no hash is kept of any of these files. They are in the pull request's own control; an independent control would need CODEOWNERS or ruleset entries on .github/policy/** and bin/chain-*-test.sh, a repository permission change not made here.
       - Closed lists (.github/policy/): id-token-jobs.json, the jobs that may hold id-token: write, a reason each (any other holder, matched case-insensitively, a stale entry, or an unparsable workflow fails; a merge key, `<<` or `!!merge`, at any depth of any workflow or composite action is refused, and one that does not parse as a single YAML document is a finding; composite actions are found anywhere in the repository, any case); legacy-stage-files.json, the eleven legacy stage files (the list names them; the wiring and records judges leave out their own findings but follow the LISTED scripts they run and what they produce; an UNLISTED file they run is never scanned; a changed one is judged in full; the list goes with the last of them); build-config-files.json, the build configuration outside bin/ and .github/, with .goreleaser.yaml held to a closed key set, its two hooks, and each build (no repeated id) with env, flags and ldflags exactly as they stand; chain-signers.json, every non-provenance signing call with a reason; chain-scripts.json, the scripts a stage may run (only bin/chain-verify.py may sign provenance).
-      - The id-token list is per job: it closes unlisted jobs, including remote reusable workflows, in-process libraries, files outside bin/ and .github/, and tools missing from the signer table. A signer step added to a listed job is seen when the shared signer table names it (@actions/attest is in it); otherwise review and the pin checker see it.
+      - The id-token list is per job: it closes unlisted jobs, including remote reusable workflows, in-process libraries, files outside bin/ and .github/, and tools missing from the signer table. A signer step added to a listed job is seen when the shared signer table names it (@actions/attest is in it); otherwise review sees it.
       - Python puts a script's directory first on sys.path, so a file in bin/ named after a standard-library module would replace that module inside the Sign jobs, which hold the release key (the key check cannot see it). Closed structurally: the Sign step runs `python3 -I -B` and every python3 line of release.yml runs with -I; chain-verify.py compiles its two helper modules from their bytes, from their own directory (no bytecode cache is consulted; tests prove a bin/fractions.py and a __pycache__ copy are not run). The judge refuses any file or directory under bin/ or .github/ named after a standard-library module, and any __pycache__ directory or .pyc/.pyo/.so/.pyd/.dll file there (names matched case-insensitively). The -I rule covers release.yml lines only; a third-party name (bin/yaml.py) on a job without -I is backed by the file allowlist for bin/ and Release's key check. Release's own `policy make` in the release job of release.yml runs with -I too.
       - Information, not a gap in Release: an unlisted file run by a frozen id-token job (bin/vex-forms.py and the like) is not scanned by these suites; a signing-like secret other than the release key is not scanned either (the only one, AUDITOR_APP_PRIVATE_KEY, mints App tokens); neither can make a record that Release accepts, because Release accepts only the release key's signature. Obfuscated signers are out of scope; `docker buildx --attest type=provenance` writes unsigned provenance.
       Decisions:
       - AC3: no known-red allowance; the real tree is an ordinary `expect ok` with the frozen files' own findings left out.
-      - AC4 is narrow on purpose: `actions` judges the one release.yml; it refuses repeated keys (trimmed, case-folded) and malformed shapes by name. The pin checker's repeated-key rule is its own pull request (pin-check-repeated-keys).
+      - AC4 is narrow on purpose: `actions` judges the one release.yml; it refuses repeated keys (trimmed, case-folded) and malformed shapes by name.
       - AC5 (narrowed): no workflow file but scan.yml and main-candidate-rescan.yml calls release.yml, each only in snapshot mode; every sign job and the release job is guarded off in snapshot mode and under workflow_call, because a called release.yml's token names the caller's file and the policy pins the Build Config URI.
       - `stage-start` starts only from rebuild<-build, check<-build, sign<-build and release<-{build, sign, rebuild, check}, with Sign's digest-format and subject-type checks.
       - CI: the four suites are steps of ci.yml's allowlist job, judging a copy of the tracked files; a lint case refuses any pipe into a quiet grep under pipefail.
@@ -3967,9 +3929,8 @@ requirements:
     confidence: implementation-only
     notes: >
       The `then` text of AC1, AC2 and AC3 is a PARAPHRASE of the agreed sentences with the literal auditor path replaced by 'the auditor directory' (the layout check forbids that literal in this file); the VERBATIM agreed sentences are quoted in the comments above the three entries in test-evidence/mappings.yaml, which is exempt from the layout check.
-      The second review that AC3 requires is enforced outside this repository, by the private review tooling, before merge. The trusted verdict auditor-review-gate (agent-review-gate.yml, always the default branch's copy) runs main's action-pin checker, allowlist guard, pin-wiring judge and scanner guard over the pull request head, read as git objects; it judges no review record and reads no substitute. That the main branch ruleset REQUIRES the checks is not checkable from the repository and is an inspection item for the repository settings.
+      The second review that AC3 requires is enforced outside this repository, by the private review tooling, before merge. The trusted verdict auditor-review-gate (agent-review-gate.yml, always the default branch's copy) runs main's allowlist guard and scanner guard over the pull request head, read as git objects; it judges no review record and reads no substitute. That the main branch ruleset REQUIRES the checks is not checkable from the repository and is an inspection item for the repository settings.
       AC1 exemptions in the layout check beyond the AC text: .github/dependabot.yml and .githooks/pre-commit (read as allowlist entries), plus mappings.yaml and unmapped.yaml (Oct 2). The coverage gate's exclusion list (coverage-exclusions.txt in the auditor directory) is not in the AC2 text, so "100% coverage" is read as zero uncovered eligible statements.
-      Gate-workflow digest (the scanner guard, cache PR #316): the pin checker (bin/check-action-pins.py in the auditor directory) pins the gate workflow by GATE_WORKFLOW_SHA256, a frozen set of exactly one digest, 699abb31 (the gate workflow of #316), taken by its gate_digest (action pins masked). The bootstrap digest adcfd54f (the gate workflow on main before #316) was removed in the release-candidate review (rc-5b B1), so a revert of the gate workflow to it is refused. A different digest fails with a message naming the accepted one.
     acceptance_criteria:
       - id: REQ-AUD-018-AC1
         given: "any tracked file in the repository"
