@@ -62,16 +62,12 @@ write_referrer_layout() {
   printf '{}' > "$blobs/$empty"
   jq -cnj --arg type "$type" --arg layer "$layer" --argjson layer_size "$(wc -c < "$bundle")" --arg digest "$digest" --arg empty "sha256:$empty" \
     --slurpfile subject "$subject" --argjson subject_size "$(wc -c < "$subject")" \
-    '{schemaVersion: 2, mediaType: "application/vnd.oci.image.manifest.v1+json", artifactType: $type,
-      config: {mediaType: "application/vnd.oci.empty.v1+json", digest: $empty, size: 2},
-      layers: [{mediaType: $type, digest: ("sha256:" + $layer), size: $layer_size}],
-      subject: {mediaType: $subject[0].mediaType, digest: $digest, size: $subject_size}}' > "$dir/manifest.json"
+    '{schemaVersion: 2, mediaType: "application/vnd.oci.image.manifest.v1+json", artifactType: $type, config: {mediaType: "application/vnd.oci.empty.v1+json", digest: $empty, size: 2}, layers: [{mediaType: $type, digest: ("sha256:" + $layer), size: $layer_size}], subject: {mediaType: $subject[0].mediaType, digest: $digest, size: $subject_size}}' > "$dir/manifest.json"
   manifest=$(sha256sum "$dir/manifest.json" | cut -d ' ' -f 1)
   mv "$dir/manifest.json" "$blobs/$manifest"
   printf '{"imageLayoutVersion":"1.0.0"}' > "$dir/oci-layout"
   jq -cn --arg manifest "$manifest" --argjson size "$(wc -c < "$blobs/$manifest")" \
-    '{schemaVersion: 2, manifests: [{mediaType: "application/vnd.oci.image.manifest.v1+json",
-                                    digest: ("sha256:" + $manifest), size: $size}]}' > "$dir/index.json"
+    '{schemaVersion: 2, manifests: [{mediaType: "application/vnd.oci.image.manifest.v1+json", digest: ("sha256:" + $manifest), size: $size}]}' > "$dir/index.json"
 }
 # the guide's own check, so a bundle without its Rekor entry is never left on a public digest unnoticed
 # attach_manifest LAYOUT REF@DIGEST

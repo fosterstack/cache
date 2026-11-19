@@ -4413,7 +4413,7 @@ requirements:
       - id: REQ-CHAIN-007-AC10
         given: "the release scripts and the witnessed helper"
         when: "chain-scripts.json and the scripts are read"
-        then: "each is listed with exactly the tools it uses (release-verify: python3 only; release-apks: bash, jq and python3; release-publish: bash, crane, jq, python3 and trap; release-sign: bash, cosign, git, jq, python3, sha256sum and trap; release-sign-verify: jq, python3, sha256sum and trap; release-assets: gh, git and python3; release-postverify: python3), signs false for release-verify, release-publish, release-assets and release-postverify and other, with a reason, for release-apks and release-sign, no script starts another script except through the list, no script prints a credential, and a run with credential sentinels in the environment shows none of them in any output or file"
+        then: "each is listed with exactly the tools it uses (release-verify: python3 only; release-apks: bash, jq and python3; release-publish: bash, crane, jq, python3 and trap; release-sign: bash, cosign, crane, git, jq, python3, sha256sum and trap; release-sign-verify: jq, python3, sha256sum and trap; release-assets: gh, git and python3; release-postverify: python3), signs false for release-verify, release-publish, release-assets and release-postverify and other, with a reason, for release-apks and release-sign, no script starts another script except through the list, no script prints a credential, and a run with credential sentinels in the environment shows none of them in any output or file"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-007-AC11
