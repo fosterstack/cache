@@ -181,6 +181,9 @@ func metricsEndpoint(cfg Config) http.Handler {
 		// The wait for a refresh (at most the sampler's few milliseconds) happens
 		// BEFORE the lock, so scrapes do not queue behind it.
 		smp := diskSample(cfg)
+		if cfg.Metrics != nil && cfg.Cache != nil {
+			updateStoreGauges(cfg)
+		}
 		buf := &bufferedResponse{header: http.Header{}, status: http.StatusOK}
 		scrapeMu.Lock()
 		setDiskGauges(cfg, smp)
@@ -468,7 +471,6 @@ func handlePut(w http.ResponseWriter, r *http.Request, cfg Config, key string) {
 	}
 	if cfg.Metrics != nil {
 		cfg.Metrics.BytesWritten.Add(float64(n))
-		updateStoreGauges(cfg)
 	}
 	w.WriteHeader(http.StatusCreated)
 }
@@ -479,16 +481,16 @@ func handlePut(w http.ResponseWriter, r *http.Request, cfg Config, key string) {
 var gaugesReadHook = func() {}
 
 // gaugesMu orders gauge refreshes: the last refresh to run also read last, so
-// the gauges end at the totals the last completed upload saw.
+// the gauges end at the totals the last completed refresh saw.
 var gaugesMu sync.Mutex
 
-// updateStoreGauges refreshes the store_bytes/store_entries gauges after a
-// successful write. Each refresh makes two read-only passes over the metadata
-// index (TotalSize and Count each visit every record, so the cost grows with
-// the number of entries; a running total would be a metadata-layer change).
-// The whole refresh runs under gaugesMu: the reads and the sets of one
-// refresh cannot interleave with another's, so overlapping uploads cannot
-// leave the gauges at an older total.
+// updateStoreGauges refreshes the store_bytes/store_entries gauges at a
+// /metrics scrape, never on a PUT. Each refresh makes two read-only passes over
+// the metadata index (TotalSize and Count each visit every record, so the cost
+// grows with the number of entries), which a PUT must not wait for. The whole
+// refresh runs under gaugesMu: the reads and the sets of one refresh cannot
+// interleave with another's, so overlapping scrapes cannot leave the gauges at
+// an older total.
 func updateStoreGauges(cfg Config) {
 	gaugesMu.Lock()
 	defer gaugesMu.Unlock()
