@@ -44,10 +44,12 @@ for mf in "$SRC"/*/go.mod.fixture; do
   hasdep="$(grep -c 'golang.org/x/text v0.3.0' "$tmp/go.mod")"; hasdep="${hasdep:-0}"
   hasgo="$(ls "$tmp"/*.go >/dev/null 2>&1 && echo 1 || echo 0)"
   # if the Go toolchain is present, `go mod edit -json` validates the materialized manifest
-  # offline (no module download); skip cleanly when go is absent.
+  # offline (no module download); skip cleanly when go is absent, except in CI (the job that runs this suite must have Go, or the check never runs where it gates).
   goedit=1
   if command -v go >/dev/null 2>&1; then
     (cd "$tmp" && go mod edit -json >/dev/null 2>&1) || goedit=0
+  elif [ -n "${CI:-}" ]; then
+    goedit=0
   fi
   if [ "$goodmod" -ge 1 ] 2>/dev/null && [ "$hasdep" -ge 1 ] 2>/dev/null && [ "$hasgo" = 1 ] && [ "$goedit" = 1 ]; then
     ok "materialized $name into a temp module (valid go.mod + deliberate vulnerable pin + sources)"
