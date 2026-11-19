@@ -168,9 +168,9 @@ grep -q "^lines.append(.$STUBNAME() { sh bin/loopback-get.sh" "$root/bin/accepta
 # pin-age reads a line that starts with an assignment to a variable named url as the place a script downloads from, which no ruling can cover: the helper has none
 if grep -Eq '^[ 	]*(export +|readonly +|local +)?(url|URL)=' "$H"; then bad "the helper has a line that starts with an assignment to url"; else ok "the helper has no line that starts with an assignment to url (pin-age reads it as a download source)"; fi
 # --- the call sites no longer name curl
-# the four scripts that change directory keep their own request lines (the named exception of REQ-SUP-001-AC24, until check-action-pins can place a relative path in a script that cds); every other call site goes through the helper
+# the four scripts that change directory keep their own request lines (the named exception of REQ-SUP-001-AC24); every other call site goes through the helper
 for f in acceptance-gradle.sh acceptance-gradle-capped.sh acceptance-maven.sh acceptance-maven-capped.sh; do
-  if grep -q 'loopback-get.sh' "$root/bin/$f"; then bad "bin/$f names the helper (it is a named exception of AC24: it keeps its own fetch lines until check-action-pins can place a relative path in a script that cds)"; else ok "bin/$f keeps its own fetch lines (named exception of AC24)"; fi
+  if grep -q 'loopback-get.sh' "$root/bin/$f"; then bad "bin/$f names the helper (it is a named exception of AC24: it keeps its own fetch lines)"; else ok "bin/$f keeps its own fetch lines (named exception of AC24)"; fi
 done
 for f in acceptance-serve.sh acceptance-k8s.sh acceptance-egress.sh check-artifacts.sh check-fips.sh; do
   n=$(grep -v '^[[:space:]]*#' "$root/bin/$f" | grep -c "\b$STUBNAME\b" || true)

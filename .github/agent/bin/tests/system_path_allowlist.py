@@ -6,52 +6,23 @@ ROWS = [
     ('bin/branch_sweep_test.py',
      'or "/").split("/")',
      "the default of a dict lookup whose result is split on '/' to compare an owner name; a string separator, not a path"),
-    ('.github/agent/bin/tests/test_check_action_pins.py',
-     '',
-     "shell-script TEXT handed to the pin checker's string analysers (script_installs, _downloaded_commands, _outside, _made_executable); /home/runner/work and /usr/local/bin are the literal GitHub-runner and install-location strings those rules match on, and the functions never open, stat or resolve them (the checker reads only entries of the tree it is given; the guard proves the suite touches no system path at run time)"),
     ('.github/agent/bin/tests/test_panel.py',
      '',
      'container-image-internal paths inside evidence text (package-database and go-build-info lines) that the panel voter parses; no filesystem access'),
     ('.github/agent/bin/tests/test_panel_io.py',
      '',
      'container-image-internal paths: tar member names written into an in-memory layer archive and read back from a temp .oci file; assertions compare the parsed in-image paths, never the host filesystem (go_buildinfo takes the in-image name as a dict key and copies to its own temp file)'),
-    ('.github/agent/bin/tests/test_pin_writes_redirect.py',
-     "'/tmp/x', '/dev/null'",
-     "shell-script TEXT handed to the pin checker's _writes (a redirect or tee target); the checker places the target as text and never opens, stats or resolves it"),
-    ('.github/agent/bin/tests/test_pin_writes_redirect.py',
-     "'{c} /tmp/out',",
-     "shell-script TEXT handed to the pin checker's _writes; a fixture line, never opened, stat-ed or resolved"),
 ]
 
-# Link creations with an absolute target that are pure data: command text inside a fixture workflow/script that the pin checker
-# judges as text and nothing executes. (file, substring of the line, reason)
+# Link creations with an absolute target that are pure data: command text inside a fixture that nothing executes.
+# (file, substring of the line, reason)
 LINK_ROWS = [
-    ('.github/agent/tests/check-action-pins-test.sh',
-     'ln -s /tmp/a /tmp/b',
-     'text of a workflow run: step (case n2-copy-other-file) that the pin checker judges as text; nothing executes it'),
 ]
 
 # A WHOLE-FILE row (empty span) exempts every system-path literal in a PYTHON test, and the scan cannot tell a quoted fixture line from a command,
 # so each file lists the literal-bearing lines it may contain, with a reason. A new literal line in one of these files must be added here
 # with a reason (`python3 test_fs_guard.py --print-pins`).
 PINS = {
-    '.github/agent/bin/tests/test_check_action_pins.py': (
-        [        'self.assertEqual(M.script_installs("python3 -m venv /tmp/v && python3 -m json.tool f"), [])',
-                 'self.assertEqual(M._downloaded_commands("curl --output=/tmp/x https://e/x\\ncp /tmp/x /usr/local/bin/tool"), {"tool", '
-                 '"x"})',
-                 'self.assertEqual(M._downloaded_commands("curl -o /tmp/x https://e/x\\ninstall --target-directory=/usr/local/bin '
-                 '/tmp/x"), {"x"})',
-                 'self.assertFalse(M._outside("/home/runner/work/x", ""))',
-                 'self.assertTrue(M._outside("$HOME/.docker/x", ""))',
-                 'self.assertFalse(M._outside("$d", "d=/tmp/y; d=/home/runner/work/z"))',
-                 'self.assertEqual(M._made_executable("curl -o /usr/local/bin/t https://e/t", "/usr/local/bin/t"), "downloads")',
-                 'self.assertEqual(M._downloaded_commands("curl --output /usr/local/bin/x https://e/x"), {"x"})',
-                 'fh.write(HEAD + "    steps:\\n      - run: |\\n          printf x > /tmp/smoke-assert.sh; bash '
-                 '/tmp/smoke-assert.sh\\n")',
-                 'for script in ("/tmp/smoke-assert.sh", "/tmp/pf-forward.sh"):',
-                 'code, out = run([self.tree_with(self.K8S, "/tmp/other.sh")])',
-                 'for js in ("core.addPath(\'/tmp/bin\')", "core.addPath(p)", "core.addPath(`${dir}/bin`)"):'],
-        "shell-script TEXT handed to the pin checker's string analysers (script_installs, _downloaded_commands, _outside, _made_executable); /home/runner/work and /usr/local/bin are the literal GitHub-runner and install-location strings those rules match on, and the functions never open, stat or resolve them (the checker reads only entries of the tree it is given; the guard proves the suite touches no system path at run time); the added for-loop line holds JavaScript test strings (core.addPath arguments) that are written into a throwaway fixture workflow, never used as paths"),
     '.github/agent/bin/tests/test_panel.py': (
         [        '"package database /var/lib/dpkg/status.d/tzdata:\\nPackage: tzdata\\nVersion: 2026c-0+deb13u1\\n"',
                  '"file: /usr/share/zoneinfo/tzdata.zi (version 2026a)\\n"',

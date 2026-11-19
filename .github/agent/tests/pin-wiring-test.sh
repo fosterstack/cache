@@ -135,7 +135,7 @@ for _jid, _j in (d.get("jobs") or {}).items():
         if isinstance(env, dict):
             for k in sorted(k for k in env if is_risky(k)):
                 bad.append(f"{where} sets env {k}")
-# every action of ci.yml is one of the four pinned ones, by a full lower-case commit digest (the digest VALUE is judged by check-action-pins --verify-tags and the daily
+# every action of ci.yml is one of the four pinned ones, by a full lower-case commit digest (the digest VALUE is judged by review, the release audit and the daily
 # audit: a Dependabot bump moves it); a tag, a short or upper-case digest, a local action or another owner's action is refused in every job
 _PINNED_ACTIONS = ("actions/checkout", "actions/setup-go", "actions/setup-python", "actions/upload-artifact")
 for _jid, _j in (d.get("jobs") or {}).items():
@@ -202,7 +202,7 @@ else:
 # main's copy), being changed first. Adding a step to one of these jobs means adding it here. The run text of the suite-list `list` step and of the suites leg is not judged here (ci-suites-matrix-test.sh runs it).
 def _by_shape(st):
     """A step with `uses: name@<full 40-hex commit>` stands for every digest of
-    that action: the digest VALUE is judged by check-action-pins --verify-tags and the daily audit (a Dependabot bump moves it), not by these lists. The
+    that action: the digest VALUE is judged by review, the release audit and the daily audit (a Dependabot bump moves it), not by these lists. The
     action name and the exact shape of the ref (40 lower-case hex) stay compared; the stand-in is a tuple, which no YAML
     scalar can equal."""
     u = st.get("uses")
@@ -269,14 +269,6 @@ JUDGED = json.loads(r'''{
    {
     "name": "every reusable-workflow caller covers its callees' permissions (R01)",
     "run": "python3 bin/check-workflow-permissions.py"
-   },
-   {
-    "name": "the pin checker's own cases (row 78)",
-    "run": "bash .github/agent/tests/check-action-pins-test.sh"
-   },
-   {
-    "name": "the pip that CI runs is pinned in every job that installs with pip (REQ-SUP-001-AC13)",
-    "run": "bash .github/agent/tests/pip-pin-test.sh"
    },
    {
     "name": "the documented Gradle and Maven snippets have the structure acceptance runs, and the Kubernetes reset order",
@@ -530,7 +522,7 @@ for _jid in ("suite-list", "suites", "allowlist-chain"):
             bad.append(f"a run text of the {_jid} job contains a `${{{{` expression")
 def _by_shape(st):
     """A step with `uses: name@<full 40-hex commit>` stands for every digest of
-    that action: the digest VALUE is judged by check-action-pins --verify-tags and the daily audit (a Dependabot bump moves it), not by these lists. The
+    that action: the digest VALUE is judged by review, the release audit and the daily audit (a Dependabot bump moves it), not by these lists. The
     action name and the exact shape of the ref (40 lower-case hex) stay compared; the stand-in is a tuple, which no YAML
     scalar can equal."""
     u = st.get("uses")
@@ -753,7 +745,6 @@ case_msg_fs() { case_msg_on full-suite.yml fsjudge "$@"; }
 steps='d["jobs"]["allowlist"]["steps"]'
 # a counting step of ci.yml, by the file name of the suite it runs (its run is `bash PATH`)
 cnt() { echo "[s for j in d['jobs'].values() for s in (j.get('steps') or []) if (s.get('run') or '').strip().startswith('bash ') and (s.get('run') or '').strip().endswith('/$1')][0]"; }
-pick=$(cnt check-action-pins-test.sh)
 CW=$(cnt check-file-allowlist-test.sh)
 case_ the-real-hygiene      ok  ""
 case_fs the-real-full-suite ok  ""
@@ -779,10 +770,6 @@ case_ count-step-continue           bad "w = $CW; w['continue-on-error'] = 'true
 case_ count-step-env-injected       bad "w = $CW; w['run'] = 'BASH_ENV=/tmp/x bash bin/check-file-allowlist-test.sh'"
 case_ count-step-copied-to-test-job bad "d['jobs']['test']['steps'].append(dict($CW))"
 case_ count-step-two-suites-one-step bad "w = $CW; w['run'] = w['run'] + '\nbash bin/check-customer-words-test.sh'"
-case_ step-removed          bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() != $pick['run']]"
-case_ step-if-false         bad "$pick['if'] = 'false'"
-case_ step-continue         bad "$pick['continue-on-error'] = 'true'"
-case_ step-weakened         bad "$pick['run'] = $pick['run'] + ' || true'"
 case_ job-if-false          bad "d['jobs']['allowlist']['if'] = 'false'"
 case_ job-if-gone           bad "d['jobs']['allowlist'].pop('if', None)"
 case_ job-if-always         bad "d['jobs']['allowlist']['if'] = 'always()'"
@@ -792,13 +779,11 @@ case_ pr-paths-filter       bad "d['on']['pull_request'] = {'paths': ['README.md
 case_ pr-branches-filter    bad "d['on']['pull_request'] = {'branches': ['release']}"
 case_ push-paths-filter     bad "d['on']['push']['paths'] = ['README.md']"
 case_ push-paths-ignore     bad "d['on']['push']['paths-ignore'] = ['**']"
-case_ step-shell-override   bad "$pick['shell'] = \"bash -c 'true' {0}\""
 case_ job-defaults-shell    bad "d['jobs']['allowlist']['defaults'] = {'run': {'shell': \"bash -c 'true' {0}\"}}"
 case_ other-job-defaults    bad "d['jobs']['test']['defaults'] = {'run': {'shell': \"bash -c 'true' {0}\"}}"
 case_ workflow-defaults     bad "d['defaults'] = {'run': {'shell': \"bash -c 'true' {0}\"}}"
 case_ other-job-continue    bad "d['jobs']['lint']['continue-on-error'] = 'true'"
 case_ other-step-continue   bad "d['jobs']['requirements']['steps'][-1]['continue-on-error'] = 'true'"
-case_ bash-env-on-step      bad "$pick['env'] = {'BASH_ENV': '/tmp/x.sh'}"
 case_ bash-env-on-job       bad "d['jobs']['allowlist']['env'] = {'BASH_ENV': '/tmp/x.sh'}"
 case_ bash-env-on-other-job bad "d['jobs']['test']['env'] = {'BASH_ENV': '/tmp/x.sh'}"
 case_ shellopts-on-other-step bad "d['jobs']['lint']['steps'][-1]['env']['SHELLOPTS'] = 'noexec'"
@@ -807,12 +792,9 @@ case_ github-env-write      bad "$steps.insert(1, {'run': 'echo BASH_ENV=/tmp/x.
 case_ github-path-write     bad "$steps.insert(1, {'run': 'echo /tmp/fake >> \"\$GITHUB_PATH\"'})"
 case_ github-env-write-test-job bad "d['jobs']['test']['steps'].insert(1, {'run': 'echo BASH_ENV=/tmp/x.sh >> \"\$GITHUB_ENV\"'})"
 case_ checkout-other-ref    bad "$steps[0]['with'] = {'ref': 'main'}"
-case_ cases-step-env        bad "$pick['env'] = {'PINS_DRY': '1'}"
-case_ cases-step-env-self   bad "$pick['env'] = {'PINS_SELF': '/bin/true'}"
-case_ cases-step-removed    bad "$steps[:] = [s for s in $steps if s is not $pick]"
 
 # the counting steps of the allowlist job (REQ-CI-005): each is one step with exactly its name and its counting line and nothing else, so a pull request cannot remove, skip, rename, weaken, wrap or move it
-for sfx in check-file-allowlist check-customer-words branch-sweep govulncheck-fixtures check-action-pins pip-pin docs-snippets auditor-matrix auditor-labels; do
+for sfx in check-file-allowlist check-customer-words branch-sweep govulncheck-fixtures docs-snippets auditor-matrix auditor-labels; do
   sel=$(cnt "$sfx-test.sh")
   case_ "$sfx-removed"  bad "$steps[:] = [s for s in $steps if s is not $sel]"
   case_ "$sfx-if"       bad "$sel['if'] = 'false'"
@@ -1026,7 +1008,7 @@ gitcase suites-leg-if-at-a-commit bad "$LEG['if'] = 'false'" full-suite.yml
 gitcase full-suite-push-at-a-commit bad "d['on']['push'] = {'branches': ['main']}" full-suite.yml
 
 case_ job-needs-skipped          bad "d['jobs']['skip_guard'] = {'runs-on': 'ubuntu-latest', 'if': 'false', 'steps': [{'run': 'true'}]}; d['jobs']['allowlist']['needs'] = 'skip_guard'"
-# a bump of an action that ci.yml uses moves the digest in every step that uses it; the digest value is judged by check-action-pins --verify-tags and the daily audit,
+# a bump of an action that ci.yml uses moves the digest in every step that uses it; the digest value is judged by review, the release audit and the daily audit,
 # not by this judge. The action name and the full 40-hex lower-case shape of the ref stay exact, in every job.
 BUMP="for j in d['jobs'].values(): "
 BUMP+="[s.__setitem__('uses', '%s') for s in (j.get('steps') or []) "

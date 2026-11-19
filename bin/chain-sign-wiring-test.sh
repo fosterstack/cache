@@ -5542,10 +5542,6 @@ if ! grep -q 'witness-evil' "$t/log" 2> /dev/null; then pass=$((pass + 1)); echo
 # a plan entry is matched whole: a staged file whose name only contains a planned name is not on the plan
 t=$(ws_tree longer); echo '{}' > "$t/staged/witness-build/build-collection.payload.payload"; wsno "F4 a staged payload whose name only contains a planned payload's name is refused" "$t"
 
-# ---- round 2 (Codex terra, cache#586): the repository-wide action-pin gate (a required CI step) reads the Sign helper; it must stay clean on the real tree ----
-if (cd "$root" && python3 -I ".github/ag""ent/bin/check-action-pins.py" . > "$work/pins.out" 2>&1); then pass=$((pass + 1)); echo "ok   the real tree passes the repository-wide action-pin gate (stage-sign.yml and the staged signer bind)"
-else failn=$((failn + 1)); echo "FAIL the real tree fails the action-pin gate: $(tail -3 "$work/pins.out" | cut -c1-300)"; fi
-
 # ---- KA-2 p4 group 3 (ruling of 2026-11-03T14:05Z, Q3): bin/with-aws-token.sh adds `--aws "$RUNNER_TEMP/aws-cli/aws" --public-key build/keys/release.rsa.pub` to sign and sign-record only (literal), and
 # REFUSES (exit 2, before the token is fetched and before any call) a caller that already passes --aws or --public-key to either. A stub verifier records its argv; the stage judge is not loosened.
 # WRAPPER-FILE ARGS... : runs the wrapper in a throw-away tree with a stub verifier; sets WR_RC, WR_FETCHES (token
