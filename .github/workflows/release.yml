@@ -244,7 +244,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # the same queries and run selection admission makes (every run, filter=all; a release-only check by its producing file's newest run), against the same policy: protected main's, never the
+          # the same queries and run selection admission makes (the latest run of each name, filter=latest; a release-only check by its producing file's newest of every run, filter=all), against the same policy: protected main's, never the
           # checked-out commit's (Codex #159 r1, B6; pin pass B01/B02) — so "ready" here is what admission will see
           end=$((SECONDS + 3600))
           while [ "$SECONDS" -lt "$end" ]; do
@@ -252,11 +252,13 @@ jobs:
             git fetch -q --no-tags origin main
             git show origin/main:.github/policy/required-checks.json > "$RUNNER_TEMP/required-checks.json"
             git show origin/main:.github/policy/release-only-checks.json > "$RUNNER_TEMP/release-only-checks.json"
-            gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?filter=all&per_page=100" --paginate \
+            gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?filter=latest&per_page=100" --paginate \
               --jq '[.check_runs[] | {id, name, status, conclusion, app_id: .app.id, url: .details_url}]' | jq -s 'add // []' > "$RUNNER_TEMP/runs.json"
+            gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?filter=all&per_page=100" --paginate \
+              --jq '[.check_runs[] | {id, name, status, conclusion, app_id: .app.id, url: .details_url}]' | jq -s 'add // []' > "$RUNNER_TEMP/all-runs.json"
             gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${GITHUB_SHA}&per_page=100" --paginate \
               --jq '[.workflow_runs[] | {id, path, event, head_sha}]' | jq -s 'add // []' > "$RUNNER_TEMP/workflow-runs.json"
-            v=$(python3 bin/patch-decide.py ready --required "$RUNNER_TEMP/required-checks.json" --required "$RUNNER_TEMP/release-only-checks.json" --check-runs "$RUNNER_TEMP/runs.json" --workflow-runs "$RUNNER_TEMP/workflow-runs.json" --sha "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY")
+            v=$(python3 bin/patch-decide.py ready --required "$RUNNER_TEMP/required-checks.json" --required "$RUNNER_TEMP/release-only-checks.json" --check-runs "$RUNNER_TEMP/runs.json" --all-check-runs "$RUNNER_TEMP/all-runs.json" --workflow-runs "$RUNNER_TEMP/workflow-runs.json" --sha "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY")
             echo "$v"
             case "${v%% *}" in
               ready) echo "ready=true" >> "$GITHUB_OUTPUT"; exit 0 ;;

@@ -1244,7 +1244,7 @@ def _bound_verdict(req, check_runs, workflow_runs, sha, repo, file, events):
     return "wait", ""
 
 
-def ready(required, check_runs, workflow_runs=None, sha=None, repo=None, bound=()):
+def ready(required, check_runs, workflow_runs=None, sha=None, repo=None, bound=(), all_runs=None):
     """(verdict, why) for the tagged commit's push-scoped required checks, judged as source admission judges them
     (stage-admission.yml): a check counts only as a success from its pinned app. "ready": every one has one. "wait": none
     is red with nothing left to run (a run is missing, queued or in progress). "no": a check finished without success and
@@ -1252,7 +1252,8 @@ def ready(required, check_runs, workflow_runs=None, sha=None, repo=None, bound=(
     `required` is one policy file or a list of them (required-checks.json and release-only-checks.json): admission
     requires both, and a bad file never lowers the requirement. The policies of `bound` (release-only-checks.json) are
     judged by admission's run selection (BOUND_CONTEXTS): the newest run of the producing file on `sha` decides, from
-    `workflow_runs` {id, path, event, head_sha}; with no sha or repo, or a context the table does not bind, it is "no"."""
+    `all_runs` (every run of the commit; `check_runs` when not given) and `workflow_runs` {id, path, event, head_sha}.
+    The others are judged on `check_runs`, the latest run of each name, as admission's one_green_run is. With no sha or repo, or a context the table does not bind, it is "no"."""
     waiting, red, reqs = [], [], []
     for policy in required if isinstance(required, list) else [required]:
         part = policy.get("required_checks") if isinstance(policy, dict) else None
@@ -1277,7 +1278,7 @@ def ready(required, check_runs, workflow_runs=None, sha=None, repo=None, bound=(
         if _scope(req) != "push":
             continue
         if is_bound:
-            v, why = _bound_verdict(req, check_runs, workflow_runs or [], sha, repo, files[req["context"]], events)
+            v, why = _bound_verdict(req, check_runs if all_runs is None else all_runs, workflow_runs or [], sha, repo, files[req["context"]], events)
             if v == "no":
                 return "no", why
             if v == "wait":
@@ -1677,7 +1678,7 @@ def cmd_ready(a):
     policies = [_policy(f) for f in a.required]
     bound = [p for f, p in zip(a.required, policies) if os.path.basename(f) == "release-only-checks.json"]
     verdict, why = ready(policies, json.load(open(a.check_runs)), json.load(open(a.workflow_runs)) if a.workflow_runs else [],
-                         a.sha, a.repo, bound)
+                         a.sha, a.repo, bound, json.load(open(a.all_check_runs)) if a.all_check_runs else None)
     print(verdict, _clean(why))
     return 0
 
@@ -1775,7 +1776,8 @@ def main(argv=None):
     k = sub.add_parser("ready")
     k.add_argument("--required", required=True, action="append",
                    help="a policy file, once each: required-checks.json and release-only-checks.json")
-    k.add_argument("--check-runs", required=True, help="JSON list of the commit's check runs {name, status, conclusion, app_id, id, url}")
+    k.add_argument("--check-runs", required=True, help="JSON list of the latest check run of each name {name, status, conclusion, app_id, id, url}")
+    k.add_argument("--all-check-runs", help="JSON list of every check run of the commit, for the contexts the admission table binds (default: --check-runs)")
     k.add_argument("--workflow-runs", help="JSON list of the commit's workflow runs {id, path, event, head_sha}")
     k.add_argument("--sha", help="the tagged commit")
     k.add_argument("--repo", help="owner/name")

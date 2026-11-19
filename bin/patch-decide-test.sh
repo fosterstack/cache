@@ -446,10 +446,11 @@ def with_ids(runs):
     return out
 def wr_(run_id, path=FS_, event="schedule", sha=SHA_):
     return {"id": run_id, "path": path, "event": event, "head_sha": sha}
-def ready_files(files, runs, wrs=None, sha=SHA_, repo=REPO_):
+def ready_files(files, runs, wrs=None, sha=SHA_, repo=REPO_, all_runs=None):
     runs = with_ids(runs)
     wrs = [wr_(r["id"] + 1000) for r in runs] if wrs is None else wrs
     cmd = [sys.executable, sys.argv[1], "ready"] + [x for f in files for x in ("--required", f)] + ["--check-runs", jf_(runs), "--workflow-runs", jf_(wrs)]
+    if all_runs is not None: cmd += ["--all-check-runs", jf_(with_ids(all_runs))]   # every run; only the bound contexts read it
     if sha: cmd += ["--sha", sha]
     if repo: cmd += ["--repo", repo]
     r = subprocess.run(cmd, capture_output=True, text=True)
@@ -525,12 +526,22 @@ v_, o_ = acc([(10, "failure"), (20, "success")])
 check("REL-013-AC1 run selection: 'acceptance / x' older red newer green -> ready", v_ == "ready", o_)
 v_, o_ = acc([(20, "success")], path=".github/workflows/scan.yml")
 check("REL-013-AC1 run selection: 'acceptance / x' green from scan.yml does not qualify -> wait", v_ == "wait", o_)
-# a required-checks.json context is never bound: any green run of the pinned app counts
-v_, o_ = ready_files([REQF_, ROF_], [dict(run("test", conclusion="failure"), id=5), dict(run("test"), id=6), run("scan"), run("allowlist-chain")],
-                     [wr_(1005, event="push"), wr_(1006, event="push")] + [wr_(1000 + i) for i in (3, 4)])
+# a required-checks.json context is never bound: admission judges the latest run of its name (--check-runs holds the latest of each name, --all-check-runs every run)
+old_red_, new_green_ = dict(run("test", conclusion="failure"), id=5), dict(run("test"), id=6)
+v_, o_ = ready_files([REQF_, ROF_], [new_green_, run("scan"), run("allowlist-chain")],
+                     [wr_(1005, event="push"), wr_(1006, event="push")] + [wr_(1000 + i) for i in (3, 4)], all_runs=[old_red_, new_green_, run("scan"), run("allowlist-chain")])
 check("REL-013-AC1 run selection: a required-checks context with an old red and a newer green stays ready (unbound, push event irrelevant)", v_ == "ready", o_)
-v_, o_ = ready_files([REQF_, ROF_], [dict(run("test"), id=5), dict(run("test", conclusion="failure"), id=6), run("scan"), run("allowlist-chain")])
-check("REL-013-AC1 run selection: a required-checks context with an old green and a newer red stays ready (any green counts)", v_ == "ready", o_)
+old_green_ = dict(run("test"), id=5)
+v_, o_ = ready_files([REQF_, ROF_], [dict(run("test", conclusion="failure"), id=6), run("scan"), run("allowlist-chain")], all_runs=[old_green_, dict(run("test", conclusion="failure"), id=6), run("scan"), run("allowlist-chain")])
+check("REL-013-AC1 run selection: a required-checks context with an old green and a newer red is no (admission judges the latest run, an older green never counts)", v_ == "no", o_)
+for st_ in ("in_progress", "queued"):
+    pend_, scan_, chain_ = dict(run("test", status=st_), id=6), dict(run("scan"), id=7), dict(run("allowlist-chain"), id=8)
+    v_, o_ = ready_files([REQF_, ROF_], [pend_, scan_, chain_], all_runs=[old_green_, pend_, scan_, chain_])
+    check("REL-013-AC1 run selection: a required-checks context with an old green and a newer %s run -> wait (the latest run is pending)" % st_, v_ == "wait", o_)
+# a bound context keeps the every-run selection: --all-check-runs decides it, whatever --check-runs holds
+bound_all_ = [dict(run("test"), id=900), dict(run("scan"), id=901), dict(run("allowlist-chain"), id=10), dict(run("allowlist-chain", conclusion="failure"), id=20)]
+v_, o_ = ready_files([REQF_, ROF_], bound_all_[:2] + bound_all_[3:], [wr_(r["id"] + 1000) for r in bound_all_], all_runs=bound_all_)
+check("REL-013-AC1 run selection: a bound release-only context with an old green and a newer red is still no when --check-runs holds only the latest of each name", v_ == "no", o_)
 # a release-only context the table does not bind is a policy error
 UNB_ = ro_file({"required_checks": [{"context": "some-unbound-context", "integration_id": 15368, "scope": "push"}]})
 v_, o_ = ready_files([REQF_, UNB_], [run("test"), run("scan"), run("some-unbound-context")])
