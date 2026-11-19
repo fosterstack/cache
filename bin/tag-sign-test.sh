@@ -89,6 +89,12 @@ for t in v0.3.0 v0.3.1-rc1 v1.0.0 v0.3 main "v0.3.1 " v0.3.01; do
 done
 rm -f "$W/o3" "$W/d3"; rc=0; prep v0.3.1 abc123 "" "" "" "$W/o3" "$W/d3" > /dev/null 2>&1 || rc=$?
 [ "$rc" != 0 ] && [ ! -e "$W/o3" ] && ok "prepare refuses a commit that is not 40 hex characters" || bad "prepare accepted a short commit (exit $rc)"
+# notes that do not end in a newline: the signature block would follow on the last notes line and git cannot find it ("no signature found"), so prepare refuses them (an empty file too) and writes nothing
+printf '%s' "${NOTES_TXT%$'\n'}" > "$W/notes-nonl.md"; : > "$W/notes-empty.md"; printf 'one line, no newline' > "$W/notes-one.md"
+for n in notes-nonl notes-empty notes-one; do
+  rm -f "$W/o5" "$W/d5"; rc=0; prep v0.3.1 "" "$W/$n.md" "" "" "$W/o5" "$W/d5" > "$W/p5.out" 2>&1 || rc=$?
+  [ "$rc" != 0 ] && [ ! -e "$W/o5" ] && [ ! -e "$W/d5" ] && grep -qi 'notes' "$W/p5.out" && grep -qi 'newline' "$W/p5.out" && ok "prepare refuses the notes file '$n' (no final newline), naming the notes and the final newline, and writes neither the object nor the digest" || bad "prepare with '$n' -> exit $rc, object $([ -e "$W/o5" ] && echo written || echo none), digest $([ -e "$W/d5" ] && echo written || echo none): $(head -c 200 "$W/p5.out")"
+done
 # ---- assemble and the oracle: git verify-tag ----
 kms_sign "$W/digest" "$W/sig"
 rc=0; rm -f "$W/signed"; python3 "$TS" assemble --object "$W/obj" --signature "$W/sig" --signer-file "$W/signer" --out "$W/signed" > "$W/asm.out" 2>&1 || rc=$?
@@ -126,6 +132,16 @@ verify "$W/tampered" "$W/signer" && bad "git verify-tag accepts a tag whose note
 verify "$W/signed" "$W/signer-other" && bad "git verify-tag accepts the signature under another key" || ok "the signature does not verify under another RSA key"
 rc=0; python3 "$TS" assemble --object "$W/obj" --signature "$W/sig" --signer-file "$W/signer-other" --out "$W/signed-other" > /dev/null 2>&1 || rc=$?
 if [ "$rc" = 0 ]; then verify "$W/signed-other" "$W/signer-other" && bad "a signature made by one key verifies under another's key block" || ok "a signature assembled with another key's block does not verify"; else ok "assemble refuses a signature that does not match the key (exit $rc)"; fi
+# git itself, on notes of other shapes that end in a newline (one line; a blank line last): each prepared, signed and assembled tag verifies
+for n in $'one line\n' $'first\n\nlast paragraph\n\n'; do
+  printf '%s' "$n" > "$W/notes-e.md"; rm -f "$W/oe" "$W/de" "$W/se" "$W/ge"
+  if prep v0.3.1 "" "$W/notes-e.md" "" "" "$W/oe" "$W/de" > /dev/null 2>&1 && kms_sign "$W/de" "$W/se" && python3 "$TS" assemble --object "$W/oe" --signature "$W/se" --signer-file "$W/signer" --out "$W/ge" > /dev/null 2>&1 && verify "$W/ge" "$W/signer"
+  then ok "git verify-tag accepts a tag whose notes end in a newline ($(printf '%s' "$n" | head -c 12 | tr '\n' '|'))"
+  else bad "a tag with newline-terminated notes ($(printf '%s' "$n" | head -c 12 | tr '\n' '|')) does not prepare, assemble and verify: ${VOUT:-}"; fi
+done
+# unterminated notes never reach assemble: there is no object to hand it, and the prepared file of an earlier run is not reused
+rm -f "$W/oe" "$W/de"; rc=0; prep v0.3.1 "" "$W/notes-nonl.md" "" "" "$W/oe" "$W/de" > /dev/null 2>&1 || rc=$?
+{ [ "$rc" != 0 ] && [ ! -e "$W/oe" ]; } && ok "unterminated notes give no object for assemble (prepare exits $rc with nothing written)" || bad "unterminated notes: prepare exit $rc, object $([ -e "$W/oe" ] && echo written || echo none)"
 # assemble refusals
 printf 'release@fosterstack ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA==\n' > "$W/signer-ed"; : > "$W/empty"
 for c in "signer-ed:sig" "signer:empty" "nosuch:sig" "signer:nosuch"; do

@@ -701,10 +701,12 @@ SR_REF = "refs/tags/v0.3.0"        # the ref the environment attestor of a made 
 
 
 def coll_record(path, name, products, material=(), commit=TAGSHA, attestors=ATT,
-                ptype="application/vnd.in-toto+json", env_vars=None, ref=None, stdout="built\n", env_raw=None):
-    """A Witness collection, the throwaway-key form: {payloadType, payload, signatures:[{keyid,sig}]}; products {relative name: bytes}."""
+                ptype="application/vnd.in-toto+json", env_vars=None, ref=None, stdout="built\n", env_raw=None, material_raw=None, forged=()):
+    """A Witness collection, the throwaway-key form: {payloadType, payload, signatures:[{keyid,sig}]}; products {relative name: bytes}.
+    material [(path, bytes)] is written where the pinned Witness 0.12.0 writes it: in the BODY of the material attestation ({path: {sha256}}), never as a subject;
+    material_raw replaces that body (a malformed one); forged [(path, bytes)] are material SUBJECTS, which no real record has and which nothing may read."""
     ref = ref or SR_REF
-    subs = [subject(n, d) for n, d in products.items()] + [subject(n, d, MATERIAL) for n, d in material]
+    subs = [subject(n, d) for n, d in products.items()] + [subject(n, d, MATERIAL) for n, d in forged]
     if commit:
         subs.append({"name": "https://witness.dev/attestations/git/v0.1/commithash:" + commit, "digest": {"gitoid:sha1": "gitoid:commit:sha1:" + commit}})
     def attestation(k):
@@ -714,6 +716,8 @@ def coll_record(path, name, products, material=(), commit=TAGSHA, attestors=ATT,
             return {"variables": dict({"GITHUB_REF": ref}, **(env_vars or {}))}
         if k == "command-run":      # the real shape (pinned Witness 0.12.0): the command, its whole output and its exit code
             return {"cmd": ["bash", "bin/build-stage.sh"], "stdout": stdout, "stderr": "", "exitcode": 0}
+        if k == "material":
+            return material_raw if material_raw is not None else {n: {"sha256": hashlib.sha256(d).hexdigest()} for n, d in material}
         return {}
     atts = [dict({"type": "https://witness.dev/attestations/%s/v0.1" % k, "attestation": attestation(k)}, **({"starttime": "2026-10-31T00:00:00Z", "endtime": "2026-10-31T00:00:01Z"} if k == "command-run" else {})) for k in attestors]
     statement = {"_type": "https://in-toto.io/Statement/v0.1", "predicateType": "https://witness.testifysec.com/attestation-collection/v0.1",
@@ -1187,6 +1191,25 @@ for runner_ in CHECK_RUNNERS:
         sr("sign-records check: the %s record of %s must have Build's attested digests.json as material" % (step_, runner_), d, "check", 1, ["material", step_])
 d, _ = sr_tree("ck24", "check"); ck_rec(d, ARM, "acceptance", material=())
 sr("sign-records check: a Check record with no material at all is refused", d, "check", 1, ["material"])
+# B-F2, the REAL record: Check's scanners record as the pinned Witness 0.12.0 wrote it (no material subject; the digest is in the material body, key witness-build/digests.json)
+SCANNERS_SHA = "6879d71cfc3552de83bb67b1d4b0919daa063ee0"      # the commit of the committed real scanners record
+REAL_DIGESTS = b'{"image-production":"sha256:' + b"a" * 64 + b'"}\n'
+check("the real scanners record's material body holds the sha256 of the one-line digests.json fixture", hashlib.sha256(REAL_DIGESTS).hexdigest() == "ac7c39b0decb3685b7fadbdaaaf3d249e1901e678e60e4ec0215e8deccd8d87a")
+def real_check_tree(name, digests=REAL_DIGESTS):
+    d, _ = sr_tree(name, "check")
+    put(d, "digests.json", digests)
+    for r_ in CHECK_RUNNERS:
+        for s_ in CHECK_STEPS:
+            if (r_, s_) != (AMD, "scanners"):
+                ck_rec(d, r_, s_, material=[("witness-build/digests.json", digests)], commit=SCANNERS_SHA)
+    write_real("scanners", d + "/" + check_dir(AMD, "scanners") + "/scanners-collection.local.json")
+    shutil.rmtree(d + "/artifacts/check-results-" + AMD + "/grype", ignore_errors=True)          # the real record's only product is check-results/govulncheck.json
+    put(d, "artifacts/check-results-" + AMD + "/govulncheck.json", b"{}\n")
+    return d
+d = real_check_tree("ck26")
+sr("sign-records check: the real scanners record (digest only in the material body) beside records for the same digests.json is accepted", d, "check", 0, env={"GITHUB_SHA": SCANNERS_SHA})
+d = real_check_tree("ck27", b'{"image-production":"sha256:' + b"b" * 64 + b'"}\n')
+sr("sign-records check: the real scanners record against another digests.json than its material body holds is refused", d, "check", 1, ["material"], env={"GITHUB_SHA": SCANNERS_SHA})
 d, _ = sr_tree("sr25", "rebuild"); coll_record(d + "/witness-rebuild/rebuild-collection.local.json", "rebuild", {"verdict.json": b'{"verdict":"pass"}'}, [("witness-build/digests.json", BUILD_DATA["digests.json"])])
 sr("sign-records rebuild: a record that names the verdict by its bare file name is refused (the product is witness-rebuild/verdict.json, matched in full)", d, "rebuild", 1, ["witness-rebuild/verdict.json"])
 d, _ = sr_tree("sr26"); os.makedirs(d + "/artifacts/witness-build/dist/locked"); put(d, "artifacts/witness-build/dist/locked/f", b"x"); os.chmod(d + "/artifacts/witness-build/dist/locked", 0)
@@ -1285,12 +1308,31 @@ d, _ = sr_tree("rl11", "release"); rr(d, "release-verify", material=[("witness-b
 sr("sign-records release: a record whose material digests.json is not Build's attested list (--digests) is refused", d, "release", 1, ["material"])
 d, _ = sr_tree("rl11b", "release"); rr(d, "release-publish", material=())
 sr("sign-records release: a record with no material at all is refused", d, "release", 1, ["material"])
-d, _ = sr_tree("rl11c", "release"); rr(d, "release-publish", material=[("witness-build/digests.json", BUILD_DATA["digests.json"]), ("witness-build/digests.json", BUILD_DATA["digests.json"])])
-sr("sign-records release: a record with two material subjects for the digest list is refused (exactly one)", d, "release", 1, ["material"])
-d, _ = sr_tree("rl11d", "release"); rr(d, "release-verify", material=[("witness-build/digests.json", BUILD_DATA["digests.json"]), ("witness-build/items.json", b"{}")])
-sr("sign-records release: a record with a second material subject of another name is refused (exactly one, witness-build/digests.json)", d, "release", 1, ["material"])
+d, _ = sr_tree("rl11c", "release"); rr(d, "release-publish", attestors=ATT + ["material"], material=[("witness-build/digests.json", BUILD_DATA["digests.json"])])
+sr("sign-records release: a record with two material attestations is refused (exactly one)", d, "release", 1, ["repeated"])
+d, _ = sr_tree("rl11d", "release"); rr(d, "release-verify", material=[("witness-build/digests.json", BUILD_DATA["digests.json"]), ("witness-build/items.json", b"{}"), (".git/HEAD", b"ref")])
+sr("sign-records release: other files in the material body (the real one holds the whole working tree) do not matter: witness-build/digests.json is the one that counts", d, "release", 0)
 d, _ = sr_tree("rl11e", "release"); rr(d, "release-verify", material=[("digests.json", BUILD_DATA["digests.json"])])
 sr("sign-records release: a record whose material is named digests.json, not witness-build/digests.json, is refused", d, "release", 1, ["material"])
+# B-F2: the digest is read from the material attestation's BODY ({path: {sha256}}); a material SUBJECT is never read, and a malformed body is a refusal, never a traceback
+_BD = hashlib.sha256(BUILD_DATA["digests.json"]).hexdigest()
+for _lab, _kw in (("only a forged material SUBJECT with Build's digest and no body entry", dict(material=(), forged=[("witness-build/digests.json", BUILD_DATA["digests.json"])])),
+                  ("a material body that is a list", dict(material_raw=[]) ), ("a material body that is a string", dict(material_raw="x")),
+                  ("a body entry that is not an object", dict(material_raw={"witness-build/digests.json": _BD})),
+                  ("a body entry with no sha256", dict(material_raw={"witness-build/digests.json": {}})),
+                  ("a body entry whose sha256 is a number", dict(material_raw={"witness-build/digests.json": {"sha256": 5}})),
+                  ("a body entry whose sha256 is a list", dict(material_raw={"witness-build/digests.json": {"sha256": [_BD]}}))):
+    _fg = [("witness-build/digests.json", BUILD_DATA["digests.json"])] if "forged" in _kw else []      # the other records carry the forged subject too, so only the record under test lacks a body entry
+    d, _ = sr_tree("rl13", "release"); rr(d, "release-verify", forged=_fg); rr(d, "release-publish", **_kw)
+    sr("sign-records release: a record with %s is refused naming material" % _lab, d, "release", 1, ["material"])
+    d, _ = sr_tree("ck25", "check")
+    for _r, _s in ((r, s) for r in CHECK_RUNNERS for s in CHECK_STEPS):
+        ck_rec(d, _r, _s, forged=_fg)
+    ck_rec(d, AMD, "runtime", **{k: v for k, v in _kw.items() if k != "material"}, **({"material": ()} if "material" in _kw else {}))
+    sr("sign-records check: a record with %s is refused naming material" % _lab, d, "check", 1, ["material"])
+    d, _ = sr_tree("sr26", "rebuild"); coll_record(d + "/witness-rapk-ubuntu-24.04/rapk-collection.local.json", "rapk", {"out/x86_64/fscache-0.3.0-r0.apk": b"apk-x", "admission.json": b"{}"}, [("witness-build/digests.json", BUILD_DATA["digests.json"])], forged=_fg)
+    coll_record(d + "/witness-rebuild/rebuild-collection.local.json", "rebuild", {"witness-rebuild/verdict.json": b'{"verdict":"pass"}'}, **_kw)
+    sr("sign-records rebuild: a record with %s is refused naming material" % _lab, d, "rebuild", 1, ["material"])
 d, _ = sr_tree("rl12", "release"); put(d, VF + "/digests.json", b"{}")
 sr("sign-records release: a data file in a release record folder (digests.json) is refused: the folder holds only its record", d, "release", 1, ["witness-release-verify", "digests.json"])
 d, _ = sr_tree("rl12b", "release"); put(d, PF + "/notes.txt", b"x")

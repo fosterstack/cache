@@ -90,11 +90,26 @@ sign_file policy.json "$out/release-evidence/release-policy.bundle"
 for f in vendor-evidence.json dependency-list.json; do sign_file "$out/release-evidence/$f" "$out/release-evidence/$f.bundle"; done
 sign_file "$out/checksums.txt" "$out/checksums.txt.bundle"
 sign_file "$out/release-metadata/release-files.sha256" "$out/release-metadata/release-files.sha256.bundle"
-# the apks: the sha256 of each control stream, as the apk tool puts it in front of the unchanged streams. An apk that is not one Build attested is not signed.
-for f in apks/ubuntu-24.04/x86_64/*.apk apks/ubuntu-24.04-arm/aarch64/*.apk; do
-  [ -f "$f" ] && [ ! -L "$f" ] || { echo "release-signatures: $f is not a regular file" >&2; exit 1; }
-  got=$(python3 -I -B bin/apk-tool.py digest "$f")
-  jq -e --arg d "$got" '[to_entries[] | select(.key | startswith("apk-")) | .value] | index($d) != null' witness-build/digests.json > /dev/null || { echo "release-signatures: $f ($got) is not an apk Build attested" >&2; exit 1; }
+# the apks: the four Build attested, selected through the fixed table the Release apk step reads (a runner's directory also holds Build's base-layout apk, which is not one of them); each must be there exactly
+# once with the digest Build attested, before any is signed. The sha256 of each control stream goes in as the apk tool puts it in front of the unchanged streams.
+shopt -s nullglob
+sel=()
+for row in ubuntu-24.04:x86_64:amd64 ubuntu-24.04-arm:aarch64:arm64; do
+  runner="${row%%:*}"; rest="${row#*:}"; arch="${rest%%:*}"; short="${rest#*:}"
+  for variant in standard fips; do
+    case "$variant" in standard) pat='fscache-[0-9]*-r0.apk' ;; fips) pat='fscache-fips-*-r0.apk' ;; esac
+    files=("apks/$runner/$arch"/$pat)
+    count=${#files[@]}
+    [ "$count" = 1 ] || { echo "release-signatures: $count $variant apks for $arch in apks/$runner, Build attested exactly one" >&2; exit 1; }
+    f=${files[0]}
+    [ -f "$f" ] && [ ! -L "$f" ] || { echo "release-signatures: $f is not a regular file" >&2; exit 1; }
+    got=$(python3 -I -B bin/apk-tool.py digest "$f")
+    want=$(jq -r --arg k "apk-$variant-$short" '.[$k] // empty' witness-build/digests.json)
+    [ -n "$want" ] && [ "$got" = "$want" ] || { echo "release-signatures: $f ($got) is not the apk Build attested for apk-$variant-$short" >&2; exit 1; }
+    sel+=("$f")
+  done
+done
+for f in "${sel[@]}"; do
   arch=$(basename "$(dirname "$f")")
   mkdir -p "$out/apks/$arch"
   python3 -I -B bin/apk-tool.py control "$f" "$scratch/control.gz"

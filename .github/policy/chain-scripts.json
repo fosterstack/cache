@@ -1797,6 +1797,7 @@
       "tools": [
         "bash",
         "cosign",
+        "crane",
         "git",
         "jq",
         "python3",
@@ -1808,7 +1809,7 @@
         "bin/release-sign-verify.sh"
       ],
       "signs": false,
-      "reason": "Release, step release-sign: holds no key. It checks the detached KMS signatures Sign made (release-signed/, each with its Rekor entry) against build/keys/release.rsa.pub and pushes them: the images signatures and the release manifest attestations attached by digest in both registries (cosign attach signature and attestation, then cosign verify --key on each), the blobs bundles placed beside the blobs (REQ-CHAIN-007-AC8)",
+      "reason": "Release, step release-sign: holds no key. It checks the detached KMS signatures Sign made (release-signed/, each with its Rekor entry) against build/keys/release.rsa.pub and pushes them: the images signatures (cosign attach signature, then cosign verify --key on each) and the release manifest attestations, Sign's bundles pushed as referrers by digest in both registries (crane push, then cosign verify-attestation --key on each), the blobs bundles placed beside the blobs (REQ-CHAIN-007-AC8)",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",

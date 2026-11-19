@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # bin/with-aws-token.sh sign-record|sign|kms-sign [ARG...]  --  run one signing call of the verifier (bin/chain-verify.py sign-record, sign or kms-sign, with ARG...; for sign-record and sign the wrapper adds the options for the pinned AWS CLI and the release public key and refuses a caller that passes either) with a fresh identity token, for that one call only (#822 round 2: Sign's one copy of the token fetch; the Release wrapper keeps its own).
 # The caller is a step whose own call signs with the release KMS key through the AWS SDK: Sign's staged-record helper (one call per record) and Sign's provenance signature.
+# The request URL goes to the loopback helper in its environment for that one call (the helper allows the token URL only when it is that variable's value); the shell has already unset it for the caller.
 # The request token goes to the loopback helper through a header file of mode 0600 in the same directory (-H @file), never in the arguments of a process, where any process of the runner could read it. A fresh token (audience sts.amazonaws.com, the audience the AWS trust requires) is fetched now and written to a file of mode 0600 in a private directory under RUNNER_TEMP, outside the
 # repository tree; AWS_WEB_IDENTITY_TOKEN_FILE points the SDK at it for that call and for nothing else (AWS_ROLE_ARN, AWS_REGION and RELEASE_KMS_KEY_REF come from the job's step environment and
 # stay in the call's environment). The request variables are plain shell variables, never exported, so the call cannot ask for another token; nothing goes to the runner's environment file. The directory is removed
@@ -23,7 +24,7 @@ trap 'rm -rf "$td"' EXIT HUP INT TERM
 req_tok=$ACTIONS_ID_TOKEN_REQUEST_TOKEN req_url=$ACTIONS_ID_TOKEN_REQUEST_URL
 unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL
 printf 'Authorization: bearer %s\n' "$req_tok" > "$td/req-header"
-sh bin/loopback-get.sh -sSf -H "@$td/req-header" "${req_url}&audience=sts.amazonaws.com" | jq -r .value > "$td/token"
+ACTIONS_ID_TOKEN_REQUEST_URL=$req_url sh bin/loopback-get.sh -sSf -H "@$td/req-header" "${req_url}&audience=sts.amazonaws.com" | jq -r .value > "$td/token"
 tok=$(cat "$td/token")
 [ -n "$tok" ] && [ "$tok" != null ] || { echo "with-aws-token: no identity token" >&2; exit 1; }
 echo "::add-mask::$tok"

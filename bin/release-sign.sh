@@ -48,16 +48,47 @@ for host in ghcr.io docker.io; do
     cosign verify --key "$pub" "$ref" > /dev/null || { echo "release-sign: cosign verify --key does not pass on the signature attached to $ref" >&2; exit 1; }
   done
 done
+# cosign attach cannot write a Sigstore bundle (pinned cosign 3.1.3: "invalid payloadType"), so the bundle, with its Rekor entry, is the
+# one layer of an OCI referrer manifest in a layout, and crane push keeps the manifest's subject.
+# write_referrer_layout BUNDLE SUBJECT-MANIFEST-FILE DIGEST DIR
+write_referrer_layout() {
+  local bundle=$1 subject=$2 digest=$3 dir=$4 type blobs layer manifest
+  local empty=44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a # sha256 of {}, the config
+  type=$(jq -r .mediaType "$bundle")
+  blobs="$dir/blobs/sha256"
+  mkdir -p "$blobs"
+  layer=$(sha256sum "$bundle" | cut -d ' ' -f 1)
+  cp "$bundle" "$blobs/$layer"
+  printf '{}' > "$blobs/$empty"
+  jq -cnj --arg type "$type" --arg layer "$layer" --argjson layer_size "$(wc -c < "$bundle")" --arg digest "$digest" --arg empty "sha256:$empty" \
+    --slurpfile subject "$subject" --argjson subject_size "$(wc -c < "$subject")" \
+    '{schemaVersion: 2, mediaType: "application/vnd.oci.image.manifest.v1+json", artifactType: $type, config: {mediaType: "application/vnd.oci.empty.v1+json", digest: $empty, size: 2}, layers: [{mediaType: $type, digest: ("sha256:" + $layer), size: $layer_size}], subject: {mediaType: $subject[0].mediaType, digest: $digest, size: $subject_size}}' > "$dir/manifest.json"
+  manifest=$(sha256sum "$dir/manifest.json" | cut -d ' ' -f 1)
+  mv "$dir/manifest.json" "$blobs/$manifest"
+  printf '{"imageLayoutVersion":"1.0.0"}' > "$dir/oci-layout"
+  jq -cn --arg manifest "$manifest" --argjson size "$(wc -c < "$blobs/$manifest")" \
+    '{schemaVersion: 2, manifests: [{mediaType: "application/vnd.oci.image.manifest.v1+json", digest: ("sha256:" + $manifest), size: $size}]}' > "$dir/index.json"
+}
+# the guide's own check, so a bundle without its Rekor entry is never left on a public digest unnoticed
+# attach_manifest LAYOUT REF@DIGEST
+attach_manifest() {
+  crane push "$1" "${2%@*}@$(jq -r '.manifests[0].digest' "$1/index.json")" &&
+    cosign verify-attestation --key "$pub" --type https://fosterstack.com/attestations/release-manifest/v1 "$2" > /dev/null
+}
 # the release manifest, attached to each public digest: the attestation Sign made (a bundle with its Rekor entry)
 for host in ghcr.io docker.io; do
   for pair in "production:$prod" "fips:$fips"; do
     v="${pair%%:*}"; d="${pair#*:}"; ref="$host/$repo@$d"
     att="$signed/images/$host/$v.attestation.bundle"
     jq -e --arg d "${d#sha256:}" --slurpfile m release-metadata/release-manifest.json '(.dsseEnvelope.payload | @base64d | fromjson) as $s | $s.subject[0].digest.sha256 == $d and $s.predicate == $m[0]' "$att" > /dev/null || { echo "release-sign: $att is not the attestation of release-manifest.json for $ref" >&2; exit 1; }
+    crane manifest "$ref" > "$scratch/$host-$v.subject"
+    write_referrer_layout "$att" "$scratch/$host-$v.subject" "$d" "$scratch/$host-$v.layout"
     if [ "$host" = ghcr.io ]; then
-      cosign attach attestation --attestation "$att" "$ref"
+      attach_manifest "$scratch/$host-$v.layout" "$ref" ||
+        { echo "release-sign: the manifest referrer on $ref does not verify" >&2; exit 1; }
     else
-      cosign attach attestation --attestation "$att" "$ref" || echo "::warning::could not attach the manifest referrer on $ref: the GHCR referrer is authoritative"
+      attach_manifest "$scratch/$host-$v.layout" "$ref" ||
+        echo "::warning::could not attach the manifest referrer on $ref: the GHCR referrer is authoritative"
     fi
   done
 done
