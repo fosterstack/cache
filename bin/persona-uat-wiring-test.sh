@@ -1425,7 +1425,8 @@ if [ "$1" = debug ]; then
   shift
   while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done
   shift
-  exec env PATH="$INNER:$PATH" "$@"
+  env PATH="$INNER:$PATH" "$@"
+  exit 0                                          # real kubectl debug -i exits 0 once the attach ends, whatever the container's command returned
 fi
 exit 0
 '''
@@ -1490,7 +1491,7 @@ else:
     dmut("blob check mounts elsewhere", "read-only blob check", lambda t: t.replace("fscache-data:/data:ro", "fscache-data:/mnt:ro"))
     dmut("blob check lists another path", "read-only blob check", lambda t: t.replace("/data/data/blobs", "/data/blobs"))
     dmut("docker pipe check without -e", "does not make the check", lambda t: re.sub(r"\bsh -e\b", "sh", t, count=1))
-    dmut("kubectl pipe check without -e", "does not make the check", lambda t: re.sub(r"\bsh -e\b(?!.*\bsh -e\b)", "sh", t, flags=re.S))
+    dmut("kubectl check without the HEALTHZ_OK marker", "does not make the check", lambda t: t.replace(" | grep -q HEALTHZ_OK", ""))
     dmut("a busybox:1.37 tag", "every busybox reference", lambda t: t.replace(BB_PIN, "busybox:1.37", 1))
     dmut("a busybox:stable tag", "every busybox reference", lambda t: t.replace(BB_PIN, "busybox:stable", 1))
     dmut("a busybox tag without the digest", "every busybox reference", lambda t: t.replace(BB_PIN, "busybox:1.37.0", 1))
