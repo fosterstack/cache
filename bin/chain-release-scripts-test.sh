@@ -24,7 +24,7 @@ export RELEASE_BIN="${RELEASE_BIN:-$root/bin}"
 export RELEASE_ROOT="$root"
 export REPO_ROOT="$root"
 python3 - "$@" <<'PY'
-import ast, atexit, base64, datetime, hashlib, json, os, re, shutil, stat, subprocess, sys, tempfile
+import ast, atexit, base64, datetime, hashlib, json, os, re, shutil, stat, subprocess, sys, tarfile, tempfile
 BIN = os.environ["RELEASE_BIN"]
 SCRATCH = tempfile.mkdtemp()
 tempfile.tempdir = SCRATCH      # a failing or aborted run leaves nothing in TMPDIR
@@ -48,12 +48,24 @@ echo "crane $*" >> "$LOG"
 case "$1" in
   auth) cat > /dev/null; mkdir -p "$REG/.login"; : > "$REG/.login/$3"
         d="${DOCKER_CONFIG:-$HOME/.docker}"; mkdir -p "$d"; echo "login $3" >> "$d/config.json"; echo "$d" >> "$LOG.dockercfg" ;;
-  push) host=${3%%/*}; [ -e "$REG/.login/$host" ] || { echo "UNAUTHORIZED $host" >&2; exit 1; }
+  push) host=${3%%/*};
+        # release-sign's referrer: a layout DIRECTORY pushed by a digest ref (REF@sha256:...); FAKE_PUSH_FAIL_ON names a substring of the ref that fails;
+        # a copy of the directory is kept as calls.log.push.N.tar (the step removes its own scratch) and the ref in calls.log.pushmap
+        # (it is logged in by cosign login, which shares the DOCKER_CONFIG of the step)
+        if [[ "$3" == *@sha256:* ]]; then
+          grep -q "login $host" "${DOCKER_CONFIG:-$HOME/.docker}/config.json" 2>/dev/null || { echo "UNAUTHORIZED $host" >&2; exit 1; }
+          [ -z "${FAKE_PUSH_FAIL_ON:-}" ] || case "$3" in *"$FAKE_PUSH_FAIL_ON"*) echo "crane: push $3 failed" >&2; exit 1;; esac
+          [ -d "$2" ] && [ -f "$2/oci-layout" ] && [ -f "$2/index.json" ] || { echo "crane: $2 is not an OCI image layout directory" >&2; exit 1; }
+          n=$(( $(cat "$LOG.pushmap" 2>/dev/null | wc -l) + 1 )); tar -C "$2" -cf "$LOG.push.$n.tar" .; printf '%s\t%s\n' "$3" "$LOG.push.$n.tar" >> "$LOG.pushmap"; exit 0
+        fi
+        [ -e "$REG/.login/$host" ] || { echo "UNAUTHORIZED $host" >&2; exit 1; }
         # images/<variant>/ is an OCI image layout DIRECTORY. MEASURED with crane 0.22.1: pushing a
         # docker-format tarball re-creates the manifest (the digest changes), pushing an OCI layout directory keeps the digest. A tarball is refused here.
         [ -d "$2" ] && [ -f "$2/oci-layout" ] && [ -f "$2/index.json" ] || { echo "crane: $2 is not an OCI image layout directory" >&2; exit 1; }
         d=$(cat "${2}.digest"); p="$REG/${3/://}"; mkdir -p "$(dirname "$p")"
         [ "${REG_CORRUPT:-}" = "$host" ] && d="sha256:$(printf 'f%.0s' $(seq 64))"; echo "$d" > "$p" ;;
+  manifest) [ -z "${FAKE_MANIFEST_FAIL_ON:-}" ] || case "$2" in *"$FAKE_MANIFEST_FAIL_ON"*) echo "crane: manifest $2 failed" >&2; exit 1;; esac
+            printf '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","size":2,"digest":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"},"layers":[],"annotations":{"ref":"%s"}}' "$2" ;;
   digest) p="$REG/${2/://}"; [ -e "$p" ] && cat "$p" || { echo "NAME_UNKNOWN $2" >&2; exit 1; } ;;
   ls) [ -z "${LS_FAIL:-}" ] || { echo "connection refused" >&2; exit 1; }
       [ -d "$REG/$2" ] || { echo "NAME_UNKNOWN $2" >&2; exit 1; }
@@ -74,7 +86,7 @@ if [ -n "${FAKE_NEEDFILES:-}" ]; then for a in "$@"; do case "$a" in *.json|*.bu
 [ -z "${COSIGN_FAIL:-}" ] || { echo "cosign failed" >&2; exit 1; }
 [ -z "${COSIGN_FAIL_ON:-}" ] || case "$*" in *"$COSIGN_FAIL_ON"*) echo "cosign failed" >&2; exit 1;; esac
 if [ "$1" = login ]; then cat > /dev/null; d="${DOCKER_CONFIG:-$HOME/.docker}"; mkdir -p "$d"; echo "login $*" >> "$d/config.json"; echo "$d" >> "$LOG.dockercfg"; fi
-[ "$1 $2" != "attach attestation" ] || [ -z "${COSIGN_ATTEST_FAIL_ON:-}" ] || case "$*" in *"$COSIGN_ATTEST_FAIL_ON"*) echo "cosign attach attestation failed" >&2; exit 1;; esac
+[ "$1" != verify-attestation ] || [ -z "${FAKE_VERIFY_ATT_FAIL_ON:-}" ] || case "${*: -1}" in *"$FAKE_VERIFY_ATT_FAIL_ON"*) echo "cosign verify-attestation failed on ${*: -1}" >&2; exit 1;; esac
 exit 0''',
  "git": r'''#!/usr/bin/env bash
 # release-assets reads the release tag's object (cat-file tag); release-sign asks for the admitted commit's committer date (log -1 --format=%ct)
@@ -189,7 +201,7 @@ if a[0] == "kms-sign":     # KA-2 (a model of the one blob signer, KA-1): the ca
     tl = "[]" if os.environ.get("COSIGN_NOREKOR") == os.path.basename(g("--bundle")) else "[" + ent + "]"
     ms = ', "messageSignature": {"messageDigest": {"algorithm": "SHA2_256", "digest": "%s"}, "signature": "%s"}' % (b64(bytes.fromhex(g("--digest"))).decode(), b64(sig).decode()) if not dsse else ""
     env = ', "dsseEnvelope": {"payloadType": "application/vnd.in-toto+json", "payload": "%s", "signatures": [{"sig": "c2ln"}]}' % __import__("base64").b64encode(stm).decode() if dsse else ""
-    open(g("--bundle"), "w").write('{"verificationMaterial":{"tlogEntries":%s}%s}' % (tl, env if dsse else ms)); sys.exit(0)
+    open(g("--bundle"), "w").write('{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json","verificationMaterial":{"tlogEntries":%s}%s}' % (tl, env if dsse else ms)); sys.exit(0)
 if a[0] == "bundle-check":     # a model of the one bundle check: exactly one Rekor entry, and the bundle is the signature of exactly this digest (the real RSA check is the caller's own openssl)
     g = lambda k: a[a.index(k) + 1] if k in a else None
     for k in ("--bundle", "--digest", "--public-key", "--signing-config"):
@@ -907,6 +919,25 @@ for key in ("apk-standard-amd64", "apk-fips-arm64"):
     t = tree(); d = json.load(open(os.path.join(t, "witness-build/digests.json"))); d[key] = "sha256:" + "0" * 64; json.dump(d, open(os.path.join(t, "witness-build/digests.json"), "w"))
     rc, so, se = sign_step(t)
     check(rc == 1 and "apk" in se and len(kms_calls(t)) < 23, "I1 an apk whose digest is not an apk-* value of digests.json (%s changed) is refused with exit 1 and not signed" % key, "rc=%s n=%d %s" % (rc, len(kms_calls(t)), first(se)))
+# the apks are chosen as release-apks.sh chooses them (fixed table: per runner and arch one standard fscache-[0-9]*-r0.apk and one fips fscache-fips-*-r0.apk): any other apk (Build also writes fscache-baselayout) is neither signed nor an error
+def apk_sigs_of(t): return [opts(c)["--bundle"] for c in kms_calls(t) if "/apks/" in opts(c).get("--bundle", "")]
+def add_baselayout(t):
+    for runner, archdir, short in RUNNERS: open(os.path.join(t, "apks", runner, archdir, "fscache-baselayout-0.3.0-r0.apk"), "w").write("apk\nsigner: assembly.rsa.pub\ndata: baselayout-%s\n" % short)
+t = tree(); add_baselayout(t); rc, so, se = sign_step(t); ab = apk_sigs_of(t)
+check(rc == 0 and len(kms_calls(t)) == 23 and sorted(ab) == sorted("%s/apks/%s/%s.bundle" % (S, a, n) for _r, a, _s in RUNNERS for _v, n in APKS) and not [f for f in files_of(t) if f.startswith(S + "/") and "baselayout" in f],
+      "I1 a fscache-baselayout apk beside the four apks (digests.json never names it) is neither signed nor an error: exit 0, 23 signatures, exactly the four apks' signatures", "rc=%s n=%d %s %s" % (rc, len(kms_calls(t)), ab, first(se)))
+for runner, archdir, short in RUNNERS:
+    for variant, name in APKS:
+        t = tree(); os.remove(os.path.join(t, "apks", runner, archdir, name)); rc, so, se = sign_step(t)
+        check(rc == 1 and "apk" in se, "I1 the %s %s apk missing is refused with exit 1 (all four must be present)" % (variant, short), "rc=%s %s" % (rc, first(se)))
+        check(not apk_sigs_of(t), "I1 the %s %s apk missing: no apk is signed" % (variant, short), str(apk_sigs_of(t)))
+t = tree(); shutil.copy(os.path.join(t, "apks/ubuntu-24.04/x86_64/fscache-0.3.0-r0.apk"), os.path.join(t, "apks/ubuntu-24.04/x86_64/fscache-9.9.9-r0.apk")); rc, so, se = sign_step(t)
+check(rc == 1 and "apk" in se and not apk_sigs_of(t), "I1 two standard apks in one directory (ambiguous) are refused with exit 1 and no apk is signed", "rc=%s %s %s" % (rc, apk_sigs_of(t), first(se)))
+t = tree(); shutil.copy(os.path.join(t, "apks/ubuntu-24.04-arm/aarch64/fscache-fips-0.3.0-r0.apk"), os.path.join(t, "apks/ubuntu-24.04-arm/aarch64/fscache-fips-9.9.9-r0.apk")); rc, so, se = sign_step(t)
+check(rc == 1 and "apk" in se and not apk_sigs_of(t), "I1 two fips apks in one directory (ambiguous) are refused with exit 1 and no apk is signed", "rc=%s %s %s" % (rc, apk_sigs_of(t), first(se)))
+# each apk must have the digest Build attested FOR ITS OWN key: another apk's attested digest is not enough
+t = tree(); d = json.load(open(os.path.join(t, "witness-build/digests.json"))); d["apk-standard-amd64"], d["apk-fips-amd64"] = d["apk-fips-amd64"], d["apk-standard-amd64"]; json.dump(d, open(os.path.join(t, "witness-build/digests.json"), "w")); rc, so, se = sign_step(t)
+check(rc == 1 and "apk" in se and not apk_sigs_of(t), "I1 an apk whose digest is another apk's attested digest (the digests of apk-standard-amd64 and apk-fips-amd64 swapped: both are still apk-* values) is refused with exit 1 and no apk is signed", "rc=%s %s %s" % (rc, apk_sigs_of(t), first(se)))
 # R-A (now made in Sign by release-signatures): the manifest's --reason is the first LINE of the release tag's message (the owner's words) and --published-at is the UTC time the step runs
 def mf_of(t):
     pth = os.path.join(t, S, "release-metadata/release-manifest.json"); return json.load(open(pth)) if os.path.exists(pth) else {}
@@ -1001,6 +1032,49 @@ def released_tree(tag="v0.3.0"):
 def put_bundle(t, rel, fn):
     pth = os.path.join(t, S, rel); b = json.load(open(pth)); fn(b); json.dump(b, open(pth, "w"))
 def cosign_calls(t): return [l for l in log(t) if l.startswith("cosign")]
+VATT = "cosign verify-attestation --key build/keys/release.rsa.pub --type https://fosterstack.com/attestations/release-manifest/v1 "
+def fake_manifest(ref): return ('{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","size":2,"digest":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"},"layers":[],"annotations":{"ref":"%s"}}' % ref).encode()
+def pushed(t):
+    """what the fake crane kept of each layout push, in order: (the pushed ref, the layout's files by path)"""
+    pm = os.path.join(t, "calls.log.pushmap"); out = []
+    for l in (open(pm).read().split("\n") if os.path.exists(pm) else []):
+        if not l: continue
+        r_, tp = l.split("\t", 1); files = {}
+        with tarfile.open(tp) as tf:
+            for m in tf.getmembers():
+                if m.isfile(): files[os.path.normpath(m.name)] = tf.extractfile(m).read()
+        out.append((r_, files))
+    return out
+def subject_of(files):
+    """the subject digest of the one manifest a pushed layout lists (None when it cannot be read)"""
+    try: return json.loads(files["blobs/sha256/" + json.loads(files["index.json"])["manifests"][0]["digest"].split(":")[1]])["subject"]["digest"]
+    except Exception: return None
+def layout_problems(t, h, v, pr, files):
+    """what is wrong with the referrer layout pushed for HOST/VARIANT (empty: nothing)"""
+    bad = []; sha = lambda b: hashlib.sha256(b).hexdigest()
+    ref = "%s/fosterstack/cache@%s" % (h, DIG["image-" + v]); bb = open(os.path.join(t, S, "images", h, v + ".attestation.bundle"), "rb").read(); mt = json.loads(bb)["mediaType"]
+    for n, b in files.items():
+        if n.startswith("blobs/sha256/") and sha(b) != os.path.basename(n): bad.append("blob %s is not named by its sha256" % os.path.basename(n)[:12])
+    if "oci-layout" not in files: bad.append("no oci-layout")
+    try:
+        ms = json.loads(files["index.json"])["manifests"]
+        if len(ms) != 1: return bad + ["index.json lists %d manifests" % len(ms)]
+        mb = files["blobs/sha256/" + ms[0]["digest"].split(":")[1]]; m = json.loads(mb)
+        if ms[0]["digest"] != "sha256:" + sha(mb) or ms[0]["size"] != len(mb): bad.append("index.json digest or size of the manifest is wrong")
+        if pr != "%s/fosterstack/cache@%s" % (h, ms[0]["digest"]): bad.append("pushed to %s, not the referrer manifest's digest" % pr)
+        if m.get("mediaType") != "application/vnd.oci.image.manifest.v1+json": bad.append("manifest mediaType")
+        if m.get("artifactType") != mt: bad.append("artifactType")
+        c = m.get("config", {})
+        if (c.get("mediaType"), c.get("size"), c.get("digest")) != ("application/vnd.oci.empty.v1+json", 2, "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a") or files.get("blobs/sha256/44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a") != b"{}": bad.append("config is not the empty {}")
+        ls = m.get("layers", [])
+        if len(ls) != 1 or ls[0].get("mediaType") != mt or ls[0].get("digest") != "sha256:" + sha(bb) or ls[0].get("size") != len(bb): bad.append("the layer descriptor is not the bundle's")
+        if files.get("blobs/sha256/" + sha(bb)) != bb: bad.append("the layer blob is not byte-identical to the bundle")
+        sj = m.get("subject", {}); sb = fake_manifest(ref)
+        if sj.get("digest") != DIG["image-" + v]: bad.append("subject.digest %s" % sj.get("digest"))
+        if sj.get("mediaType") != "application/vnd.oci.image.manifest.v1+json": bad.append("subject.mediaType %s" % sj.get("mediaType"))
+        if sj.get("size") != len(sb): bad.append("subject.size %s, want %d" % (sj.get("size"), len(sb)))
+    except Exception as e: bad.append("layout unreadable: %r" % (e,))
+    return bad
 t = released_tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"FAKE_NEEDFILES": "1"}); lg = log(t); cc = cosign_calls(t)
 check(rc == 0, "AC8 I2 a good run (Sign's signatures are in release-signed/) passes", se)
 bc = [i for i, l in enumerate(lg) if l.startswith("chain-verify bundle-check")]; lo = [i for i, l in enumerate(lg) if l.startswith("cosign login")]
@@ -1008,19 +1082,29 @@ check(len(bc) == 15 and len(lo) == 2 and bc[-1] < lo[0], "I2 all 15 signatures (
 check(len(bc) == 15 and all(" --bundle release-signed/" in lg[i] and re.search(r" --digest [0-9a-f]{64}( |$)", lg[i]) and "--public-key build/keys/release.rsa.pub" in lg[i] and "--signing-config .github/policy/cosign-signing-config.json" in lg[i] for i in bc), "I2 each bundle-check names the blob's bundle, its sha256, the public key build/keys/release.rsa.pub and the signing config", str([lg[i] for i in bc][:1]))
 want_logins = [("ghcr.io"), ("docker.io")]
 check([re.match(r"cosign login (\S+)", cosign_calls(t)[i]).group(1) for i in (0, 1)] == want_logins and not [c for c in cc if c.startswith("cosign login")][2:], "I2 cosign login to ghcr.io, then docker.io, first of all the cosign calls", str(cc[:2]))
-ok_calls = True; why = ""
+PM = pushed(t); pidx = [i for i, l in enumerate(lg) if l.startswith("crane push")]
+ok_calls = True; why = ""; lay_ok = len(PM) == 4 and len(pidx) == len(PM); lay_why = "%d pushes" % len(PM)
 for h in HOSTS:
     for v in ("production", "fips"):
         ref = "%s/fosterstack/cache@%s" % (h, DIG["image-" + v])
-        a = [i for i, c in enumerate(cc) if c.startswith("cosign attach signature ") and c.endswith(" " + ref)]
-        vr = [i for i, c in enumerate(cc) if c == "cosign verify --key build/keys/release.rsa.pub " + ref]
-        att = [i for i, c in enumerate(cc) if c == "cosign attach attestation --attestation %s/images/%s/%s.attestation.bundle %s" % (S, h, v, ref)]
-        o = opts(cc[a[0]]) if a else {}
-        good = len(a) == 1 and len(vr) == 1 and len(att) == 1 and a[0] < vr[0] < att[0] and o.get("--payload") == "%s/images/%s/%s.payload" % (S, h, v) and "--signature" in o and "--rekor-response" in o
+        a = [i for i, c in enumerate(lg) if c.startswith("cosign attach signature ") and c.endswith(" " + ref)]
+        vr = [i for i, c in enumerate(lg) if c == "cosign verify --key build/keys/release.rsa.pub " + ref]
+        cm = [i for i, c in enumerate(lg) if c == "crane manifest " + ref]
+        pu_any = [(pidx[k], PM[k]) for k in range(min(len(pidx), len(PM))) if PM[k][0].startswith(h + "/fosterstack/cache@sha256:") and subject_of(PM[k][1]) == DIG["image-" + v]]
+        va = [i for i, c in enumerate(lg) if c == VATT + ref]
+        o = opts(lg[a[0]]) if a else {}
+        good = len(a) == 1 and len(vr) == 1 and len(cm) == 1 and len(pu_any) == 1 and len(va) == 1 and a[0] < vr[0] < cm[0] < pu_any[0][0] < va[0] and o.get("--payload") == "%s/images/%s/%s.payload" % (S, h, v) and "--signature" in o and "--rekor-response" in o
         ok_calls &= good; why += "" if good else " %s:%s" % (h, v)
-check(ok_calls and len(cc) == 14, "I2 per host and variant: `cosign attach signature --payload P --signature S --rekor-response R REF@DIGEST`, then `cosign verify --key build/keys/release.rsa.pub REF@DIGEST`, then `cosign attach attestation --attestation BUNDLE REF@DIGEST` (14 cosign calls in all)", "%s %d" % (why, len(cc)))
-check(not [l for l in lg if re.match(r"(cosign (sign|sign-blob|attest|generate-key-pair)\b|with-aws-token|chain-verify kms-sign|aws|crane push)", l)], "R1 I2 Release never runs cosign sign, sign-blob or attest, kms-sign, with-aws-token or any aws command")
+        pb = layout_problems(t, h, v, pu_any[0][1][0], pu_any[0][1][1]) if len(pu_any) == 1 else ["no push for this image"]
+        lay_ok &= not pb; lay_why += "" if not pb else " %s:%s=%s" % (h, v, pb)
+check(ok_calls and len(cc) == 14 and not [c for c in cc if c.startswith("cosign attach attestation")], "I2 per host and variant: `cosign attach signature --payload P --signature S --rekor-response R REF@DIGEST`, then `cosign verify --key build/keys/release.rsa.pub REF@DIGEST`, then `crane manifest REF@DIGEST`, then `crane push LAYOUT HOST/fosterstack/cache@MANIFEST-DIGEST`, then the guide's `cosign verify-attestation --key build/keys/release.rsa.pub --type ... REF@DIGEST` (14 cosign calls in all, no `cosign attach attestation`)", "%s %d %s" % (why, len(cc), [c for c in lg if c.startswith("crane")][:3]))
+check(lay_ok, "I2 the layout pushed for each host and variant is a referrer: one manifest listed by index.json, blobs named by their sha256, artifactType and layer media type of the bundle, the layer byte-identical to release-signed/images/HOST/VARIANT.attestation.bundle, the empty {} config, subject = that variant's image digest, pushed by the referrer manifest's own digest", lay_why)
+check(all("verificationMaterial" in json.load(open(os.path.join(t, S, "images", h, v + ".attestation.bundle"))) for h in HOSTS for v in ("production", "fips")), "I2 Sign's attestation bundles in release-signed stay bundles (verificationMaterial still in them)")
+check(not [l for l in lg if re.match(r"(cosign (sign|sign-blob|attest|generate-key-pair)\b|with-aws-token|chain-verify kms-sign|aws)", l)], "R1 I2 Release never runs cosign sign, sign-blob or attest, kms-sign, with-aws-token or any aws command")
+check(len(pidx) == 4 and all(re.fullmatch(r"crane push \S+ (ghcr\.io|docker\.io)/fosterstack/cache@sha256:[0-9a-f]{64}", lg[i]) for i in pidx) and len(PM) == 4 and all("oci-layout" in f and "index.json" in f for _, f in PM), "R1 I2 every crane push of Release is a push of a layout DIRECTORY by a @sha256: digest ref of the public repository (4 in all: 2 variants on each of 2 hosts)", str([lg[i] for i in pidx][:2]))
+check(not [l for l in lg if "--insecure-ignore-" + "tlog" in l], "I2 no logged call passes the transparency-log bypass flag")
 rsrc = open(os.path.join(BIN, "release-sign.sh")).read()
+check(not re.search(r"attach\s+attestation", "\n".join(l for l in rsrc.split("\n") if not l.lstrip().startswith("#"))), "AC8 I2 release-sign.sh no longer calls cosign attach attestation")
 check(not re.search(r"(?<![A-Za-z])(RELEASE|AWS)_[A-Z]|\baws\b|kms-sign|with-aws-token|cosign (sign|attest)\b|sign-blob", "\n".join(l for l in rsrc.split("\n") if not l.lstrip().startswith("#"))), "R1 I2 release-sign.sh reads no RELEASE_* or AWS_* name and names no aws, kms-sign, cosign sign, sign-blob or attest call")
 check(all(os.path.isfile(os.path.join(t, "release-evidence", f)) for f in ["vendor-evidence.json", "vendor-evidence.json.bundle", "dependency-list.json", "dependency-list.json.bundle", "release-policy.bundle", "checksums.txt.bundle", "release-files.sha256.bundle"] + ["%s.bundle" % x for x in EVID]), "AC8 I2 the blobs and bundles are placed in release-evidence/")
 check(sorted(os.listdir(os.path.join(t, "release-metadata"))) == sorted(f for f in os.listdir(os.path.join(t, S, "release-metadata")) if not f.endswith(".bundle")) and open(os.path.join(t, "dist/checksums.txt"), "rb").read() == open(os.path.join(t, S, "checksums.txt"), "rb").read(), "AC8 I2 release-metadata/ holds the metadata files Sign made and dist/checksums.txt is Sign's checksums.txt")
@@ -1039,9 +1123,17 @@ for bundle, blob in sorted(SRC.items()):
 t = released_tree(); shutil.rmtree(os.path.join(t, S)); rc, so, se = run(t, "release-sign", creds=REG); check(rc == 1 and S in se and not log(t), "I2 without release-signed/ the step stops with exit 1 before any call", "rc=%s %s" % (rc, first(se)))
 for miss in ("DOCKERHUB_TOKEN", "DOCKERHUB_USERNAME", "GH_TOKEN"):
     t = released_tree(); rc, so, se = run(t, "release-sign", creds=[c for c in REG if c != miss]); check(rc == 2 and miss in se and not log(t), "I2 a missing %s is refused with exit 2, naming it, before any call" % miss, "rc=%s %s" % (rc, first(se)))
-t = released_tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_ATTEST_FAIL_ON": "docker.io/"})
-check(rc == 0 and "docker.io" in so + se and "::warning::" in so and len([l for l in log(t) if l.startswith("cosign attach attestation")]) == 4, "AC8 a Docker Hub mirror referrer that cannot be attached is a loud warning, never a silent skip, and the run continues (GHCR is authoritative)", "rc=%s %s" % (rc, first(se)))
-t = released_tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_ATTEST_FAIL_ON": "ghcr.io/"}); check(rc != 0, "AC8 a GHCR referrer that cannot be attached stops the run", "rc=%s %s" % (rc, first(se)))
+def refs_of(h): return ["%s/fosterstack/cache@%s" % (h, DIG["image-" + v]) for v in ("production", "fips")]
+t = released_tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"FAKE_PUSH_FAIL_ON": "ghcr.io/"}); lg = log(t); gp = [i for i, l in enumerate(lg) if l.startswith("crane push") and " ghcr.io/" in l]
+check(rc != 0 and gp and any(r_ in se for r_ in refs_of("ghcr.io")) and not [i for i, l in enumerate(lg) if l.startswith("crane push") and " docker.io/" in l and i > gp[0]], "AC8 I2 a GHCR referrer push that fails stops the run non-zero, names the ref on stderr, and no docker.io push follows", "rc=%s %s" % (rc, first(se)))
+t = released_tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"FAKE_VERIFY_ATT_FAIL_ON": "ghcr.io/"}); lg = log(t)
+check(rc != 0 and [l for l in lg if l.startswith(VATT + "ghcr.io/")] and any(r_ in se for r_ in refs_of("ghcr.io")), "AC8 I2 a GHCR referrer that does not verify (the guide's cosign verify-attestation fails) stops the run non-zero, naming the ref on stderr", "rc=%s %s" % (rc, first(se)))
+for what, env, nva in (("push", {"FAKE_PUSH_FAIL_ON": "docker.io/"}, 2), ("verify-attestation", {"FAKE_VERIFY_ATT_FAIL_ON": "docker.io/"}, 4)):      # a failed push ends that ref's && chain: no check of it follows
+    t = released_tree(); rc, so, se = run(t, "release-sign", creds=REG, env=env); lg = log(t)
+    check(rc == 0 and all(any(l.startswith("::warning::") and r_ in l for l in so.split("\n")) for r_ in refs_of("docker.io")) and len([l for l in lg if l.startswith("crane push") and " ghcr.io/" in l]) == 2 and len([l for l in lg if l.startswith(VATT)]) == nva and len([l for l in lg if l.startswith("crane push") and " docker.io/" in l]) == 2, "AC8 I2 a Docker Hub referrer %s that fails is a loud ::warning:: naming each ref, never a silent skip, and the run continues with exit 0 (GHCR is authoritative)" % what, "rc=%s %s" % (rc, first(se)))
+for h in HOSTS:
+    t = released_tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"FAKE_MANIFEST_FAIL_ON": h + "/"}); lg = log(t)
+    check(rc != 0 and [l for l in lg if l.startswith("crane manifest " + h + "/")] and not [l for l in lg if l.startswith("crane push") and " " + h + "/" in l] and any(r_ in se for r_ in refs_of(h)), "AC8 I2 a crane manifest that fails on %s is fatal: non-zero exit, the ref named, and nothing is pushed there" % h, "rc=%s %s" % (rc, first(se)))
 t = released_tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_FAIL_ON": "verify"}); cv = cosign_calls(t)
 check(rc != 0 and len([c for c in cv if c.startswith("cosign verify")]) == 1 and not [c for c in cv if c.startswith("cosign attach attestation")], "I2 a cosign verify that fails stops the step: nothing is attached to an image whose signature does not verify", "rc=%s %s" % (rc, first(se)))
 t = released_tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_FAIL_ON": "attach signature"}); cv = cosign_calls(t)

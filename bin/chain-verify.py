@@ -861,8 +861,22 @@ def cmd_stage_start(a):
 # Both are new commands run by Release's first witnessed step only. They add refusals and change no existing subcommand, pin or message.
 CHECK_RECORDS = ("scanners", "acceptance", "runtime")        # a Check job's three records, by step name (REQ-CHAIN-007-AC16)
 CHECK_RUNNERS = ("ubuntu-24.04", "ubuntu-24.04-arm")        # the two chips; each makes all three records, so a record is named by its runner and its step
-MATERIAL_PREFIX = "https://witness.dev/attestations/material/v0.1/file:"
-MATERIAL = MATERIAL_PREFIX + "witness-build/digests.json"
+MATERIAL_TYPE = "https://witness.dev/attestations/material/v0.1"
+MATERIAL_FILE = "witness-build/digests.json"
+
+
+def material_sha256(stage, stmt, what="the record"):
+    """The sha256 of witness-build/digests.json in the one material attestation of the record: the pinned Witness writes the material files in the attestation body, never as subjects."""
+    atts = (stmt.get("predicate") or {}).get("attestations") if isinstance(stmt.get("predicate"), dict) else None
+    mats = [x for x in atts if isinstance(x, dict) and x.get("type") == MATERIAL_TYPE] if isinstance(atts, list) else []
+    if len(mats) != 1:
+        refuse(stage, "digests: %s holds %d material attestations of witness-build/digests.json, exactly one is required" % (what, len(mats)))
+    body = mats[0].get("attestation")
+    entry = body.get(MATERIAL_FILE) if isinstance(body, dict) else None
+    sha = entry.get("sha256") if isinstance(entry, dict) else None
+    if not isinstance(sha, str):
+        refuse(stage, "digests: the material attestation of %s holds no sha256 for %s" % (what, MATERIAL_FILE))
+    return sha
 ITEMS_PRODUCT = "https://witness.dev/attestations/product/v0.1/file:items.json"
 
 
@@ -929,10 +943,7 @@ def cmd_bind_check(a):
     step = (stmt.get("predicate") or {}).get("name") if isinstance(stmt.get("predicate"), dict) else None
     if step != "scanners":
         refuse("check", "the record is the record of step %r, not scanners (a product is bound only to the record of the step that made it)" % step)
-    mats = [x for x in typed_subjects("check", stmt) if x["name"] == MATERIAL]
-    if len(mats) != 1:
-        refuse("check", "digests: the scanners record names %d material subjects file:witness-build/digests.json, exactly one is required" % len(mats))
-    if mats[0]["digest"].get("sha256") != want:
+    if material_sha256("check", stmt, "the scanners record") != want:
         refuse("check", "digest: the scanners record is about another digests list than the one Build attested")
     hits = [x for x in typed_subjects("check", stmt) if x["name"] == PRODUCT_PREFIX + a.product]
     if len(hits) != 1:
@@ -943,11 +954,12 @@ def cmd_bind_check(a):
 
 
 APK_FILE_SHA256 = re.compile(r"[0-9a-f]{64}")
+APK_PRODUCT = re.compile(re.escape(PRODUCT_PREFIX) + r"out/[^/]+/[^/]+\.apk")
 
 
 def _signed_apk_files(pol, stage, paths, step, label):
-    """The whole-file sha256 of every product in the signed records of one step (apk is Build's, rapk is Rebuild's), each verified under the stage's
-    identity; an unverified record, a record of another step, or a product held by two records is refused."""
+    """The whole-file sha256 of every apk product (out/<arch>/*.apk) in the signed records of one step (apk is Build's, rapk is Rebuild's), each verified under the stage's
+    identity; an unverified record, a record of another step, or an apk held by two records is refused. The subjects every record shares (git, admission.json, APKINDEX) are not apks."""
     files = {}
     for path in paths:
         try:
@@ -958,6 +970,8 @@ def _signed_apk_files(pol, stage, paths, step, label):
         if rd["payloadType"] == POLT or (rs.get("predicate") or {}).get("name") != step:
             refuse("rebuild", "%s: %s is not a signed %s record" % (label, path, step))
         for x in typed_subjects(stage, rs):
+            if not APK_PRODUCT.fullmatch(x["name"]):
+                continue
             if x["name"] in files:
                 refuse("rebuild", "%s: the product %s is in two signed %s records" % (label, x["name"], step))
             files[x["name"]] = x["digest"].get("sha256")
@@ -1121,10 +1135,7 @@ def cmd_check_list(a):
             step = (stmt.get("predicate") or {}).get("name") if isinstance(stmt.get("predicate"), dict) else None
             if step != n:
                 refuse("check", "the %s record of %s is the record of step %r (a record is accepted only in the slot of its own step)" % (n, r, step))
-            mats = [x for x in typed_subjects("check", stmt) if x["name"] == MATERIAL]
-            if len(mats) != 1:
-                refuse("check", "digests: the %s record of %s names %d material subjects file:witness-build/digests.json, exactly one is required" % (n, r, len(mats)))
-            if mats[0]["digest"].get("sha256") != want:
+            if material_sha256("check", stmt, "the %s record of %s" % (n, r)) != want:
                 refuse("check", "digest: the %s record of %s is about another digest list than the one Build attested" % (n, r))
             h = _sha256_bytes_of(path, "check", n)
             if h in seen:
@@ -2191,15 +2202,13 @@ def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha, ref):
     if stage == "release":
         if name != "witness-" + step:
             refuse(stage, "record: the folder %s holds the %s record; Release's folders are %s, each named for its step" % (name, step, " ".join(sorted("witness-" + n for n in SR_STEPS["release"]))))
-        mats = [x for x in subs if x["name"].startswith(MATERIAL_PREFIX)]
-        if len(mats) != 1 or mats[0]["name"] != MATERIAL or mats[0]["digest"].get("sha256") != digests_sha:
+        if material_sha256(stage, stmt) != digests_sha:
             refuse(stage, "material: the %s record's file:witness-build/digests.json is not Build's attested digests.json (--digests)" % step)
         return step, payload, [], {}
     if stage == "check":
         if SR_CHECK_FOLDER.get(name.rsplit("/", 1)[-1]) != step:
             refuse(stage, "record: the folder %s holds the %s record; Check's folders are %s, each named for its step" % (name, step, " ".join(sorted(SR_CHECK_FOLDER))))
-        mats = [x for x in subs if x["name"] == MATERIAL]
-        if len(mats) != 1 or mats[0]["digest"].get("sha256") != digests_sha:
+        if material_sha256(stage, stmt) != digests_sha:
             refuse(stage, "material: the %s record's file:witness-build/digests.json is not Build's attested digests.json (--digests)" % step)
         return step, payload, [n for n in names if n != fname], {k: v for k, v in products.items() if k.startswith(SR_CHECK_PREFIX)}
     received = sr_received(stage, rec_dir, art_dir, name)
@@ -2214,8 +2223,7 @@ def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha, ref):
     if unreceived:
         refuse(stage, "missing: the record names build products under out/ or dist/ that Sign did not receive: %s" % " ".join(unreceived))
     if stage == "rebuild":
-        mats = [x for x in subs if x["name"] == MATERIAL]
-        if len(mats) != 1 or mats[0]["digest"].get("sha256") != digests_sha:
+        if material_sha256(stage, stmt) != digests_sha:
             refuse(stage, "material: the record's file:witness-build/digests.json is not Build's attested digests.json (--digests)")
     return step, payload, [n for n in names if n != fname], {}
 

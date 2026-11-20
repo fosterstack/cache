@@ -1565,6 +1565,7 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
       - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
+      - { type: shell-test, ref: "bin/release-referrer-verify-test.sh" }
   - ac: REQ-CHAIN-007-AC9
     evidence:
       - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }

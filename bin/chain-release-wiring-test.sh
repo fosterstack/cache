@@ -123,7 +123,7 @@ BODY = {
  "release-compare": "set -euo pipefail\npython3 -I -B bin/release-compare.py\n",
  "release-apks": 'set -euo pipefail\npython3 -I -B bin/apk-tool.py digest apks/a.apk\npython3 -I -B bin/release-postverify.py --before-publish\nbash bin/release-sign-apks.sh --build-dir b --signatures release-signed/apks\n',
  "release-publish": 'set -euo pipefail\nbash bin/release-sign-verify.sh\npython3 bin/release-layout.py images/x "$digest"\ncrane copy "src@$digest" "dst:$tag"\ncrane digest "dst:$tag" | jq -R .\n',
- "release-sign": 'set -euo pipefail\nbash bin/release-sign-verify.sh\npython3 -I -B bin/chain-verify.py bundle-check --bundle b --digest d --public-key build/keys/release.rsa.pub --signing-config c\ncosign login ghcr.io -u x --password-stdin <<< "$GH_TOKEN"\ncosign attach signature --payload p --signature s --rekor-response r "ghcr.io/x@$digest"\ncosign verify --key build/keys/release.rsa.pub "ghcr.io/x@$digest"\njq . policy.bundle\n',
+ "release-sign": 'set -euo pipefail\nbash bin/release-sign-verify.sh\npython3 -I -B bin/chain-verify.py bundle-check --bundle b --digest d --public-key build/keys/release.rsa.pub --signing-config c\ncosign login ghcr.io -u x --password-stdin <<< "$GH_TOKEN"\ncosign attach signature --payload p --signature s --rekor-response r "ghcr.io/x@$digest"\ncosign verify --key build/keys/release.rsa.pub "ghcr.io/x@$digest"\ncrane manifest "ghcr.io/x@$digest" > m\ncrane push layout "ghcr.io/x@$digest"\ncosign verify-attestation --key build/keys/release.rsa.pub --type t "ghcr.io/x@$digest"\njq . policy.bundle\n',
  "release-sign-verify": 'set -euo pipefail\npython3 -I -B bin/chain-verify.py bundle-check --bundle b --digest d --public-key build/keys/release.rsa.pub --signing-config c\njq -er .messageSignature.signature b\nsha256sum f\ntrap \'rm -rf "$scratch"\' EXIT\n',
  "release-signatures": 'set -euo pipefail\ndate=$(git log -1 --format=%ct "$GITHUB_SHA")\npython3 -I -B bin/vendor-provenance.py evidence --out evidence\nbash bin/with-aws-token.sh kms-sign --digest d --out s --bundle b\njq . policy.bundle\n',
  "release-stage": 'set -euo pipefail\npython3 -I -B bin/release-gate.py --dir release-upload\n',
@@ -131,7 +131,7 @@ BODY = {
  "release-assets": 'set -euo pipefail\ngh release create "$GITHUB_REF_NAME" --verify-tag\ngh release upload "$GITHUB_REF_NAME" release-upload/*.json\ngh release download "$GITHUB_REF_NAME" -D release-published\npython3 -I -B bin/release-gate.py --dir release-published --same-as release-upload\n',
 }
 ROWS = {"release-verify": (["python3"], False, ["bin/build-admit.py", "bin/chain-verify.py"]), "release-compare": (["python3"], False, ["bin/apk-tool.py", "bin/release-compare.py"]), "release-apks": (["bash", "jq", "python3"], False, ["bin/apk-tool.py", "bin/build-admit.py", "bin/release-postverify.py", "bin/release-sign-apks.sh"]),
-        "release-publish": (["bash", "crane", "jq", "python3", "trap"], False, ["bin/release-layout.py", "bin/release-sign-verify.sh"]), "release-sign": (["bash", "cosign", "git", "jq", "python3", "sha256sum", "trap"], False, ["bin/chain-verify.py", "bin/release-sign-verify.sh"]),
+        "release-publish": (["bash", "crane", "jq", "python3", "trap"], False, ["bin/release-layout.py", "bin/release-sign-verify.sh"]), "release-sign": (["bash", "cosign", "crane", "git", "jq", "python3", "sha256sum", "trap"], False, ["bin/chain-verify.py", "bin/release-sign-verify.sh"]),
         "release-sign-verify": (["jq", "python3", "sha256sum", "trap"], False, ["bin/chain-verify.py"]),
         "release-signatures": (["bash", "git", "jq", "python3", "sha256sum", "trap"], "other", ["bin/apk-tool.py", "bin/build-admit.py", "bin/chain-verify.py", "bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py", "bin/with-aws-token.sh"]),
         "release-assets": (["gh", "python3"], False, ["bin/release-gate.py"]), "release-stage": (["git", "python3"], False, ["bin/build-admit.py", "bin/patch-decide.py", "bin/release-gate.py", "bin/release-metadata.py"]),
@@ -732,7 +732,7 @@ assert not v.get("reads_env"), v.get("reads_env")
 p, s = rows["bin/release-publish.sh"], rows["bin/release-sign.sh"]
 assert "bin/release-sign-verify.sh" in p["runs"] and "bin/release-sign-verify.sh" in s["runs"], "runs"
 assert sorted(p["tools"]) == ["bash", "crane", "jq", "python3", "trap"], p["tools"]
-assert sorted(s["tools"]) == ["bash", "cosign", "git", "jq", "python3", "sha256sum", "trap"], s["tools"]
+assert sorted(s["tools"]) == ["bash", "cosign", "crane", "git", "jq", "python3", "sha256sum", "trap"], s["tools"]
 PY
 expect ok "the real release scripts are listed in chain-scripts.json" "" listed "$root/.github/policy/chain-scripts.json" "$root"
 expect ok "the old authorization machinery is gone from the real repository" "" removed "$root"

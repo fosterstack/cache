@@ -486,6 +486,24 @@ _rapk("rapk_arm64_short", "arm64", "aarch64", hexfix=lambda x: x[:63])
 _rapk("rapk_arm64_other", "arm64", "aarch64", lambda d: "sha256:" + "9" * 64)
 _rapk("rapk_arm64_throwaway", "arm64", "aarch64", key="throwaway")
 for _a, _r in (("amd64", "x86_64"), ("arm64", "aarch64")): _rapk("rapk_%s_wcd" % _a, _a, _r, whole=False); _rapk("bapk_%s_wcd" % _a, _a, _r, pname="apk", whole=False)
+# REAL-SHAPE apk records (test-evidence/witness-real/apk-collection.real.txt): besides its apk products, a Build apk record and a Rebuild rapk record carry the git subjects
+# (commithash, authoremail, committeremail, refnameshort), the product file:admission.json and the APKINDEX, and the two records of a step share most of them (B-F3)
+def _shaped(n, arch, runner, pname, key="rel", whole=True, dupe_of=None, wrong=None, signed=True):
+    PP = "https://witness.dev/attestations/product/v0.1/file:"
+    GP = "https://witness.dev/attestations/git/v0.1/"
+    sub = [{"name": GP + "commithash:" + "f" * 40, "digest": {"sha1": "f" * 40}}, {"name": GP + "authoremail:x@x", "digest": {"sha256": "6" * 64}},
+           {"name": GP + "committeremail:x@x", "digest": {"sha256": "6" * 64}}, {"name": GP + "refnameshort:main", "digest": {"sha256": "7" * 64}},
+           {"name": PP + "out/%s/APKINDEX.tar.gz" % runner, "digest": {"sha256": hashlib.sha256(("idx" + runner).encode()).hexdigest()}}]
+    for v, nm in (("standard", "fscache-0.3.0-r0.apk"), ("fips", "fscache-fips-0.3.0-r0.apk")):
+        dg = _wf(AC_BUILD["apk-%s-%s" % (v, arch)].split(":")[1], whole)
+        sub.append({"name": PP + "out/%s/%s" % (runner, nm), "digest": {"sha256": wrong if wrong and v == "fips" else dg}})
+    sub.append({"name": PP + "admission.json", "digest": {"sha256": "8" * 64}})
+    att = [{"type": "https://witness.dev/attestations/environment/v0.1", "attestation": {"os": "linux", "variables": {"GITHUB_REF": T}}}]
+    add(n, COLL, None, payload=json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "subject": sub, "predicate": {"name": pname, "attestations": att}}).encode(), key=key, signed=signed)
+_shaped("rapk_shaped_amd64", "amd64", "x86_64", "rapk"); _shaped("rapk_shaped_arm64", "arm64", "aarch64", "rapk")
+_shaped("bapk_shaped_amd64", "amd64", "x86_64", "apk"); _shaped("bapk_shaped_arm64", "arm64", "aarch64", "apk")
+_shaped("rapk_shaped_arm64_wrong", "arm64", "aarch64", "rapk", wrong="9" * 64)
+_shaped("bapk_shaped_arm64_wrong", "arm64", "aarch64", "apk", wrong="9" * 64)
 # REAL apk bytes (signature + control + data gzip streams, as melange writes them): the whole-file sha256 (what Witness attests as a product) and the
 # control+data digest (what apk-tool prints and Build attests in digests.json) are different numbers; each is only ever compared with its own kind
 import gzip, io, tarfile
@@ -720,7 +738,10 @@ def _prods(items_name, digests_name="digests.json"):
     return [{"name": PRD + "digests.json", "digest": {"sha256": _fsha(digests_name)}}, {"name": PRD + "items.json", "digest": {"sha256": _fsha(items_name)}},
             {"name": "https://witness.dev/attestations/git/v0.1/commithash:" + "f" * 40, "digest": {"gitoid:sha1": "gitoid:commit:sha1:" + "f" * 40}}]
 def _envatt(ref): return [{"type": "https://witness.dev/attestations/environment/v0.1", "attestation": {"os": "linux", "variables": {"GITHUB_REF": ref}}}]
-def _coll(step, subj, ref=T): return json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {"name": step, "attestations": _envatt(ref)}, "subject": subj}).encode()
+# the pinned Witness 0.12.0 material attestor writes no subject: Build's digest list is in the BODY of the attestation of type .../material/v0.1, {path: {sha256}} (mats: the bodies)
+def _matatt(body): return {"type": "https://witness.dev/attestations/material/v0.1", "attestation": body}
+def _mbody(digests="digests.json", extra=None): return dict({"witness-build/digests.json": {"sha256": _fsha(digests)}}, **(extra or {}))
+def _coll(step, subj, ref=T, mats=()): return json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {"name": step, "attestations": _envatt(ref) + [_matatt(b) for b in mats]}, "subject": subj}).encode()
 add("bi_ok", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")))
 for _n in ("build_coll", "bi_ok"): shutil.copy(p(_n + ".json"), p(_n + "_norekor.json"))      # the same signed records with no Rekor entries file beside them
 # 0707 fix 4: Build records that ARE bound to an items.json with one SBOM entry missing or malformed (so the refusal is about the entry, not about a hash mismatch)
@@ -747,11 +768,11 @@ add("bi_adm_dup", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.
 add("bi_adm_material", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [dict(_PADM, name=MAT + "admission-baseline.json")]))
 CK_RUNNERS = ("ubuntu-24.04", "ubuntu-24.04-arm")
 CK_STEPS = ("scanners", "acceptance", "runtime")
-def _chk(name, step, key="rel", digests="digests.json", signed=True, subj=None, ref=T, runner=""):
+def _chk(name, step, key="rel", digests="digests.json", signed=True, subj=None, ref=T, runner="", mats=None):
     # a runner's product differs from the other runner's (two records of different bytes: a record repeated for the other runner is a duplicate)
     add(name, COLL, None, stmt="v0.1", signed=signed, key=key,
-        payload=_coll(step, subj if subj is not None else [{"name": MAT + "witness-build/digests.json", "digest": {"sha256": _fsha(digests)}},
-                                                        {"name": PRD + "check-results/%s.json" % step, "digest": {"sha256": hashlib.sha256((runner + step).encode()).hexdigest()}}], ref))
+        payload=_coll(step, subj if subj is not None else [{"name": PRD + "check-results/%s.json" % step, "digest": {"sha256": hashlib.sha256((runner + step).encode()).hexdigest()}}], ref,
+                      [_mbody(digests)] if mats is None else mats))
 for _r in CK_RUNNERS:
     for _sn in CK_STEPS: _chk("c_%s_%s" % (_r, _sn), _sn, runner=_r)
 for _r in CK_RUNNERS:
@@ -759,9 +780,9 @@ for _r in CK_RUNNERS:
 _chk("c_job", "check-arm64")
 _chk("c_scanners_otherkey", "scanners", key="other"); _chk("c_scanners_throwaway", "scanners", key="throwaway")
 _chk("c_scanners_unsigned", "scanners", signed=False)
-_chk("c_scanners_nomat", "scanners", subj=[{"name": PRD + "check-results/scanners.json", "digest": {"sha256": "9" * 64}}])
-_chk("c_scanners_prodonly", "scanners", subj=[{"name": PRD + "witness-build/digests.json", "digest": {"sha256": _fsha("digests.json")}}])
-_chk("c_scanners_dupmat", "scanners", subj=[{"name": MAT + "witness-build/digests.json", "digest": {"sha256": _fsha("digests.json")}}, {"name": MAT + "witness-build/digests.json", "digest": {"sha256": _fsha("digests-other.json")}}])
+_chk("c_scanners_nomat", "scanners", subj=[{"name": PRD + "check-results/scanners.json", "digest": {"sha256": "9" * 64}}], mats=[])
+_chk("c_scanners_prodonly", "scanners", subj=[{"name": PRD + "witness-build/digests.json", "digest": {"sha256": _fsha("digests.json")}}], mats=[])
+_chk("c_scanners_dupmat", "scanners", mats=[_mbody(), _mbody("digests-other.json")])
 def _cl(dirname, slots):
     """slots: {(runner, step): record name}; the records land in DIR/<runner>/witness-<step>/<step>-collection.json with their Rekor entries file beside them"""
     for (runner, slot), rec in slots.items():
@@ -794,9 +815,9 @@ _chk("c_scanners_unsigned", "scanners", signed=False)
 _cl("cl_unverifiable", six({(ARM, "runtime"): "c_scanners_unsigned"}))
 _cl("cl_wrongjob", six({(ARM, "runtime"): "c_job"}))
 _chk("c_scanners_otherkey", "scanners", key="other"); _chk("c_scanners_throwaway", "scanners", key="throwaway")
-_chk("c_scanners_nomat", "scanners", subj=[{"name": PRD + "check-results/scanners.json", "digest": {"sha256": "9" * 64}}])
-_chk("c_scanners_prodonly", "scanners", subj=[{"name": PRD + "witness-build/digests.json", "digest": {"sha256": _fsha("digests.json")}}])
-_chk("c_scanners_dupmat", "scanners", subj=[{"name": MAT + "witness-build/digests.json", "digest": {"sha256": _fsha("digests.json")}}, {"name": MAT + "witness-build/digests.json", "digest": {"sha256": _fsha("digests-other.json")}}])
+_chk("c_scanners_nomat", "scanners", subj=[{"name": PRD + "check-results/scanners.json", "digest": {"sha256": "9" * 64}}], mats=[])
+_chk("c_scanners_prodonly", "scanners", subj=[{"name": PRD + "witness-build/digests.json", "digest": {"sha256": _fsha("digests.json")}}], mats=[])
+_chk("c_scanners_dupmat", "scanners", mats=[_mbody(), _mbody("digests-other.json")])
 _cl("cl_otherkey", six({(ARM, "scanners"): "c_scanners_otherkey"}))
 _cl("cl_throwaway", six({(AMD, "scanners"): "c_scanners_throwaway"}))
 _cl("cl_nomat", six({(ARM, "scanners"): "c_scanners_nomat"}))
@@ -811,10 +832,10 @@ _cl("cl_stray2", OK6); open(_cd("cl_stray2", ARM + "/witness-runtime/stray.json"
 dj("gv.json", {"config": {"scanner_name": "govulncheck", "scanner_version": "v1.7.0"}})
 dj("gv-other.json", {"config": {"scanner_name": "govulncheck", "scanner_version": "v9.9.9"}})
 _GVP = PRD + "check-results/govulncheck.json"
-def _gv(name, step="scanners", key="rel", digests="digests.json", signed=True, prods=None, mats=None, ref=T):
-    m = mats if mats is not None else [{"name": MAT + "witness-build/digests.json", "digest": {"sha256": _fsha(digests)}}]
+def _gv(name, step="scanners", key="rel", digests="digests.json", signed=True, prods=None, mats=None, ref=T, subj=()):
+    m = mats if mats is not None else [_mbody(digests)]
     pr = prods if prods is not None else [{"name": _GVP, "digest": {"sha256": _fsha("gv.json")}}]
-    add(name, COLL, None, stmt="v0.1", signed=signed, key=key, payload=_coll(step, m + pr, ref))
+    add(name, COLL, None, stmt="v0.1", signed=signed, key=key, payload=_coll(step, list(subj) + pr, ref, m))
 _gv("gv_ok"); _gv("gv_otherfile", prods=[{"name": _GVP, "digest": {"sha256": _fsha("gv-other.json")}}])
 _gv("gv_noprod", prods=[{"name": PRD + "check-results/scan-results.json", "digest": {"sha256": "9" * 64}}])
 _gv("gv_dup", prods=[{"name": _GVP, "digest": {"sha256": _fsha("gv.json")}}, {"name": _GVP, "digest": {"sha256": _fsha("gv-other.json")}}])
@@ -826,6 +847,28 @@ add("bi_branch", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.j
 _chk("c_scanners_tag2", "scanners", ref=T2); _chk("c_scanners_branch", "scanners", ref="refs/heads/main")
 _cl("cl_tag2", six({(ARM, "scanners"): "c_scanners_tag2"})); _cl("cl_branch", six({(AMD, "scanners"): "c_scanners_branch"}))
 _gv("gv_tag2", ref=T2); _gv("gv_branch", ref="refs/heads/main")
+_FORGED = [{"name": MAT + "witness-build/digests.json", "digest": {"sha256": _fsha("digests.json")}}]      # the right digest as a material SUBJECT: no real record has one, nothing may read it
+_gv("gv_forged", mats=[], subj=_FORGED); _chk("c_scanners_forged", "scanners", mats=[], subj=_FORGED + [{"name": PRD + "check-results/scanners.json", "digest": {"sha256": "9" * 64}}])
+_cl("cl_forged", six({(ARM, "scanners"): "c_scanners_forged"}))
+_MALFORMED = {"list": [], "str": "x", "entry_str": {"witness-build/digests.json": _fsha("digests.json")}, "entry_empty": {"witness-build/digests.json": {}},
+              "sha_num": {"witness-build/digests.json": {"sha256": 5}}, "sha_list": {"witness-build/digests.json": {"sha256": [_fsha("digests.json")]}},
+              "sha_null": {"witness-build/digests.json": {"sha256": None}}, "otherpath": {"digests.json": {"sha256": _fsha("digests.json")}}}
+for _mk, _mb in _MALFORMED.items():
+    _gv("gv_mal_" + _mk, mats=[_mb]); _chk("c_scanners_mal_" + _mk, "scanners", mats=[_mb]); _cl("cl_mal_" + _mk, six({(AMD, "scanners"): "c_scanners_mal_" + _mk}))
+_gv("gv_dupmat", mats=[_mbody(), _mbody()]); _gv("gv_dupmat_other", mats=[_mbody(), _mbody("digests-other.json")])
+_gv("gv_manyfiles", mats=[_mbody(extra={".git/HEAD": {"sha256": "1" * 64}, "witness-build/items.json": {"sha256": "2" * 64}})])      # the real body names the whole working tree: other paths do not matter
+_chk("c_scanners_manyfiles", "scanners", mats=[_mbody(extra={".git/HEAD": {"sha256": "1" * 64}, "witness-build/items.json": {"sha256": "2" * 64}})]); _cl("cl_manyfiles", six({(AMD, "scanners"): "c_scanners_manyfiles"}))
+# the REAL scanners record (pinned Witness 0.12.0, test-evidence/witness-real/scanners-collection.real.txt): its payload re-signed here with the test release key; digests.json and
+# govulncheck.json are the fixture's bytes (the material body holds sha256 ac7c39b0.. for witness-build/digests.json, the product file:check-results/govulncheck.json holds the sha256 of "{}\n")
+open(p("digests-real.json"), "wb").write(b'{"image-production":"sha256:' + b"a" * 64 + b'"}\n'); open(p("gv-real.json"), "wb").write(b"{}\n")
+_rl = open(sys.argv[2] + "/test-evidence/witness-real/scanners-collection.real.txt").read().split("\n"); _rl = _rl[_rl.index("payload:") + 1:]
+_REALPAY = base64.b64decode("".join(_rl))
+assert _fsha("digests-real.json") == "ac7c39b0decb3685b7fadbdaaaf3d249e1901e678e60e4ec0215e8deccd8d87a" and _fsha("gv-real.json") == "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+add("gv_real", COLL, None, stmt="v0.1", payload=_REALPAY)
+add("gv_real_other", COLL, None, stmt="v0.1", payload=_REALPAY.replace(b"ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356", b"0" * 64))
+for _r in CK_RUNNERS:
+    for _sn in CK_STEPS: _chk("cr_%s_%s" % (_r, _sn), _sn, digests="digests-real.json", runner=_r)
+_cl("cl_real", six({(r, s): "cr_%s_%s" % (r, s) for r in CK_RUNNERS for s in CK_STEPS}) | {(AMD, "scanners"): "gv_real"})
 _gv("gv_nomat", mats=[]); _gv("gv_otherkey", key="other"); _gv("gv_unsigned", signed=False)
 
 # ---- cutover prep (advisor Oct 12; REQ-CHAIN-001-AC6): the rc run's records, laid out like Release's own directories ----
@@ -925,7 +968,7 @@ for f in sealed-env.json archive.json melange.yaml apko.yaml locks/fips-module.t
 rcg add -A > /dev/null; rcg commit -q -m c1; rcg tag v0.3.0-rc1
 C1=$(rcg rev-parse HEAD)
 export RC_COMMIT=$C1
-python3 "$work/fx.py" "$work" > "$work/fx.log" 2>&1 || { cat "$work/fx.log"; echo "FAIL fixture generation"; exit 1; }
+python3 "$work/fx.py" "$work" "$root" > "$work/fx.log" 2>&1 || { cat "$work/fx.log"; echo "FAIL fixture generation"; exit 1; }
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 # fixture self-checks: the inputs are what the cases claim they are (so a refusal is about the claimed cause)
@@ -2004,6 +2047,22 @@ expect_refuse "G bind-check: an unsigned record is refused" "check|signature" $(
 expect_refuse "G bind-check: a product name outside check-results/ is refused" "check|product" $(BC gv_ok gv digests ../gv.json)
 expect_refuse "G bind-check: a product name that is not a plain file of check-results/ is refused" "check|product" $(BC gv_ok gv digests check-results/a/b.json)
 expect_refuse "PR4 bind-items: a record signed by a key the manifest does not name is refused" "build|signature" $(BI bi_otherkey)
+expect_ok     "B-F2 bind-check REAL: the committed Witness 0.12.0 scanners record (digest in the material body, no material subject) binds govulncheck.json for Build's digests" $(BC gv_real gv-real digests-real)
+expect_refuse "B-F2 bind-check REAL: the real record against another digest list than its material body holds is refused" "check|digests" $(BC gv_real gv-real digests)
+expect_refuse "B-F2 bind-check REAL: a file that is not the real record's product is refused" "check|govulncheck.json|digest" $(BC gv_real gv digests-real)
+expect_refuse "B-F2 bind-check REAL: the real record holding another product hash is refused" "check|govulncheck.json|digest" $(BC gv_real_other gv-real digests-real)
+expect_ok     "B-F2 check-list REAL: the real scanners record among five more records for its digest list is accepted" $(CLS cl_real digests-real)
+expect_refuse "B-F2 check-list REAL: the real scanners record against another digest list is refused" "check|scanners|digest" $(CLS cl_real digests)
+expect_ok     "B-F2 bind-check: the material body names other files too (the real one names the whole tree): only witness-build/digests.json counts" $(BC gv_manyfiles)
+expect_ok     "B-F2 check-list: other files in the material body do not matter" $(CLS cl_manyfiles)
+expect_refuse "B-F2 bind-check: a material SUBJECT with Build's digest and no body entry is refused" "check|digests" $(BC gv_forged)
+expect_refuse "B-F2 check-list: a material SUBJECT with Build's digest and no body entry is refused" "check|scanners|digests" $(CLS cl_forged)
+expect_refuse "B-F2 bind-check: two material attestations are refused (exactly one)" "check|digests" $(BC gv_dupmat)
+expect_refuse "B-F2 bind-check: two material attestations, one for another list, are refused" "check|digests" $(BC gv_dupmat_other)
+for _mk in list str entry_str entry_empty sha_num sha_list sha_null otherpath; do
+  expect_refuse "B-F2 bind-check: a material body '$_mk' is refused, never a traceback" "check|digests" $(BC gv_mal_$_mk)
+  expect_refuse "B-F2 check-list: a material body '$_mk' is refused, never a traceback" "check|scanners|digests" $(CLS cl_mal_$_mk)
+done
 expect_refuse "PR4 check-list: a record signed by a key the manifest does not name is refused" "check|signature" $(CLS cl_otherkey)
 expect_refuse "PR4 check-list: a record signed by the throwaway key is refused" "check|signature|manifest key" $(CLS cl_throwaway)
 expect_refuse "G bind-check: a record signed by a key the manifest does not name is refused" "check|signature" $(BC gv_otherkey)
@@ -2346,6 +2405,12 @@ expect_refuse "apk-compare REAL: a wrong control+data digest in the result file 
 expect_refuse "apk-compare REAL: a control+data digest in a rapk record never satisfies the whole-file check" "apk|rapk|digest|whole" $(RAC rebuild_real ac_real_good acr-real rapk_real_amd64_cd rapk_real_arm64_cd)
 expect_refuse "apk-compare REAL: a whole-file sha256 in Build's list and the result file never satisfies the control+data check" "apk|attested|digest|control" $(RAC rebuild_realwhole ac_real_whole acr-realwhole rapk_real_amd64 rapk_real_arm64)
 expect_refuse "apk-compare REAL: a control+data result file beside a Build list that holds whole-file digests is refused" "apk|attested|digest" $(RAC rebuild_realwhole ac_real_good acr-realwhole rapk_real_amd64 rapk_real_arm64)
+# B-F3: the records Build's apk step and Rebuild's rapk step really write share subjects (git, admission.json): only the apk products out/<arch>/<name>.apk are collected
+expect_ok     "B-F3 apk-compare: two records per step in the real shape, sharing their git subjects and file:admission.json, are accepted" $(ACB) --file "$work/ac_good.json" --digests "$work/acd.json" --rapk "$work/rapk_shaped_amd64.json" --rapk "$work/rapk_shaped_arm64.json" --build-apk "$work/bapk_shaped_amd64.json" --build-apk "$work/bapk_shaped_arm64.json"
+expect_refuse "B-F3 apk-compare: real-shape records with a wrong whole-file digest in a rapk record are refused" "rapk|build|digest|whole" $(ACB) --file "$work/ac_good.json" --digests "$work/acd.json" --rapk "$work/rapk_shaped_amd64.json" --rapk "$work/rapk_shaped_arm64_wrong.json" --build-apk "$work/bapk_shaped_amd64.json" --build-apk "$work/bapk_shaped_arm64.json"
+expect_refuse "B-F3 apk-compare: real-shape records with a wrong whole-file digest in a Build record are refused" "rapk|build|digest|whole" $(ACB) --file "$work/ac_good.json" --digests "$work/acd.json" --rapk "$work/rapk_shaped_amd64.json" --rapk "$work/rapk_shaped_arm64.json" --build-apk "$work/bapk_shaped_amd64.json" --build-apk "$work/bapk_shaped_arm64_wrong.json"
+expect_refuse "B-F3 apk-compare: an apk product in two real-shape records of the same step (x86_64 twice) is still refused, naming the product" "rapk|two|out/x86_64/fscache-0.3.0-r0.apk" $(ACB) --file "$work/ac_good.json" --digests "$work/acd.json" --rapk "$work/rapk_shaped_amd64.json" --rapk "$work/rapk_shaped_amd64.json" --build-apk "$work/bapk_shaped_amd64.json" --build-apk "$work/bapk_shaped_arm64.json"
+expect_refuse "B-F3 apk-compare: an apk product in two real-shape Build records (aarch64 twice) is still refused, naming the product" "apk|two|out/aarch64/fscache-0.3.0-r0.apk" $(ACB) --file "$work/ac_good.json" --digests "$work/acd.json" --rapk "$work/rapk_shaped_amd64.json" --rapk "$work/rapk_shaped_arm64.json" --build-apk "$work/bapk_shaped_arm64.json" --build-apk "$work/bapk_shaped_arm64.json"
 # ROW 2: Build's whole-file sha256 (--build-apk, two signed apk records, one per runner) is compared whole-file with whole-file against the signed --rapk records
 ACR="apk-compare ROW2:"
 ACX() { echo $(ACB) --file "$work/ac_good.json" --digests "$work/acd.json"; }

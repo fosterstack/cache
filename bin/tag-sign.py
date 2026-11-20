@@ -46,6 +46,8 @@ def prepare(a):
         sys.exit("tag-sign: the tagger is one line")
     with open(a.notes, "rb") as fh:
         notes = fh.read()
+    if not notes.endswith(b"\n"):
+        sys.exit("tag-sign: the notes must end with a newline, or Git cannot find the signature after them")
     obj = ("object %s\ntype commit\ntag %s\ntagger %s %d +0000\n\n" % (a.commit, a.tag, a.tagger, a.time)).encode() + notes
     write(a.object, obj)
     write(a.digest, (hashlib.sha256(signed_data(obj)).hexdigest() + "\n").encode())

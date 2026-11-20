@@ -65,6 +65,12 @@ jobs:
         if: ${{ matrix.suite == 'vex-scope-test.sh' || matrix.suite == 'vex-both-scanners-test.sh' }}
         run: ./bin/install-scanner.sh grype
 
+      - name: install the pinned cosign and crane (the suite that runs the real binaries)
+        if: ${{ matrix.suite == 'release-referrer-verify-test.sh' }}
+        run: |
+          ./bin/install-scanner.sh cosign
+          ./bin/install-scanner.sh crane
+
       - name: the suite
         env:
           SUITE: ${{ matrix.suite }}
