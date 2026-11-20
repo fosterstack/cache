@@ -427,6 +427,11 @@
         },
         {
           "rule": "script-name",
+          "text": "build-admit.py",
+          "why": "the file name joined to this script's own directory and parsed, not run: BOUND_CONTEXTS and BOUND_EVENTS are read as data from its source, so the bound check table has one definition; a name, never a command here"
+        },
+        {
+          "rule": "script-name",
           "text": "x.sh",
           "why": "a file-name pattern or an example of one in the classifier (data and prose), never run from here"
         },
@@ -1882,6 +1887,7 @@
       "path": "bin/release-assets.sh",
       "tools": [
         "gh",
+        "jq",
         "python3"
       ],
       "runs": [

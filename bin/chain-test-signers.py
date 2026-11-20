@@ -610,8 +610,8 @@ def fed_value(name):
     return m.group(1) if m else "<RELEASE_KEY_REF not found in bin/chain-verify.py>"
 
 
-# the job that holds a named credential holds exactly these permissions (Build's apk job: read-only, no identity token since the Witness record is signed outside the build; Release: the three writes)
-PLACE_PERMS = {(_R, "build-apk"): {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read"},
+# the job that holds a named credential holds exactly these permissions (Build's apk job: read-only, the Actions read of admission's bound check runs (docs/ratify/2026-11-10-full-suite-at-promotion.md:11-12), no identity token since the Witness record is signed outside the build; Release: the three writes)
+PLACE_PERMS = {(_R, "build-apk"): {"contents": "read", "actions": "read", "checks": "read", "statuses": "read", "pull-requests": "read"},
                (_R, "release"): {"contents": "write", "packages": "write"}}
 # the one workflow-level group of release.yml: release.yml's own push and daily runs on main share 'patch-release' (queued, never cancelled); every other run has its own
 # (a tag push, a dispatch, and a snapshot call, whose ref and event are the caller's)
