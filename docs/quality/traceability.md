@@ -467,7 +467,7 @@ Every release shall ship static (CGO_ENABLED=0) standard and FIPS-variant binari
 
 ### REQ-PLAT-002 — Image variants and multi-arch
 
-Every release shall ship three image variants — production, -debug, -fips — each a multi-arch manifest for linux/amd64 and linux/arm64.
+Every release shall ship two image variants — production and -fips — each a multi-arch manifest for linux/amd64 and linux/arm64.
 
 *Introduced v0.1.0 · tier community · confidence documented · source: README.md "Image variants"; docs/verify-images.md*
 
@@ -477,7 +477,7 @@ Every release shall ship three image variants — production, -debug, -fips — 
 
 ### REQ-PLAT-003 — Shell-lessness per variant
 
-The production and -fips images shall contain no shell; the -debug image shall provide busybox with its shell at /busybox/sh and no /bin/sh.
+The production and -fips images shall contain no shell.
 
 *Introduced v0.1.0 · tier community · confidence documented · source: README.md "Image variants"; docs/verify-images.md; release.yml shell assertions*
 
