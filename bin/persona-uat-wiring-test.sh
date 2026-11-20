@@ -1402,6 +1402,99 @@ mutate("rc job: the debugging step drops its exit status", "does not hold 'exit 
 mutate("rc job: the debugging step prints no fail: line", "does not hold 'fail: '", lambda j: dbg(j).update({"run": dbg(j)["run"].replace("fail: ", "failed ")}))
 mutate("weekly job: the debugging step present", "the weekly job must have none", lambda j: j["steps"].insert(j["steps"].index(up(j)), synth_debug()), which="fresh")
 mutate("weekly job: the debugging step present before the upload, next to the driver", "the weekly job must have none", lambda j: j["steps"].insert(j["steps"].index(drv(j)) + 1, synth_debug()), which="fresh")
+# --- the real debugging step EXECUTED against recording stubs (docker, kind, kubectl, crane, jq, sleep): the volume mount, the exit status of the pipe-into-shell checks and the busybox pins (REQ-UAT-001-AC1)
+import stat, subprocess
+BB_PIN = "busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec"
+STUB_DOCKER = r'''#!/bin/bash
+echo "docker $*" >> "$STUBLOG"
+case "$1" in
+  run) ;;
+  *) exit 0 ;;
+esac
+shift; args=("$@"); n=${#args[@]}
+for ((i=0;i<n;i++)); do
+  case "${args[i]}" in
+    busybox*) exec env PATH="$INNER:$PATH" "${args[@]:i+1}" ;;   # the container's command, run with the real shell and the inner wget/ps/du/ls stubs
+  esac
+done
+exit 0
+'''
+STUB_KUBECTL = r'''#!/bin/bash
+echo "kubectl $*" >> "$STUBLOG"
+if [ "$1" = debug ]; then
+  shift
+  while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done
+  shift
+  exec env PATH="$INNER:$PATH" "$@"
+fi
+exit 0
+'''
+def exec_debug(run, wget_ok):
+    """run the step's script with the stubs; returns (stdout, recorded calls). wget in the container fails unless wget_ok; ps, du and ls succeed"""
+    w = tempfile.mkdtemp(); inner = os.path.join(w, "inner"); os.makedirs(inner)
+    def put(path, text):
+        open(path, "w").write(text); os.chmod(path, 0o755)
+    put(w + "/docker", STUB_DOCKER); put(w + "/kubectl", STUB_KUBECTL)
+    for t in ("kind", "crane", "sleep"):
+        put(f"{w}/{t}", "#!/bin/sh\necho \"%s $*\" >> \"$STUBLOG\"\nexit 0\n" % t)
+    put(w + "/jq", "#!/bin/sh\necho kindest/node:stub\n")
+    put(inner + "/wget", "#!/bin/sh\n" + ("echo ok\n" if wget_ok else "exit 1\n"))
+    for t in ("ps", "du", "ls"):
+        put(f"{inner}/{t}", "#!/bin/sh\nexit 0\n")
+    log = w + "/calls"; open(log, "w").close()
+    env = {"PATH": w + ":" + os.environ["PATH"], "STUBLOG": log, "INNER": inner, "PERSONA_UAT_IMAGE": "localhost:5000/cache@sha256:" + "b" * 64}
+    r = subprocess.run(["bash", "-c", run], capture_output=True, text=True, env=env, cwd=w, timeout=60)
+    calls = open(log).read().splitlines()
+    shutil.rmtree(w, ignore_errors=True)
+    return r.stdout, calls
+
+def debug_problems(run):
+    bad = []
+    out, calls = exec_debug(run, wget_ok=False)
+    server = [c for c in calls if c.startswith("docker run") and "--name cache" in c and " -d " in c + " "]
+    if len(server) != 1 or "-v fscache-data:/home/nonroot " not in server[0] + " ":
+        bad.append(f"the server container is not started with -v fscache-data:/home/nonroot (volume at the home directory docs/docker-deploy.md mounts): {server}")
+    if any("fscache-data:/data " in c + " " or "chown" in c for c in calls) or "chown" in run:
+        bad.append("a volume mount at /data (other than the read-only blob check) or a chown helper remains")
+    ro = [c for c in calls if "fscache-data:/data:ro" in c]
+    if len(ro) != 1 or "/data/data/blobs" not in ro[0]:
+        bad.append(f"the read-only blob check must mount fscache-data at /data:ro and list /data/data/blobs: {ro}")
+    for name in ("README docker without docker debug: busybox sharing the network and process namespaces", "README kubectl debug"):
+        if f"fail: {name}" not in out:
+            bad.append(f"a failing healthz wget does not make the check {name!r} print fail: (pass: printed: {('pass: ' + name) in out}); output {out!r}")
+    out_ok, _ = exec_debug(run, wget_ok=True)
+    for name in ("README docker without docker debug: busybox sharing the network and process namespaces", "README kubectl debug"):
+        if f"pass: {name}" not in out_ok:
+            bad.append(f"with a working wget the check {name!r} does not print pass: {out_ok!r}")
+    refs = re.findall(r"busybox[^\s'\"|]*", re.sub(r'\bcheck "[^"]*"', "check NAME", run))      # the words of a check name are not image references
+    if len(refs) < 5 or set(refs) != {BB_PIN}:
+        bad.append(f"every busybox reference must be exactly {BB_PIN} (at least five of them): {sorted(set(refs))} x{len(refs)}")
+    for c in calls:
+        for r_ in re.findall(r"busybox\S*", c):
+            if r_ != BB_PIN:
+                bad.append(f"a recorded call runs {r_}: {c}")
+    return bad
+
+REAL_DBG = next((s for s in ((P or {}).get("jobs", {}).get("persona-uat-rc", {}).get("steps") or []) if s.get("name") == DEBUG_NAME), None)
+if REAL_DBG is None:
+    result(False, "the real persona-uat-rc job has no debugging step to execute")
+else:
+    rr = REAL_DBG["run"]
+    bd = debug_problems(rr)
+    result(not bd, "the real debugging step, executed against recording stubs: the server container mounts fscache-data at /home/nonroot, no chown helper, the blob check reads /data:ro and /data/data/blobs, a failing healthz wget prints fail: for both pipe-into-shell checks (sh -e), every busybox reference is the pinned 1.37.0 index digest" + ("" if not bd else ": " + "; ".join(bd)))
+    def dmut(name, expect, fn):
+        bad = debug_problems(fn(rr))
+        result(any(expect in b for b in bad), f"caught: debugging step {name} (reason: {expect!r})" + ("" if any(expect in b for b in bad) else f"; saw {bad}"))
+    dmut("server volume back at /data", "/home/nonroot", lambda t: t.replace("-v fscache-data:/home/nonroot", "-v fscache-data:/data"))
+    dmut("chown helper back", "chown helper remains", lambda t: t.replace("docker run -d --name cache", "docker run --rm -v fscache-data:/data busybox chown 65532:65532 /data\n          docker run -d --name cache", 1))
+    dmut("blob check mounts elsewhere", "read-only blob check", lambda t: t.replace("fscache-data:/data:ro", "fscache-data:/mnt:ro"))
+    dmut("blob check lists another path", "read-only blob check", lambda t: t.replace("/data/data/blobs", "/data/blobs"))
+    dmut("docker pipe check without -e", "does not make the check", lambda t: re.sub(r"\bsh -e\b", "sh", t, count=1))
+    dmut("kubectl pipe check without -e", "does not make the check", lambda t: re.sub(r"\bsh -e\b(?!.*\bsh -e\b)", "sh", t, flags=re.S))
+    dmut("a busybox:1.37 tag", "every busybox reference", lambda t: t.replace(BB_PIN, "busybox:1.37", 1))
+    dmut("a busybox:stable tag", "every busybox reference", lambda t: t.replace(BB_PIN, "busybox:stable", 1))
+    dmut("a busybox tag without the digest", "every busybox reference", lambda t: t.replace(BB_PIN, "busybox:1.37.0", 1))
+    dmut("a busybox with another digest", "every busybox reference", lambda t: t.replace("a7dbc319", "b7dbc319", 1))
 mutate("rc job runs docker itself", "uses docker or buildx", lambda j: j["steps"].insert(0, {"run": "docker run -d jenkins/jenkins:lts"}))
 mutate("rc secrets set at job level", "set at job level", lambda j: j.setdefault("env", {}).update(ANTHROPIC_WORKSPACE_ID="${{ secrets.ANTHROPIC_WORKSPACE_ID }}"))
 mutate("rc image argument is the raw digests JSON", "takes the image from something other than Build's own image-production digest",

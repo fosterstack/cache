@@ -136,25 +136,24 @@ jobs:
           check() { local name=$1; shift; if "$@"; then echo "pass: ${name}"; else echo "fail: ${name}"; fail=1; fi; }
           trap 'docker rm -f cache >/dev/null 2>&1; docker volume rm -f fscache-data >/dev/null 2>&1; kind delete cluster --name debug-check >/dev/null 2>&1' EXIT
           docker volume create fscache-data >/dev/null
-          docker run --rm -v fscache-data:/data busybox:1.37 chown 65532:65532 /data
-          docker run -d --name cache -v fscache-data:/data "$PERSONA_UAT_IMAGE" >/dev/null
+          docker run -d --name cache -v fscache-data:/home/nonroot "$PERSONA_UAT_IMAGE" >/dev/null
           sleep 5
           check "README docker without docker debug: busybox sharing the network and process namespaces" \
-            bash -c "printf 'wget -qO- http://127.0.0.1:8080/healthz\nps\n' | docker run --rm -i --network=container:cache --pid=container:cache busybox:1.37 sh"
+            bash -c "printf 'wget -qO- http://127.0.0.1:8080/healthz\nps\n' | docker run --rm -i --network=container:cache --pid=container:cache busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec sh -e"
           if docker debug --help >/dev/null 2>&1; then check "README docker debug" bash -c "echo exit | docker debug cache"; else echo "not run: README docker debug (the docker debug plugin is not on the runner)"; fi
           check "docker-deploy toolbox sharing the server's network and processes" \
-            bash -c "printf 'wget -qO- http://localhost:8080/healthz\n' | docker run --rm -i --pid=container:cache --network=container:cache busybox:stable sh"
+            bash -c "printf 'wget -qO- http://localhost:8080/healthz\n' | docker run --rm -i --pid=container:cache --network=container:cache busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec sh"
           check "docker-deploy blob volume, read-only" \
-            docker run --rm -i -v fscache-data:/data:ro busybox:stable sh -c 'du -sh /data; ls -la /data/data/blobs'
+            docker run --rm -i -v fscache-data:/data:ro busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec sh -c 'du -sh /data; ls -la /data/data/blobs'
           crane pull "${PERSONA_UAT_IMAGE%@*}:rc" rc-image.tar
           kind create cluster --name debug-check --image "$(jq -er .kind bin/persona-uat-tools.json)"
           kind load image-archive rc-image.tar --name debug-check
           kubectl run cache --image="${PERSONA_UAT_IMAGE%@*}:rc" --image-pull-policy=IfNotPresent
           kubectl wait --for=condition=Ready pod/cache --timeout=120s
           check "README kubectl debug" \
-            bash -c "printf 'wget -qO- http://127.0.0.1:8080/healthz\nps\n' | kubectl debug -i cache --image=busybox:1.37 --target=cache -- sh"
+            bash -c "printf 'wget -qO- http://127.0.0.1:8080/healthz\nps\n' | kubectl debug -i cache --image=busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec --target=cache -- sh -e"
           check "docker-deploy kubectl debug" \
-            kubectl debug -i cache --image=busybox:stable --target=cache -- true
+            kubectl debug -i cache --image=busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec --target=cache -- true
           exit "$fail"
 
       - name: upload the encrypted reports and transcripts

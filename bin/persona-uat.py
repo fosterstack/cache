@@ -100,9 +100,10 @@ INSTRUCTIONS = {
         "directory), and find and read the logs you need to diagnose a problem."),
 }
 RC_ON_CALL = (
-    "You are an on-call engineer in the middle of an incident. The Kubernetes cluster you are given (its kubeconfig is in your working directory) is "
-    "running the latest published release of this product. Following the documentation, perform an upgrade from it to the release candidate image %s, which is already in the "
-    "cluster's node (use exactly that reference with imagePullPolicy IfNotPresent: the cluster cannot pull it), then a rollback to the release you upgraded from, "
+    "You are an on-call engineer in the middle of an incident. The Kubernetes cluster you are given (its kubeconfig is in your working directory) is empty: it runs no "
+    "release of this product. Following the documentation, install release 0.2.2 (the image ghcr.io/fosterstack/cache:0.2.2, which the cluster can pull), "
+    "then perform an upgrade from it to the release candidate image %s, which is already in the "
+    "cluster's node (use exactly that reference with imagePullPolicy IfNotPresent: the cluster cannot pull it), then a rollback to 0.2.2, "
     "and find and read the logs you need to diagnose a problem.")
 LIMITS = (
     "each command runs in its own disposable container, so a foreground `kubectl port-forward` followed by commands 'in another terminal' cannot be held across actions",

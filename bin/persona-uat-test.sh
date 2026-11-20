@@ -115,7 +115,7 @@ set -euo pipefail
 SEG_SHARDS=3
 # The cases each shard must pass: counted from the unsharded suite (624 in all) and checked by the gate, so a case that is skipped, run twice, moved out of its section or
 # made by another shard fails the step. A case added or removed changes a shard's number: the gate names it, and this line is updated with the case.
-SEG_CASES="221 174 273"
+SEG_CASES="222 174 273"
 SEG_DEADLINE=${PERSONA_UAT_SHARD_DEADLINE:-3000}   # seconds one shard may run; a hung shard is killed (its whole process group) and counts as failed (exit 124)
 # SHARDS. Run plain, this script runs the driver suite as SEG_SHARDS shards at once (PERSONA_UAT_SHARD=I/N each, below), prints their outputs one after the other and
 # fails unless every shard passed and the shards together ran every section of this file exactly once (the gate). PERSONA_UAT_SHARD=I/N runs one shard;
@@ -1859,22 +1859,47 @@ d = sys.argv[1]
 assert kh.crane(d) == [] and kh.loads(d) == [], (kh.crane(d), kh.loads(d))
 assert [r["argv"][:2] for r in kh.kind(d)] == [["create", "cluster"], ["delete", "cluster"]], [r["argv"] for r in kh.kind(d)]
 PY
-CASE="rc: the on-call engineer's instructions are the rc text: the cluster runs the latest published release, upgrade from it to the release candidate image <REPO>:rc (named exactly, imagePullPolicy IfNotPresent, the cluster cannot pull it), roll back to the release upgraded from, find and read logs, then the usual classification text"
+CASE="rc: the on-call engineer's instructions are the rc text: the cluster is empty of the product, install the published release 0.2.2 (ghcr.io/fosterstack/cache:0.2.2, which the cluster can pull) following the documentation, upgrade to the release candidate image <REPO>:rc (named exactly, imagePullPolicy IfNotPresent, the cluster cannot pull it), roll back to 0.2.2, find and read logs, then the usual classification text, in that order"
 check python3 - "$work/rc3" "$work/clean" "$IMG" <<'PY'
-import json, sys
+import json, re, sys
 rc = {json.loads(l)["persona"]: json.loads(l)["request"]["instructions"] for l in open(sys.argv[1] + "/log")}
 wk = {json.loads(l)["persona"]: json.loads(l)["request"]["instructions"] for l in open(sys.argv[2] + "/log")}
 ref = sys.argv[3].split("@sha256:")[0] + ":rc"
 t = rc["on-call-engineer"]; low = t.lower()
 assert t != wk["on-call-engineer"], "the rc instructions are the weekly ones"
-for w in ("latest published release", "upgrade", "release candidate", ref.lower(), "imagepullpolicy", "ifnotpresent", "cannot pull", "logs"):
+for w in ("empty", "install", "0.2.2", "ghcr.io/fosterstack/cache:0.2.2", "upgrade", "release candidate", ref.lower(), "imagepullpolicy", "ifnotpresent", "cannot pull", "logs"):
     assert w in low, (w, t)
-assert "roll back" in low or "rollback" in low, ("no rollback to the release upgraded from", t)
+assert "latest published release" not in low, ("the instruction still names the latest published release", t)
+assert "roll back" in low or "rollback" in low, ("no rollback to 0.2.2", t)
+i_inst, i_up, i_rb, i_logs = low.index("install"), low.index("upgrade"), max(low.rfind("roll back"), low.rfind("rollback")), low.index("logs")
+assert i_inst < low.index("0.2.2") and i_inst < i_up < i_rb < i_logs, ("order: install, upgrade, roll back, logs", t)
+assert low.rfind("0.2.2") > i_up, ("the rollback does not name 0.2.2", t)
 assert t.count(ref) >= 1 and "@sha256" not in t, "the image is named by the tag, never by a digest"
 for w in ("broken behavior", "friction", "as written"):
     assert w in low, w
 assert "these tools are not in the sandbox: gh, docker, jq" in low and "report each as friction, not as blocking" in low, low[-700:]
 assert ref.lower() not in wk["on-call-engineer"].lower() and "ifnotpresent" not in wk["on-call-engineer"].lower(), "the weekly text must not carry the rc wording"
+PY
+CASE="rc: the on-call instruction matches what the cluster holds: the driver applied only Namespace, ServiceAccount, Role and RoleBinding (no workload) and ran no kubectl run/create/apply of a workload, so the instruction tells the persona to install 0.2.2 itself, claims nothing is already running, and names no image but <REPO>:rc and ghcr.io/fosterstack/cache:0.2.2"
+check python3 - "$work/rc3" "$work" "$IMG" <<'PY'
+import json, re, sys
+sys.path.insert(0, sys.argv[2]); import kh
+d = sys.argv[1]
+kinds = sorted({o["kind"] for _, _, o in kh.objects(d)})
+assert kinds == ["Namespace", "Role", "RoleBinding", "ServiceAccount"], ("the driver applied a workload", kinds)
+for r in kh.kubectl(d):
+    v = r["verb"]                                    # the first non-flag word of argv (argv starts with --kubeconfig <path>)
+    assert v in ("apply", "create", "get", "wait", "version", "cluster-info"), r["argv"]
+    nxt = r["argv"][r["argv"].index(v) + 1:][:1]
+    assert not (v == "create" and nxt != ["token"]), ("an imperative create of an object", r["argv"])
+    assert not {"run", "set", "scale", "delete", "patch", "replace"} & set(r["argv"]), r["argv"]
+ref = sys.argv[3].split("@sha256:")[0] + ":rc"
+t = [json.loads(l) for l in open(d + "/log") if json.loads(l)["persona"] == "on-call-engineer"][0]["request"]["instructions"]
+low = t.lower()
+assert "install" in low and "0.2.2" in low and "empty" in low, ("the cluster holds no workload, so the persona must install 0.2.2 itself", t)
+assert not re.search(r"\b(?:is|are|was|already|currently|now)\s+running\b|running the latest|latest published", low), ("the instruction claims a release is running", t)
+imgs = set(re.findall(r"[a-z0-9][a-z0-9.-]*(?::[0-9]+)?/[a-z0-9._/-]+:[A-Za-z0-9._-]+", t))
+assert imgs == {ref, "ghcr.io/fosterstack/cache:0.2.2"}, imgs
 PY
 CASE="rc: the other three personas' instructions are the weekly ones, word for word, and the weekly instructions of all five personas carry no rc wording"
 check python3 - "$work/rc3" "$work/clean" "$work/wk5" "$IMG" <<'PY'
