@@ -1886,8 +1886,10 @@ rc=0; run sign --check --items "$work/items.json" --build-record "$work/build_co
 
 # 001-AC2: --out must not exist yet. Sign creates it and, on a refusal, removes only what it created; an existing
 # path (., a directory, a file, a symlink) is a usage error before anything runs: nothing deleted, nothing written, KMS never asked to sign
-expect_out_refused() { local l=$1 out=$2 dir=$3 rc=0
-  (cd "$dir" && run sign --check --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$out") || rc=$?
+expect_out_refused() { local l=$1 out=$2 dir=$3 here=$PWD rc=0
+  cd "$dir"      # not a subshell: run counts LEAKS in this shell
+  run sign --check --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$out" || rc=$?
+  cd "$here"
   if [ "$rc" = 2 ] && ! crashed && grep -q -i "already exists" "$work/err" && [ -e "$dir/keep.txt" ] && [ -z "$(find "$dir" -name 'provenance*' -print -quit)" ] && [ ! -s "$work/kmssign-argv.log" ]; then ok "$l"
   else bad "$l (exit $rc, wanted 2 'already exists', keep.txt kept, nothing written, no KMS sign; $(head -c 200 "$work/err" | tr '\n' ' '))"; fi; }
 mkdir -p "$work/h1/dot" "$work/h1/dir/existing" "$work/h1/file" "$work/h1/link/target"

@@ -1214,7 +1214,7 @@ def _scope(req):
 
 
 def _bound_table():
-    """bin/build-admit.py's BOUND_CONTEXTS (context glob, producing workflow file) and BOUND_EVENTS, read as data from its source."""
+    """Admission's BOUND_CONTEXTS (context glob, producing workflow file) and BOUND_EVENTS, read as data from its source."""
     tree = ast.parse(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "build-admit.py")).read())
     got = {t.id: ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
            for t in n.targets if isinstance(t, ast.Name) and t.id in ("BOUND_CONTEXTS", "BOUND_EVENTS")}
@@ -1222,7 +1222,7 @@ def _bound_table():
 
 
 def _bound_verdict(req, check_runs, workflow_runs, sha, repo, file, events):
-    """admission's bound_run (bin/build-admit.py): the newest check run of the context and app (by id) whose workflow run has the
+    """admission's bound_run: the newest check run of the context and app (by id) whose workflow run has the
     producing file's path, an event of BOUND_EVENTS and the tagged commit decides. ("ok"|"wait"|"red"|"no", why)."""
     prefix = "https://github.com/%s/actions/runs/" % repo
     facts_by_id = {w.get("id"): w for w in workflow_runs if isinstance(w, dict)}

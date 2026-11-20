@@ -28,7 +28,7 @@ for pair in "production:$prod" "fips:$fips"; do
   # digest; every blob hashes to its name; the index blob and every manifest, config and layer it reaches are present. Checked before any login or push.
   python3 -I -B bin/release-layout.py "images/$v" "${pair#*:}"
 done
-# Every signature Sign made must verify before any login or push (release-sign-verify.sh exits 1 and names the file when one does not).
+# Every signature Sign made must verify before any login or push (bin/release-sign-verify.sh exits 1 and names the file when one does not).
 bash bin/release-sign-verify.sh
 
 digest_of() {

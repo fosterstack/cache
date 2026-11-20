@@ -134,7 +134,7 @@ ROWS = {"release-verify": (["python3"], False, ["bin/build-admit.py", "bin/chain
         "release-publish": (["bash", "crane", "jq", "python3", "trap"], False, ["bin/release-layout.py", "bin/release-sign-verify.sh"]), "release-sign": (["bash", "cosign", "crane", "git", "jq", "python3", "sha256sum", "trap"], False, ["bin/chain-verify.py", "bin/release-sign-verify.sh"]),
         "release-sign-verify": (["jq", "python3", "sha256sum", "trap"], False, ["bin/chain-verify.py"]),
         "release-signatures": (["bash", "git", "jq", "python3", "sha256sum", "trap"], "other", ["bin/apk-tool.py", "bin/build-admit.py", "bin/chain-verify.py", "bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py", "bin/with-aws-token.sh"]),
-        "release-assets": (["gh", "python3"], False, ["bin/release-gate.py"]), "release-stage": (["git", "python3"], False, ["bin/build-admit.py", "bin/patch-decide.py", "bin/release-gate.py", "bin/release-metadata.py"]),
+        "release-assets": (["gh", "jq", "python3"], False, ["bin/release-gate.py"]), "release-stage": (["git", "python3"], False, ["bin/build-admit.py", "bin/patch-decide.py", "bin/release-gate.py", "bin/release-metadata.py"]),
         "release-postverify": (["bash", "python3"], False, ["bin/release-postverify.py", "bin/release-stage.sh"])}
 rows = []
 for n, b in BODY.items():

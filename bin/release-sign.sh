@@ -18,7 +18,7 @@ fips=$(jq -r '."image-fips" // empty' witness-build/digests.json)
 scratch=$(mktemp -d)
 [ -n "$scratch" ] && [ -d "$scratch" ] || { echo "release-sign: no scratch directory" >&2; exit 1; }
 trap 'rm -rf "$scratch"' EXIT
-# the blobs Sign made, which release-sign-verify.sh has checked: placed where release-stage reads them
+# the blobs Sign made, which bin/release-sign-verify.sh has checked: placed where release-stage reads them
 mkdir -p release-evidence release-metadata
 for f in "$signed"/release-evidence/*.json; do
   cp "$f" "$f.bundle" release-evidence/

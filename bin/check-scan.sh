@@ -307,7 +307,7 @@ for s in "${scanners[@]}"; do
     if [ "$rc" = 1 ]; then
       echo "check-scan: $s found vulnerabilities in $name ($digest) that the VEX document does not except" >&2; sv=fail
     elif [ "$rc" != 0 ]; then
-      echo "check-scan: $s could not run on $name (exit ${gx:-$rc}): nothing is judged behind a scanner that did not run" >&2; sv=fail
+      echo "check-scan: $s could not run on $name, exit ${gx:-$rc}: nothing is judged behind a scanner that did not run" >&2; sv=fail
     elif [ "$packages" -eq 0 ]; then
       echo "check-scan: $s reported 0 packages for $name: a scan that inventoried nothing did not run (REQ-REL-004-AC1)" >&2; sv=fail
     fi

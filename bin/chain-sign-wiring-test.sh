@@ -347,10 +347,10 @@ stage-verify.yml supply-chain.yml""".split())
 
 def only_new_workflow(files, bad):
     """001-AC1: release.yml (it existed at v0.2.2) is the only signing workflow file v0.3.0 has: the files added beyond v0.2.2 are customer-words-edited.yml, which holds no signer
-    (listed_signers and direct_signers still judge it; decision 98, Oct 3), and persona-uat.yml, the persona proof's own file. No stage-*.yml file is added."""
+    (listed_signers and direct_signers still judge it; decision 98, Oct 3), persona-uat.yml, the persona proof's own file, and full-suite.yml, the full suite at promotion (docs/ratify/2026-11-10-full-suite-at-promotion.md:11-12). No stage-*.yml file is added."""
     new = sorted(os.path.basename(f) for f in files if os.path.basename(f) not in V022_WORKFLOWS)
-    if set(new) != {"persona-uat.yml", "customer-words-edited.yml", "evidence-letter.yml"}:
-        bad.append("AC1: workflow files added since v0.2.2 must be customer-words-edited.yml (decision 98, Oct 3), evidence-letter.yml (REQ-REL-015) and persona-uat.yml, found %s" % new)
+    if set(new) != {"persona-uat.yml", "customer-words-edited.yml", "evidence-letter.yml", "full-suite.yml"}:
+        bad.append("AC1: workflow files added since v0.2.2 must be customer-words-edited.yml (decision 98, Oct 3), evidence-letter.yml (REQ-REL-015), persona-uat.yml and full-suite.yml (docs/ratify/2026-11-10-full-suite-at-promotion.md:11-12), found %s" % new)
 
 def listed_signers(base, bad):
     """001-AC1: "every other signing call being listed with its reason in .github/policy/chain-signers.json" (never a provenance signer)."""
@@ -1051,7 +1051,7 @@ caught "AC2 github-script step" "      - uses: actions/checkout" "      - uses: 
 caught "AC2 the Sign step does not check (no --check)" ' --check' ''
 caught "AC2 the Sign step only verifies (verify, not sign --check)" 'bash bin/with-aws-token.sh sign --check' 'python3 -I -B bin/chain-verify.py verify --record witness-build/build-collection.json #'
 caught "AC2 the Sign step has no Build record" ' --build-record signed/witness-build/build-collection.json' ''
-caught "AC2 the Sign step reads the digests inline, not from the file" '--digests digests.json' '--digests "\$DIGESTS"'
+caught "AC2 the Sign step reads the digests inline, not from the file" 'with-aws-token.sh sign --check --digests digests.json' 'with-aws-token.sh sign --check --digests "\$DIGESTS"'
 caught "AC2 the Sign step passes --signer cosign (the verifier's sign has no such flag)" '--check --digests' '--check --signer cosign --digests'
 cat > "$FXDIR/FXD_44" <<'FXEOF'
 run: curl -sL https://example.com/cosign -o cosign
@@ -1067,11 +1067,11 @@ caught "AC2 --items names a file of another job's folder" ' --items witness-buil
 caught "AC2 --items given twice" ' --items witness-build/items\.json' ' --items witness-build/items.json --items witness-build/items.json'
 # Opus r4 B1: Python puts the script's directory first on sys.path, so an unlisted bin/<stdlib name>.py would replace that module inside
 # the Sign job (which holds id-token: write); -I (isolated) removes it. The Sign step must run the verifier isolated.
-caught "AC2 the Sign step runs the verifier without -I (a bin/<stdlib name>.py would shadow the standard library)" 'python3 -I -B bin/chain-verify.py' 'python3 bin/chain-verify.py'
-caught "AC2 the Sign step runs the verifier without -B (it could leave a bytecode cache behind)" 'python3 -I -B bin/chain-verify.py' 'python3 -I bin/chain-verify.py'
-caught "AC2 a permissive policy file instead of the template" 'release-policy.template.json' 'permissive.json'
+caught "AC2 the Sign step runs the verifier without -I (a bin/<stdlib name>.py would shadow the standard library)" 'run: bash bin/with-aws-token.sh sign --check' 'run: python3 bin/chain-verify.py sign --check'
+caught "AC2 the Sign step runs the verifier without -B (it could leave a bytecode cache behind)" 'run: bash bin/with-aws-token.sh sign --check' 'run: python3 -I bin/chain-verify.py sign --check'
+caught "AC2 a permissive policy file instead of the template" '(--build-record signed/witness-build/build-collection.json --template .github/policy/)release-policy.template.json' '\1permissive.json'
 caught "AC2 a different Build record file name" 'witness-build/build-collection.json' 'witness-build/other.json'
-caught "AC2 the policy argument points outside .github/policy" '--template .github/policy/release-policy.template.json' '--template /tmp/p.json'
+caught "AC2 the policy argument points outside .github/policy" '(--build-record signed/witness-build/build-collection.json )--template .github/policy/release-policy.template.json' '\1--template /tmp/p.json'
 caught "AC3 checkout without persist-credentials: false" '        with:\n          persist-credentials: false\n' ''
 caught "AC3 checkout with persist-credentials: true" 'persist-credentials: false' 'persist-credentials: true'
 caught "AC3 secret reference" 'DIGESTS: \$\{\{ inputs.digests \}\}' 'DIGESTS: ${{ inputs.digests }}\n          K: ${{ secrets.KEY }}'
@@ -1224,6 +1224,7 @@ mk() {
   printf 'jobs: {}\n' > "$d/.github/workflows/customer-words-edited.yml"   # an added file that is not a signer
   printf 'jobs: {}\n' > "$d/.github/workflows/evidence-letter.yml"   # the monthly evidence letter's file (REQ-REL-015)
   printf 'jobs: {}\n' > "$d/.github/workflows/persona-uat.yml"      # the other added file: the persona proof has its own workflow file
+  printf 'jobs: {}\n' > "$d/.github/workflows/full-suite.yml"      # the full suite at promotion (docs/ratify/2026-11-10-full-suite-at-promotion.md:11-12)
   printf 'jobs:\n  b:\n    steps:\n      - run: |\n          set -euo pipefail\n          bash bin/build-stage.sh apk\n' > "$d/.github/workflows/stage-build.yml"
   { printf 'jobs:\n  hostile-verify:\n    steps:\n      - run: git -c gpg.x509.program=gitsign tag -s v1\n'
     for j in sign sign-rebuild sign-check; do      # Sign's three jobs: the only jobs of release.yml that sign provenance
@@ -3016,6 +3017,8 @@ d=$(mk t_cwgone); rm "$d/.github/workflows/customer-words-edited.yml"
 expect caught "AC1 the added set is exact: without customer-words-edited.yml it is wrong too" tree "$d"
 d=$(mk t_puatgone); rm "$d/.github/workflows/persona-uat.yml"
 expect caught "AC1 the added set is exact: without persona-uat.yml it is wrong too" tree "$d"
+d=$(mk t_fsgone); rm "$d/.github/workflows/full-suite.yml"
+expect caught "AC1 the added set is exact: without full-suite.yml it is wrong too" tree "$d"
 d=$(mk t_stagesign); printf 'jobs: {}\n' > "$d/.github/workflows/stage-sign.yml"
 expect caught "AC1 a stage-sign.yml file is a new workflow file: no stage-*.yml file is added" tree "$d"
 for j in sign sign-rebuild sign-check; do
@@ -3037,8 +3040,8 @@ extra="$d/.github/workflows/stage-extra.yml"
 printf 'jobs:\n  b:\n    steps:\n      - uses: actions/checkout@%s # v4\n' "$sha" > "$extra"
 printf '        with:\n          persist-credentials: false\n' >> "$extra"
 out=$(judge tree "$d" 2>/dev/null) || true
-want="AC1: workflow files added since v0.2.2 must be customer-words-edited.yml (decision 98, Oct 3), evidence-letter.yml (REQ-REL-015) and persona-uat.yml,"
-want="$want found ['customer-words-edited.yml', 'evidence-letter.yml', 'persona-uat.yml', 'stage-extra.yml']"
+want="AC1: workflow files added since v0.2.2 must be customer-words-edited.yml (decision 98, Oct 3), evidence-letter.yml (REQ-REL-015), persona-uat.yml and full-suite.yml (docs/ratify/2026-11-10-full-suite-at-promotion.md:11-12),"
+want="$want found ['customer-words-edited.yml', 'evidence-letter.yml', 'full-suite.yml', 'persona-uat.yml', 'stage-extra.yml']"
 if [ "$out" = "$want" ]; then
   pass=$((pass + 1))
   echo "ok   AC1 a third new workflow file is refused by the workflow-name rule alone"
@@ -3077,13 +3080,21 @@ f = sys.argv[1] + "/.github/policy/chain-signers.json"; j = json.load(open(f))
 j["signers"].append({"file": "bin", "tool": "gitsign", "reason": "a directory is no signer file"}); json.dump(j, open(f, "w"))
 PY
 expect caught "AC1 a signer row naming a directory" tree "$d"
-d=$(mk t_nonyaml)
+expm() { # expm ok|caught DIR FRAGMENT LABEL : the tree judge with stderr merged; a caught case must name FRAGMENT and must not be a traceback
+  local out rc=0
+  out=$(judge tree "$2" 2>&1) || rc=$?
+  if [ "$rc" = 70 ]; then failn=$((failn + 1)); echo "FAIL $4: the persistent judge is gone"
+  elif [ "$1" = ok ] && [ "$rc" = 0 ]; then pass=$((pass + 1)); echo "ok   $4"
+  elif [ "$1" = caught ] && [ "$rc" != 0 ] && ! grep -q Traceback <<< "$out" && grep -F -q -- "$3" <<< "$out"; then pass=$((pass + 1)); echo "ok   $4 (caught: ${out:0:160})"
+  else failn=$((failn + 1)); echo "FAIL $4 -> rc=$rc ${out:0:500}"; fi
+}
+d=$(mk t_nonyaml); printf '#!/usr/bin/env bash\nset -euo pipefail\necho staged\n' > "$d/bin/build-stage-apk.sh"      # a regular file in the tree that the judge never reads
 python3 - "$d" <<'PY'
 import json, sys
 f = sys.argv[1] + "/.github/policy/chain-signers.json"; j = json.load(open(f))
 j["signers"].append({"file": "bin/build-stage-apk.sh", "tool": "gitsign", "reason": "a regular file the judge never reads"}); json.dump(j, open(f, "w"))
 PY
-expect caught "AC1 a signer row naming a regular file the judge does not read" tree "$d"
+expm caught "$d" 'which is not a file this judge reads' "AC1 a signer row naming a regular file the judge does not read"
 d=$(mk t_signyml)
 python3 - "$d" <<'PY'
 import json, sys
@@ -3166,7 +3177,7 @@ expect ok "002-AC4 a step that runs bin/witnessed-local.sh with no secret passes
   build "$work/build-clean.yml"
 expect caught "002-AC4 a secret on the step that runs bin/witnessed-local.sh" build "$work/build-secret.yml"
 expect ok "the real tree: only scan.yml and main-candidate-rescan.yml call release.yml, in snapshot mode; no stage file is called; every sign job and release carries the guard (003-AC5)" calls "$REAL"
-label="the real tree: only customer-words-edited.yml, evidence-letter.yml and persona-uat.yml are new and only the sign jobs of release.yml sign provenance"
+label="the real tree: only customer-words-edited.yml, evidence-letter.yml, persona-uat.yml and full-suite.yml are new and only the sign jobs of release.yml sign provenance"
 expect ok "$label" tree "$REAL"
 # a grant covers a whole file: the grants of these two files excused one literal and one prose word (B1)
 b1() { # b1 0|1 LABEL [DETAIL]: 0 is a pass
@@ -3527,14 +3538,6 @@ tg caught "$work/rel-unneeded.yml" "R8 mutation: release-compare with no needs (
 
 # ---- PR 1b (judge exceptions): (A) reviewed exact-text exceptions, (B) ambient env names, (C) the path-named deny test at command position only.
 # REQ-CHAIN-001-AC1 (listed-script clause), REQ-CHAIN-004-AC2 (the wrapped command runs as plain bash SCRIPT ARGS), REQ-CHAIN-004-AC8 (GH_TOKEN through the step's env), REQ-CHAIN-004-AC3 (--go-archive archive/go).
-expm() { # expm ok|caught DIR FRAGMENT LABEL : the tree judge with stderr merged; a caught case must name FRAGMENT and must not be a traceback
-  local out rc=0
-  out=$(judge tree "$2" 2>&1) || rc=$?
-  if [ "$rc" = 70 ]; then failn=$((failn + 1)); echo "FAIL $4: the persistent judge is gone"
-  elif [ "$1" = ok ] && [ "$rc" = 0 ]; then pass=$((pass + 1)); echo "ok   $4"
-  elif [ "$1" = caught ] && [ "$rc" != 0 ] && ! grep -q Traceback <<< "$out" && grep -F -q -- "$3" <<< "$out"; then pass=$((pass + 1)); echo "ok   $4 (caught: ${out:0:160})"
-  else failn=$((failn + 1)); echo "FAIL $4 -> rc=$rc ${out:0:500}"; fi
-}
 DEF='D=lambda l,c=1,w="x":{"rule":"deny","line":l,"count":c,"why":w};'
 export WT='timeout 540 bash "$@"'
 wfix() { # wfix NAME [more script lines] : bin/witnessed.sh with an invented `timeout 540` line and its one witness-target exception
@@ -3725,6 +3728,8 @@ ALLOWED = {
     'FX="$root/bin/chain-sign-wiring-fixtures.txt"',
     'if [ -f "$FX" ] && [ ! -x "$FX" ] && python3 "$work/fx-guard.py" "$FX" "${BASH_SOURCE[0]}"',
     'run_fixtures "$FX"',
+    '  [ "$1" != o ] || { if FX="$m/f.txt" work="$work" bash -c "$fxg" > /dev/null 2>&1; then pass=$((pass + 1)); echo "ok   REQ-CHAIN-001-AC1 the data-file guard accepts $4"; else failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 the data-file guard refused $4"; fi; return; }',
+    '  if FX="$m/f.txt" work="$work" bash -c "$fxg" > /dev/null 2>&1; then failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 the data-file guard accepted: $4"',
     '  local m="$work/fxm"; rm -rf "$m"; mkdir -p "$m"; cp "$FX" "$m/f.txt"; cp "${BASH_SOURCE[0]}" "$m/t.sh"; chmod 644 "$m/f.txt"',
     "  [ -z \"$2\" ] || sed -i.bak \"$2\" \"$m/f.txt\"; [ -z \"$3\" ] || printf '%s\\n' \"${3//@FX@/\\$FX}\" >> \"$m/t.sh\"",
 }
@@ -3764,9 +3769,13 @@ fxmut() { # fxmut LABEL FILE-SED TEST-APPEND : the guard against a mutated copy 
   local m="$work/fxm"; rm -rf "$m"; mkdir -p "$m"; cp "$FX" "$m/f.txt"; cp "${BASH_SOURCE[0]}" "$m/t.sh"; chmod 644 "$m/f.txt"
   [ -z "$2" ] || sed -i.bak "$2" "$m/f.txt"; [ -z "$3" ] || printf '%s\n' "${3//@FX@/\$FX}" >> "$m/t.sh"
   [ "$1" != x ] || chmod 755 "$m/f.txt"
-  if python3 "$work/fx-guard.py" "$m/f.txt" "$m/t.sh" > /dev/null 2>&1 && { [ ! -x "$m/f.txt" ]; }; then failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 the data-file guard accepted: $4"
+  fxg=$(grep -m1 '^if \[ -f "[$][F]X" \]' "${BASH_SOURCE[0]}"); fxg=${fxg#if }; fxg=${fxg//'${BASH_SOURCE[0]}'/$m/t.sh}      # the condition of the real guard above, run against the mutated copies
+  case $fxg in *fx-guard.py*) ;; *) failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 the data-file guard was not found in this test: $4"; return ;; esac
+  [ "$1" != o ] || { if FX="$m/f.txt" work="$work" bash -c "$fxg" > /dev/null 2>&1; then pass=$((pass + 1)); echo "ok   REQ-CHAIN-001-AC1 the data-file guard accepts $4"; else failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 the data-file guard refused $4"; fi; return; }
+  if FX="$m/f.txt" work="$work" bash -c "$fxg" > /dev/null 2>&1; then failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 the data-file guard accepted: $4"
   else pass=$((pass + 1)); echo "ok   REQ-CHAIN-001-AC1 the data-file guard refuses $4"; fi
 }
+fxmut o '' '' "an unmodified copy of the data file and of this test (the control: the extracted guard condition runs)"
 fxmut x '' '' "an executable data file"
 TAB=$'\t'
 fxmut s '1s/^/#!\/bin\/sh\'$'\n''/' '' "a data file that starts with a shebang"
