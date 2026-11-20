@@ -102,11 +102,44 @@ def judge_crane(name, steps, d, pre, bad):
     if str(s.get("shell", "bash")) != "bash" or s.get("working-directory") or s.get("env"):
         bad.append(f"{name}: the crane install step has a custom shell, working-directory or env")
 
+# REQ-UAT-001-AC1: the rc job's ONE extra step, between the driver and the upload: the README's and docs/docker-deploy.md's container-debugging commands run on Build's image
+DEBUG_NAME = "run the container-debugging commands of the README and docs/docker-deploy.md against Build's image"
+def is_debug(s, name):
+    """the rc job's container-debugging step (judged in judge_debug; it names docker, kind and kubectl on purpose, so the rules that keep those out of the other steps skip it)"""
+    return "weekly" not in name and s.get("name") == DEBUG_NAME
+
+def judge_debug(name, steps, d, bad):
+    """persona-uat-rc: exactly one step DEBUG_NAME, immediately after the driver (and so before the upload), `if: ${{ !cancelled() }}`, keys name/if/env/run only (no uses, no
+    continue-on-error, no shell, no working-directory), env exactly PERSONA_UAT_IMAGE with the driver's own value (no secret), an inline run that prints a pass:/fail: line per
+    command, `not run:` for a missing docker debug plugin, creates the kind cluster debug-check and exits non-zero when a line failed. persona-uat-weekly: no such step."""
+    found = [s for s in steps if s.get("name") == DEBUG_NAME or "debug-check" in str(s.get("run", ""))]
+    if "weekly" in name:
+        if found:
+            bad.append(f"{name}: the container-debugging step is the release candidate's alone: the weekly job must have none")
+        return
+    if len(found) != 1:
+        bad.append(f"{name}: expected exactly one container-debugging step ({DEBUG_NAME!r}), found {len(found)}"); return
+    x = found[0]
+    if x.get("name") != DEBUG_NAME:
+        bad.append(f"{name}: the container-debugging step is not named exactly {DEBUG_NAME!r} (found {x.get('name')!r})")
+    if steps.index(x) != steps.index(d) + 1:
+        bad.append(f"{name}: the container-debugging step must be the step immediately after the driver (and before the upload), not at index {steps.index(x)}")
+    if norm(x.get("if", "")) != "!cancelled()":
+        bad.append(f"{name}: the container-debugging step must run when the job is not cancelled (if: ${{{{ !cancelled() }}}}), found {x.get('if')!r}")
+    if set(x) - {"name", "if", "env", "run"}:
+        bad.append(f"{name}: the container-debugging step carries keys outside name, if, env and run (uses, continue-on-error, shell, working-directory, timeout ...): {sorted(set(x) - {'name', 'if', 'env', 'run'})}")
+    if x.get("env") != {"PERSONA_UAT_IMAGE": (d.get("env") or {}).get("PERSONA_UAT_IMAGE")}:
+        bad.append(f"{name}: the container-debugging step's env is not exactly PERSONA_UAT_IMAGE with the driver step's own value (found {x.get('env')!r}): no secret, no other variable")
+    run = str(x.get("run", ""))
+    for w in ("pass: ", "fail: ", "not run: ", "docker debug", "kubectl debug", "kind create cluster --name debug-check", "exit "):
+        if w not in run:
+            bad.append(f"{name}: the container-debugging step's inline run does not hold {w!r}: one pass:/fail: line per command, not run: for a missing docker debug plugin, the kind cluster debug-check, and a non-zero exit when a line failed")
+
 def judge_install(name, steps, d, pre, bad):
     """the job checks the runner image's kind in ONE unconditional run step BEFORE the driver
     (no download, no install)"""
     di = steps.index(d)
-    cands = [(i, s) for i, s in enumerate(steps) if "run" in s and re.search(r"\bkind\b|install-scanner", str(s["run"])) and not crane_re(pre).match(str(s["run"]).strip())]
+    cands = [(i, s) for i, s in enumerate(steps) if "run" in s and re.search(r"\bkind\b|install-scanner", str(s["run"])) and not crane_re(pre).match(str(s["run"]).strip()) and not is_debug(s, name)]
     good = [(i, s) for i, s in cands if is_kind_run(str(s["run"]))]
     if len(good) != 1 or len(cands) != 1:
         found = [str(s["run"])[:60] for _, s in cands]
@@ -362,7 +395,7 @@ def common(name, job, bad):
             bad.append(f"{name}: action {u} is not pinned to a commit digest")
         if u and u.split("@")[0] not in ALLOWED:
             bad.append(f"{name}: action {u.split('@')[0]} is not on the persona job's allowlist {ALLOWED}")
-        if re.search(r"\bdocker\b|\bbuildx\b", str(s.get("run", ""))):
+        if re.search(r"\bdocker\b|\bbuildx\b", str(s.get("run", ""))) and not is_debug(s, name):
             bad.append(f"{name}: a run step uses docker or buildx: containers are started only by the driver, by pinned digest; every digest read uses the chain's pinned `crane digest` (rule 61: no buildx anywhere)")
     for s in steps:
         if "actions/checkout" in str(s.get("uses", "")) and str(s.get("with", {}).get("persist-credentials", "")).lower() != "false":
@@ -380,7 +413,7 @@ def common(name, job, bad):
         is_load = isrun and name == "persona-uat-rc" and "crane push" in str(s.get("run", ""))      # judged in judge_rc_registry
         is_cleanup = step_kind(s, pre, weekly) == "cleanup"
         is_refresher = step_kind(s, pre, weekly) == "refresher"
-        if i > di and "upload-artifact" not in str(s.get("uses", "")) and not is_cleanup:
+        if i > di and "upload-artifact" not in str(s.get("uses", "")) and not is_cleanup and not is_debug(s, name):
             bad.append(f"{name}: a step after the driver other than the transcript upload and the identity token cleanup could alter the files before upload")
         if i < di and isrun and not is_resolver and not is_boot and not is_install and not is_refresher and not is_pin and not is_load:
             bad.append(f"{name}: a run step before the driver other than the latest-release resolver, "
@@ -421,8 +454,9 @@ def common(name, job, bad):
     for u in ups:
         if not literal_false(u.get("continue-on-error")):
             bad.append(f"{name}: the transcript upload has continue-on-error: a run could go green without retaining its transcripts")
-        if steps.index(u) != di + 1:
-            bad.append(f"{name}: the transcript upload must be the step immediately after the driver")
+        want_at = di + 2 if len(steps) > di + 1 and is_debug(steps[di + 1], name) else di + 1
+        if steps.index(u) != want_at:
+            bad.append(f"{name}: the transcript upload must be the step immediately after the driver (the rc job's container-debugging step may stand between them)")
         if norm(u.get("if", "")) != "always()":
             bad.append(f"{name}: the transcript upload must run always() (found {u.get('if')!r})")
         outdir = re.search(r"--out\s+(\S+)", run)
@@ -440,8 +474,9 @@ def common(name, job, bad):
         if str(u.get("with", {}).get("if-no-files-found", "")) != "error":
             bad.append(f"{name}: the upload must fail on missing files (if-no-files-found: error)")
     for s in steps:
-        if s is not d and s not in ups and str(s.get("run", "")).strip() != CLEANUP_RUN and "if" in s and "persona" in json.dumps(s).lower():
+        if s is not d and s not in ups and str(s.get("run", "")).strip() != CLEANUP_RUN and "if" in s and "persona" in json.dumps(s).lower() and not is_debug(s, name):
             bad.append(f"{name}: a persona step has an if: {s.get('if')!r}")
+    judge_debug(name, steps, d, bad)
     return d
 
 def run_resolver(script):
@@ -917,9 +952,13 @@ def judge_rc_registry(j, bad):
         for m in re.finditer(r"\bcrane\s+(\S+)([^\n;&|]*)", run_):
             sub, rest = m.group(1), m.group(2).split()
             targets = [t.strip("\"'") for t in rest if not t.startswith("-")]
+            if is_debug(st, "persona-uat-rc"):      # the container-debugging step only pulls the rc image of the runner's own registry (the tag of its PERSONA_UAT_IMAGE), into a file
+                if sub != "pull" or len(targets) != 2 or targets[0] != "${PERSONA_UAT_IMAGE%@*}:rc":
+                    bad.append(f"persona-uat-rc step {si}: crane {sub} {' '.join(rest)} is not a pull of the rc image (${{PERSONA_UAT_IMAGE%@*}}:rc) into a file (nothing leaves the runner)")
+                continue
             if sub not in ("push", "digest") or not targets or not targets[-1].startswith("localhost:5000/"):
                 bad.append(f"persona-uat-rc step {si}: crane {sub} {' '.join(rest)} is not a push/digest to localhost:5000 (nothing leaves the runner)")
-        if re.search(r"\b(?:docker|buildx|skopeo|regctl|oras)\b", run_) and "persona-uat.py" not in run_:
+        if re.search(r"\b(?:buildx|skopeo|regctl|oras)\b" if is_debug(st, "persona-uat-rc") else r"\b(?:docker|buildx|skopeo|regctl|oras)\b", run_) and "persona-uat.py" not in run_:
             bad.append(f"persona-uat-rc step {si} runs a container or registry client other than crane")
     dumped = json.dumps(j)
     for needle, why in (("ghcr.io", "another registry"), ("GITHUB_TOKEN", "the job token"), ("github.token", "the job token"), ("crane auth", "a registry login"), ("docker login", "a registry login"),
@@ -1142,6 +1181,13 @@ IDENT = ("const fs = require('fs');\nconst token = await core.getIDToken('https:
 REFRESHER = 'set -euo pipefail\nf="${RUNNER_TEMP}/anthropic-identity-token"\n[ -f "$f" ] || { echo "::error::the identity token file does not exist yet: mint it first"; exit 1; }\nnohup bash -c \'\n  f="$1"; every="$2"\n  while [ -e "$f" ] && sleep "$every"; do\n    [ -e "$f" ] || break\n    python3 bin/persona-uat.py --mint-identity "$f" || { [ "$?" -eq 3 ] && break; continue; }\n  done\n\' identity-refresher "$f" "${PERSONA_UAT_REFRESH_SECONDS:-60}" </dev/null >/dev/null 2>&1 &\ndisown\n'
 CLEANUP = CLEANUP_RUN
 RC_LOAD_RUN = LOAD_RUN_EXPECTED
+DEBUG_RUN = ('set -uo pipefail\nfail=0\ncheck() { local name=$1; shift; if "$@"; then echo "pass: ${name}"; else echo "fail: ${name}"; fail=1; fi; }\n'
+             'check "README docker" docker run --rm busybox:1.37 true\n'
+             'if docker debug --help >/dev/null 2>&1; then check "README docker debug" docker debug cache; else echo "not run: README docker debug (the plugin is missing)"; fi\n'
+             'crane pull "${PERSONA_UAT_IMAGE%@*}:rc" rc-image.tar\nkind create cluster --name debug-check --image "$(jq -er .kind bin/persona-uat-tools.json)"\n'
+             'kind load image-archive rc-image.tar --name debug-check\ncheck "README kubectl debug" kubectl debug -i cache --image=busybox:1.37 -- sh\nexit "$fail"\n')
+def synth_debug():
+    return {"name": DEBUG_NAME, "if": "${{ !cancelled() }}", "env": {"PERSONA_UAT_IMAGE": "localhost:5000/cache@${{ fromJSON(inputs.digests)['image-production'] }}"}, "run": DEBUG_RUN}
 def synth_driver(weekly):
     pre = ""
     env = {v: ("${{ secrets.%s }}" if v in MODEL_SECRETS else "${{ vars.%s }}") % v for v in VARS}
@@ -1167,7 +1213,7 @@ def synth_persona_job(weekly):
     steps = (head + [{"run": KIND_RUN},
              {"run": PIN_PIP_RUN},
              {"run": "python3 -m pip install --quiet --break-system-packages --require-hashes --only-binary=:all: -r " + pre + "bin/persona-uat-requirements.txt"},
-             {"uses": "actions/github-script@" + H40, "with": {"script": IDENT}}, {"run": REFRESHER}, synth_driver(weekly),
+             {"uses": "actions/github-script@" + H40, "with": {"script": IDENT}}, {"run": REFRESHER}, synth_driver(weekly)] + ([] if weekly else [synth_debug()]) + [
              {"if": "${{ always() }}", "uses": "actions/upload-artifact@" + H40, "with": {"name": "persona-uat-encrypted", "path": "persona-uat-out/*.cms", "if-no-files-found": "error"}},
              {"if": "${{ always() }}", "run": CLEANUP}])
     j = {"runs-on": "ubuntu-24.04", "timeout-minutes": "120", "environment": "persona-uat", "permissions": {"contents": "read", "id-token": "write"}, "steps": steps}
@@ -1240,6 +1286,9 @@ if REAL_JOBS:
 else:
     result(False, "the real persona-uat.yml does not hold the two persona jobs: every workflow mutation below ran against the synthetic known-good workflows only")
 result(REAL_JOBS, "the real persona-uat.yml holds the persona jobs, persona-uat-rc and persona-uat-weekly (REQ-UAT-001-AC1, AC6)")
+HEAD_COMMENT = "\n".join(l for l in (open(PERSONA).read() if os.path.exists(PERSONA) else "").splitlines() if l.startswith("#")).lower()
+result("four personas" in HEAD_COMMENT and "three personas" not in HEAD_COMMENT and re.search(r"compliance-reviewer[^\n]*weekly", HEAD_COMMENT) is not None,
+       "the real persona-uat.yml's header comment says four personas for the release candidate and that compliance-reviewer runs in the weekly job only (REQ-UAT-001-AC1)")
 result(sorted(n for n, j in R.get("jobs", {}).items() if "persona-uat.yml" in str(j.get("uses", ""))) == ["persona-uat-rc"], "the real release.yml calls persona-uat.yml from its one job persona-uat-rc (REQ-UAT-001-AC1)")
 result(not any(str(n).startswith("persona-uat") for n in F.get("jobs", {})), "the real go-freshness.yml has no persona job (REQ-UAT-001-AC6)")
 good = []
@@ -1322,6 +1371,131 @@ mutate("rc driver step wrapped in if !", "not exactly one bare driver command", 
 mutate("rc driver continue-on-error is an expression", "the driver step has continue-on-error", lambda j: drv(j).update({"continue-on-error": "${{ always() }}"}))
 mutate("rc job has no timeout", "no timeout-minutes", lambda j: j.pop("timeout-minutes"))
 mutate("rc job uses a kind action", "is not on the persona job's allowlist", lambda j: j["steps"].insert(0, {"uses": "helm/kind-action@" + "a" * 40}))
+# the container-debugging step of the rc job (REQ-UAT-001-AC1): accepted where it is, rejected anywhere else or in any other shape
+def dbg(job): return next(s for s in job["steps"] if s.get("name") == DEBUG_NAME)
+def move_dbg(j, to):
+    x = dbg(j); j["steps"].remove(x); j["steps"].insert(to(j), x)
+mutate("rc job: the debugging step copies the image to another registry", "is not a pull of the rc image", lambda j: dbg(j).update({"run": dbg(j)["run"] + "crane copy \"${PERSONA_UAT_IMAGE%@*}:rc\" ghcr.io/fosterstack/cache:rc\n"}))
+mutate("rc job: the debugging step pulls another image", "is not a pull of the rc image", lambda j: dbg(j).update({"run": dbg(j)["run"].replace("${PERSONA_UAT_IMAGE%@*}:rc", "docker.io/library/busybox:latest", 1)}))
+mutate("rc job: the debugging step runs skopeo", "runs a container or registry client other than crane", lambda j: dbg(j).update({"run": dbg(j)["run"] + "skopeo copy docker://a docker://b\n"}))
+mutate("rc job: the debugging step moved before the driver", "must be the step immediately after the driver", lambda j: move_dbg(j, lambda j: j["steps"].index(drv(j))))
+mutate("rc job: the debugging step moved after the upload", "must be the step immediately after the driver", lambda j: move_dbg(j, lambda j: j["steps"].index(up(j)) + 1))
+mutate("rc job: the debugging step moved after the upload (the upload is then next to the driver, the rule of the step after it is the debugging step's own)", "container-debugging step must be the step immediately after the driver", lambda j: move_dbg(j, lambda j: len(j["steps"])))
+mutate("rc job: the upload is no longer after the debugging step (a second step between them)", "transcript upload must be the step immediately after the driver", lambda j: j["steps"].insert(j["steps"].index(dbg(j)) + 1, {"run": "echo hi"}))
+mutate("rc job: the debugging step has no if", "must run when the job is not cancelled", lambda j: dbg(j).pop("if"))
+mutate("rc job: the debugging step runs always()", "must run when the job is not cancelled", lambda j: dbg(j).update({"if": "${{ always() }}"}))
+mutate("rc job: the debugging step is skipped on success (if: failure())", "must run when the job is not cancelled", lambda j: dbg(j).update({"if": "${{ failure() }}"}))
+mutate("rc job: the debugging step has a uses", "carries keys outside name, if, env and run", lambda j: dbg(j).update({"uses": "actions/checkout@" + "a" * 40}))
+mutate("rc job: the debugging step has continue-on-error", "carries keys outside name, if, env and run", lambda j: dbg(j).update({"continue-on-error": "true"}))
+mutate("rc job: the debugging step has a custom shell", "carries keys outside name, if, env and run", lambda j: dbg(j).update({"shell": "pwsh"}))
+mutate("rc job: the debugging step has a working-directory", "carries keys outside name, if, env and run", lambda j: dbg(j).update({"working-directory": "/tmp"}))
+mutate("rc job: the debugging step has a timeout", "carries keys outside name, if, env and run", lambda j: dbg(j).update({"timeout-minutes": "5"}))
+mutate("rc job: a secret in the debugging step's env", "env is not exactly PERSONA_UAT_IMAGE", lambda j: dbg(j)["env"].update({"ANTHROPIC_ORGANIZATION_ID": "${{ secrets.ANTHROPIC_ORGANIZATION_ID }}"}))
+mutate("rc job: a secret in the debugging step's env (named for the credential rule)", "carries a credential reference or a model name", lambda j: dbg(j)["env"].update({"X": "${{ secrets.ANTHROPIC_ORGANIZATION_ID }}"}))
+mutate("rc job: the debugging step has no env", "env is not exactly PERSONA_UAT_IMAGE", lambda j: dbg(j).pop("env"))
+mutate("rc job: the debugging step takes another image", "env is not exactly PERSONA_UAT_IMAGE", lambda j: dbg(j)["env"].update({"PERSONA_UAT_IMAGE": "ghcr.io/example/cache:latest"}))
+mutate("rc job: the debugging step is renamed", "is not named exactly", lambda j: dbg(j).update({"name": "debug the image"}))
+mutate("rc job: the debugging step is missing", "expected exactly one container-debugging step", lambda j: j["steps"].remove(dbg(j)))
+mutate("rc job: the debugging step twice", "expected exactly one container-debugging step", lambda j: j["steps"].insert(j["steps"].index(dbg(j)), copy.deepcopy(dbg(j))))
+mutate("rc job: the debugging step's run is an external script", "does not hold", lambda j: dbg(j).update({"run": "bash bin/debug-check.sh"}))
+mutate("rc job: the debugging step drops its exit status", "does not hold 'exit '", lambda j: dbg(j).update({"run": dbg(j)["run"].replace("exit ", "echo ")}))
+mutate("rc job: the debugging step prints no fail: line", "does not hold 'fail: '", lambda j: dbg(j).update({"run": dbg(j)["run"].replace("fail: ", "failed ")}))
+mutate("weekly job: the debugging step present", "the weekly job must have none", lambda j: j["steps"].insert(j["steps"].index(up(j)), synth_debug()), which="fresh")
+mutate("weekly job: the debugging step present before the upload, next to the driver", "the weekly job must have none", lambda j: j["steps"].insert(j["steps"].index(drv(j)) + 1, synth_debug()), which="fresh")
+# --- the real debugging step EXECUTED against recording stubs (docker, kind, kubectl, crane, jq, sleep): the volume mount, the exit status of the pipe-into-shell checks and the busybox pins (REQ-UAT-001-AC1)
+import stat, subprocess
+BB_PIN = "busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec"
+STUB_DOCKER = r'''#!/bin/bash
+echo "docker $*" >> "$STUBLOG"
+case "$1" in
+  run) ;;
+  *) exit 0 ;;
+esac
+shift; args=("$@"); n=${#args[@]}
+for ((i=0;i<n;i++)); do
+  case "${args[i]}" in
+    busybox*) exec env PATH="$INNER:$PATH" "${args[@]:i+1}" ;;   # the container's command, run with the real shell and the inner wget/ps/du/ls stubs
+  esac
+done
+exit 0
+'''
+STUB_KUBECTL = r'''#!/bin/bash
+echo "kubectl $*" >> "$STUBLOG"
+if [ "$1" = debug ]; then
+  shift
+  while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done
+  shift
+  env PATH="$INNER:$PATH" "$@"
+  exit 0                                          # real kubectl debug -i exits 0 once the attach ends, whatever the container's command returned
+fi
+exit 0
+'''
+def exec_debug(run, wget_ok):
+    """run the step's script with the stubs; returns (stdout, recorded calls). wget in the container fails unless wget_ok; ps, du and ls succeed"""
+    w = tempfile.mkdtemp(); inner = os.path.join(w, "inner"); os.makedirs(inner)
+    def put(path, text):
+        open(path, "w").write(text); os.chmod(path, 0o755)
+    put(w + "/docker", STUB_DOCKER); put(w + "/kubectl", STUB_KUBECTL)
+    for t in ("kind", "crane", "sleep"):
+        put(f"{w}/{t}", "#!/bin/sh\necho \"%s $*\" >> \"$STUBLOG\"\nexit 0\n" % t)
+    put(w + "/jq", "#!/bin/sh\necho kindest/node:stub\n")
+    put(inner + "/wget", "#!/bin/sh\n" + ("echo ok\n" if wget_ok else "exit 1\n"))
+    for t in ("ps", "du", "ls"):
+        put(f"{inner}/{t}", "#!/bin/sh\nexit 0\n")
+    log = w + "/calls"; open(log, "w").close()
+    env = {"PATH": w + ":" + os.environ["PATH"], "STUBLOG": log, "INNER": inner, "PERSONA_UAT_IMAGE": "localhost:5000/cache@sha256:" + "b" * 64}
+    r = subprocess.run(["bash", "-c", run], capture_output=True, text=True, env=env, cwd=w, timeout=60)
+    calls = open(log).read().splitlines()
+    shutil.rmtree(w, ignore_errors=True)
+    return r.stdout, calls
+
+def debug_problems(run):
+    bad = []
+    out, calls = exec_debug(run, wget_ok=False)
+    server = [c for c in calls if c.startswith("docker run") and "--name cache" in c and " -d " in c + " "]
+    if len(server) != 1 or "-v fscache-data:/home/nonroot " not in server[0] + " ":
+        bad.append(f"the server container is not started with -v fscache-data:/home/nonroot (volume at the home directory docs/docker-deploy.md mounts): {server}")
+    if any("fscache-data:/data " in c + " " or "chown" in c for c in calls) or "chown" in run:
+        bad.append("a volume mount at /data (other than the read-only blob check) or a chown helper remains")
+    ro = [c for c in calls if "fscache-data:/data:ro" in c]
+    if len(ro) != 1 or "/data/data/blobs" not in ro[0]:
+        bad.append(f"the read-only blob check must mount fscache-data at /data:ro and list /data/data/blobs: {ro}")
+    for name in ("README docker without docker debug: busybox sharing the network and process namespaces", "README kubectl debug"):
+        if f"fail: {name}" not in out:
+            bad.append(f"a failing healthz wget does not make the check {name!r} print fail: (pass: printed: {('pass: ' + name) in out}); output {out!r}")
+    out_ok, _ = exec_debug(run, wget_ok=True)
+    for name in ("README docker without docker debug: busybox sharing the network and process namespaces", "README kubectl debug"):
+        if f"pass: {name}" not in out_ok:
+            bad.append(f"with a working wget the check {name!r} does not print pass: {out_ok!r}")
+    refs = re.findall(r"busybox[^\s'\"|]*", re.sub(r'\bcheck "[^"]*"', "check NAME", run))      # the words of a check name are not image references
+    if len(refs) < 5 or set(refs) != {BB_PIN}:
+        bad.append(f"every busybox reference must be exactly {BB_PIN} (at least five of them): {sorted(set(refs))} x{len(refs)}")
+    for c in calls:
+        for r_ in re.findall(r"busybox\S*", c):
+            if r_ != BB_PIN:
+                bad.append(f"a recorded call runs {r_}: {c}")
+    return bad
+
+REAL_DBG = next((s for s in ((P or {}).get("jobs", {}).get("persona-uat-rc", {}).get("steps") or []) if s.get("name") == DEBUG_NAME), None)
+if REAL_DBG is None:
+    result(False, "the real persona-uat-rc job has no debugging step to execute")
+else:
+    rr = REAL_DBG["run"]
+    bd = debug_problems(rr)
+    result(not bd, "the real debugging step, executed against recording stubs: the server container mounts fscache-data at /home/nonroot, no chown helper, the blob check reads /data:ro and /data/data/blobs, a failing healthz wget prints fail: for both pipe-into-shell checks (sh -e), every busybox reference is the pinned 1.37.0 index digest" + ("" if not bd else ": " + "; ".join(bd)))
+    def dmut(name, expect, fn):
+        bad = debug_problems(fn(rr))
+        result(any(expect in b for b in bad), f"caught: debugging step {name} (reason: {expect!r})" + ("" if any(expect in b for b in bad) else f"; saw {bad}"))
+    dmut("server volume back at /data", "/home/nonroot", lambda t: t.replace("-v fscache-data:/home/nonroot", "-v fscache-data:/data"))
+    dmut("chown helper back", "chown helper remains", lambda t: t.replace("docker run -d --name cache", "docker run --rm -v fscache-data:/data busybox chown 65532:65532 /data\n          docker run -d --name cache", 1))
+    dmut("blob check mounts elsewhere", "read-only blob check", lambda t: t.replace("fscache-data:/data:ro", "fscache-data:/mnt:ro"))
+    dmut("blob check lists another path", "read-only blob check", lambda t: t.replace("/data/data/blobs", "/data/blobs"))
+    dmut("docker pipe check without -e", "does not make the check", lambda t: re.sub(r"\bsh -e\b", "sh", t, count=1))
+    dmut("kubectl check without the HEALTHZ_OK marker", "does not make the check", lambda t: t.replace(" | grep -q HEALTHZ_OK", ""))
+    dmut("a busybox:1.37 tag", "every busybox reference", lambda t: t.replace(BB_PIN, "busybox:1.37", 1))
+    dmut("a busybox:stable tag", "every busybox reference", lambda t: t.replace(BB_PIN, "busybox:stable", 1))
+    dmut("a busybox tag without the digest", "every busybox reference", lambda t: t.replace(BB_PIN, "busybox:1.37.0", 1))
+    dmut("a busybox with another digest", "every busybox reference", lambda t: t.replace("a7dbc319", "b7dbc319", 1))
 mutate("rc job runs docker itself", "uses docker or buildx", lambda j: j["steps"].insert(0, {"run": "docker run -d jenkins/jenkins:lts"}))
 mutate("rc secrets set at job level", "set at job level", lambda j: j.setdefault("env", {}).update(ANTHROPIC_WORKSPACE_ID="${{ secrets.ANTHROPIC_WORKSPACE_ID }}"))
 mutate("rc image argument is the raw digests JSON", "takes the image from something other than Build's own image-production digest",
