@@ -347,10 +347,10 @@ stage-verify.yml supply-chain.yml""".split())
 
 def only_new_workflow(files, bad):
     """001-AC1: release.yml (it existed at v0.2.2) is the only signing workflow file v0.3.0 has: the files added beyond v0.2.2 are customer-words-edited.yml, which holds no signer
-    (listed_signers and direct_signers still judge it; decision 98, Oct 3), and persona-uat.yml, the persona proof's own file. No stage-*.yml file is added."""
+    (listed_signers and direct_signers still judge it; decision 98, Oct 3), persona-uat.yml, the persona proof's own file, and full-suite.yml, the full suite at promotion (docs/ratify/2026-11-10-full-suite-at-promotion.md:11-12). No stage-*.yml file is added."""
     new = sorted(os.path.basename(f) for f in files if os.path.basename(f) not in V022_WORKFLOWS)
-    if set(new) != {"persona-uat.yml", "customer-words-edited.yml", "evidence-letter.yml"}:
-        bad.append("AC1: workflow files added since v0.2.2 must be customer-words-edited.yml (decision 98, Oct 3), evidence-letter.yml (REQ-REL-015) and persona-uat.yml, found %s" % new)
+    if set(new) != {"persona-uat.yml", "customer-words-edited.yml", "evidence-letter.yml", "full-suite.yml"}:
+        bad.append("AC1: workflow files added since v0.2.2 must be customer-words-edited.yml (decision 98, Oct 3), evidence-letter.yml (REQ-REL-015), persona-uat.yml and full-suite.yml (docs/ratify/2026-11-10-full-suite-at-promotion.md:11-12), found %s" % new)
 
 def listed_signers(base, bad):
     """001-AC1: "every other signing call being listed with its reason in .github/policy/chain-signers.json" (never a provenance signer)."""
@@ -1224,6 +1224,7 @@ mk() {
   printf 'jobs: {}\n' > "$d/.github/workflows/customer-words-edited.yml"   # an added file that is not a signer
   printf 'jobs: {}\n' > "$d/.github/workflows/evidence-letter.yml"   # the monthly evidence letter's file (REQ-REL-015)
   printf 'jobs: {}\n' > "$d/.github/workflows/persona-uat.yml"      # the other added file: the persona proof has its own workflow file
+  printf 'jobs: {}\n' > "$d/.github/workflows/full-suite.yml"      # the full suite at promotion (docs/ratify/2026-11-10-full-suite-at-promotion.md:11-12)
   printf 'jobs:\n  b:\n    steps:\n      - run: |\n          set -euo pipefail\n          bash bin/build-stage.sh apk\n' > "$d/.github/workflows/stage-build.yml"
   { printf 'jobs:\n  hostile-verify:\n    steps:\n      - run: git -c gpg.x509.program=gitsign tag -s v1\n'
     for j in sign sign-rebuild sign-check; do      # Sign's three jobs: the only jobs of release.yml that sign provenance
@@ -3016,6 +3017,8 @@ d=$(mk t_cwgone); rm "$d/.github/workflows/customer-words-edited.yml"
 expect caught "AC1 the added set is exact: without customer-words-edited.yml it is wrong too" tree "$d"
 d=$(mk t_puatgone); rm "$d/.github/workflows/persona-uat.yml"
 expect caught "AC1 the added set is exact: without persona-uat.yml it is wrong too" tree "$d"
+d=$(mk t_fsgone); rm "$d/.github/workflows/full-suite.yml"
+expect caught "AC1 the added set is exact: without full-suite.yml it is wrong too" tree "$d"
 d=$(mk t_stagesign); printf 'jobs: {}\n' > "$d/.github/workflows/stage-sign.yml"
 expect caught "AC1 a stage-sign.yml file is a new workflow file: no stage-*.yml file is added" tree "$d"
 for j in sign sign-rebuild sign-check; do
@@ -3037,8 +3040,8 @@ extra="$d/.github/workflows/stage-extra.yml"
 printf 'jobs:\n  b:\n    steps:\n      - uses: actions/checkout@%s # v4\n' "$sha" > "$extra"
 printf '        with:\n          persist-credentials: false\n' >> "$extra"
 out=$(judge tree "$d" 2>/dev/null) || true
-want="AC1: workflow files added since v0.2.2 must be customer-words-edited.yml (decision 98, Oct 3), evidence-letter.yml (REQ-REL-015) and persona-uat.yml,"
-want="$want found ['customer-words-edited.yml', 'evidence-letter.yml', 'persona-uat.yml', 'stage-extra.yml']"
+want="AC1: workflow files added since v0.2.2 must be customer-words-edited.yml (decision 98, Oct 3), evidence-letter.yml (REQ-REL-015), persona-uat.yml and full-suite.yml (docs/ratify/2026-11-10-full-suite-at-promotion.md:11-12),"
+want="$want found ['customer-words-edited.yml', 'evidence-letter.yml', 'full-suite.yml', 'persona-uat.yml', 'stage-extra.yml']"
 if [ "$out" = "$want" ]; then
   pass=$((pass + 1))
   echo "ok   AC1 a third new workflow file is refused by the workflow-name rule alone"
@@ -3174,7 +3177,7 @@ expect ok "002-AC4 a step that runs bin/witnessed-local.sh with no secret passes
   build "$work/build-clean.yml"
 expect caught "002-AC4 a secret on the step that runs bin/witnessed-local.sh" build "$work/build-secret.yml"
 expect ok "the real tree: only scan.yml and main-candidate-rescan.yml call release.yml, in snapshot mode; no stage file is called; every sign job and release carries the guard (003-AC5)" calls "$REAL"
-label="the real tree: only customer-words-edited.yml, evidence-letter.yml and persona-uat.yml are new and only the sign jobs of release.yml sign provenance"
+label="the real tree: only customer-words-edited.yml, evidence-letter.yml, persona-uat.yml and full-suite.yml are new and only the sign jobs of release.yml sign provenance"
 expect ok "$label" tree "$REAL"
 # a grant covers a whole file: the grants of these two files excused one literal and one prose word (B1)
 b1() { # b1 0|1 LABEL [DETAIL]: 0 is a pass
@@ -3725,6 +3728,7 @@ ALLOWED = {
     'FX="$root/bin/chain-sign-wiring-fixtures.txt"',
     'if [ -f "$FX" ] && [ ! -x "$FX" ] && python3 "$work/fx-guard.py" "$FX" "${BASH_SOURCE[0]}"',
     'run_fixtures "$FX"',
+    '  [ "$1" != o ] || { if FX="$m/f.txt" work="$work" bash -c "$fxg" > /dev/null 2>&1; then pass=$((pass + 1)); echo "ok   REQ-CHAIN-001-AC1 the data-file guard accepts $4"; else failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 the data-file guard refused $4"; fi; return; }',
     '  if FX="$m/f.txt" work="$work" bash -c "$fxg" > /dev/null 2>&1; then failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 the data-file guard accepted: $4"',
     '  local m="$work/fxm"; rm -rf "$m"; mkdir -p "$m"; cp "$FX" "$m/f.txt"; cp "${BASH_SOURCE[0]}" "$m/t.sh"; chmod 644 "$m/f.txt"',
     "  [ -z \"$2\" ] || sed -i.bak \"$2\" \"$m/f.txt\"; [ -z \"$3\" ] || printf '%s\\n' \"${3//@FX@/\\$FX}\" >> \"$m/t.sh\"",
@@ -3765,10 +3769,13 @@ fxmut() { # fxmut LABEL FILE-SED TEST-APPEND : the guard against a mutated copy 
   local m="$work/fxm"; rm -rf "$m"; mkdir -p "$m"; cp "$FX" "$m/f.txt"; cp "${BASH_SOURCE[0]}" "$m/t.sh"; chmod 644 "$m/f.txt"
   [ -z "$2" ] || sed -i.bak "$2" "$m/f.txt"; [ -z "$3" ] || printf '%s\n' "${3//@FX@/\$FX}" >> "$m/t.sh"
   [ "$1" != x ] || chmod 755 "$m/f.txt"
-  fxg=$(grep -m1 '^if \[ -f ' "${BASH_SOURCE[0]}"); fxg=${fxg#if }; fxg=${fxg//'${BASH_SOURCE[0]}'/$m/t.sh}      # the condition of the real guard above, run against the mutated copies
+  fxg=$(grep -m1 '^if \[ -f "[$][F]X" \]' "${BASH_SOURCE[0]}"); fxg=${fxg#if }; fxg=${fxg//'${BASH_SOURCE[0]}'/$m/t.sh}      # the condition of the real guard above, run against the mutated copies
+  case $fxg in *fx-guard.py*) ;; *) failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 the data-file guard was not found in this test: $4"; return ;; esac
+  [ "$1" != o ] || { if FX="$m/f.txt" work="$work" bash -c "$fxg" > /dev/null 2>&1; then pass=$((pass + 1)); echo "ok   REQ-CHAIN-001-AC1 the data-file guard accepts $4"; else failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 the data-file guard refused $4"; fi; return; }
   if FX="$m/f.txt" work="$work" bash -c "$fxg" > /dev/null 2>&1; then failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 the data-file guard accepted: $4"
   else pass=$((pass + 1)); echo "ok   REQ-CHAIN-001-AC1 the data-file guard refuses $4"; fi
 }
+fxmut o '' '' "an unmodified copy of the data file and of this test (the control: the extracted guard condition runs)"
 fxmut x '' '' "an executable data file"
 TAB=$'\t'
 fxmut s '1s/^/#!\/bin\/sh\'$'\n''/' '' "a data file that starts with a shebang"
