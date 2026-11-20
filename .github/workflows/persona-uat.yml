@@ -2,7 +2,8 @@ name: Persona UAT
 
 # Persona UAT (REQ-UAT-001), the one file with a persona job (one purpose per file). Two legs:
 #   persona-uat-rc      the release-candidate leg: release.yml calls this file once, in release mode on a release-candidate tag only (the caller holds the tag and snapshot conditions), and
-#                       the three personas (gradle-platform-engineer, maven-jenkins-ci, readme-evaluator) test the image Build made, BEFORE anything is released; nothing is published.
+#                       four personas (gradle-platform-engineer, maven-jenkins-ci, readme-evaluator, on-call-engineer) test the image Build made, BEFORE anything is released; nothing is published.
+#                       The driver loads that image into the on-call engineer's kind cluster (crane pull, kind load); a last step runs the README's and docs/docker-deploy.md's container-debugging commands against it.
 #                       Build's production OCI layout (artifact images) is pushed with the pinned crane to a registry:2 service pinned by digest and published on the runner's loopback only;
 #                       the pushed digest must equal Build's image-production digest, which the caller passes as the input digests. The image is unverified (no release-verify has run): that is what the personas test.
 #   persona-uat-weekly  the Monday cron: the five personas follow the docs AS PUBLISHED with the latest release (checked out under release-docs) against that release's public image,
@@ -10,7 +11,7 @@ name: Persona UAT
 # Results stay private: pass/fail lines only, one encrypted artifact per persona, no issue; a blocking persona fails its job. The model identities are environment SECRETS (masked); the
 # token budget is the one variable. Every job is in the environment persona-uat and holds contents read and the identity token for the persona federation only: never the release signing key's role.
 # GATE: PERSONA_UAT_ENABLED is exactly 'true' (unset = off), on each JOB, so while off the persona-uat environment is never entered and no token is minted.
-# compliance-reviewer and on-call-engineer run in the weekly job only.
+# compliance-reviewer (it needs a signed, published image) runs in the weekly job only.
 on:
   schedule:
     - cron: '43 6 * * 1'    # persona UAT, weekly (Mondays)
@@ -111,7 +112,7 @@ jobs:
           ' identity-refresher "$f" "${PERSONA_UAT_REFRESH_SECONDS:-60}" </dev/null >/dev/null 2>&1 &
           disown
 
-      - name: run the three release-candidate personas against Build's image on the local registry
+      - name: run the four release-candidate personas against Build's image on the local registry
         env:
           PERSONA_UAT_MODEL: ${{ secrets.PERSONA_UAT_MODEL }}
           PERSONA_UAT_COMPLIANCE_MODEL: ${{ secrets.PERSONA_UAT_COMPLIANCE_MODEL }}
@@ -123,6 +124,38 @@ jobs:
           ANTHROPIC_IDENTITY_TOKEN_FILE: ${{ runner.temp }}/anthropic-identity-token
           PERSONA_UAT_IMAGE: localhost:5000/cache@${{ fromJSON(inputs.digests)['image-production'] }}
         run: python3 bin/persona-uat.py --mode rc --image "$PERSONA_UAT_IMAGE" --repo . --out persona-uat-out --tools bin/persona-uat-tools.json --recipient bin/persona-uat-recipient.pem --agent "python3 bin/persona-uat-agent.py" --allow-listen 5000
+
+      - name: run the container-debugging commands of the README and docs/docker-deploy.md against Build's image
+        # one pass/fail line per command, as the docs write them (the tty flag -t dropped: the runner has none); docker debug without its plugin is "not run"
+        if: ${{ !cancelled() }}
+        env:
+          PERSONA_UAT_IMAGE: localhost:5000/cache@${{ fromJSON(inputs.digests)['image-production'] }}
+        run: |
+          set -uo pipefail
+          fail=0
+          check() { local name=$1; shift; if "$@"; then echo "pass: ${name}"; else echo "fail: ${name}"; fail=1; fi; }
+          trap 'docker rm -f cache >/dev/null 2>&1; docker volume rm -f fscache-data >/dev/null 2>&1; kind delete cluster --name debug-check >/dev/null 2>&1' EXIT
+          docker volume create fscache-data >/dev/null
+          docker run --rm -v fscache-data:/data busybox:1.37 chown 65532:65532 /data
+          docker run -d --name cache -v fscache-data:/data "$PERSONA_UAT_IMAGE" >/dev/null
+          sleep 5
+          check "README docker without docker debug: busybox sharing the network and process namespaces" \
+            bash -c "printf 'wget -qO- http://127.0.0.1:8080/healthz\nps\n' | docker run --rm -i --network=container:cache --pid=container:cache busybox:1.37 sh"
+          if docker debug --help >/dev/null 2>&1; then check "README docker debug" bash -c "echo exit | docker debug cache"; else echo "not run: README docker debug (the docker debug plugin is not on the runner)"; fi
+          check "docker-deploy toolbox sharing the server's network and processes" \
+            bash -c "printf 'wget -qO- http://localhost:8080/healthz\n' | docker run --rm -i --pid=container:cache --network=container:cache busybox:stable sh"
+          check "docker-deploy blob volume, read-only" \
+            docker run --rm -i -v fscache-data:/data:ro busybox:stable sh -c 'du -sh /data; ls -la /data/data/blobs'
+          crane pull "${PERSONA_UAT_IMAGE%@*}:rc" rc-image.tar
+          kind create cluster --name debug-check --image "$(jq -er .kind bin/persona-uat-tools.json)"
+          kind load image-archive rc-image.tar --name debug-check
+          kubectl run cache --image="${PERSONA_UAT_IMAGE%@*}:rc" --image-pull-policy=IfNotPresent
+          kubectl wait --for=condition=Ready pod/cache --timeout=120s
+          check "README kubectl debug" \
+            bash -c "printf 'wget -qO- http://127.0.0.1:8080/healthz\nps\n' | kubectl debug -i cache --image=busybox:1.37 --target=cache -- sh"
+          check "docker-deploy kubectl debug" \
+            kubectl debug -i cache --image=busybox:stable --target=cache -- true
+          exit "$fail"
 
       - name: upload the encrypted reports and transcripts
         if: ${{ always() }}

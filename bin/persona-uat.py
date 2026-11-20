@@ -44,7 +44,8 @@ import uuid
 import shlex as _shlex
 
 warnings.simplefilter("ignore")        # nothing but the fixed lines is ever printed: no interpreter warning either
-RC_PERSONAS = ("gradle-platform-engineer", "maven-jenkins-ci", "readme-evaluator")   # the release candidate runs these three; compliance-reviewer and on-call-engineer run weekly only
+RC_PERSONAS = ("gradle-platform-engineer", "maven-jenkins-ci", "readme-evaluator", "on-call-engineer")   # the release candidate runs these four; compliance-reviewer (it needs a signed, published image) runs weekly only
+RC_TAG = "rc"             # the tag the rc job pushed Build's image under on the runner's registry (persona-uat.yml); the on-call engineer's cluster holds it under that name
 PERSONAS = ("gradle-platform-engineer", "maven-jenkins-ci", "compliance-reviewer", "readme-evaluator", "on-call-engineer")
 TOOLS_FOR = {"maven-jenkins-ci": ("jenkins", "gitlab-runner"), "on-call-engineer": ("kind",)}
 DIGEST_REF = re.compile(r"^[a-z0-9][^\s@]*@sha256:[0-9a-f]{64}$")
@@ -98,6 +99,11 @@ INSTRUCTIONS = {
         "version and a rollback to the previous one on the Kubernetes cluster you are given (its kubeconfig is in your working "
         "directory), and find and read the logs you need to diagnose a problem."),
 }
+RC_ON_CALL = (
+    "You are an on-call engineer in the middle of an incident. The Kubernetes cluster you are given (its kubeconfig is in your working directory) is "
+    "running the latest published release of this product. Following the documentation, perform an upgrade from it to the release candidate image %s, which is already in the "
+    "cluster's node (use exactly that reference with imagePullPolicy IfNotPresent: the cluster cannot pull it), then a rollback to the release you upgraded from, "
+    "and find and read the logs you need to diagnose a problem.")
 LIMITS = (
     "each command runs in its own disposable container, so a foreground `kubectl port-forward` followed by commands 'in another terminal' cannot be held across actions",
     "there is no pre-seeded Jenkins job or credentials and no GitLab server or runner registration (the GitLab runner container exposes its metrics endpoint only)",
@@ -833,6 +839,17 @@ class Cluster:
             raise RuntimeError("the admin kubeconfig is not readable")
         self.server, self.port, self.ca = m.group(1), int(m.group(2)), c.group(1)
         self.kubectl("wait", "--for=condition=Ready", "node", "--all", "--timeout=120s")       # `kind create cluster --wait 0s` returns before the node is Ready
+
+    def load(self, ref, timeout):
+        """the rc image goes into the kind node from the runner's loopback registry, which the node cannot reach: crane pull of ref to an archive, kind load of the archive (the node then holds it under ref)"""
+        arch = os.path.join(self.dir, "rc-image.tar")
+        try:
+            if host_run(["crane", "pull", ref, arch], timeout=timeout).returncode != 0:
+                raise RuntimeError("crane pull of the image failed")
+            if host_run(["kind", "load", "image-archive", arch, "--name", KIND_NAME], timeout=timeout).returncode != 0:
+                raise RuntimeError("kind load of the image failed")
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("loading the image into the cluster timed out")
 
     def join(self, docker, net):
         """the kind node joins the persona's network (by its own name, which the API server's certificate names), so the persona reaches the cluster without the host's loopback"""
@@ -1694,6 +1711,7 @@ def last_resort():
 def _main():
     a = parse_args()
     ACTIVE[:] = RC_PERSONAS if a.mode == "rc" else PERSONAS
+    rc_ref = a.image.split("@")[0] + ":" + RC_TAG
     try:
         models, budget, tools = configure(a)
     except Refuse as e:
@@ -1938,6 +1956,8 @@ def _main():
                             req_tools[tool] = {"container": tc, "endpoint": "http://gitlab-runner:9252"}
                         else:
                             cluster = Cluster(tools[tool], timeout=max(a.ready_timeout * 2, 3))
+                            if a.mode == "rc":
+                                cluster.load(rc_ref, max(a.ready_timeout * 2, 3))
                             cluster.join(docker, net)
                             kc = cluster.provision(token_seconds, KIND_SERVER)
                             with open(os.path.join(sandbox, "kubeconfig"), "w") as fh:
@@ -1956,7 +1976,7 @@ def _main():
                     continue
                 request = {
                     "docs_dir": sandbox, "endpoint": "http://endpoint:8080", "image": a.image,
-                    "instructions": INSTRUCTIONS[persona] + " " + CLASSIFY,
+                    "instructions": (RC_ON_CALL % rc_ref if a.mode == "rc" and persona == "on-call-engineer" else INSTRUCTIONS[persona]) + " " + CLASSIFY,
                     "model": models["PERSONA_UAT_COMPLIANCE_MODEL" if persona == "compliance-reviewer" else "PERSONA_UAT_MODEL"],
                     "persona": persona, "token_budget": budget, "tools": req_tools,
                 }

@@ -115,7 +115,7 @@ set -euo pipefail
 SEG_SHARDS=3
 # The cases each shard must pass: counted from the unsharded suite (624 in all) and checked by the gate, so a case that is skipped, run twice, moved out of its section or
 # made by another shard fails the step. A case added or removed changes a shard's number: the gate names it, and this line is updated with the case.
-SEG_CASES="201 174 273"
+SEG_CASES="221 174 273"
 SEG_DEADLINE=${PERSONA_UAT_SHARD_DEADLINE:-3000}   # seconds one shard may run; a hung shard is killed (its whole process group) and counts as failed (exit 124)
 # SHARDS. Run plain, this script runs the driver suite as SEG_SHARDS shards at once (PERSONA_UAT_SHARD=I/N each, below), prints their outputs one after the other and
 # fails unless every shard passed and the shards together ran every section of this file exactly once (the gate). PERSONA_UAT_SHARD=I/N runs one shard;
@@ -737,6 +737,8 @@ if kc and a[:2] == ["create", "cluster"]:
     row["kc"] = os.path.abspath(kc)
     row["existed_mode"] = oct(os.stat(kc).st_mode & 0o7777) if os.path.exists(kc) else None
     row["dir_mode"] = oct(os.stat(os.path.dirname(os.path.abspath(kc))).st_mode & 0o7777)
+if a[:2] == ["load", "image-archive"] and len(a) > 2:
+    row["archive"] = os.path.abspath(a[2]); row["archive_exists"] = os.path.isfile(a[2]); row["alive"] = os.path.exists(D + "/alive")
 open(D + "/host.log", "a").write(json.dumps(row) + "\n")
 DIGEST = "sha256:" + "ab12" * 16
 def noise(what):
@@ -755,6 +757,12 @@ elif a[:2] == ["delete", "cluster"]:
     noise("delete")
 if cfg.get("kind_hang") and a[:2] == ["create", "cluster"]:
     time.sleep(90)
+if a[:2] == ["load", "image-archive"]:       # rc mode only: the rc image goes into the node from the archive `crane pull` wrote
+    if cfg.get("load_hang"):
+        time.sleep(90)
+    if cfg.get("load_fail"):
+        sys.stderr.write("ERROR: failed to load image: command \"docker exec --privileged -i kind-control-plane ctr images import %s\" failed\n" % a[2]); sys.exit(1)
+    sys.exit(0)
 if cfg.get("kind_fail"):
     sys.stderr.write("kind: simulated failure\n"); sys.exit(1)
 port, pn = int(cfg["kind_port"]), cfg.get("procnet")
@@ -782,6 +790,30 @@ elif a[:2] == ["delete", "cluster"]:
     if pn:
         keep = [l for l in open(pn + "/tcp") if not l.rstrip().endswith(" 9999 1 0")]
         open(pn + "/tcp", "w").writelines(keep)
+sys.exit(0)
+PY
+cat >"$work/crane.tmpl" <<'PY'
+#!/usr/bin/env python3
+# The recording `crane` of the job's PATH: `crane pull REF ARCHIVE` writes the archive file (so `kind load` can find it) and logs the call (argv, instant, whether the cluster
+# was up, the archive's directory mode) to host.log; crane_fail (prints the registry reference and the archive path on stdout and stderr, as the real one does) and crane_hang
+# are switched by host.cfg.
+import json, os, sys, time
+D = "__DIR__"
+cfg = json.load(open(D + "/host.cfg"))
+a = sys.argv[1:]
+row = {"tool": "crane", "t": time.time(), "argv": a, "env": sorted(os.environ), "cwd": os.getcwd(), "alive": os.path.exists(D + "/alive")}
+if len(a) == 3 and a[0] == "pull":
+    arc = os.path.abspath(a[2]); row["archive"] = arc
+    row["dir_mode"] = oct(os.stat(os.path.dirname(arc)).st_mode & 0o7777) if os.path.isdir(os.path.dirname(arc)) else None
+open(D + "/host.log", "a").write(json.dumps(row) + "\n")
+if cfg.get("crane_hang"):
+    time.sleep(90)
+if cfg.get("crane_fail"):
+    t = "Error: pulling %s: GET https://%s/v2/: connection refused (writing %s)\n" % (a[1], a[1].split("/")[0], a[2])
+    sys.stdout.write(t); sys.stderr.write(t); sys.exit(1)
+if len(a) != 3 or a[0] != "pull":
+    sys.stderr.write("crane: only `pull REF ARCHIVE` is modelled\n"); sys.exit(2)
+open(a[2], "w").write("RC-IMAGE-ARCHIVE-BYTES")
 sys.exit(0)
 PY
 cat >"$work/kubectl.tmpl" <<'PY'
@@ -984,7 +1016,7 @@ if verb != "apply":
     row["manifests"] = []
 finish(0)
 PY
-# mkhost <case dir>: the per-case HOSTBIN (kind, kubectl) and host.cfg from KIND_FAIL, KUBECTL_FAIL_MATCH, KIND_PORT (default 18090), KIND_PROCNET
+# mkhost <case dir>: the per-case HOSTBIN (kind, kubectl, crane) and host.cfg from CRANE_FAIL, CRANE_HANG, LOAD_FAIL, LOAD_HANG (rc mode: `crane pull`, `kind load image-archive`), KIND_FAIL, KUBECTL_FAIL_MATCH, KIND_PORT (default 18090), KIND_PROCNET
 mkhost() {
   local d=$1; mkdir -p "$d/hostbin"; : >"$d/host.log"
   printf '#!/bin/sh\necho "$*" >>"%s/gh.log"\necho "gh: the persona UAT must never call gh" >&2\nexit 1\n' "$d" >"$d/hostbin/gh"; chmod +x "$d/hostbin/gh"; : >"$d/gh.log"
@@ -1011,10 +1043,10 @@ os.execv(REAL, [REAL] + sys.argv[1:])
 """)
 os.chmod(d + "/hostbin/openssl", 0o755); open(d + "/openssl.log", "w").close()
 PYO
-  sed "s#__DIR__#$d#" "$work/kind.tmpl" >"$d/hostbin/kind"; sed "s#__DIR__#$d#" "$work/kubectl.tmpl" >"$d/hostbin/kubectl"; chmod +x "$d/hostbin/kind" "$d/hostbin/kubectl"
-  python3 - "$d/host.cfg" "${KIND_FAIL:-}" "${KUBECTL_FAIL_MATCH:-}" "${KIND_PORT:-18090}" "${KIND_PROCNET:-}" "${KIND_DELETE_FAIL:-}" "${KIND_HANG:-}" "${KIND_TOKEN_LIFETIME:-}" "${KIND_API_AUD:-}" "${KIND_NODE_READY:-}" <<'PYC'
+  sed "s#__DIR__#$d#" "$work/kind.tmpl" >"$d/hostbin/kind"; sed "s#__DIR__#$d#" "$work/kubectl.tmpl" >"$d/hostbin/kubectl"; sed "s#__DIR__#$d#" "$work/crane.tmpl" >"$d/hostbin/crane"; chmod +x "$d/hostbin/kind" "$d/hostbin/kubectl" "$d/hostbin/crane"
+  python3 - "$d/host.cfg" "${KIND_FAIL:-}" "${KUBECTL_FAIL_MATCH:-}" "${KIND_PORT:-18090}" "${KIND_PROCNET:-}" "${KIND_DELETE_FAIL:-}" "${KIND_HANG:-}" "${KIND_TOKEN_LIFETIME:-}" "${KIND_API_AUD:-}" "${KIND_NODE_READY:-}" "${CRANE_FAIL:-}" "${CRANE_HANG:-}" "${LOAD_FAIL:-}" "${LOAD_HANG:-}" <<'PYC'
 import json, sys
-json.dump({"kind_fail": sys.argv[2], "kubectl_fail_match": sys.argv[3], "kind_port": int(sys.argv[4]), "procnet": sys.argv[5], "kind_delete_fail": sys.argv[6], "kind_hang": sys.argv[7], "token_lifetime": sys.argv[8], "api_aud": sys.argv[9], "node_ready_delay": sys.argv[10]}, open(sys.argv[1], "w"))
+json.dump({"kind_fail": sys.argv[2], "kubectl_fail_match": sys.argv[3], "kind_port": int(sys.argv[4]), "procnet": sys.argv[5], "kind_delete_fail": sys.argv[6], "kind_hang": sys.argv[7], "token_lifetime": sys.argv[8], "api_aud": sys.argv[9], "node_ready_delay": sys.argv[10], "crane_fail": sys.argv[11], "crane_hang": sys.argv[12], "load_fail": sys.argv[13], "load_hang": sys.argv[14]}, open(sys.argv[1], "w"))
 PYC
 }
 # The driver makes NO gh call and opens NO issue (results stay private): a recording `gh` is first on every run's PATH (hostbin) and any call is a failure.
@@ -1046,7 +1078,7 @@ PY
 decout() { rm -rf "${work:?}/$1/plain"; python3 "$work/dec.py" "$work/$1/out" "$work/$1/plain" "${2:-$work/test.key}"; }
 # publiclog <case>: the job log (stdout + stderr) is ONLY `persona-uat: <persona>|overall: pass|fail` lines, one per persona and overall, agreeing with the
 # encrypted reports (friction reads pass) and with each other (overall fails iff a persona does): no finding, doc name, host, model name or transcript text
-publiclog() { python3 - "$work/$1" "$PERSONAS" <<'PYL'
+publiclog() { python3 - "$work/$1" "${2:-$PERSONAS}" <<'PYL'
 import re, sys
 d, personas = sys.argv[1], sys.argv[2].split()
 import os
@@ -1359,33 +1391,33 @@ import json, sys
 rows = [json.loads(l) for l in open(sys.argv[1])]
 assert sorted(r["persona"] for r in rows) == sorted(sys.argv[2].split()), [r["persona"] for r in rows]
 PY
-# --- 0486 (advisor Oct 17): --mode rc means something. A release candidate is exercised before anything is signed or published, so rc runs the three personas whose job can
-# be done against an unsigned, unpublished candidate; the compliance reviewer and the on-call engineer (they need a signed, published release) are never invoked in rc and the
-# weekly run covers them. weekly runs all five; one fixed list in the driver, no flag
+# --- 0486 (advisor Oct 17; amended for REQ-UAT-001-AC1): --mode rc means something. A release candidate is exercised before anything is signed or published, so rc runs the FOUR personas whose job can
+# be done against an unsigned, unpublished candidate (the Gradle platform engineer, the Maven CI user on Jenkins, the README evaluator and the on-call engineer, whose cluster gets the rc image
+# by `crane pull` + `kind load`); the compliance reviewer (it needs a signed, published release) is never invoked in rc and the weekly run covers it. weekly runs all five; one fixed list in the driver, no flag
 run rc3 '{}' rc
-CASE="rc exits 0 with three personas"; check test "$rc" -eq 0
-CASE="rc ran exactly gradle-platform-engineer, maven-jenkins-ci and readme-evaluator, once each; compliance-reviewer and on-call-engineer were never invoked"
+CASE="rc exits 0 with four personas"; check test "$rc" -eq 0
+CASE="rc ran exactly gradle-platform-engineer, maven-jenkins-ci, readme-evaluator and on-call-engineer, once each; compliance-reviewer was never invoked"
 check python3 - "$work/rc3/log" <<'PY'
 import json, sys
 rows = [json.loads(l) for l in open(sys.argv[1])]
-assert sorted(r["persona"] for r in rows) == ["gradle-platform-engineer", "maven-jenkins-ci", "readme-evaluator"], [r["persona"] for r in rows]
+assert sorted(r["persona"] for r in rows) == ["gradle-platform-engineer", "maven-jenkins-ci", "on-call-engineer", "readme-evaluator"], [r["persona"] for r in rows]
 PY
 CASE="in rc a skipped persona has no report, no transcript and no encrypted file"
-check test ! -e "$(out rc3)/compliance-reviewer.report.md" -a ! -e "$(out rc3)/on-call-engineer.report.md" -a ! -e "$work/rc3/out/compliance-reviewer.cms" -a ! -e "$work/rc3/out/on-call-engineer.cms" -a -s "$work/rc3/out/readme-evaluator.cms" -a -s "$work/rc3/out/gradle-platform-engineer.cms" -a -s "$work/rc3/out/maven-jenkins-ci.cms"
+check test ! -e "$(out rc3)/compliance-reviewer.report.md" -a ! -e "$work/rc3/out/compliance-reviewer.cms" -a -s "$work/rc3/out/on-call-engineer.cms" -a -s "$work/rc3/out/readme-evaluator.cms" -a -s "$work/rc3/out/gradle-platform-engineer.cms" -a -s "$work/rc3/out/maven-jenkins-ci.cms"
 CASE="in rc the public log has a pass line per run persona, none for the others, and one overall line"
 check python3 - "$work/rc3/stderr" <<'PY'
 import sys
 t = open(sys.argv[1]).read()
 lines = [l for l in t.splitlines() if l.startswith("persona-uat: ")]
-assert sorted(l for l in lines if "overall" not in l) == ["persona-uat: gradle-platform-engineer: pass", "persona-uat: maven-jenkins-ci: pass", "persona-uat: readme-evaluator: pass"], lines
+assert sorted(l for l in lines if "overall" not in l) == ["persona-uat: gradle-platform-engineer: pass", "persona-uat: maven-jenkins-ci: pass", "persona-uat: on-call-engineer: pass", "persona-uat: readme-evaluator: pass"], lines
 assert [l for l in lines if "overall" in l] == ["persona-uat: overall: pass"], lines
-assert "compliance-reviewer" not in t and "on-call-engineer" not in t, t
+assert "compliance-reviewer" not in t, t
 PY
-CASE="in rc the step summary lists the three run personas and the overall line only"
+CASE="in rc the step summary lists the four run personas and the overall line only"
 check python3 - "$work/rc3/summary.md" <<'PY'
 import sys
 t = open(sys.argv[1]).read()
-assert "compliance-reviewer" not in t and "on-call-engineer" not in t and t.count("persona-uat: ") == 4, t
+assert "compliance-reviewer" not in t and t.count("persona-uat: ") == 5, t
 PY
 run wk5 '{}' weekly
 CASE="weekly runs exactly the five personas, once each"
@@ -1643,6 +1675,13 @@ def issued(d):
     return [json.loads(l) for l in open(d + "/host.log") if '"issued"' in l]
 def kind(d):
     return [r for r in rows(d) if r["tool"] == "kind"]
+def allrows(d):
+    """every host call in the order it was made (kind, kubectl, crane)"""
+    return [r for r in (json.loads(l) for l in open(d + "/host.log") if l.strip()) if r["tool"] in ("kind", "kubectl", "crane")]
+def crane(d):
+    return [r for r in allrows(d) if r["tool"] == "crane"]
+def loads(d):
+    return [r for r in kind(d) if r["argv"][:2] == ["load", "image-archive"]]
 def kubectl(d):
     """the DRIVER's kubectl calls (admin credential); the persona's own calls with its token are persona_calls"""
     return [r for r in rows(d) if r["tool"] == "kubectl" and not r.get("persona_call")]
@@ -1757,6 +1796,98 @@ assert sorted(o) == ["--image", "--kubeconfig", "--name"], a
 assert o["--image"] == knd, a
 assert re.fullmatch(r"[a-z][a-z0-9-]{2,30}", o["--name"]), a
 assert o["--kubeconfig"].startswith("/"), a
+PY
+# --- rc mode only (REQ-UAT-001-AC1): the rc image goes into the on-call engineer's kind node with exactly two host calls, `crane pull <REPO>:rc <ARCHIVE>` then
+# `kind load image-archive <ARCHIVE> --name <the create name>`, after `kind create cluster` returned and before the persona's request; <REPO> is --image up to its @sha256 part;
+# <ARCHIVE> lies in the driver-private cluster directory (the admin kubeconfig's) and is gone when the run ends; weekly mode makes neither call.
+CASE="rc image into the node: exactly one 'crane pull <REPO>:rc <ARCHIVE>' (REPO = the --image reference without @sha256:...), then exactly one 'kind load image-archive <ARCHIVE> --name <the create name>', both after 'kind create cluster' and before the persona starts, in that order, nothing else"
+check python3 - "$work/rc3" "$work" "$IMG" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[2]); import kh
+d, img = sys.argv[1], sys.argv[3]
+repo = img.split("@sha256:")[0]
+assert repo == "ghcr.io/example/cache", repo
+cr, ld = kh.crane(d), kh.loads(d)
+assert len(cr) == 1 and len(ld) == 1, (cr, ld)
+c = kh.create(d)
+name = c["argv"][c["argv"].index("--name") + 1]
+arc = cr[0]["argv"][2]
+assert cr[0]["argv"] == ["pull", repo + ":rc", arc], cr[0]["argv"]
+assert ld[0]["argv"] == ["load", "image-archive", arc, "--name", name], ld[0]["argv"]
+assert arc.startswith("/"), arc
+rows = kh.allrows(d)
+i_create, i_crane, i_load = rows.index(c), rows.index(cr[0]), rows.index(ld[0])
+assert i_create < i_crane < i_load, (i_create, i_crane, i_load)
+assert cr[0]["alive"] and ld[0]["alive"], "the cluster was not up when the image was put into it"
+assert ld[0]["archive_exists"], "kind load found no archive: crane pull must have written it first"
+t0 = [json.loads(l) for l in open(d + "/timing.log") if '"on-call-engineer"' in l][0]["t0"]
+assert ld[0]["t"] < t0, "the image was loaded after the persona started"
+dels = [r for r in kh.kind(d) if r["argv"][:2] == ["delete", "cluster"]]
+assert len(dels) == 1 and rows.index(dels[0]) > i_load
+PY
+CASE="rc image into the node: the archive is a file in the driver's PRIVATE cluster directory (the admin kubeconfig's directory), never in a sandbox, the output directory or the repository, and it is gone when the run ends"
+check python3 - "$work/rc3" "$work" "$repo" <<'PY'
+import json, os, sys
+sys.path.insert(0, sys.argv[2]); import kh
+d = sys.argv[1]
+arc = os.path.realpath(kh.crane(d)[0]["argv"][2])
+kc = os.path.realpath(kh.create(d)["kc"])
+assert os.path.dirname(arc) == os.path.dirname(kc), (arc, kc)
+assert int(kh.crane(d)[0]["dir_mode"], 8) & 0o77 == 0 or int(kh.create(d)["dir_mode"], 8) & 0o77 == 0, "the cluster directory is open to others"
+for r in kh.persona_row(d, "on-call-engineer") + kh.persona_row(d, "gradle-platform-engineer") + kh.persona_row(d, "readme-evaluator"):
+    assert not arc.startswith(os.path.realpath(r["request"]["docs_dir"]) + os.sep), ("inside a sandbox", arc)
+assert not arc.startswith(os.path.realpath(d + "/out") + os.sep), "inside the public output directory"
+assert not arc.startswith(os.path.realpath(sys.argv[3]) + os.sep), "inside the repository"
+assert not os.path.exists(arc), "the archive outlives the run"
+PY
+CASE="rc image into the node: the archive path and the image archive never reach a docker call, a request, an agent environment, a sandbox file, a report, a transcript, stdout or stderr"
+check python3 - "$work/rc3" "$work" <<'PY'
+import glob, json, os, sys
+sys.path.insert(0, sys.argv[2]); import kh
+d = sys.argv[1]
+arc = kh.crane(d)[0]["argv"][2]
+blobs = [open(d + "/docker.log").read(), open(d + "/log").read(), open(d + "/stdout").read(), open(d + "/stderr").read()]
+blobs += [open(f, errors="replace").read() for f in glob.glob(d + "/out/*") + glob.glob(d + "/plain/*")]
+for b in blobs:
+    assert arc not in b and "RC-IMAGE-ARCHIVE-BYTES" not in b, b[:200]
+PY
+CASE="weekly mode makes neither host call: no 'crane' call and no 'kind load' at all (the on-call engineer's cluster is the same as before)"
+check python3 - "$work/clean" "$work" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[2]); import kh
+d = sys.argv[1]
+assert kh.crane(d) == [] and kh.loads(d) == [], (kh.crane(d), kh.loads(d))
+assert [r["argv"][:2] for r in kh.kind(d)] == [["create", "cluster"], ["delete", "cluster"]], [r["argv"] for r in kh.kind(d)]
+PY
+CASE="rc: the on-call engineer's instructions are the rc text: the cluster runs the latest published release, upgrade from it to the release candidate image <REPO>:rc (named exactly, imagePullPolicy IfNotPresent, the cluster cannot pull it), roll back to the release upgraded from, find and read logs, then the usual classification text"
+check python3 - "$work/rc3" "$work/clean" "$IMG" <<'PY'
+import json, sys
+rc = {json.loads(l)["persona"]: json.loads(l)["request"]["instructions"] for l in open(sys.argv[1] + "/log")}
+wk = {json.loads(l)["persona"]: json.loads(l)["request"]["instructions"] for l in open(sys.argv[2] + "/log")}
+ref = sys.argv[3].split("@sha256:")[0] + ":rc"
+t = rc["on-call-engineer"]; low = t.lower()
+assert t != wk["on-call-engineer"], "the rc instructions are the weekly ones"
+for w in ("latest published release", "upgrade", "release candidate", ref.lower(), "imagepullpolicy", "ifnotpresent", "cannot pull", "logs"):
+    assert w in low, (w, t)
+assert "roll back" in low or "rollback" in low, ("no rollback to the release upgraded from", t)
+assert t.count(ref) >= 1 and "@sha256" not in t, "the image is named by the tag, never by a digest"
+for w in ("broken behavior", "friction", "as written"):
+    assert w in low, w
+assert "these tools are not in the sandbox: gh, docker, jq" in low and "report each as friction, not as blocking" in low, low[-700:]
+assert ref.lower() not in wk["on-call-engineer"].lower() and "ifnotpresent" not in wk["on-call-engineer"].lower(), "the weekly text must not carry the rc wording"
+PY
+CASE="rc: the other three personas' instructions are the weekly ones, word for word, and the weekly instructions of all five personas carry no rc wording"
+check python3 - "$work/rc3" "$work/clean" "$work/wk5" "$IMG" <<'PY'
+import json, sys
+def rows(d):
+    return {json.loads(l)["persona"]: json.loads(l)["request"]["instructions"] for l in open(d + "/log")}
+rc, wk, wk5 = rows(sys.argv[1]), rows(sys.argv[2]), rows(sys.argv[3])
+ref = sys.argv[4].split("@sha256:")[0] + ":rc"
+for p in ("gradle-platform-engineer", "maven-jenkins-ci", "readme-evaluator"):
+    assert rc[p] == wk[p], p
+assert wk5 == wk, "the weekly instructions differ between two weekly runs"
+for p, t in wk.items():
+    assert ref.lower() not in t.lower() and "release candidate image" not in t.lower(), p
 PY
 CASE="kind: the admin kubeconfig is a DRIVER-PRIVATE file: outside every sandbox, the output directory and the repository, in a directory (or a file) closed to others, and gone when the run ends"
 check python3 - "$work/clean" "$work" "$repo" <<'PY'
@@ -3150,14 +3281,14 @@ check test "$rc" -eq 0
 PROCNET="$work/pn-bad" ALLOW_LISTEN=9999 run guardallow '{}' weekly
 CASE="guard: --allow-listen 9999 names the listener and the run proceeds"
 check test "$rc" -eq 0
-# 0486 review of #428 round 1: the rc job's registry service listens on 127.0.0.1:5000 for the whole run; with --allow-listen 5000 the three rc personas run, without it none does
+# 0486 review of #428 round 1: the rc job's registry service listens on 127.0.0.1:5000 for the whole run; with --allow-listen 5000 the four rc personas run, without it none does
 mkprocnet "$work/pn-reg" "0A:127.0.0.1:5000"
 PROCNET="$work/pn-reg" ALLOW_LISTEN=5000 run regallow '{}' rc
-CASE="guard (rc): the registry service's listener 127.0.0.1:5000 with --allow-listen 5000 is accepted: the three rc personas run and the run is clean"
+CASE="guard (rc): the registry service's listener 127.0.0.1:5000 with --allow-listen 5000 is accepted: the four rc personas run and the run is clean"
 check python3 - "$work/regallow/log" "$rc" <<'PY'
 import json, sys
 rows = [json.loads(l) for l in open(sys.argv[1])]
-assert int(sys.argv[2]) == 0 and sorted(r["persona"] for r in rows) == ["gradle-platform-engineer", "maven-jenkins-ci", "readme-evaluator"], (sys.argv[2], rows)
+assert int(sys.argv[2]) == 0 and sorted(r["persona"] for r in rows) == ["gradle-platform-engineer", "maven-jenkins-ci", "on-call-engineer", "readme-evaluator"], (sys.argv[2], rows)
 PY
 PROCNET="$work/pn-reg" run regdeny '{}' rc
 CASE="guard (rc): the same listener WITHOUT --allow-listen is stray: no persona runs, the run fails (any other listener stays refused)"
@@ -3907,6 +4038,52 @@ assert int(sys.argv[4]) < 45, "the driver waited for a hung kind (RUNSECS=%s, bo
 assert "Traceback" not in open(d + "/stderr").read()
 assert "on-call-engineer" not in [json.loads(l)["persona"] for l in open(d + "/log")] and len(open(d + "/log").read().splitlines()) == 4
 assert "did not run" in open(sys.argv[2] + "/on-call-engineer.report.md").read().lower()
+PY
+# rc mode: `crane pull` or `kind load` fails or hangs: the on-call engineer does not run, exactly as after a failed `kind create cluster` (blocking "did not run", the cluster is still
+# deleted, the run ends non-zero), and the public log names no registry reference and no path
+CRANE_FAIL=1 run rccranefail '{}' rc
+echo "$rc" >"$work/rccranefail/rc"; echo "$RUNSECS" >"$work/rccranefail/runsecs"
+LOAD_FAIL=1 run rcloadfail '{}' rc
+echo "$rc" >"$work/rcloadfail/rc"; echo "$RUNSECS" >"$work/rcloadfail/runsecs"
+CRANE_HANG=1 READY_TIMEOUT=2 RUN_TIMEOUT=60 run rccranehang '{}' rc
+echo "$rc" >"$work/rccranehang/rc"; echo "$RUNSECS" >"$work/rccranehang/runsecs"
+LOAD_HANG=1 READY_TIMEOUT=2 RUN_TIMEOUT=60 run rcloadhang '{}' rc
+echo "$rc" >"$work/rcloadhang/rc"; echo "$RUNSECS" >"$work/rcloadhang/runsecs"
+RCP="gradle-platform-engineer maven-jenkins-ci readme-evaluator on-call-engineer"
+for name in rccranefail rcloadfail rccranehang rcloadhang; do
+  CASE="rc ($name): the on-call persona did not run (blocking 'did not run', no agent for it, no apply and no token), the other three ran, the cluster is deleted, the admin kubeconfig and the archive are gone, no traceback"
+  check python3 - "$work/$name" "$work" "$(out $name)" <<'PY'
+import json, os, sys
+sys.path.insert(0, sys.argv[2]); import kh
+d = sys.argv[1]
+assert sorted(json.loads(l)["persona"] for l in open(d + "/log")) == ["gradle-platform-engineer", "maven-jenkins-ci", "readme-evaluator"], open(d + "/log").read()[:300]
+assert not [r for r in kh.kubectl(d) if r["verb"] != "wait"], ("kubectl applied or minted although the image never got into the cluster (only the node-ready wait before it is allowed)", [r["argv"] for r in kh.kubectl(d)])
+rep = open(sys.argv[3] + "/on-call-engineer.report.md").read()
+assert rep.splitlines()[0] == "VERDICT: blocking" and "did not run" in rep.lower(), rep
+for p in ("gradle-platform-engineer", "maven-jenkins-ci", "readme-evaluator"):
+    assert open(sys.argv[3] + "/" + p + ".report.md").read().splitlines()[0] == "VERDICT: pass", p
+c = kh.create(d)
+name = c["argv"][c["argv"].index("--name") + 1]
+dels = [r for r in kh.kind(d) if r["argv"][:2] == ["delete", "cluster"] and name in r["argv"]]
+assert len(dels) == 1 and not os.path.exists(c["kc"]), ("the cluster or its admin kubeconfig is left behind", [r["argv"] for r in kh.kind(d)])
+for r in kh.crane(d):
+    assert not os.path.exists(r["argv"][2]), "the archive is left behind"
+assert "Traceback" not in open(d + "/stderr").read(), open(d + "/stderr").read()[-600:]
+PY
+  CASE="rc ($name): the run ends non-zero"; check test "$(cat "$work/$name/rc" 2>/dev/null || echo 1)" -ne 0
+  CASE="rc ($name): the public log is ONLY the pass/fail lines of the four rc personas: no registry reference, no archive path, no tool output"; check publiclog "$name" "$RCP"
+done
+CASE="rc (rccranefail): 'kind load' is never run when 'crane pull' failed"
+check python3 - "$work/rccranefail" "$work" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[2]); import kh
+assert len(kh.crane(sys.argv[1])) == 1 and kh.loads(sys.argv[1]) == []
+PY
+CASE="rc (rccranehang, rcloadhang): a hung 'crane pull' or 'kind load' is bounded (the fakes hang 90s, past the 60s run timeout): the run ends in under 45s"
+check python3 - "$work/rccranehang/runsecs" "$work/rcloadhang/runsecs" <<'PY'
+import sys
+for f in sys.argv[1:]:
+    assert int(open(f).read()) < 45, (f, "the driver waited for a hung host call")
 PY
 # before-scrape failures ALONE (S-B3): the persona after a queued break reads a broken BEFORE-scrape and a good after-scrape
 for ba in nometric nofamily; do
