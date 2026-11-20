@@ -90,7 +90,7 @@ jobs:
             || { echo "::error::admission predicate admits tag ${adm_tag}, this ref is ${GITHUB_REF_NAME}" >&2; exit 1; }
           echo "admitted: ${adm_tag} at ${adm_sha}"
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
           check-latest: false
