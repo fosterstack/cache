@@ -119,7 +119,7 @@ ROWS = {
     "bin/release-signatures.sh": {"tools": ["bash", "git", "jq", "python3", "sha256sum", "trap"], "signs": "other", "runs": ["bin/build-admit.py", "bin/chain-verify.py", "bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py", "bin/apk-tool.py", "bin/with-aws-token.sh"]},   # S2: the Sign job's release step: the one place the release KMS key is reached
     "bin/release-gate.py":    {"tools": [], "signs": False, "runs": []},   # AC20: the coverage gate alone, so release-assets.sh (a secret holder) runs no build-admit.py
     "bin/release-stage.sh":   {"tools": ["git", "python3"], "signs": False, "runs": ["bin/build-admit.py", "bin/patch-decide.py", "bin/release-gate.py", "bin/release-metadata.py"]},   # B-F22: gathers the release's files before release-postverify and writes the release notes (a generated patch tag's, via patch-decide.py tag-notes, REQ-REL-009-AC8); no credential, no gh
-    "bin/release-assets.sh":  {"tools": ["gh", "python3"], "signs": False, "runs": ["bin/release-gate.py"]},   # B-F22: creates the release after release-postverify has passed
+    "bin/release-assets.sh":  {"tools": ["gh", "jq", "python3"], "signs": False, "runs": ["bin/release-gate.py"]},   # B-F22: creates the release after release-postverify has passed
     "bin/release-postverify.sh": {"tools": ["bash", "python3"], "signs": False, "runs": ["bin/release-postverify.py", "bin/release-stage.sh"]},   # rule 79 amended; runs the staging first
     "bin/release-postverify.py": {"tools": ["at", "command", "cosign", "exec", "gh", "jq", "just"], "signs": False, "runs": ["bin/build-admit.py", "bin/chain-verify.py", "bin/guide_plan_judge.py"]},   # runs only verify forms, judged first
 }
