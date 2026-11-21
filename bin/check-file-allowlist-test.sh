@@ -826,6 +826,8 @@ runeach fail "feature/x" "REQ-CHAIN-008: verify-key-page-test near-miss refused"
 # round 1 (Codex B1): every Release script and helper of REQ-CHAIN-007 is a tracked file the allowlist admits, and near misses are not
 passfam "feature/x" "REQ-CHAIN-007: the Release scripts and helpers" "bin/release-verify.sh" "bin/release-apks.sh" "bin/release-compare.sh" "bin/release-compare.py" "bin/release-publish.sh" "bin/release-sign.sh" "bin/release-assets.sh" "bin/release-postverify.sh" "bin/release-postverify.py" "bin/release-metadata.py" "bin/release-layout.py" "bin/release-gate.py"
 runeach fail "feature/x" "REQ-CHAIN-007: Release helper near-misses refused" "bin/release-layout.py.bak" "bin/release-layout.pyx" "bin/Release-Layout.py" "bin/release-other.py" "bin/sub/release-layout.py" "./bin/release-layout.py"
+passfam "feature/x" "REQ-CHAIN-007: the sign verifier and the referrer verifier suite" "bin/release-sign-verify.sh" "bin/release-referrer-verify-test.sh"
+runeach fail "feature/x" "REQ-CHAIN-007: sign-verify and referrer-verify-test near-misses refused" "bin/release-sign-verify.py" "bin/release-sign-verify.sh.bak" "bin/Release-Sign-Verify.sh" "bin/sub/release-sign-verify.sh" "bin/release-referrer-verify.sh" "bin/release-referrer-verify-test.py" "bin/release-referrer-verify-test.sh.bak" "bin/sub/release-referrer-verify-test.sh"
 
 
 # the reviewer's version script is the four files' list-keeper: admitted by its exact path only
