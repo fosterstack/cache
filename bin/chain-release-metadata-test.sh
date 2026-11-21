@@ -1,0 +1,442 @@
+#!/usr/bin/env bash
+# proves: REQ-CHAIN-007-AC19, REQ-CHAIN-007-AC21, REQ-CHAIN-004-AC20
+# bin/release-metadata.py: the release metadata files and their signed list. It is offline and deterministic
+# (no clock, no network).
+# Tested subcommands: images, manifest, baseline, list, bind-archives, checksums. Every refusal exits 1 with a message
+# that names the file or the key. The coverage gate of the release assets is bin/release-gate.py (REQ-CHAIN-004-AC20: it holds no
+# tag grammar and runs beside the release secrets, so it loads nothing and works with bin/build-admit.py absent); its cases are here.
+# Runs on ubuntu-24.04 or macOS with bash and python3.
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+export METADATA_BIN="${METADATA_BIN:-$root/bin}"
+python3 - <<'PY'
+import atexit, hashlib, json, os, shutil, subprocess, sys, tempfile
+BIN = os.environ["METADATA_BIN"]
+SCRATCH = tempfile.mkdtemp()
+tempfile.tempdir = SCRATCH      # a failing or aborted run leaves nothing in TMPDIR
+atexit.register(shutil.rmtree, SCRATCH, ignore_errors=True)
+passn = failn = 0
+def ok(l): global passn; passn += 1; print("ok   " + l)
+def bad(l): global failn; failn += 1; print("FAIL " + l)
+def check(c, l, why=""): ok(l) if c else bad(l + (" -> " + why if why else ""))
+def run(*a, cwd=None):
+    p = os.path.join(BIN, "release-metadata.py")
+    if not os.path.exists(p): return 127, "", "bin/release-metadata.py does not exist"
+    r = subprocess.run(["python3", p] + list(a), capture_output=True, text=True, cwd=cwd); return r.returncode, r.stdout, r.stderr
+def rungate(*a, bin_dir=None, cwd=None):
+    p = os.path.join(bin_dir or BIN, "release-gate.py")
+    if not os.path.exists(p): return 127, "", "bin/release-gate.py does not exist"
+    r = subprocess.run(["python3", "-I", "-B", p] + list(a), capture_output=True, text=True, cwd=cwd); return r.returncode, r.stdout, r.stderr
+def sha(b): return "sha256:" + hashlib.sha256(b).hexdigest()
+IP, IF = sha(b"index-production"), sha(b"index-fips")
+KIDS = {"production": {"amd64": sha(b"kp-amd64"), "arm64": sha(b"kp-arm64")}, "fips": {"amd64": sha(b"kf-amd64"), "arm64": sha(b"kf-arm64")}}
+MODULE_SBOMS = (("standard", "fscache-modules.spdx.json"), ("fips", "fscache-modules-fips.spdx.json"))
+def module_sbom(variant): return "module sbom " + variant
+def tree():
+    t = tempfile.mkdtemp(); os.makedirs(t + "/witness-build"); os.makedirs(t + "/images")
+    d = {"image-production": IP, "image-fips": IF, "archive-linux-amd64": sha(b"a1"), "archive-linux-arm64": sha(b"a2"), "archive-fips-linux-amd64": sha(b"a3"), "archive-fips-linux-arm64": sha(b"a4"),
+         "apk-standard-amd64": sha(b"p1"), "apk-standard-arm64": sha(b"p2"), "apk-fips-amd64": sha(b"p3"), "apk-fips-arm64": sha(b"p4")}
+    json.dump(d, open(t + "/witness-build/digests.json", "w"))
+    items = {}
+    for v, idx in (("production", IP), ("fips", IF)):
+        open("%s/images/%s.digest" % (t, v), "w").write(idx + "\n")
+        open("%s/images/%s.manifests" % (t, v), "w").write("".join("%s %s\n" % (a, h) for a, h in KIDS[v].items()))
+        os.makedirs("%s/images/%s-sbom" % (t, v)); open("%s/images/%s.full.lock.json" % (t, v), "w").write("lock " + v); open("%s/images/%s-sbom/sbom.json" % (t, v), "w").write("sbom " + v)
+        items.update({"image-" + v: idx, "lock-" + v: sha(b"lock " + v.encode()), "sbom-" + v: sha(b"sbom " + v.encode())})
+        items.update({"image-%s-manifest-%s" % (v, a): h for a, h in KIDS[v].items()})
+    os.makedirs(t + "/modules")
+    for variant, name in MODULE_SBOMS:
+        open(os.path.join(t, "modules", name), "w").write(module_sbom(variant))
+        items["modules-sbom-" + variant] = sha(module_sbom(variant).encode())
+    json.dump(items, open(t + "/witness-build/items.json", "w"))
+    return t, d
+def setd(t, d): json.dump(d, open(t + "/witness-build/digests.json", "w"))
+V = "v0.3.0"
+# ---- images: the digests for vex-forms.py -------------------------------------------------------------------------------------------------
+t, d = tree(); out = t + "/vex-images.json"; rc, so, se = run("images", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images", "--items", t + "/witness-build/items.json", "--out", out)
+doc = json.load(open(out)) if os.path.exists(out) else {}
+check(rc == 0 and doc == {v: {"index": i, "children": {"linux/amd64": KIDS[v]["amd64"], "linux/arm64": KIDS[v]["arm64"]}} for v, i in (("production", IP), ("fips", IF))}, "images: exactly the two variants, index from Build's verified digests.json and the children from images/<variant>.manifests", "rc=%s %s" % (rc, se[:200]))
+def img(label, mutate, word):
+    t, d = tree(); mutate(t, d); rc, so, se = run("images", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images", "--items", t + "/witness-build/items.json", "--out", t + "/o.json")
+    check(rc == 1 and word in se and not os.path.exists(t + "/o.json"), "images: " + label, "rc=%s %s" % (rc, se[:200]))
+img("a third variant key (image-debug) in the digest list is refused", lambda t, d: (d.update({"image-debug": sha(b"x")}), setd(t, d)), "image-debug")
+# the digest list is a closed table (image-*, apk-VARIANT-ARCH, archive-*linux-ARCH): a name outside it is refused
+img("a digest name outside the table (outside-table) is refused", lambda t, d: (d.update({"outside-table": sha(b"x")}), setd(t, d)), "outside-table")
+img("an apk name for a variant or architecture not in the table is refused", lambda t, d: (d.update({"apk-debug-amd64": sha(b"x")}), setd(t, d)), "apk-debug-amd64")
+img("an archive name for an architecture not in the table is refused", lambda t, d: (d.update({"archive-linux-ppc64": sha(b"x")}), setd(t, d)), "archive-linux-ppc64")
+img("a missing image-fips key is refused", lambda t, d: (d.pop("image-fips"), setd(t, d)), "image-fips")
+img("a value that is not sha256:<64 lower-case hex> is refused", lambda t, d: (d.update({"image-production": "sha256:ZZ"}), setd(t, d)), "image-production")
+img("an images/<variant>.digest that is not the attested one is refused (not in Build's verified set)", lambda t, d: open(t + "/images/fips.digest", "w").write(sha(b"other") + "\n"), "fips")
+img("a child digest line repeated is refused", lambda t, d: open(t + "/images/production.manifests", "a").write("amd64 " + sha(b"zz") + "\n"), "production.manifests")
+img("a missing architecture line is refused", lambda t, d: open(t + "/images/fips.manifests", "w").write("amd64 " + KIDS["fips"]["amd64"] + "\n"), "fips.manifests")
+img("an unknown architecture line is refused", lambda t, d: open(t + "/images/fips.manifests", "a").write("riscv64 " + sha(b"r") + "\n"), "fips.manifests")
+img("a malformed child digest is refused", lambda t, d: open(t + "/images/fips.manifests", "w").write("amd64 sha256:zz\narm64 " + KIDS["fips"]["arm64"] + "\n"), "fips.manifests")
+img("a missing images/<variant>.manifests file is refused", lambda t, d: os.remove(t + "/images/production.manifests"), "production.manifests")
+def items_of(t): return json.load(open(t + "/witness-build/items.json"))
+def setitems(t, it): json.dump(it, open(t + "/witness-build/items.json", "w"))
+img("a child digest that is not Build's verified item image-fips-manifest-arm64 is refused", lambda t, d: setitems(t, dict(items_of(t), **{"image-fips-manifest-arm64": sha(b"other")})), "image-fips-manifest-arm64")
+img("a child digest with no verified item is refused", lambda t, d: setitems(t, {k: v for k, v in items_of(t).items() if k != "image-production-manifest-amd64"}), "image-production-manifest-amd64")
+img("an index that differs from Build's verified item image-production is refused", lambda t, d: setitems(t, dict(items_of(t), **{"image-production": sha(b"other")})), "image-production")
+img("a lock file whose hash is not Build's verified item lock-production is refused", lambda t, d: open(t + "/images/production.full.lock.json", "w").write("tampered"), "lock-production")
+img("an SBOM whose hash is not Build's verified item sbom-fips is refused", lambda t, d: open(t + "/images/fips-sbom/sbom.json", "w").write("tampered"), "sbom-fips")
+img("a missing items file is refused", lambda t, d: os.remove(t + "/witness-build/items.json"), "items.json")
+# ---- manifest: deterministic, the rescan's shape ------------------------------------------------------------------------------------------
+def vexdir(t, version=V):
+    v = t + "/vex"; os.makedirs(v, exist_ok=True)
+    for n in ("fosterstack-cache.openvex.json", "fosterstack-cache-%s.csaf.json" % version, "fosterstack-cache-%s.inspector-filters.json" % version): open(os.path.join(v, n), "w").write("content of " + n)
+    return v
+def repo(t, base=V):
+    r = t + "/repo"; os.makedirs(r + "/requirements/releases", exist_ok=True); os.makedirs(r + "/test-evidence", exist_ok=True)
+    open("%s/requirements/releases/%s.yaml" % (r, base), "w").write("baseline of " + base + "\n"); open(r + "/test-evidence/mappings.yaml", "w").write("evidence\n")
+    return r
+PUB, REASON = "2026-11-13T09:30:00Z", "Regular release.\nSecond line of the reason.\n"
+def manifest(t, out, version=V, commit="a" * 40, extra=(), base=None, root=None, pub=PUB, reason=REASON):
+    return run("manifest", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images",
+               "--items", t + "/witness-build/items.json", "--modules-dir", t + "/modules",
+               "--vex-dir", vexdir(t, version),
+               "--version", version, "--commit", commit, "--baseline-version", base or version,
+               "--repo-root", root or repo(t, base or version),
+               "--ci-url", "https://github.com/fosterstack/cache/actions/runs/1/attempts/1", "--workflow", "fosterstack/cache/.github/workflows/release.yml@refs/tags/v0.3.0", "--out", out,
+               *(("--published-at", pub) if pub is not None else ()), *(("--reason", reason) if reason is not None else ()), *extra)
+t, d = tree(); m1, m2 = t + "/m1.json", t + "/m2.json"; rc, so, se = manifest(t, m1); rc2, _, _ = manifest(t, m2)
+mj = json.load(open(m1)) if os.path.exists(m1) else {}
+check(rc == 0 and rc2 == 0 and open(m1, "rb").read() == open(m2, "rb").read(), "manifest: two runs give the same bytes (no clock, no random value)", se[:200])
+check([(i.get("variant"), i.get("digest")) for i in mj.get("images", [])] == [("production", IP), ("fips", IF)] and all(sorted(i["refs"]) == sorted(["ghcr.io/fosterstack/cache@" + i["digest"], "docker.io/fosterstack/cache@" + i["digest"]]) for i in mj.get("images", [])), "manifest: `.images[].variant` and `.images[].digest` keep the shape the rescan reads, with both registry references", str(mj.get("images")))
+check(mj.get("version") == V and mj.get("commit") == "a" * 40 and "generated_at" not in json.dumps(mj) and mj.get("run", {}).get("url", "").startswith("https://github.com/"), "manifest: version, commit and run recorded; no generated_at")
+check({a["name"]: a["digest"] for a in mj.get("archives", [])} == {k: v for k, v in d.items() if k.startswith("archive-")} and {a["name"]: a["digest"] for a in mj.get("apks", [])} == {k: v for k, v in d.items() if k.startswith("apk-")}, "manifest: archives and apks are exactly Build's attested digests")
+hexs = lambda n: hashlib.sha256(open(t + "/vex/" + n, "rb").read()).hexdigest()
+check([(x.get("form"), x.get("file"), x.get("sha256")) for x in mj.get("vex", [])] == [("openvex", "fosterstack-cache.openvex.json", hexs("fosterstack-cache.openvex.json")), ("inspector-suppression-rules", "fosterstack-cache-%s.inspector-filters.json" % V, hexs("fosterstack-cache-%s.inspector-filters.json" % V)), ("csaf-2.0-vex", "fosterstack-cache-%s.csaf.json" % V, hexs("fosterstack-cache-%s.csaf.json" % V))], "manifest: records the sha256 of the OpenVEX, inspector-filters and CSAF files it was made after (generated before the manifest)", str(mj.get("vex")))
+check(mj.get("published_at") == PUB and mj.get("reason") == REASON, "manifest: records published_at and the whole reason as given", str((mj.get("published_at"), mj.get("reason"))))
+t, d = tree(); m3 = t + "/m3.json"; rc3, _, _ = manifest(t, m3, reason="Another reason"); mk = json.load(open(m3)) if rc3 == 0 else {}
+check(mk.get("reason") == "Another reason" and mk.get("published_at") == PUB and {k: v for k, v in mk.items() if k != "reason"} == {k: v for k, v in mj.items() if k != "reason"}, "manifest: the reason is the only key that changes with the reason", str(rc3))
+for label, bad_pub in (("a date only", "2026-11-13"), ("a +00:00 offset", "2026-11-13T09:30:00+00:00"), ("no Z", "2026-11-13T09:30:00"), ("an empty value", "")):
+    t, d = tree(); rc, so, se = manifest(t, t + "/m.json", pub=bad_pub)
+    check(rc == 1 and "published-at %r is not a UTC YYYY-MM-DDTHH:MM:SSZ time" % bad_pub in se and not os.path.exists(t + "/m.json"), "manifest: published-at as " + label + " is refused, naming it", "rc=%s %s" % (rc, se[:160]))
+for label, bad_reason in (("empty", ""), ("only whitespace", " \t\n"), ("blank on its first line", "\nreal text after\n")):
+    t, d = tree(); rc, so, se = manifest(t, t + "/m.json", reason=bad_reason)
+    check(rc == 1 and "the reason is empty" in se and not os.path.exists(t + "/m.json"), "manifest: a reason that is " + label + " is refused", "rc=%s %s" % (rc, se[:160]))
+for opt in ("pub", "reason"):
+    t, d = tree(); rc, so, se = manifest(t, t + "/m.json", **{opt: None})
+    check(rc == 2 and "--" + ("published-at" if opt == "pub" else "reason") in se and not os.path.exists(t + "/m.json"), "manifest: a missing --%s is an argument error (exit 2)" % ("published-at" if opt == "pub" else "reason"), "rc=%s %s" % (rc, se[:160]))
+for n in ("fosterstack-cache.openvex.json", "fosterstack-cache-%s.csaf.json" % V, "fosterstack-cache-%s.inspector-filters.json" % V):
+    t, d = tree(); rc, so, se = manifest(t, t + "/m.json"); os.remove(t + "/vex/" + n)
+    rc, so, se = run("manifest", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images",
+                     "--items", t + "/witness-build/items.json", "--modules-dir", t + "/modules",
+                     "--vex-dir", t + "/vex",
+                     "--version", V, "--commit", "a" * 40, "--baseline-version", V, "--repo-root", t + "/repo",
+                     "--ci-url", "u", "--workflow", "w", "--out", t + "/m2.json", "--published-at", PUB, "--reason", REASON)
+    check(rc == 1 and n in se and not os.path.exists(t + "/m2.json"), "manifest: a missing %s (not generated before the manifest) is refused, naming it" % n, se[:160])
+for label, ver, com in (("a version that is not vX.Y.Z", "v0.3", "a" * 40), ("a release candidate (no release is made for one)", "v0.3.0-rc1", "a" * 40), ("a commit that is not 40 hex", V, "abc")):
+    t, d = tree(); rc, so, se = manifest(t, t + "/m.json", ver, com); check(rc == 1 and not os.path.exists(t + "/m.json"), "manifest: " + label + " is refused", "rc=%s %s" % (rc, se[:160]))
+t, d = tree(); d.pop("apk-fips-arm64"); setd(t, d); rc, so, se = manifest(t, t + "/m.json"); check(rc == 1 and "apk-fips-arm64" in se, "manifest: a digest list without one of the four apks is refused, naming it", se[:160])
+t, d = tree(); rc, so, se = manifest(t, t + "/m.json")
+mj = json.load(open(t + "/m.json")) if rc == 0 else {}
+want = [{"name": name, "digest": sha(module_sbom(variant).encode())} for variant, name in MODULE_SBOMS]
+check(mj.get("module_sboms") == want, "manifest: names both Go module SBOMs with Build's items.json digests", se[:160])
+def module_sbom_refused(label, name, change, also=""):
+    t, d = tree(); change(t)
+    rc, so, se = manifest(t, t + "/m.json")
+    check(rc == 1 and name in se and also in se and not os.path.exists(t + "/m.json"), "manifest: " + label, se[:160])
+def make_symlink(t, name):
+    path = t + "/modules/" + name
+    os.rename(path, t + "/real-" + name)
+    os.symlink(t + "/real-" + name, path)
+for variant, name in MODULE_SBOMS:
+    module_sbom_refused("a %s that differs from Build's item is refused, naming it" % name, name,
+                        lambda t: open(t + "/modules/" + name, "w").write("changed"))
+    module_sbom_refused("a missing %s is refused, naming it" % name, name, lambda t: os.remove(t + "/modules/" + name))
+    module_sbom_refused("a %s that is a symlink to Build's bytes is refused, naming it" % name, name,
+                        lambda t: make_symlink(t, name), also="not a regular file")
+    module_sbom_refused("a %s that is a directory is refused, naming it" % name, name,
+                        lambda t: (os.remove(t + "/modules/" + name), os.mkdir(t + "/modules/" + name)),
+                        also="not a regular file")
+    module_sbom_refused("no Build item modules-sbom-%s is refused, naming the file and the item" % variant, name,
+                        lambda t: setitems(t, {k: v for k, v in items_of(t).items() if k != "modules-sbom-" + variant}),
+                        also="modules-sbom-" + variant)
+# ---- the baseline travels with the manifest (REQ-REL-009-AC13 note; AC19): requirements/releases/<baseline>.yaml and test-evidence/mappings.yaml, by sha256 ----------------
+t, d = tree(); rc, so, se = manifest(t, t + "/m.json"); mj = json.load(open(t + "/m.json")) if os.path.exists(t + "/m.json") else {}
+hx = lambda f: hashlib.sha256(open(f, "rb").read()).hexdigest()
+check(mj.get("requirements_baseline") == {"path": "requirements/releases/%s.yaml" % V, "version": V, "sha256": hx(t + "/repo/requirements/releases/%s.yaml" % V)}, "baseline: the manifest records the baseline file admission chose (path, version, sha256)", str(mj.get("requirements_baseline")))
+check(mj.get("test_evidence") == {"path": "test-evidence/mappings.yaml", "sha256": hx(t + "/repo/test-evidence/mappings.yaml")}, "baseline: the manifest records the test-evidence hash", str(mj.get("test_evidence")))
+t, d = tree(); rc, so, se = manifest(t, t + "/m.json", base="v0.2.9"); mj = json.load(open(t + "/m.json")) if rc == 0 else {}
+check(rc == 0 and mj.get("requirements_baseline", {}).get("version") == "v0.2.9" and mj["requirements_baseline"]["path"] == "requirements/releases/v0.2.9.yaml", "baseline: a CI patch's baseline is another version's file (admission's choice), recorded as that", se[:160])
+t, d = tree(); r = repo(t); os.remove(r + "/requirements/releases/%s.yaml" % V); rc, so, se = manifest(t, t + "/m.json", root=r)
+check(rc == 1 and "requirements/releases/%s.yaml" % V in se and not os.path.exists(t + "/m.json"), "baseline: a missing baseline file is refused, naming it", se[:160])
+t, d = tree(); r = repo(t); os.remove(r + "/test-evidence/mappings.yaml"); rc, so, se = manifest(t, t + "/m.json", root=r)
+check(rc == 1 and "mappings.yaml" in se, "baseline: missing test evidence is refused, naming it", se[:160])
+for bad_base in ("main", "0.3.0", "v0.3", "../v0.3.0", "v0.3.0/x", ""):
+    t, d = tree(); r = repo(t)
+    rc, so, se = run("manifest", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images",
+                     "--items", t + "/witness-build/items.json", "--modules-dir", t + "/modules",
+                     "--vex-dir", vexdir(t),
+                     "--version", V, "--commit", "a" * 40, "--baseline-version", bad_base, "--repo-root", r,
+                     "--ci-url", "u", "--workflow", "w", "--out", t + "/m.json", "--published-at", PUB, "--reason", REASON)
+    check(rc == 1 and not os.path.exists(t + "/m.json"), "baseline: the version %r is not vX.Y.Z and is refused" % bad_base, se[:120])
+t, d = tree(); r = repo(t); f = r + "/requirements/releases/%s.yaml" % V; os.remove(f); os.symlink(r + "/test-evidence/mappings.yaml", f); rc, so, se = manifest(t, t + "/m.json", root=r)
+check(rc == 1 and "symlink" in se, "baseline: a symlinked baseline file is refused", se[:120])
+# ---- list: release-files.sha256 ---------------------------------------------------------------------------------------------------------
+NAMES = lambda v: ["release-manifest.json", "fosterstack-cache.openvex.json", "fosterstack-cache-%s.csaf.json" % v, "fosterstack-cache-%s.inspector-filters.json" % v]
+def assets():
+    a = tempfile.mkdtemp()
+    for n in NAMES(V): open(os.path.join(a, n), "w").write("content of " + n)
+    return a
+a = assets(); out = a + "/release-files.sha256"; rc, so, se = run("list", "--version", V, "--dir", a, "--out", out)
+want = "".join("%s  %s\n" % (hashlib.sha256(open(os.path.join(a, n), "rb").read()).hexdigest(), n) for n in NAMES(V))
+check(rc == 0 and open(out).read() == want, "list: exactly the four files in this order, `<sha256>  <name>`, the form `sha256sum -c` reads", "rc=%s %s" % (rc, se[:160]))
+for n in NAMES(V):
+    a = assets(); os.remove(os.path.join(a, n)); rc, so, se = run("list", "--version", V, "--dir", a, "--out", a + "/l"); check(rc == 1 and n in se and not os.path.exists(a + "/l"), "list: a missing %s is refused, naming it" % n, se[:160])
+a = assets(); os.remove(os.path.join(a, NAMES(V)[0])); os.symlink(os.path.join(a, NAMES(V)[1]), os.path.join(a, NAMES(V)[0])); rc, so, se = run("list", "--version", V, "--dir", a, "--out", a + "/l"); check(rc == 1 and "symlink" in se, "list: a symlink in place of a file is refused")
+a = assets(); open(os.path.join(a, NAMES(V)[2]), "w").write(""); rc, so, se = run("list", "--version", V, "--dir", a, "--out", a + "/l"); check(rc == 1 and "empty" in se, "list: an empty file is refused")
+a = assets(); rc, so, se = run("list", "--version", "v0.3.0-rc1", "--dir", a, "--out", a + "/l"); check(rc == 1, "list: a release candidate has no list")
+# ---- gate: every asset is covered ----------------------------------------------------------------------------------------------------------
+def release_dir():
+    a = assets(); run("list", "--version", V, "--dir", a, "--out", a + "/release-files.sha256")
+    open(a + "/release-files.sha256.bundle", "w").write("{}")
+    for n, c in (("fscache_0.3.0_linux_amd64.tar.gz", b"A"), ("fscache_0.3.0_linux_arm64.tar.gz", b"B")): open(os.path.join(a, n), "wb").write(c)
+    open(a + "/checksums.txt", "w").write("".join("%s  %s\n" % (hashlib.sha256(open(os.path.join(a, n), "rb").read()).hexdigest(), n) for n in ("fscache_0.3.0_linux_amd64.tar.gz", "fscache_0.3.0_linux_arm64.tar.gz")))
+    open(a + "/checksums.txt.bundle", "w").write("{}")
+    open(a + "/production.sbom.json", "w").write("{}"); open(a + "/production.sbom.json.bundle", "w").write("{}")
+    open(a + "/policy.json", "w").write("{}"); open(a + "/release-policy.bundle", "w").write("{}")
+    open(a + "/build-collection.json", "w").write("{}")
+    # the entries file Sign keeps beside the record
+    open(a + "/build-collection.rekor.json", "w").write("{}")
+    for n in ("provenance.json", "provenance.rekor.json", "provenance.bundle.json"): open(os.path.join(a, n), "w").write("{}")      # Sign's three files (REQ-CHAIN-007-AC9, AC19)
+    return a
+def gate(label, mutate, word=None):
+    a = release_dir(); mutate(a); rc, so, se = rungate("--dir", a)
+    if word is None: check(rc == 0, "gate: " + label, "rc=%s %s" % (rc, se[:200]))
+    else: check(rc == 1 and word in se and se.startswith("release-gate: "), "gate: " + label, "rc=%s %s" % (rc, se[:200]))
+gate("a complete release directory passes", lambda a: None)
+# bin/release-gate.py is the gate by itself (REQ-CHAIN-004-AC20): it takes --dir [--same-as] and no subcommand, and the old subcommand of release-metadata.py is gone
+rc, so, se = run("gate", "--dir", release_dir())
+check(rc != 0 and so == "", "gate: `release-metadata.py gate` is refused (the gate lives in bin/release-gate.py)", "rc=%s out=%r err=%s" % (rc, so[:60], se[:120]))
+rc, so, se = rungate("gate", "--dir", release_dir())
+check(rc != 0, "gate: release-gate.py takes no subcommand word", "rc=%s %s" % (rc, se[:120]))
+rc, so, se = rungate()
+check(rc != 0 and "--dir" in se, "gate: release-gate.py with no --dir is refused, naming --dir", "rc=%s %s" % (rc, se[:120]))
+# --same-as: what the release stores equals what was staged, name for name and byte for byte
+def _staged_copy(a):
+    st = tempfile.mkdtemp(); [shutil.copy(os.path.join(a, n), os.path.join(st, n)) for n in os.listdir(a)]; return st
+a = release_dir(); st = _staged_copy(a); rc, so, se = rungate("--dir", a, "--same-as", st)
+check(rc == 0, "gate: --same-as a byte-for-byte copy passes", "rc=%s %s" % (rc, se[:200]))
+a = release_dir(); st = _staged_copy(a); open(st + "/stray.json", "w").write("{}"); rc, so, se = rungate("--dir", a, "--same-as", st)
+check(rc == 1 and "stray.json" in se and se.startswith("release-gate: "), "gate: --same-as a staged directory with a file the release lacks is refused, naming it", "rc=%s %s" % (rc, se[:200]))
+a = release_dir(); st = _staged_copy(a); open(st + "/production.sbom.json", "w").write("{\"other\": 1}"); rc, so, se = rungate("--dir", a, "--same-as", st)
+check(rc == 1 and "production.sbom.json" in se and se.startswith("release-gate: "), "gate: --same-as a staged file whose bytes differ is refused, naming it", "rc=%s %s" % (rc, se[:200]))
+# bin/release-gate.py stands alone: copied by itself into an empty bin/ (no build-admit.py, no release-metadata.py, no chain_common.py, no other file) it gives the same verdicts
+alone = tempfile.mkdtemp(); os.makedirs(alone + "/bin")
+if os.path.exists(os.path.join(BIN, "release-gate.py")): shutil.copy(os.path.join(BIN, "release-gate.py"), alone + "/bin/release-gate.py")
+check(sorted(os.listdir(alone + "/bin")) == ["release-gate.py"] or not os.path.exists(os.path.join(BIN, "release-gate.py")), "gate: the scratch bin/ holds release-gate.py and nothing else")
+a = release_dir(); rc, so, se = rungate("--dir", a, bin_dir=alone + "/bin")
+check(rc == 0, "gate: release-gate.py alone in a scratch bin/ (no build-admit.py, no release-metadata.py, no chain_common.py) passes a complete release directory", "rc=%s %s" % (rc, se[:200]))
+a = release_dir(); os.remove(a + "/build-collection.rekor.json"); rc, so, se = rungate("--dir", a, bin_dir=alone + "/bin")
+check(rc == 1 and "build-collection.rekor.json" in se and se.startswith("release-gate: ") and "Traceback" not in se, "gate: release-gate.py alone in a scratch bin/ refuses a release directory as it does with the other files beside it, naming the file", "rc=%s %s" % (rc, se[:200]))
+a = release_dir(); st = _staged_copy(a); open(st + "/stray.json", "w").write("{}"); rc, so, se = rungate("--dir", a, "--same-as", st, bin_dir=alone + "/bin")
+check(rc == 1 and "stray.json" in se and "Traceback" not in se, "gate: release-gate.py alone in a scratch bin/ refuses a --same-as difference, naming the file", "rc=%s %s" % (rc, se[:200]))
+gate_text = open(os.path.join(BIN, "release-gate.py")).read() if os.path.exists(os.path.join(BIN, "release-gate.py")) else None
+check(gate_text is not None and "build-admit" not in gate_text and "build_admit" not in gate_text and "load_sibling" not in gate_text, "gate: the text of bin/release-gate.py names no build-admit and loads no sibling file", "release-gate.py missing" if gate_text is None else "")
+mtext = open(os.path.join(BIN, "release-metadata.py")).read()
+check("def cmd_gate" not in mtext and 'add_parser("gate")' not in mtext, "gate: bin/release-metadata.py holds no gate code and no gate subcommand")
+for n in ("release-assets.sh", "release-stage.sh"):
+    t_ = open(os.path.join(BIN, n)).read()
+    check("python3 -I -B bin/release-gate.py --dir " in t_ and "release-metadata.py gate" not in t_, "gate: bin/%s calls `python3 -I -B bin/release-gate.py --dir ...` and no longer `release-metadata.py gate`" % n)
+gate("a Witness record with no entries file beside it is refused, naming the missing file", lambda a: os.remove(a + "/build-collection.rekor.json"), "build-collection.rekor.json")
+gate("an entries file with no record beside it is refused, naming it", lambda a: open(a + "/other-collection.rekor.json", "w").write("{}"), "other-collection.rekor.json")
+# the record/entries pairing is checked for EVERY name, also for a name that checksums.txt or
+# release-files.sha256 already covers
+def _sum_add(a, n):
+    open(a + "/checksums.txt", "a").write("%s  %s\n" % (hashlib.sha256(open(os.path.join(a, n), "rb").read()).hexdigest(), n))
+def _orphan_checksummed(a):
+    open(a + "/orphan-collection.rekor.json", "w").write("{}"); _sum_add(a, "orphan-collection.rekor.json")
+def _record_checksummed_no_entries(a):
+    open(a + "/lone-collection.json", "w").write("{}"); _sum_add(a, "lone-collection.json")
+gate("a checksummed entries file with no record beside it is refused, naming it", _orphan_checksummed, "orphan-collection.rekor.json")
+gate("a checksummed record with no entries file beside it is refused, naming the missing file", _record_checksummed_no_entries, "lone-collection.rekor.json")
+gate("an asset in neither checksums.txt nor release-files.sha256 nor with a bundle is refused, naming it", lambda a: open(a + "/stray.txt", "w").write("x"), "stray.txt")
+gate("a bundle whose signed file is not an asset is refused", lambda a: open(a + "/ghost.json.bundle", "w").write("{}"), "ghost.json.bundle")
+gate("a file listed in checksums.txt that is not an asset is refused", lambda a: open(a + "/checksums.txt", "a").write("%s  gone.tar.gz\n" % ("0" * 64)), "gone.tar.gz")
+gate("an archive whose bytes differ from checksums.txt is refused", lambda a: open(a + "/fscache_0.3.0_linux_amd64.tar.gz", "wb").write(b"tampered"), "fscache_0.3.0_linux_amd64.tar.gz")
+gate("a metadata file altered after the list was made is refused", lambda a: open(a + "/release-manifest.json", "a").write("x"), "release-manifest.json")
+gate("a module SBOM with no bundle is refused, naming it",
+     lambda a: open(a + "/fscache-modules.spdx.json", "w").write("{}"), "fscache-modules.spdx.json")
+def with_module_sbom(a):
+    open(a + "/fscache-modules.spdx.json", "w").write("{}")
+    open(a + "/fscache-modules.spdx.json.bundle", "w").write("{}")
+gate("a module SBOM with its bundle passes", with_module_sbom)
+gate("an extra line in release-files.sha256 is refused", lambda a: open(a + "/release-files.sha256", "a").write("%s  extra.json\n" % ("0" * 64)), "extra")
+# the exact four-line format; a blank line anywhere (leading, between entries, or more than the one final
+# newline) is an extra line
+def _sums_edit(f):
+    def w(a):
+        t = open(a + "/release-files.sha256").read(); open(a + "/release-files.sha256", "w").write(f(t))
+    return w
+gate("a blank line before the first entry of release-files.sha256 is refused", _sums_edit(lambda t: "\n" + t), "blank")
+gate("a blank line between entries of release-files.sha256 is refused", _sums_edit(lambda t: t.replace("\n", "\n\n", 1)), "blank")
+gate("a second newline at the end of release-files.sha256 is refused", _sums_edit(lambda t: t + "\n"), "blank")
+gate("a blank line in checksums.txt is refused", lambda a: open(a + "/checksums.txt", "a").write("\n"), "blank")
+gate("an empty release-files.sha256 is refused", lambda a: open(a + "/release-files.sha256", "w").write(""), "release-files.sha256")
+gate("a missing release-files.sha256.bundle is refused (v0.3.0 is not released without the four files signed)", lambda a: os.remove(a + "/release-files.sha256.bundle"), "release-files.sha256.bundle")
+gate("a missing metadata file is refused", lambda a: os.remove(a + "/fosterstack-cache.openvex.json"), "fosterstack-cache.openvex.json")
+gate("a missing checksums.txt.bundle is refused", lambda a: os.remove(a + "/checksums.txt.bundle"), "checksums.txt.bundle")
+gate("a file with its own bundle (the SBOM) is covered by it", lambda a: None)
+for n in ("provenance.json", "provenance.rekor.json", "provenance.bundle.json"):
+    gate("a release without Sign's %s is refused, naming it (Sign's provenance is part of every release)" % n, lambda a, n=n: os.remove(os.path.join(a, n)), n)
+gate("an SBOM whose bundle is gone is refused", lambda a: os.remove(a + "/production.sbom.json.bundle"), "production.sbom.json")
+gate("a symlink among the assets is refused", lambda a: os.symlink(a + "/checksums.txt", a + "/link.txt"), "link.txt")
+# ---- no tag-notes path: no admitted tag carries a signed message, so a tag object's text is never taken as notes ----------------------------
+GEN = ("object 0123\ntype commit\ntag v0.3.1\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n"
+       "## v0.3.1 \u2014 patch release\n\n### Fixes\n- none\n-----BEGIN SIGNED MESSAGE-----\nMIIabc\n-----END SIGNED MESSAGE-----\n")
+obj = os.path.join(tempfile.mkdtemp(), "tag.txt"); open(obj, "w").write(GEN)
+rc, so, se = run("tag-notes", "--tag", "v0.3.1", "--object", obj)
+check(rc != 0 and so == "", "tag-notes: a tag with SIGNED MESSAGE notes text is not accepted as notes (no such subcommand)", "rc=%s out=%r" % (rc, so[:60]))
+check("tag-notes" not in open(os.path.join(BIN, "release-metadata.py")).read(), "tag-notes: the script holds no tag-notes code")
+# ---- REQ-CHAIN-004-AC20: `images` runs beside the secrets (bin/vex-live-run.sh) and loads nothing of bin/build-admit.py -------------------------------------
+NOADMIT = tempfile.mkdtemp()
+for n in os.listdir(BIN):
+    if n != "build-admit.py" and os.path.isfile(os.path.join(BIN, n)): shutil.copy(os.path.join(BIN, n), NOADMIT)
+check(not os.path.exists(NOADMIT + "/build-admit.py") and os.path.exists(os.path.join(BIN, "release-metadata.py")), "AC20 the build-admit-absent copy of bin/ lacks build-admit.py")
+WATCH = ('import sys, runpy, json\nseen = []\n'
+         'def hook(ev, args):\n    if ev in ("open", "import") and ("build-admit" in str(args[0]) or "build_admit" in str(args[0])): seen.append([ev, str(args[0])])\n'
+         'sys.addaudithook(hook)\nrc = 0\n'
+         'try:\n    sys.argv = sys.argv[2:]\n    runpy.run_path(sys.argv[0], run_name="__main__")\nexcept SystemExit as e:\n    rc = e.code or 0\n'
+         'open(__import__("os").environ["WATCH_OUT"], "w").write(json.dumps({"seen": seen, "mods": sorted(m for m in sys.modules if "admit" in m)}))\nsys.exit(rc)\n')
+def images_in(bin_dir, t, out, watch=False):
+    args = ["images", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images", "--items", t + "/witness-build/items.json", "--out", out]
+    env = dict(os.environ, WATCH_OUT=t + "/watch.json")
+    cmd = ["python3", "-c", WATCH, "x", os.path.join(bin_dir, "release-metadata.py")] + args if watch else ["python3", os.path.join(bin_dir, "release-metadata.py")] + args
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env); return r.returncode, r.stdout, r.stderr
+t, d = tree(); with_out, without_out = t + "/with.json", t + "/without.json"
+rc1, so1, se1 = images_in(BIN, t, with_out)
+rc2, so2, se2 = images_in(NOADMIT, t, without_out)
+check(rc2 == 0 and os.path.exists(without_out), "AC20 images succeeds with bin/build-admit.py absent", "rc=%s %s" % (rc2, se2[:300]))
+check(rc1 == 0 and rc2 == 0 and open(with_out).read() == open(without_out).read() and so1 == so2, "AC20 images with build-admit.py absent writes the same file and output as with it present", "%s %s" % (se1[:100], se2[:200]))
+t, d = tree(); rcw, sow, sew = images_in(BIN, t, t + "/w.json", watch=True)
+w = json.load(open(t + "/watch.json")) if os.path.exists(t + "/watch.json") else {"seen": ["no watch file"], "mods": []}
+check(rcw == 0 and w["seen"] == [] and w["mods"] == [], "AC20 images opens, imports and executes nothing of build-admit.py and registers no build_admit module", "rc=%s seen=%s mods=%s %s" % (rcw, str(w["seen"])[:200], w["mods"], sew[:100]))
+for label, mutate, word in (("a bad items hash is still refused with build-admit.py absent", lambda t, d: open(t + "/images/fips.digest", "w").write(sha(b"other") + "\n"), "fips"),
+                            ("a missing manifests file is still refused with build-admit.py absent", lambda t, d: os.remove(t + "/images/production.manifests"), "production.manifests")):
+    t, d = tree(); mutate(t, d); rc, so, se = images_in(NOADMIT, t, t + "/o.json")
+    check(rc == 1 and word in se and not os.path.exists(t + "/o.json") and "Traceback" not in se, "AC20 images: " + label, "rc=%s %s" % (rc, se[:200]))
+# a subcommand that judges a version still needs the grammar: with build-admit.py absent it fails closed, never succeeds
+t = tempfile.mkdtemp(); adm = t + "/admission.json"
+open(adm, "w").write(json.dumps({"baseline": "requirements/releases/v0.3.0.yaml", "baseline_version": "v0.3.0", "sha": "a" * 40, "tag": "v0.3.1"}))
+def baseline_in(bin_dir):
+    r = subprocess.run(["python3", bin_dir + "/release-metadata.py", "baseline", "--admission", adm, "--tag", "v0.3.1", "--commit", "a" * 40], capture_output=True, text=True); return r.returncode, r.stdout, r.stderr
+brc, bso, bse = baseline_in(BIN); nrc, nso, nse = baseline_in(NOADMIT)
+check(brc == 0 and bso.strip() == "v0.3.0", "AC20 baseline with build-admit.py present prints the baseline version (control)", "rc=%s %s" % (brc, bse[:150]))
+check(nrc != 0 and nso == "", "AC20 baseline with build-admit.py absent fails closed (non-zero, prints no version)", "rc=%s out=%r" % (nrc, nso[:60]))
+# ---- usage: the docstring (the script's usage text) names every subcommand it has, and no other ----------------------------------------
+import ast
+SUBS = ("images", "manifest", "baseline", "list", "bind-archives", "checksums")
+doc = ast.get_docstring(ast.parse(open(os.path.join(BIN, "release-metadata.py")).read())) or ""
+check(all("release-metadata.py %s " % n in doc for n in SUBS) and "tag-notes" not in doc and "release-metadata.py gate" not in doc,
+      "usage: the docstring has a usage line for every subcommand and none for tag-notes or gate", doc[:300])
+rc, so, se = run("--help")
+check(rc == 0 and all(n in so for n in SUBS) and "tag-notes" not in so and "gate" not in so, "usage: --help names every subcommand and neither tag-notes nor gate", so[:200])
+# ---- strict JSON: a duplicate key is refused, never taken last-wins ---------------------------------------------------------------------
+t, d = tree(); dup = t + "/witness-build/digests.json"
+open(dup, "w").write(json.dumps(d)[:-1] + ', "image-production": "%s"}' % sha(b"other"))
+rc, so, se = run("images", "--digests", dup, "--images-dir", t + "/images", "--items", t + "/witness-build/items.json", "--out", t + "/o.json")
+check(rc == 1 and "duplicate" in se and not os.path.exists(t + "/o.json"), "strict json: a duplicate key in digests.json is refused", "rc=%s %s" % (rc, se[:200]))
+t = tempfile.mkdtemp(); adm = t + "/admission.json"
+open(adm, "w").write('{"baseline": "requirements/releases/v0.3.0.yaml", "baseline_version": "v0.3.0", "sha": "%s", "tag": "v0.3.1", "tag": "v0.3.2"}' % ("a" * 40))
+rc, so, se = run("baseline", "--admission", adm, "--tag", "v0.3.2", "--commit", "a" * 40)
+check(rc == 1 and "duplicate" in se and so == "", "strict json: a duplicate key in the admission file is refused", "rc=%s %s" % (rc, se[:200]))
+# ---- requirements.yaml says what the code does ----------------------------------------------------------
+import yaml
+REQS = {r["id"]: r for r in yaml.safe_load(open(os.path.join(BIN, "..", "requirements", "requirements.yaml")))["requirements"]}
+def ac(rid, n): return next(a for a in REQS[rid]["acceptance_criteria"] if a["id"] == "%s-AC%d" % (rid, n))
+t4, t7 = ac("REQ-CHAIN-004", 2)["then"], ac("REQ-CHAIN-007", 9)["then"]
+t19 = ac("REQ-CHAIN-007", 19)["then"]
+# the audit removed the 540 s cap: the command runs plain, and no timeout wrapper wording may be left in these spots
+check("and the command run as plain `bash SCRIPT ARGS` (GitHub's default job time limit bounds a hung command)" in t4 and "timeout -k 20 540" not in t4 and "timeout 540" not in t4,
+      "text: REQ-CHAIN-004-AC2 says the command runs as plain bash SCRIPT ARGS, no timeout -k 20 540 (E item A)")
+n4, n7 = REQS["REQ-CHAIN-004"]["notes"], REQS["REQ-CHAIN-007"]["notes"]
+check("Every command run under Witness is plain `bash SCRIPT ARGS`; GitHub's default job time limit bounds a hung command" in n4 and "timeout -k 20 540" not in n4 and "timeout 540" not in n4
+      and "with the command run as plain `bash SCRIPT ARGS` inside it" in n7 and "timeout -k 20 540" not in n7 and "timeout 540" not in n7
+      and "Release has six such steps (release-verify, release-apks, release-publish, release-sign, release-assets, release-postverify)" in n7 and "Release has five such steps" not in n7,
+      "text: the REQ-CHAIN-004 and REQ-CHAIN-007 notes say plain bash SCRIPT ARGS, no timeout 540, and six Release steps (E item B)")
+t1 = ac("REQ-CHAIN-007", 1)["then"]
+check("nothing else in a step except an `env` block of exactly the credential names AC2 gives" in t1,
+      "text: REQ-CHAIN-007-AC1 says the witnessed steps carry only an env block of the credentials AC2 names")
+check("the release notes are posted here only from the notes carried in the generated patch tag's message (REQ-REL-009-AC8; the changelog is the patch-notes job's)" in t7 and "release notes are not posted here" not in t7,
+      "text: REQ-CHAIN-007-AC9 agrees with REQ-REL-009-AC8 "
+      "(the notes are posted by release-assets from the generated tag's message)")
+check("release-files.sha256 with its bundle and the four metadata files (AC19), Sign's provenance (provenance.json, provenance.rekor.json, provenance.bundle.json, as named files of the release) and the Witness records of Build, Rebuild and Check to the release" in t7,
+      "text: REQ-CHAIN-007-AC9 attaches Sign's three provenance files")
+check("Build's digests.json, items.json or admission-baseline.json (products of Build's signed record) or Sign's provenance.json, provenance.rekor.json and provenance.bundle.json (the record the Sign stage signed; the bundle carries its signature)" in t19
+      and "Build's admission-baseline.json" in t19 and "never a version Release chooses itself" in t19 and "the baseline admission chose for a CI patch)" not in t19,
+      "text: REQ-CHAIN-007-AC19 covers admission-baseline.json and Sign's provenance "
+      "and takes the baseline from Build's verified file")
+# ---- REQ-CHAIN-007-AC21: checksums writes dist/checksums.txt from the four archives Build recorded
+ARCS = (("archive-fips-linux-amd64", "fscache-fips_0.3.0_linux_amd64.tar.gz"), ("archive-fips-linux-arm64", "fscache-fips_0.3.0_linux_arm64.tar.gz"),
+        ("archive-linux-amd64", "fscache_0.3.0_linux_amd64.tar.gz"), ("archive-linux-arm64", "fscache_0.3.0_linux_arm64.tar.gz"))
+def ck_tree():
+    t = tempfile.mkdtemp(); os.makedirs(t + "/dist"); os.makedirs(t + "/witness-build")
+    for item, name in ARCS: open(os.path.join(t, "dist", name), "wb").write(item.encode())
+    json.dump({item: sha(item.encode()) for item, _ in ARCS}, open(t + "/witness-build/digests.json", "w"))
+    return t
+def ck_run(t, version="0.3.0"):
+    return run("checksums", "--version", version, "--dist", t + "/dist", "--digests", t + "/witness-build/digests.json", "--out", t + "/dist/checksums.txt")
+WANT = "".join("%s  %s\n" % (hashlib.sha256(i.encode()).hexdigest(), n) for i, n in sorted(ARCS, key=lambda x: x[1].encode()))
+t = ck_tree(); r = ck_run(t)
+check(r[0] == 0 and open(t + "/dist/checksums.txt").read() == WANT and WANT.count("\n") == 4 and "  " in WANT.split("\n")[0] and WANT.endswith("\n"),
+      "AC21 checksums writes one `<sha256>  <name>` line per archive, in byte order of the names, two spaces, a final newline, and nothing else", "rc=%s %s" % (r[0], r[2][:120]))
+t = ck_tree(); open(t + "/dist/checksums.txt", "w").write("stale\n"); r = ck_run(t)
+check(r[0] == 0 and open(t + "/dist/checksums.txt").read() == WANT and sorted(os.listdir(t + "/dist")) == sorted([n for _, n in ARCS] + ["checksums.txt"]),
+      "AC21 an earlier checksums.txt is replaced, not extended, and no temporary file is left in dist", "rc=%s %s" % (r[0], sorted(os.listdir(t + "/dist"))))
+for label, mutate, word in (("a missing archive", lambda d: os.remove(d + "/" + ARCS[2][1]), ARCS[2][0]),
+                            ("an extra archive", lambda d: open(d + "/fscache_0.3.0_linux_riscv.tar.gz", "wb").write(b"x"), "riscv"),
+                            ("an archive that is not the recorded bytes", lambda d: open(d + "/" + ARCS[0][1], "wb").write(b"other"), ARCS[0][0]),
+                            ("a symlinked archive", lambda d: (os.remove(d + "/" + ARCS[1][1]), os.symlink("/etc/hosts", d + "/" + ARCS[1][1])), ARCS[1][1])):
+    t = ck_tree(); mutate(t + "/dist"); r = ck_run(t)
+    check(r[0] == 1 and word in r[2] and not os.path.exists(t + "/dist/checksums.txt"), "AC21 %s is refused (exit 1, naming it) and no checksums.txt is written" % label, "rc=%s %s" % (r[0], r[2][:140]))
+for bad_v in ("0.3.0-rc1", "v0.3.0", "0.3", ""):
+    t = ck_tree(); r = ck_run(t, bad_v)
+    check(r[0] == 1 and not os.path.exists(t + "/dist/checksums.txt"), "AC21 the version %r is refused: only X.Y.Z, and nothing is written" % bad_v, "rc=%s %s" % (r[0], r[2][:100]))
+# the temporary file is never a path someone else can pre-place: a planted symlink checksums.txt.part must not
+# be written through,
+# and a stale regular .part is replaced, never extended or kept
+t = ck_tree(); victim = t + "/dist/" + ARCS[0][1]; before = open(victim, "rb").read()
+os.symlink(victim, t + "/dist/checksums.txt.part"); r = ck_run(t)
+check(r[0] == 0 and open(victim, "rb").read() == before and not os.path.islink(t + "/dist/checksums.txt") and open(t + "/dist/checksums.txt").read() == WANT
+      and not os.path.lexists(t + "/dist/checksums.txt.part"),
+      "AC21 a planted symlink at checksums.txt.part is not written through: the archive keeps its bytes, checksums.txt is a regular file with the right lines, no .part is left", "rc=%s %s" % (r[0], r[2][:140]))
+t = ck_tree(); open(t + "/dist/checksums.txt.part", "w").write("stale part\n"); r = ck_run(t)
+check(r[0] == 0 and open(t + "/dist/checksums.txt").read() == WANT and not os.path.lexists(t + "/dist/checksums.txt.part"),
+      "AC21 a stale regular checksums.txt.part is replaced, not kept or extended", "rc=%s" % r[0])
+t = ck_tree(); os.mkdir(t + "/dist/checksums.txt.part"); r = ck_run(t)
+check(r[0] == 1 and not os.path.exists(t + "/dist/checksums.txt"), "AC21 a directory at checksums.txt.part is a refusal (exit 1), and nothing is written", "rc=%s %s" % (r[0], r[2][:120]))
+t21 = ac("REQ-CHAIN-007", 21)["then"]
+check("bind-archives" not in t21 and "bin/release-metadata.py checksums" in t21 and "no test creates the file it signs" in t21,
+      "text: REQ-CHAIN-007-AC21 names only the checksums command (it makes the archive check itself) and says no test creates the signed file")
+# the texts, comments and the reason say what the scripts do
+t6, t10 = ac("REQ-CHAIN-007", 6)["then"], ac("REQ-CHAIN-007", 10)["then"]
+check("--rebuild-dir" not in t6 and "compares Build's and Rebuild's" not in t6 and "release-sign-apks.sh --build-dir B` with the key reference from RELEASE_KMS_KEY_REF" in t6 and "--key K" not in t6 and "release-compare.sh" in t6,
+      "text: REQ-CHAIN-007-AC6 runs release-sign-apks.sh with --build-dir and the key reference from RELEASE_KMS_KEY_REF; the comparison is release-compare.sh's")
+check("release-sign: bash, cosign, crane, git, jq, python3, sha256sum and trap;" in t10, "text: REQ-CHAIN-007-AC10 lists bash, cosign, crane, git, sha256sum and trap among release-sign's tools")
+b7 = ac("REQ-BUILDAPK-001", 7)["then"]
+check("Build and Rebuild apk" not in b7 and "PROPOSED" not in b7 and "counterpart in Rebuild" not in b7 and "same control AND data sections" not in b7 and "--rebuild-dir" in b7 and "unknown argument" in b7 and "release-compare.sh" in b7,
+      "text: REQ-BUILDAPK-001-AC7 signs Build's apks only; a --rebuild-dir is an unknown argument; the comparison is release-compare.sh's")
+CS = {r["path"]: r for r in json.load(open(os.path.join(BIN, "..", ".github", "policy", "chain-scripts.json")))["scripts"]}
+check("Build/Rebuild comparison" not in CS["bin/release-apks.sh"]["reason"] and "release-compare" in CS["bin/release-apks.sh"]["reason"],
+      "text: chain-scripts.json's release-apks reason does not claim the Build/Rebuild comparison and names release-compare.sh")
+check("--rebuild-dir" not in open(os.path.join(BIN, "melange-apko-lib.sh")).read(), "text: melange-apko-lib.sh no longer shows release-sign-apks.sh with --rebuild-dir")
+check("TODO (PR 2" not in open(os.path.join(BIN, "release-verify.sh")).read(), "text: release-verify.sh has no TODO for the rc tag grammar it already accepts")
+check("docs/apk-signing-key.md" not in open(os.path.join(BIN, "..", "build", "keys", "release.rsa.pub")).read(), "text: release.rsa.pub does not point at a document that does not exist")
+# ---- the policy file of Sign's release step (G1, G2): release-signatures.sh makes policy.json itself, because a stage file's run lines cannot read GITHUB_REF_NAME ----------
+POLICY_MAKE = ('python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json '
+               '--tag "$GITHUB_REF_NAME" --out policy.json')
+SIGS = [l.strip() for l in open(os.path.join(BIN, "release-signatures.sh")).read().split("\n") if l.strip() and not l.strip().startswith("#")]
+def line_of(part): return next((i for i, l in enumerate(SIGS) if part in l), None)
+check(SIGS.count(POLICY_MAKE) == 1 and sum("policy make" in l for l in SIGS) == 1,
+      "G1 release-signatures.sh runs exactly once, as one whole line, the policy make command of release-verify.sh (no `|| true`, no other spelling)")
+at_tag, at_key, at_make, at_sign = line_of('build-admit.py tag-ok --final "$tag"'), line_of("chain-verify.py key-ref-check"), line_of("policy make"), line_of("sign_file ")
+check(None not in (at_tag, at_key, at_make, at_sign) and at_tag < at_key < at_make < at_sign,
+      "G1 the policy make line comes after the tag check and the key-reference check and before anything is signed", str((at_tag, at_key, at_make, at_sign)))
+row = CS["bin/release-signatures.sh"]
+check(row["tools"] == ["bash", "git", "jq", "python3", "sha256sum", "trap"] and row["runs"] == ["bin/build-admit.py", "bin/chain-verify.py", "bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py", "bin/apk-tool.py", "bin/with-aws-token.sh"],
+      "G2 the chain-scripts.json row of release-signatures.sh keeps its tools and runs (chain-verify.py is already in runs): only the script changes", "%s %s" % (row["tools"], row["runs"]))
+print("pass=%d fail=%d" % (passn, failn))
+sys.exit(1 if failn else 0)
+PY

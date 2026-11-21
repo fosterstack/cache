@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Classify findings (REQ-AUD-2).
+"""Classify findings (REQ-AUD-2 of .github/agent/docs/cve-auditor-matrix.md).
 
 Two rules hold everywhere:
   * ABSENCE OF EVIDENCE IS NEVER EVIDENCE OF UNREACHABILITY. A finding with no
@@ -16,6 +16,7 @@ Two rules hold everywhere:
 import os, sys, re, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auditorlib import cli, policy
+from auditorlib import reviewed
 from auditorlib import parsers as P
 from auditorlib import vex
 
@@ -24,8 +25,11 @@ SECT = {"false_positive": [5], "not_affected_unreachable": [2],
 TS = "2026-09-22T00:00:00-04:00"
 
 
+_CVE = re.compile(r"CVE-\d{4}-\d+")
+
+
 def canon(fid, aliases):
-    for a in [fid] + list(aliases):
+    for a in [fid] + sorted(aliases):
         if re.fullmatch(r"CVE-\d{4}-\d+", a):
             return a
     return fid
@@ -47,7 +51,7 @@ def vex_doc(fid, status, justification=None, action=None, evidence=None):
 
 def gvc_verdict(gvc_path, ids, expected_module=None, usable=True):
     """Return ('unreachable'|'reachable'|'no-evidence', evidence). Unreachable requires a
-    USABLE govulncheck stream (R11 rank 5: complete AND bound to the candidate commit — the
+    USABLE govulncheck stream (complete AND bound to the candidate commit; the
     caller passes usable=False for an incomplete or stale/unbound stream), at SYMBOL scan
     level, whose scanned module equals the repository's, with an imported-but-not-called
     finding for one of the ids (a non-empty trace of real frames with no function frame — an
@@ -60,7 +64,8 @@ def gvc_verdict(gvc_path, ids, expected_module=None, usable=True):
         g = P.parse_govulncheck(gvc_path)
     except P.ParseError:
         return "no-evidence", {"reason": "unparseable govulncheck"}
-    present = [i for i in ids if i in g["by_osv"]]
+    # the stream names a finding by its GO- advisory; that advisory's own aliases carry the CVE and GHSA ids
+    present = sorted(i for i, e in g["by_osv"].items() if i in ids or set(e.get("aliases") or ()) & set(ids))
     if not present:
         return "no-evidence", {"reason": "no finding message for any id"}
     if g["scan_level"] != "symbol":
@@ -87,8 +92,9 @@ def gvc_verdict(gvc_path, ids, expected_module=None, usable=True):
 def fp_verified(ids, logpath, findings):
     """Verify a false positive only on the FULL exact key (scanner, finding_id, purl) of one
     of the group's findings against a trusted (not model-proposed) log row."""
-    if logpath and os.path.exists(logpath):
-        log = json.load(open(logpath))
+    # a present log without "defects" is a stop; the reader owns existence
+    log = reviewed.read(logpath, as_name="known-defect-log.json") if logpath else None
+    if log is not None:
         keys = {(k["scanner"], k["finding_id"], k["purl"]): row
                 for row in log.get("defects", []) for k in row.get("keys", [])}
         for f in findings:
@@ -103,23 +109,27 @@ VALID_CATS = ("false_positive", "not_affected_unreachable", "real_fixable", "ris
 
 
 def validate_manifest(m):
-    """R11 rank 3: the driver validates the manifest on load. Every scanner the driver reads
+    """The driver validates the manifest on load. Every scanner the driver reads
     must be present as a path or an explicit null (with a reason in scanner_status); a
     missing key is a manifest error, never a KeyError mid-run."""
+    if not isinstance(m, dict):
+        raise ValueError("manifest: not a JSON object")
     r = m.get("scanner_reports")
     if not isinstance(r, dict):
         raise ValueError("manifest: scanner_reports object is missing")
-    status = m.get("scanner_status") or {}
-    if m.get("scanner_set") != "panel":              # the auditor reads the four panel scanners and nothing else (0600 option A)
+    status = m.get("scanner_status", {})
+    if not isinstance(status, dict) or not all(v is None or isinstance(v, dict) for v in status.values()):
+        raise ValueError("manifest: scanner_status is not an object of objects")
+    if m.get("scanner_set") != "panel":              # the auditor reads the four panel scanners and nothing else
         raise ValueError("manifest: scanner_set %r is not 'panel'" % (m.get("scanner_set"),))
     keys = P.PANEL_SCANNERS
     if not (isinstance(m.get("panel"), dict) and "verdict" in m["panel"]):
-        raise ValueError("manifest: a panel manifest has no panel block with the verdict path (null when there is none)")
+        raise ValueError("manifest: a panel manifest has no panel block with the verdict path (null if none)")
     for k in keys:
         if k not in r:
             raise ValueError("manifest: scanner_reports missing key %r (use null for 'did not run')" % k)
     for k in keys:
-        # a null report ALWAYS carries its reason — also when scanner_status is absent (LR-27 c)
+        # a null report ALWAYS carries its reason, also when scanner_status is absent
         if r[k] is None and ((status.get(k) or {}).get("reason") is None):
             raise ValueError("manifest: %s is null with no scanner_status reason" % k)
     return m
@@ -138,7 +148,7 @@ def scanners_down(m):
 
 
 def manifest_gvc(m):
-    """Resolve the govulncheck stream and whether it is USABLE (R11 rank 5). A dict form
+    """Resolve the govulncheck stream and whether it is USABLE. A dict form
     carries path/module/commit/complete; it is usable only if complete AND its recorded
     commit equals the manifest commit (bound to this candidate). A bare-path form (test
     harness / older manifest) is treated as usable with no commit binding available."""
@@ -152,19 +162,22 @@ def manifest_gvc(m):
 
 
 def manifest_findings(manifest):
-    m = json.load(open(manifest)); validate_manifest(m); r = m.get("scanner_reports") or {}
-    PARSERS = [(sc, (lambda p, sc=sc: P.parse_panel(p, sc))) for sc in P.PANEL_SCANNERS]      # the four panel scanners, all read from the rescan's verdict.json
+    m = json.load(open(manifest))
+    validate_manifest(m)
+    # the four panel scanners, all read from the rescan's verdict.json
+    PARSERS = [(sc, (lambda p, sc=sc: P.parse_panel(p, sc))) for sc in P.PANEL_SCANNERS]
     allf = []
     vpath = (m.get("panel") or {}).get("verdict")
     for name, fn in PARSERS:
-        # panel mode reads every scanner's findings from the verdict even when the scanner missed an image (its report path is then
-        # null, which still marks it "did not run"): a partial failure must not discard what it did report
+        # panel mode reads every scanner's findings from the verdict even when the scanner missed an image
+        # (its report path is then null, which still marks it "did not run"): a partial failure must not
+        # discard what it did report
         path = vpath
         if path:                                    # a null scanner is skipped, not fatal
             allf += fn(path)
-    # Group by CONNECTED alias sets, not each record's own canonical CVE (R1 outer round-4
-    # #2): two findings the scanners connect through a shared alias belong to ONE group, so a
-    # reachable trace for one is not hidden from the other. Union-find over every id/alias.
+    # Group by CONNECTED alias sets, not each record's own canonical CVE: two findings the scanners connect
+    # through a shared alias belong to ONE group, so a reachable trace for one is not hidden from the other.
+    # Union-find over every id/alias.
     parent = {}
 
     def _find(x):
@@ -179,23 +192,36 @@ def manifest_findings(manifest):
     def _union(a, b):
         parent[_find(a)] = _find(b)
 
-    # Every record unions by its own id and aliases, so a reachability id (e.g. a Go advisory's own id) stays attached to its CVE.
+    # Every record unions by its own id and aliases, so a reachability id (e.g. a Go advisory's own id)
+    # stays attached to its CVE.
+    # An advisory that co-reports several distinct CVEs joins none of them: each CVE keeps its own group and the
+    # advisory is attached to each as lineage only (REQ-AUD-13 AC4, AC9).
+    cves = lambda f: sorted({a for a in f["aliases"] if _CVE.fullmatch(a)})
+    bundles = [f for f in allf if not _CVE.fullmatch(f["finding_id"]) and len(cves(f)) > 1]
+    bundle_ids = {f["finding_id"] for f in bundles}
+    is_bundle = {id(f) for f in bundles}
     for f in allf:
-        ids = [f["finding_id"]] + list(f["aliases"])
+        if id(f) in is_bundle:
+            continue
+        ids = [f["finding_id"]] + [a for a in f["aliases"] if a not in bundle_ids]
         for i in ids[1:]:
             _union(ids[0], i)
     comps = {}
     for f in allf:
+        if id(f) in is_bundle:
+            continue
         root = _find(f["finding_id"])
         g = comps.setdefault(root, {"aliases": set(), "findings": []})
         g["aliases"].update(f["aliases"]); g["aliases"].add(f["finding_id"]); g["findings"].append(f)
+    for f in bundles:
+        for cve in cves(f):
+            g = comps.setdefault(_find(cve), {"aliases": {cve}, "findings": []})
+            g["aliases"].update((cve, f["finding_id"]))
+            g["findings"].append(dict(f, _lineage_only=True))
     groups = {}
-    cid_by_member = {}
     for g in comps.values():
         cid = canon(sorted(g["aliases"])[0], g["aliases"])   # a CVE from the connected union
         groups[cid] = {"id": cid, "aliases": g["aliases"], "findings": g["findings"]}
-        for a in g["aliases"]:
-            cid_by_member[a] = cid
     return m, groups
 
 
@@ -236,13 +262,15 @@ TITLES = {1: "Lifted", 2: "Accepted risk", 3: "Actual vulnerabilities",
           4: "Could not be assessed", 5: "Closed as not affected",
           6: "Pending", 7: "Currently suppressed"}
 
-# R12 item 5: an empty section carries a sentence WITH ITS COUNTS, never a blank or "none".
+# An empty section carries a sentence WITH ITS COUNTS, never a blank or "none".
 EMPTY = {
-    1: "No suppression was lifted this run: {n} carried statements were re-checked against upstream and the current tree; none has a pullable fix or lost its evidence.",
+    1: "No suppression was lifted this run: {n} carried statements were re-checked against upstream and "
+       "the current tree; none has a pullable fix or lost its evidence.",
     2: "No accepted-risk items are carried. Nothing is below threshold and nothing awaits the owner.",
     3: "None. {p} packages inventoried by {k} scanners; no finding is reachable, fixable, and unfixed.",
     4: "None. Every finding was dispositioned; no adjudication was refused or exhausted.",
-    5: "None this run. {h} findings were closed by the known-defect log without a model call; {m} new not-affected statements were written with evidence.",
+    5: "None this run. {h} findings were closed by the known-defect log without a model call; "
+       "{m} new not-affected statements were written with evidence.",
     6: "Nothing pending: no VEX or bump PR awaits the audit lane; no Dependabot PR was deferred to.",
     7: "No suppressions are in force for this candidate; consistency check: {consistency}.",
 }
@@ -312,12 +340,15 @@ def main():
     out = cli.opt("--out"); adjudicator = cli.opt("--adjudicator")
     finding = cli.opt("--finding"); manifest = cli.opt("--manifest"); gvc = cli.opt("--govulncheck")
     today = cli.opt("--today"); ts = (today + "T00:00:00Z") if today else TS
-    if finding and gvc:
-        do_single(finding, manifest, gvc, out)
-    elif manifest:
-        do_manifest(manifest, adjudicator, out, ts)
-    else:
+    if not ((finding and gvc) or manifest):
         sys.exit("classify: need --manifest or --finding+--govulncheck")
+    try:
+        if finding and gvc:
+            do_single(finding, manifest, gvc, out)
+        else:
+            do_manifest(manifest, adjudicator, out, ts)
+    except (OSError, ValueError, reviewed.ReviewedInputInvalid) as e:     # unreadable/malformed/invalid manifest
+        sys.exit("classify: %s" % e)
 
 
 if __name__ == "__main__":

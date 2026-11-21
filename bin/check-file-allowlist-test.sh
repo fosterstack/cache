@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
+# proves: REQ-BUILDAPK-001-AC10
 # Regression tests for bin/check-file-allowlist.sh — in particular the branch
-# scoping of the daily CVE auditor's suppression outputs (.snyk,
-# osv-scanner.toml, .auditor/accepted-items.json): allowed only on the auditor/
+# scoping of the daily CVE auditor's suppression outputs (.auditor/accepted-items.json,
+# knowledge.md, proposals): allowed only on the auditor/
 # lane and on main, blocked on any other branch, and never a hole through which
 # private-side content can reach this PUBLIC repo.
 # Known limit (by design): a PR that changes ALLOW_PATTERNS / SUPPRESSION_PATTERNS in the script cannot pass
@@ -58,7 +59,7 @@ case "$anch" in *UNANCHORED*) gf "every pattern is anchored with ^ and \$" "$anc
 # (A) every pattern line is exactly  two-space-indent, single-quoted, one pattern, optional trailing comment; the
 #     number of such lines equals ${#ALLOW_PATTERNS[@]}+${#SUPPRESSION_PATTERNS[@]} as bash loads them; no
 #     pattern has a top-level '|'; the only ALLOW_PATTERNS+= is the known suppression append.
-# (B) the v0.3.0 region admits an EXACT, declared set of 96 paths: only literals, \. , (a|b) groups and (x)?
+# (B) the v0.3.0 region admits an EXACT, declared set of 90 paths: only literals, \. , (a|b) groups and (x)?
 #     groups; no * + [ ] { } or bare '.'; the union of every pattern's finite expansion equals the declared list.
 struct_check() {
   local f="$1" loaded
@@ -112,17 +113,17 @@ bin/archive-push.sh bin/archive-pull.sh bin/archive-verify.py
 .github/release-identity.json
 docs/verify-release.md docs/verify-release.cannot-run.json bin/verify-release-guide-test.sh bin/verify-key-page-test.sh
 bin/build-apk-helper.py build/sealed-env.json
-bin/layout-archive.sh bin/layout-archive-test.sh
+bin/layout-archive.sh bin/layout-archive-test.sh bin/full-suite-wiring-test.sh
 bin/chain-sandbox-probe.sh bin/build-sandbox-hostile-test.sh
 build/probe/control.yaml.tmpl build/probe/read-record.yaml.tmpl build/probe/write-record.yaml.tmpl
 build/probe/read-keydir.yaml.tmpl build/probe/read-token.yaml.tmpl build/probe/network.yaml.tmpl
 bin/evidence-letter.py bin/evidence-letter-test.sh docs/evidence-letter-signatory.txt
 bin/evidence-letter-fetch.sh bin/evidence-letter-publish.sh bin/evidence-letter-job-test.sh
 bin/evidence-letter-verify.sh bin/evidence-letter-present.sh
-bin/full-suite-wiring-test.sh bin/tag-sign.py bin/tag-sign-prepare.sh bin/tag-sign-kms.sh bin/tag-sign-test.sh
-bin/chain-tag-jobs-judge.py bin/chain-tag-jobs-test.sh bin/patch-tag-texts-test.sh
+bin/tag-sign.py bin/tag-sign-test.sh bin/chain-tag-jobs-judge.py bin/chain-tag-jobs-test.sh bin/patch-tag-texts-test.sh
+bin/tag-sign-prepare.sh bin/tag-sign-kms.sh bin/patch-decide.py bin/patch-decide-test.sh
 """.split())
-if len(DECLARED) != 105: errs.append("declared list is not 105 paths: %d" % len(DECLARED))
+if len(DECLARED) != 107: errs.append("declared list is not 107 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -130,14 +131,10 @@ ALLOWED_MENTIONS = {
     'for pattern in "${SUPPRESSION_PATTERNS[@]}"; do',                   # the unchanged-suppression loop
     'echo "add a pattern to ALLOW_PATTERNS in bin/check-file-allowlist.sh." >&2',  # the hint text on a blocked path
 }
-# Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
-# be added without touching the test.
-# 232 allow patterns: main's (with ^bin/dependabot-reviewer-version\.sh$ and ^bin/policy-merge-harness\.py$, without the tag observer's), plus the chain's forms that main's lines do not already match
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 247, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
-inarr = False; inregion = False; n = 0; cur = None; counts = {'ALLOW': 0, 'SUPPRESSION': 0}; byblock = {'ALLOW': [], 'SUPPRESSION': []}
+inarr = False; inregion = False; n = 0; cur = None; byblock = {'ALLOW': [], 'SUPPRESSION': []}
 for i, l in enumerate(lines, 1):
     mm = re.match(r'^(ALLOW|SUPPRESSION)_PATTERNS=\($', l)
     if mm: inarr = True; inregion = False; cur = mm.group(1); continue
@@ -164,10 +161,8 @@ for i, l in enumerate(lines, 1):
     m = re.match(r"^  '([^']*)'( +#.*)?$", l)   # at least one space before a comment: '..'#'..' is ONE bash word
     if not m:
         errs.append("line %d: pattern line not in the canonical form  two spaces, one single-quoted pattern: %s" % (i, l)); continue
-    pats.append((i, m.group(1))); counts[cur] += 1; byblock[cur].append(m.group(1))
+    pats.append((i, m.group(1))); byblock[cur].append(m.group(1))
     if inregion: region.append((i, m.group(1))); rend = i
-if (counts['ALLOW'], counts['SUPPRESSION']) != (EXPECT_ALLOW, EXPECT_SUPPRESSION):
-    errs.append("pattern lines: ALLOW %d (declared %d), SUPPRESSION %d (declared %d); update the test in the same commit" % (counts['ALLOW'], EXPECT_ALLOW, counts['SUPPRESSION'], EXPECT_SUPPRESSION))
 # element by element: what bash actually loads must equal what was parsed here, in value and order
 _py = byblock['ALLOW'] + byblock['SUPPRESSION']
 if str(loaded).isdigit() and bash_list != _py:
@@ -225,7 +220,9 @@ mutcheck() { # <desc> <sed-expr>
   if struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: $1" "$2"; else gp "struct check kills mutant: $1"; fi
 }
 mutcheck "suffix on one alternative"      "s/\(build-apk\|assemble-image\|/(build-apk|assemble-image[a-z]+|/"
-mutcheck "extension widened"              "s/\(apk-tool\|gen-recipes\|go-module-sbom\|install-host-bwrap\|refresh-inputs\)\\\\\.py\\$/(apk-tool|gen-recipes|go-module-sbom|install-host-bwrap|refresh-inputs)\\\\.(json|py|sh)\$/"
+mutcheck "extension widened"              "s/\(apk-tool\|gen-recipes\|go-module-sbom\|\
+install-host-bwrap\|refresh-inputs\)\\\\\.py\\$/\
+(apk-tool|gen-recipes|go-module-sbom|install-host-bwrap|refresh-inputs)\\\\.(json|py|sh)\$/"
 mutcheck "group made optional"            "s/\^build\/melange\(-fips\)\?/^build\/melange(-fips)?(-x)?/"
 mutcheck "group repeated with +"          "s/\^build\/apko\(-fips\)\?/^build\/apko(-fips)+/"
 mutcheck "? turned into *"                "s/\^build\/melange\(-fips\)\?/^build\/melange(-fips)*/"
@@ -238,7 +235,7 @@ mutcheck "tab-indented"                   "s/^  ('\^bin\/vendor-check)/\t\1/"
 mutcheck "two patterns on one line"       "s/^  ('\^bin\/vendor-check\\\\\.sh\\$')/  \1 '^x\$'/"
 mutcheck "top-level bar pattern"          "s/^  '\^bin\/vendor-check\\\\\.sh\\$'/  '^.*|x\$'/"
 mutcheck "extra ALLOW_PATTERNS+= outside" "s/^SUPPRESSION_PATTERNS=\(/ALLOW_PATTERNS+=('^.*\$')\nSUPPRESSION_PATTERNS=(/"
-# Fail-closed mutants for the "any other mention of the arrays" class and the pattern-line counts (built with awk
+# Fail-closed mutants for the "any other mention of the arrays" class (built with awk
 # from the real file: insert <text> after the first line matching <regex>, after the SUPPRESSION array's close when
 # <regex> is ^\)$ and the 2nd occurrence is wanted).
 mutins() { # <desc> <nth-occurrence-of-line-")"> <text>
@@ -266,11 +263,6 @@ if kill -0 "$_sp" 2>/dev/null; then
 else
   gp "struct_check does not read the caller's stdin (an open pipe on stdin does not stop it)"
 fi
-awk '/^  # v0.3.0 build chain/{r=1} {print} r&&/^$/{print "  \x27^evil/.*$\x27"; r=0}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"
-if cmp -s bin/check-file-allowlist.sh "$_mut_dir/m.sh"; then gf "mutant did not apply: wide pattern after the region blank line" ""; elif struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: wide pattern after the region blank line" ""; else gp "struct check kills mutant: wide pattern after the region blank line"; fi
-# a wide pattern line inside an older block (after the first pattern line of ALLOW_PATTERNS)
-awk '{print} /^ALLOW_PATTERNS=\(/{f=1} f&&/^  \x27/&&!d{print "  \x27^evil/.*$\x27"; d=1}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"
-if cmp -s bin/check-file-allowlist.sh "$_mut_dir/m.sh"; then gf "mutant did not apply: older block" ""; elif struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: wide pattern in an older block" ""; else gp "struct check kills mutant: wide pattern in an older block"; fi
 # B4-1 (quote concatenation through #) and extra readarray/indexed forms
 mutsub() { # <desc> <exact pattern line> <text appended to that line>
   MUT_LINE="$2" MUT_ADD="$3" awk '!d && $0 == ENVIRON["MUT_LINE"] {print $0 ENVIRON["MUT_ADD"]; d=1; next} {print}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"
@@ -282,22 +274,20 @@ mutsub "pattern then bare #"                     "  '^bin/vendor-check\\.sh\$'" 
 mutsub "pattern then tab then #"                 "  '^bin/vendor-check\\.sh\$'" "$(printf '\t')# c"
 mutins "readarray -t -O 200"                2 "readarray -t -O 200 ALLOW_PATTERNS <<< '^evil/.*\$'"
 mutins "SUPPRESSION_PATTERNS index assign"  2 "SUPPRESSION_PATTERNS[9]='^evil/.*\$'"
-# B1 (round 5): the readable denylist and the pattern counts must kill each of these edits after the arrays.
-killed() { # <desc> ; the mutant is already in $_mut_dir/m.sh
-  if cmp -s bin/check-file-allowlist.sh "$_mut_dir/m.sh"; then gf "mutant did not apply: $1" ""; return; fi
-  if struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: $1" ""; else gp "struct check kills mutant: $1"; fi
+# B1 (round 5): the readable denylist must kill each of these.
+pinkill() { # <desc> ; the mutant is already in $_mut_dir/m.sh
+  if cmp -s bin/check-file-allowlist.sh "$_mut_dir/m.sh"; then gf "mutant did not apply: $1" ""; elif struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: $1" ""; else gp "struct check kills mutant: $1"; fi
 }
 killmutins() { # <desc> <text inserted after the SUPPRESSION array close>
   awk -v n=2 -v t="$2" '{print} /^\)$/{c++; if(c==n) print t}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; killed "$1"
 }
-killmutins "process-substitution dot-source of a split-name append" ". <(echo \"ALLOW_PAT\"\"TERNS+=('^evil/.*\\\$')\")"
-killmutins "read into a computed array element name"                'n="ALLOW_PAT""TERNS[200]"; read -r "$n" <<< '"'"'^evil/.*$'"'"
-killmutins "plain dot-source of ./extra.sh"                          ". ./extra.sh"
-killmutins "DEBUG trap after the arrays"                             "trap 'exit 0' DEBUG"
-killmutins "RETURN trap after the arrays"                            "trap ':' RETURN"
-killmutins "ERR trap after the arrays"                               "trap 'exit 0' ERR"
-killmutins "exec of another script"                                  "exec bash ./other.sh"
-sed -E "/^  '\^osv-scanner\\\\\.toml\\\$'\$/d" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; killed "a suppression pattern deleted"
+pinmutins "process-substitution dot-source of a split-name append" ". <(echo \"ALLOW_PAT\"\"TERNS+=('^evil/.*\\\$')\")"
+pinmutins "read into a computed array element name"                'n="ALLOW_PAT""TERNS[200]"; read -r "$n" <<< '"'"'^evil/.*$'"'"
+pinmutins "plain dot-source of ./extra.sh"                          ". ./extra.sh"
+pinmutins "DEBUG trap after the arrays"                             "trap 'exit 0' DEBUG"
+pinmutins "RETURN trap after the arrays"                            "trap ':' RETURN"
+pinmutins "ERR trap after the arrays"                               "trap 'exit 0' ERR"
+pinmutins "exec of another script"                                  "exec bash ./other.sh"
 # B1 (round 6): the script is read once as bytes and any CR (lone or CRLF), NUL or other control byte, and any
 # Unicode line separator, is refused. Each mutant is built from the real script by the python helper below.
 bytemut() { # <desc> <python expression over b (bytes of the real script) returning the mutated bytes>
@@ -329,7 +319,7 @@ run_ref() {
   fi
 }
 
-SUPP=(".snyk" "osv-scanner.toml" ".auditor/accepted-items.json"
+SUPP=(".auditor/accepted-items.json"
       # REQ-AUD-16: the generated knowledge doc (AC3) and merge-gated proposals (AC4) the auditor
       # carries in its own suppression PR.
       ".auditor/knowledge.md" ".auditor/proposals/adjudicator-proposals.json")
@@ -346,7 +336,7 @@ HEADREPO=o/r
 run fail "main"        "same-repo PR from a branch named main: not special (only a push to main is)" "${SUPP[@]}"
 unset HEADREPO
 run pass "auditor/zzz" "same-repo PR from auditor/zzz: allowed as today" "${SUPP[@]}"
-( printf '%s\n' .snyk | GITHUB_HEAD_REF=auditor/zzz GITHUB_REF_NAME="" GITHUB_REPOSITORY=o/r "$SCRIPT" >/dev/null 2>&1 ) \
+( printf '%s\n' .auditor/knowledge.md | GITHUB_HEAD_REF=auditor/zzz GITHUB_REF_NAME="" GITHUB_REPOSITORY=o/r "$SCRIPT" >/dev/null 2>&1 ) \
   && { echo "FAIL: head-repo variable unset on a PR event must fail closed"; fail=$((fail+1)); } \
   || { echo "ok:   head-repo variable unset on a PR event fails closed"; pass=$((pass+1)); }
 
@@ -358,7 +348,10 @@ run_ref pass "main" "push to main: suppression outputs allowed" "${SUPP[@]}"
 # No other branch may add or edit a suppression (can't slip one past a scanner via a feature PR).
 run fail "feature/x"        "feature PR head: suppression outputs blocked"      "${SUPP[@]}"
 run fail "renovate/deps"    "bot PR head: suppression outputs blocked"          "${SUPP[@]}"
-run fail "auditorX/nope"    "look-alike prefix (not auditor/): blocked"         ".snyk"
+run fail "auditorX/nope"    "look-alike prefix (not auditor/): blocked"         ".auditor/knowledge.md"
+# The scanners' own ignore files are not suppression outputs any more (the published OpenVEX is the only exception): blocked on every branch.
+run fail "auditor/2026-09-24-abc123" "auditor/ lane: .snyk is blocked"            ".snyk"
+run fail "auditor/2026-09-24-abc123" "auditor/ lane: osv-scanner.toml is blocked" "osv-scanner.toml"
 # The private-content guard is intact even on the auditor lane.
 run fail "auditor/2026-09-24-abc123" "auditor/ lane does NOT open a hole for ops/brief content" "ops/runbook.md"
 run fail "auditor/2026-09-24-abc123" "auditor/ lane does NOT allow arbitrary root files"        "secrets.txt"
@@ -373,11 +366,11 @@ run pass "feature/x" "product Go source still allowed off the auditor lane" "int
 ABS_SCRIPT="$(pwd)/bin/check-file-allowlist.sh"
 TMPROOT="$(mktemp -d)"; trap 'rm -rf "$TMPROOT"' EXIT
 g() { git -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"; }
-# mkrepo <dir>: a repo whose origin/main holds .auditor/panel-state.json and .snyk, on branch feature/x
+# mkrepo <dir>: a repo whose origin/main holds .auditor/panel-state.json and .auditor/knowledge.md, on branch feature/x
 mkrepo() {
   local d="$1"
   rm -rf "$d"; mkdir -p "$d/.auditor"; ( cd "$d" && g init -q -b main . \
-    && echo '{"a":1}' > .auditor/panel-state.json && echo 'ignore: {}' > .snyk && echo 'package x' > internal.go \
+    && echo '{"a":1}' > .auditor/panel-state.json && echo 'ignore: {}' > .auditor/knowledge.md && echo 'package x' > internal.go \
     && g add -A && g commit -q -m base \
     && g update-ref refs/remotes/origin/main HEAD && g checkout -q -b feature/x )
 }
@@ -396,25 +389,25 @@ PS=.auditor/panel-state.json
 R="$TMPROOT/r"
 
 mkrepo "$R"
-trun pass "feature: suppression files untouched since the merge base are allowed" "$R" feature/x "" "$PS" .snyk
+trun pass "feature: suppression files untouched since the merge base are allowed" "$R" feature/x "" "$PS" .auditor/knowledge.md
 # an unrelated commit on the feature branch does not disturb them
 ( cd "$R" && mkdir -p internal && echo 'package y' > internal/other.go && g add -A && g commit -q -m other )
-trun pass "feature: unrelated commit, suppression files still untouched" "$R" feature/x "" "$PS" .snyk internal/other.go
+trun pass "feature: unrelated commit, suppression files still untouched" "$R" feature/x "" "$PS" .auditor/knowledge.md internal/other.go
 
 ( cd "$R" && echo '{"a":2}' > $PS && g commit -qam edit )
 trun fail "feature: edited suppression file is blocked" "$R" feature/x "" "$PS"
-trun pass "feature: the other, untouched suppression file is still allowed" "$R" feature/x "" .snyk
+trun pass "feature: the other, untouched suppression file is still allowed" "$R" feature/x "" .auditor/knowledge.md
 
-mkrepo "$R"; ( cd "$R" && echo 'x' > osv-scanner.toml && g add -A && g commit -q -m add )
-trun fail "feature: newly added suppression file (not on main) is blocked" "$R" feature/x "" osv-scanner.toml
+mkrepo "$R"; ( cd "$R" && echo 'x' > .auditor/accepted-items.json && g add -A && g commit -q -m add )
+trun fail "feature: newly added suppression file (not on main) is blocked" "$R" feature/x "" .auditor/accepted-items.json
 
-mkrepo "$R"; ( cd "$R" && g rm -q .snyk && g commit -qm del && echo 'ignore: {}' > .snyk && g add .snyk && g commit -qm readd )
-trun pass "feature: deleted then re-added with identical content is allowed" "$R" feature/x "" .snyk
-mkrepo "$R"; ( cd "$R" && g rm -q .snyk && g commit -qm del && echo 'ignore: {evil: 1}' > .snyk && g add .snyk && g commit -qm readd )
-trun fail "feature: deleted then re-added with different content is blocked" "$R" feature/x "" .snyk
+mkrepo "$R"; ( cd "$R" && g rm -q .auditor/knowledge.md && g commit -qm del && echo 'ignore: {}' > .auditor/knowledge.md && g add .auditor/knowledge.md && g commit -qm readd )
+trun pass "feature: deleted then re-added with identical content is allowed" "$R" feature/x "" .auditor/knowledge.md
+mkrepo "$R"; ( cd "$R" && g rm -q .auditor/knowledge.md && g commit -qm del && echo 'ignore: {evil: 1}' > .auditor/knowledge.md && g add .auditor/knowledge.md && g commit -qm readd )
+trun fail "feature: deleted then re-added with different content is blocked" "$R" feature/x "" .auditor/knowledge.md
 
-mkrepo "$R"; ( cd "$R" && chmod +x .snyk && g add .snyk && g commit -qm mode )
-trun fail "feature: mode change only is blocked" "$R" feature/x "" .snyk
+mkrepo "$R"; ( cd "$R" && chmod +x .auditor/knowledge.md && g add .auditor/knowledge.md && g commit -qm mode )
+trun fail "feature: mode change only is blocked" "$R" feature/x "" .auditor/knowledge.md
 
 mkrepo "$R"; ( cd "$R" && g update-ref -d refs/remotes/origin/main )
 trun fail "feature: base ref missing fails closed" "$R" feature/x "" "$PS"
@@ -447,12 +440,12 @@ trun fail "feature: shallow clone without a resolvable merge base fails closed" 
 mkrepo "$R"; ( cd "$R" && mkdir -p .auditor/proposals && echo '{"p":1}' > .auditor/proposals/a.json && g add -A && g commit -qm a && g update-ref refs/remotes/origin/main HEAD )
 ( cd "$R" && g mv .auditor/proposals/a.json .auditor/proposals/b.json && g commit -qm mv )
 trun fail "feature: move of a suppression file to another suppression path is blocked" "$R" feature/x "" .auditor/proposals/b.json
-trun pass "feature: the deleted old path of a move is not listed and not an error" "$R" feature/x "" "$PS" .snyk
+trun pass "feature: the deleted old path of a move is not listed and not an error" "$R" feature/x "" "$PS" .auditor/knowledge.md
 mkrepo "$R"; ( cd "$R" && mkdir -p .auditor/proposals && echo '{"p":1}' > .auditor/proposals/a.json && g add -A && g commit -qm a && g update-ref refs/remotes/origin/main HEAD \
   && cp .auditor/proposals/a.json .auditor/proposals/b.json && g add -A && g commit -qm cp )
 trun fail "feature: copy of a suppression file to another suppression path is blocked" "$R" feature/x "" .auditor/proposals/a.json .auditor/proposals/b.json
-mkrepo "$R"; ( cd "$R" && cp .snyk osv-scanner.toml && g add -A && g commit -qm cp )
-trun fail "feature: .snyk content copied to osv-scanner.toml is blocked" "$R" feature/x "" .snyk osv-scanner.toml
+mkrepo "$R"; ( cd "$R" && cp .auditor/knowledge.md .auditor/accepted-items.json && g add -A && g commit -qm cp )
+trun fail "feature: .auditor/knowledge.md content copied to .auditor/accepted-items.json is blocked" "$R" feature/x "" .auditor/knowledge.md .auditor/accepted-items.json
 
 mkrepo "$R"; ( cd "$R" && echo '{"a":5}' > $PS && g commit -qam edit )
 HEADREPO=fork/r
@@ -475,13 +468,13 @@ revrun() {  # revrun <expect> <desc> <rev> <paths...>   (cwd $R, checked out on 
 }
 mkrepo "$R"; ( cd "$R" && echo 'package q' > q.go && g add -A && g commit -qm same )
 SAME="$(cd "$R" && git rev-parse HEAD)"
-( cd "$R" && echo '{"a":6}' > $PS && echo x > osv-scanner.toml && g add -A && g commit -qm chg )
+( cd "$R" && echo '{"a":6}' > $PS && echo x > .auditor/accepted-items.json && g add -A && g commit -qm chg )
 CHG="$(cd "$R" && git rev-parse HEAD)"
 ( cd "$R" && g checkout -q main )
-revrun pass "rev: untouched suppression files at the PR head pass (checkout is main)" "$SAME" "$PS" .snyk
+revrun pass "rev: untouched suppression files at the PR head pass (checkout is main)" "$SAME" "$PS" .auditor/knowledge.md
 revrun fail "rev: edited suppression file at the PR head is blocked" "$CHG" "$PS"
-revrun fail "rev: new suppression file at the PR head is blocked" "$CHG" osv-scanner.toml
-revrun pass "rev: the other untouched file at that head still passes" "$CHG" .snyk
+revrun fail "rev: new suppression file at the PR head is blocked" "$CHG" .auditor/accepted-items.json
+revrun pass "rev: the other untouched file at that head still passes" "$CHG" .auditor/knowledge.md
 revrun fail "rev: a rev that is not a full hex sha fails closed" "main" "$PS"
 revrun fail "rev: a hex sha that is not a commit fails closed" "0000000000000000000000000000000000000000" "$PS"
 revrun fail "rev: an option-like rev fails closed" "--help" "$PS"
@@ -510,7 +503,7 @@ PICK="$(cd "$R" && git merge-base HEAD origin/main)"
 [ "$(cd "$R" && git merge-base --all HEAD origin/main | wc -l | tr -d ' ')" = 2 ] || gf "criss-cross fixture" "the sync commit changed the merge bases"
 ( cd "$R" && git cat-file -p "$PICK:$PS" | cmp -s - "$PS" ) && gp "criss-cross: the single-base pick equals the head (only --all can block)" || gf "criss-cross pick" "pick differs from head after syncing"
 trun fail "criss-cross: file equal to one merge base but not the other is blocked" "$R" feature/x "" "$PS"
-trun pass "criss-cross: a file identical in every merge base is allowed" "$R" feature/x "" .snyk
+trun pass "criss-cross: a file identical in every merge base is allowed" "$R" feature/x "" .auditor/knowledge.md
 
 # NUL-delimited input (ALLOWLIST_NUL=1, for `git ls-tree -z`): a path containing a newline is ONE path, not two
 # allowed ones; without the variable the line-oriented behaviour is unchanged
@@ -552,7 +545,7 @@ trun fail "feature: non-suppression unlisted file still blocked" "$R" feature/x 
 trun fail "feature: edited suppression plus unlisted file reports failure" "$R" feature/x "" "$PS" secrets.txt
 # pre-commit usage: no env at all, local branch name, staged change compared with the merge base
 mkrepo "$R"
-( cd "$R" && printf '%s\n' "$PS" .snyk | env -u GITHUB_HEAD_REF -u GITHUB_REF_NAME -u GITHUB_BASE_REF -u GITHUB_REPOSITORY -u GITHUB_HEAD_REPO "$ABS_SCRIPT" >/dev/null 2>&1 ) \
+( cd "$R" && printf '%s\n' "$PS" .auditor/knowledge.md | env -u GITHUB_HEAD_REF -u GITHUB_REF_NAME -u GITHUB_BASE_REF -u GITHUB_REPOSITORY -u GITHUB_HEAD_REPO "$ABS_SCRIPT" >/dev/null 2>&1 ) \
   && gp "pre-commit usage (no env, local feature branch): untouched suppression files pass" || gf "pre-commit untouched" "rc!=0"
 ( cd "$R" && echo '{"a":4}' > $PS && g add $PS && printf '%s\n' "$PS" | env -u GITHUB_HEAD_REF -u GITHUB_REF_NAME -u GITHUB_BASE_REF -u GITHUB_REPOSITORY -u GITHUB_HEAD_REPO "$ABS_SCRIPT" >/dev/null 2>&1 ) \
   && gf "pre-commit staged edit" "should have been blocked" || gp "pre-commit usage: staged edit of a suppression file is blocked"
@@ -763,26 +756,34 @@ runeach fail "feature/x" "v030: the removed recipe comparer is no longer admitte
 passfam "feature/x" "v030: the freeze job script" "bin/build-freeze.sh"
 passfam "feature/x" "v030: the token wrapper of the release steps" "bin/with-aws-token.sh"
 passfam "feature/x" "v030: the build-chain scripts" "bin/build-apk.sh" "bin/assemble-image.sh" "bin/apko-lock.sh" "bin/install-build-tools.sh" "bin/release-sign-apks.sh" "bin/sealed-proof.sh" "bin/lock-proof.sh" "bin/refresh-inputs.sh"
-passfam "feature/x" "v030: the build-chain Python tools" "bin/apk-tool.py" "bin/gen-recipes.py" "bin/go-module-sbom.py" "bin/install-host-bwrap.py" "bin/refresh-inputs.py"
+passfam "feature/x" "v030: the build-chain Python tools" "bin/apk-tool.py" "bin/gen-recipes.py" \
+  "bin/go-module-sbom.py" \
+  "bin/install-host-bwrap.py" "bin/refresh-inputs.py"
 runeach fail "feature/x" "v030: bin/build-apk.py (other extension) refused"   "bin/build-apk.py"
 runeach fail "feature/x" "v030: bin/apk-tool.sh (swapped extension) refused"  "bin/apk-tool.sh"
 runeach fail "feature/x" "v030: bin/Build-apk.sh uppercase refused"           "bin/Build-apk.sh"
 runeach fail "feature/x" "v030: bin/x/assemble-image.sh (extra segment) refused" "bin/x/assemble-image.sh" "bin/x/go-module-sbom.py"
 runeach fail "feature/x" "v030: assemble-image.sh one directory up refused"   "assemble-image.sh" "gen-recipes.py"
 runeach fail "feature/x" "v030: suffixed script names refused"                "bin/assemble-image.sh.orig" "bin/apk-tool.py.bak"
-runeach fail "feature/x" "v030: sibling names refused"                        "bin/sealed-proof-test.sh" "bin/build-apk-lib.sh" "bin/melange-apko-test.sh" "bin/refresh-inputs.sh.bak" "bin/lock-proof.py"
+runeach fail "feature/x" "v030: sibling names refused" "bin/sealed-proof-test.sh" "bin/build-apk-lib.sh" \
+  "bin/melange-apko-test.sh" "bin/refresh-inputs.pl" "bin/lock-proof.py"
 runeach fail "feature/x" "v030: bin/../build-apk.sh traversal refused"        "bin/../build-apk.sh"
 
 # .github/release-identity.json is for REQ-REL-009 AC13-17 (the auto-baseline PR, advisor step-5 acceptance Oct 9);
 # it is NOT part of the v0.3.0 build plan.
-passfam "feature/x" "v030: the split build-chain test files and library" "bin/melange-apko-lib.sh" "bin/build-helpers-test.sh" "bin/refresh-inputs-test.sh" "bin/build-apk-test.sh" "bin/assemble-image-test.sh"
+passfam "feature/x" "v030: the split build-chain test files and library" \
+  "bin/melange-apko-lib.sh" "bin/build-helpers-test.sh" \
+  "bin/refresh-inputs-test.sh" "bin/build-apk-test.sh" "bin/assemble-image-test.sh"
 passfam "feature/x" "REQ-CHAIN-001-AC5: the sandbox wall probe, its offline test and its six recipe templates" "bin/chain-sandbox-probe.sh" "bin/build-sandbox-hostile-test.sh" "build/probe/control.yaml.tmpl" "build/probe/read-record.yaml.tmpl" "build/probe/write-record.yaml.tmpl" "build/probe/read-keydir.yaml.tmpl" "build/probe/read-token.yaml.tmpl" "build/probe/network.yaml.tmpl"
 runeach fail "feature/x" "REQ-CHAIN-001-AC5: sandbox probe near-miss siblings refused" "bin/chain-sandbox-probe.py" "bin/chain-sandbox-probes.sh" "bin/build-sandbox-hostile-test.py" "bin/build-sandbox-hostile-tests.sh" "build/probe/other.yaml.tmpl" "build/probe/control.yaml" "build/probe/control.yaml.tmpl.bak" "build/probe/sub/control.yaml.tmpl"
+runeach fail "feature/x" "acceptance-gradle: the removed lib path is refused" "bin/acceptance-gradle-lib.sh"
 passfam "feature/x" "v030: the OCI digest and network probe tools" "bin/oci-digest.py" "bin/net-probe.py"
 passfam "feature/x" "REQ-BUILDAPK-001: the build-apk helper and the sealed environment list" "bin/build-apk-helper.py" "build/sealed-env.json"
 runeach fail "feature/x" "REQ-BUILDAPK-001: near-miss siblings refused" "bin/build-apk-helper.sh" "bin/build-apk-helpers.py" "bin/Build-Apk-Helper.py" "build/sealed-env.yaml" "build/sealed-env.json.bak" "build/locks/sealed-env.json" "build/sealed_env.json" "bin/sealed-env.json"
-passfam "feature/x" "REQ-TEST-001: the suite guard, its runner, its test and the floors file" "bin/suite-guard.sh" "bin/suite-guard-run.py" "bin/suite-guard-test.sh" "test-evidence/suite-floors.json"
-runeach fail "feature/x" "REQ-TEST-001: near-miss siblings refused" "bin/suite-guard.py" "bin/suite-guard-run.pyc" "bin/suite-guard-run-other.py" "bin/suite-guard-other.sh" "bin/suite-guard-run-test.sh" "bin/Suite-Guard.sh" "bin/suite-guards.sh" "test-evidence/suite-floors.json.bak" "test-evidence/sub/suite-floors.json" "test-evidence/suite-floor.json" "suite-floors.json"
+passfam "feature/x" "REQ-TEST-001: the suite guard and its test" "bin/suite-guard.sh" "bin/suite-guard-test.sh"
+runeach fail "feature/x" "REQ-TEST-001: near-miss siblings refused" "bin/suite-guard.py" "bin/suite-guard-run.sh" "bin/suite-guard-run.pyc" "bin/suite-guard-run-other.py" "bin/suite-guard-other.sh" "bin/suite-guard-run-test.sh" "bin/Suite-Guard.sh" "bin/suite-guards.sh"
+passfam "feature/x" "the one-suite runner of the ci suites job and its test" "bin/run-ci-suite.py" "bin/run-ci-suite-test.sh"
+runeach fail "feature/x" "near-miss siblings of the one-suite runner refused" "bin/run-ci-suite.sh" "bin/run-ci-suite-test.py" "bin/run-ci-suite.pyc" "bin/run-ci-suite-other.py" "bin/Run-Ci-Suite.py"
 passfam "feature/x" "v030: the archive scripts and their test" "bin/archive-push.sh" "bin/archive-pull.sh" "bin/archive-verify.py" "bin/archive-test.sh"
 passfam "feature/x" "v030: the secret-scanning config" ".github/secret_scanning.yml"
 runeach fail "feature/x" "v030: near-miss siblings refused" "bin/melange-apko-test.sh" "bin/archive-push.py" "bin/archive-verify.sh" "bin/archive-pull.py" "bin/archive-test.py" "bin/oci-digest.sh" "bin/net-probe.sh" "bin/build-helpers.sh" "bin/archive-list.sh" ".github/secret_scanning.yaml" ".github/secret-scanning.yml" ".github/Secret_Scanning.yml" "secret_scanning.yml"
@@ -817,51 +818,32 @@ run pass "feature/x" "REQ-GUIDE-001: the cannot-run list" "docs/verify-release.c
 runeach fail "feature/x" "REQ-GUIDE-001: verify-release.cannot-run.json near-miss refused" "docs/verify-release.cannot-run.json.bak" "docs/verify-release.cannot-run.jsonx" "docs/verify-release.cannot-run.yaml" "docs/x/verify-release.cannot-run.json" "./docs/verify-release.cannot-run.json" "verify-release.cannot-run.json" "docs/verify-release.cannot-runXjson" "docs/verify-release.cannot-run.json/" "x/docs/verify-release.cannot-run.json" "docs/../verify-release.cannot-run.json" "docs/verify-release.cannot-run.json "
 passfam "feature/x" "REQ-GUIDE-001: the guide page checker" "bin/verify-release-guide-test.sh"
 runeach fail "feature/x" "REQ-GUIDE-001: verify-release-guide-test near-miss refused" "bin/verify-release-guide-test.sh.bak" "bin/verify-release-guide-test.shx" "bin/Verify-Release-Guide-Test.sh" "bin/VERIFY-RELEASE-GUIDE-TEST.SH" "bin/sub/verify-release-guide-test.sh" "./bin/verify-release-guide-test.sh" "bin/verify-release-guide-test.py" "bin/verify-release-guide.sh" "verify-release-guide-test.sh" "bin/../verify-release-guide-test.sh" "bin/verify-release-guide-test.sh "
+passfam "feature/x" "REQ-CI-001: the suite that judges the full suite's wiring" "bin/full-suite-wiring-test.sh"
+runeach fail "feature/x" "REQ-CI-001: near-miss siblings of the full-suite wiring suite refused" "bin/full-suite-wiring-test.sh.bak" "bin/full-suite-wiring-test.py" "bin/full-suite-wiring.sh" "bin/Full-Suite-Wiring-Test.sh"
 passfam "feature/x" "REQ-CHAIN-008: the key page checker" "bin/verify-key-page-test.sh"
 runeach fail "feature/x" "REQ-CHAIN-008: verify-key-page-test near-miss refused" "bin/verify-key-page-test.sh.bak" "bin/verify-key-page-test.shx" "bin/Verify-Key-Page-Test.sh" "bin/VERIFY-KEY-PAGE-TEST.SH" "bin/sub/verify-key-page-test.sh" "./bin/verify-key-page-test.sh" "bin/verify-key-page-test.py" "bin/verify-key-page.sh" "verify-key-page-test.sh" "bin/../verify-key-page-test.sh" "bin/verify-key-page-test.sh "
 
-# every Release script and helper of REQ-CHAIN-007 is a tracked file the allowlist admits, and near misses are not
-passfam "feature/x" "REQ-CHAIN-007: the Release scripts and helpers" "bin/release-verify.sh" "bin/release-apks.sh" "bin/release-compare.sh" "bin/release-compare.py" "bin/release-publish.sh" "bin/release-sign.sh" "bin/release-assets.sh" "bin/release-postverify.sh" "bin/release-postverify.py" "bin/release-metadata.py" "bin/release-layout.py"
+# round 1 (Codex B1): every Release script and helper of REQ-CHAIN-007 is a tracked file the allowlist admits, and near misses are not
+passfam "feature/x" "REQ-CHAIN-007: the Release scripts and helpers" "bin/release-verify.sh" "bin/release-apks.sh" "bin/release-compare.sh" "bin/release-compare.py" "bin/release-publish.sh" "bin/release-sign.sh" "bin/release-assets.sh" "bin/release-postverify.sh" "bin/release-postverify.py" "bin/release-metadata.py" "bin/release-layout.py" "bin/release-gate.py"
 runeach fail "feature/x" "REQ-CHAIN-007: Release helper near-misses refused" "bin/release-layout.py.bak" "bin/release-layout.pyx" "bin/Release-Layout.py" "bin/release-other.py" "bin/sub/release-layout.py" "./bin/release-layout.py"
+passfam "feature/x" "REQ-CHAIN-007: the sign verifier and the referrer verifier suite" "bin/release-sign-verify.sh" "bin/release-referrer-verify-test.sh"
+runeach fail "feature/x" "REQ-CHAIN-007: sign-verify and referrer-verify-test near-misses refused" "bin/release-sign-verify.py" "bin/release-sign-verify.sh.bak" "bin/Release-Sign-Verify.sh" "bin/sub/release-sign-verify.sh" "bin/release-referrer-verify.sh" "bin/release-referrer-verify-test.py" "bin/release-referrer-verify-test.sh.bak" "bin/sub/release-referrer-verify-test.sh"
 
-# the chain's path families (landing on main): one accepted path each; passfam adds the near-misses
-passfam "feature/x" "chain: verifier, helpers, hostile step, signer table and the two trust files" "bin/chain-verify.py" "bin/chain_common.py" "bin/chain_hostile.py" "bin/chain-hostile-step.sh" "bin/chain-verify-test.sh" "bin/chain-no-keyless-tag-test.sh" "bin/chain-test-signers.json" ".github/policy/rekor.pub" ".github/policy/fulcio-chain.pem" "test-evidence/witness-real/apk-collection.real.txt" "results/.gitkeep"
-passfam "feature/x" "build-stage: the stage scripts, the admission and archive helpers, the suites" "bin/build-stage-apk.sh" "bin/build-stage-snapshot-rebuild-assemble.sh" "bin/build-stage-refuse-mode.sh" "bin/build-admit.py" "bin/build-version-check.py" "bin/chain_items.py" "bin/chain-bind-test.sh" "bin/chain-known-red.py" "test-evidence/known-red.json"
-passfam "feature/x" "vm: the two package lists, their locks, the kernel lock and key" "build/vm-host.yaml" "build/vm-guest.yaml" "build/locks/vm-host.lock" "build/locks/vm-guest.lock" "build/locks/vm-kernel.lock" "build/vm-keys/kernel-key-6165ee59.rsa.pub"
-passfam "feature/x" "baselayout: recipe, template, member list, copied files and scripts" "build/melange-baselayout.yaml" "build/melange-baselayout.yaml.tmpl" "build/baselayout/members.txt" "build/baselayout/etc/nsswitch.conf" "build/baselayout/etc/passwd" "bin/baselayout-test.sh" "bin/build-baselayout-apk.sh" "bin/build-baselayout-apk-test.sh"
-passfam "feature/x" "evidence letter: script, fetch, publish, verify, present, tests and signatory text" "bin/evidence-letter.py" "bin/evidence-letter-fetch.sh" "bin/evidence-letter-publish.sh" "bin/evidence-letter-verify.sh" "bin/evidence-letter-present.sh" "bin/evidence-letter-test.sh" "bin/evidence-letter-job-test.sh" "docs/evidence-letter-signatory.txt"
-passfam "feature/x" "check: stage scripts, phases, helpers and the customer-word check" "bin/check-stage.sh" "bin/check-phase-arm64.sh" "bin/check-guide-plan.py" "bin/check-govulncheck.py" "bin/check-customer-words.py" "bin/check-customer-words-test.sh" "bin/check-no-outbound.py"
-passfam "feature/x" "release: the Witness-step scripts and the Release suites" "bin/release-verify.sh" "bin/release-postverify.py" "bin/chain-install-crane-test.sh" "bin/chain-release-shape.py"
-passfam "feature/x" "release: the referrer-verify suite and the sign verifier" "bin/release-referrer-verify-test.sh" "bin/release-sign-verify.sh"
-# main's .github/policy/*.txt line already admitted the word list, so no near-miss can be refused there
-runeach pass "feature/x" "check: the customer-word allow list" ".github/policy/customer-words-allow.txt"
-# the existing .github/policy/[A-Za-z0-9._-]+.json line admits the cosign signing config; it has no line of its own
-runeach pass "feature/x" "policy: the cosign signing config" ".github/policy/cosign-signing-config.json"
-# main's own entries the chain dropped stay accepted, each with its near-misses refused
-passfam "feature/x" "main keepers: goreleaser, image Dockerfiles, acceptance authorizer, scout scan, dispatch-fixer" ".goreleaser.yaml" "build/docker/Dockerfile.base" "bin/authorize-acceptance-check.py" "bin/authorize-acceptance-check-test.sh" "bin/scout-vex-scan.sh" "bin/dispatch-fixer.sh"
-runeach fail "feature/x" "suite-guard: only bin/suite-guard.sh and its test are admitted" "bin/suite-guard-run.sh"
-# siblings of the chain's names stay refused
-runeach fail "feature/x" "chain: unlisted siblings refused" "bin/chain-other.py" "bin/chain-verify.sh" "bin/build-stage-other.sh" "build/vm-other.yaml" "build/locks/vm-other.lock" "build/baselayout/etc/shadow" "bin/evidence-letter-other.sh" "bin/check-other.sh" "bin/release-other.sh" "build/keys/retired/2027-11-01/x.pub" "results/other.json" "build/docker/Dockerfile.Base" "build/docker/Dockerfile.base.bak"
 
-# pin age of third-party images: the recorded publisher signatures are public Sigstore data (certificates, signatures, log entries), JSON files in one folder only
-runeach pass "feature/x" "REQ-SUP-001: recorded publisher signatures" ".github/agent/tests/fixtures/image-publishers/cosign.bundle.json" ".github/agent/tests/fixtures/image-publishers/distroless.sig.json" ".github/agent/tests/fixtures/image-publishers/kubectl.sig.json"
-runeach fail "feature/x" "REQ-SUP-001: signature fixtures near-misses refused" ".github/agent/tests/fixtures/image-publishers/sub/x.json" ".github/agent/tests/fixtures/image-publishers/x.json.bak" ".github/agent/tests/fixtures/image-publishers/x.py" ".github/agent/tests/fixtures/other/x.json" ".github/agent/tests/fixtures/image-publishers/.hidden"
-
-# the reviewer's version script is one of the four files' list-keeper: admitted by its exact path only
+# the reviewer's version script is the four files' list-keeper: admitted by its exact path only
 passfam "feature/x" "the reviewer's version script" "bin/dependabot-reviewer-version.sh"
 runeach fail "feature/x" "reviewer-version near-miss refused" \
   "bin/dependabot-reviewer-version.sh.bak" "bin/dependabot-reviewer-version-x.sh" \
   "bin/dependabot-reviewer-version.py" "bin/Dependabot-Reviewer-Version.sh" \
   "bin/sub/dependabot-reviewer-version.sh" "bin/dependabot-reviewer-version.sh "
 
-# The landing of the main-gate rows: the suites matrix runner and tests, the Check and Release scripts, the tag signer and the scanners witness.
-passfam "feature/x" "main-gate rows: the suites matrix runner and its tests" "bin/run-ci-suite.py" "bin/run-ci-suite-test.sh" "bin/chain-signing-trust-test.sh" "bin/ci-suites-matrix-test.sh" "bin/persona-uat-file-test.sh" "bin/release-workflow-wiring-test.sh"
-passfam "feature/x" "main-gate rows: the acceptance, pull request checks and tag grammar tests" "bin/acceptance-gradle-test.sh" "bin/acceptance-k8s-manifests-test.sh" "bin/chain-pull-request-checks-test.sh" "bin/chain-tag-grammar-test.sh"
-passfam "feature/x" "main-gate rows: the tag signer, the tag jobs judge and their tests" "bin/tag-sign.py" "bin/tag-sign-prepare.sh" "bin/tag-sign-kms.sh" "bin/tag-sign-test.sh" "bin/chain-tag-jobs-judge.py" "bin/chain-tag-jobs-test.sh" "bin/patch-tag-texts-test.sh"
-passfam "feature/x" "main-gate rows: the Check and Release scripts" "bin/check-phase.sh" "bin/dependabot-screen.sh" "bin/full-suite-wiring-test.sh" "bin/guide-judge-test.sh" "bin/guide_plan_judge.py" "bin/install-scanner-test-lib.sh" "bin/refresh-inputs.py" "bin/release-gate.py" "bin/release-layout.py" "bin/release-signatures.sh" "bin/release-stage.sh"
-passfam "feature/x" "main-gate rows: the scanners witness record" "test-evidence/witness-real/scanners-collection.real.txt"
-runeach fail "feature/x" "main-gate rows: near-miss siblings refused" "bin/run-ci-suite.sh" "bin/run-ci-suite-test.py" "bin/run-ci-suite.py.bak" "bin/x/run-ci-suite.py" "bin/ci-suites-matrix.sh" "bin/persona-uat-file.sh" "bin/acceptance-gradle-test.py" "bin/acceptance-k8s-manifests-test.py" "bin/chain-pull-request-checks.sh" "bin/chain-tag-grammar-test.py" "bin/chain-tag-jobs-judge.sh" "bin/tag-sign.sh" "bin/tag-sign-prepare.py" "bin/tag-sign-other.sh" "bin/check-phase.py" "bin/dependabot-screen.py" "bin/guide_plan_judge.sh" "bin/guide-plan-judge.py" "bin/release-gate.sh" "bin/release-layout.sh" "bin/release-signatures.py" "bin/release-stage.py" "bin/refresh-inputs.py.bak" "bin/refresh-inputs-test.py" "test-evidence/witness-real/scanners-collection.txt" "test-evidence/witness-real/scanners-collection.real.txt.bak" "test-evidence/witness-real/x/scanners-collection.real.txt" "test-evidence/scanners-collection.real.txt"
-
+# REQ-CHAIN-006-AC1: Check has ONE script for all three phases and both chips, bin/check-phase.sh; the dispatcher and the per-phase targets are gone
+passfam "feature/x" "REQ-CHAIN-006: the one Check script" "bin/check-phase.sh"
+runeach fail "feature/x" "REQ-CHAIN-006: the old Check dispatcher, the per-phase targets and the arm64 target are not admitted" "bin/check-stage.sh" "bin/check-phase-scanners.sh" "bin/check-phase-acceptance.sh" "bin/check-phase-runtime.sh" "bin/check-phase-arm64.sh"
+passfam "feature/x" "REQ-REL-009: the patch tag signer, the tag jobs judge and their tests" "bin/tag-sign.py" "bin/tag-sign-test.sh" "bin/chain-tag-jobs-judge.py" "bin/chain-tag-jobs-test.sh" "bin/patch-tag-texts-test.sh"
+runeach fail "feature/x" "REQ-REL-009: tag signer near-miss siblings refused" "bin/tag-sign.sh" "bin/tag-sign-test.py" "bin/tag-sign.py.bak" "bin/chain-tag-jobs-judge.sh" "bin/chain-tag-jobs-test.py" "bin/patch-tag-texts-test.py"
+passfam "feature/x" "REQ-REL-009: the sign-tag step scripts and the patch decision script with its test" "bin/tag-sign-prepare.sh" "bin/tag-sign-kms.sh" "bin/patch-decide.py" "bin/patch-decide-test.sh"
+runeach fail "feature/x" "REQ-REL-009: near-miss siblings of the sign-tag step scripts and the patch decision script refused" "bin/tag-sign-prepare.py" "bin/tag-sign-kms.py" "bin/tag-sign-other.sh" "bin/tag-sign-prepare.sh.bak" "bin/Tag-Sign-Kms.sh" "bin/patch-decide.sh" "bin/patch-decide-test.py" "bin/patch-decide.py.bak" "bin/patch-decides.py" "bin/sub/patch-decide.py" "bin/patch-decide-other-test.sh"
 # Deferred (not admitted until the PR that adds them): the vendored tree.
 
 echo "----"

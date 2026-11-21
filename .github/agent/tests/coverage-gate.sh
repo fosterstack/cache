@@ -34,7 +34,7 @@ unset UNIT_SHARD_DIR UNIT_SHARD_RUNNER UNIT_SHARDS UNIT_SHARD_TIMEOUT   # the un
 bash .github/agent/tests/coverage-shard-test.sh > "$W/shardtest.log" 2>&1 \
   || { tail -25 "$W/shardtest.log" >&2; echo "::error::the shard partition test failed" >&2; exit 1; }
 tail -1 "$W/shardtest.log"
-bash .github/agent/tests/unit-shards.sh "$W/unit" > "$W/unit.log" 2>&1 & p_unit=$!   # the parser unit tests as UNIT_SHARDS (4) parallel shards under coverage; every shard's exit status is checked and unit-shard-sum.py proves every test finished once
+bash .github/agent/tests/unit-shards.sh "$W/unit" > "$W/unit.log" 2>&1 & p_unit=$!   # the parser unit tests as UNIT_SHARDS (8) parallel shards under coverage; every shard's exit status is checked and unit-shard-sum.py proves every test finished once
 bash .github/agent/tests/auditor-matrix-test.sh > "$W/matrix.log" 2>&1 & p_matrix=$!
 # the k8s harness's fenced exclusion (advisor 0084), run under coverage with the rest
 bash .github/agent/tests/k8s-harness-fence-test.sh > "$W/fence.log" 2>&1 & p_fence=$!

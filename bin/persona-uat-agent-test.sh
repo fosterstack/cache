@@ -270,10 +270,15 @@ cat >"$work/proof.py" <<'PY'
 import importlib.util, json, os, sys
 sp = importlib.util.spec_from_file_location("driver", sys.argv[1]); m = importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
 a = json.load(open(sys.argv[2]))
-print("PROOF" if m.verified_digest(a, sys.argv[3]) else "NOPROOF")
+print("PROOF" if m.verified_digest(a, sys.argv[3], key_ok=len(sys.argv) > 4) else "NOPROOF")
 PY
 driver_py="$root/bin/persona-uat.py"
-verdict() { python3 "$work/proof.py" "$driver_py" "$work/$1/out.json" "$RC"; }
+# key_ok is true (the reviewer'"'"'s release.rsa.pub equals build/keys/release.rsa.pub: bin/persona-uat-test.sh cmpk22-24) only for
+# the three release-key proof cases; every other case is judged with key_ok false
+verdict() {
+  local k=(); case "$1" in px-key-release|px-key-release-eq|px-key-release-after) k=(key_ok) ;; esac
+  python3 "$work/proof.py" "$driver_py" "$work/$1/out.json" "$RC" ${k[@]+"${k[@]}"}
+}
 ISS="https://token.actions.githubusercontent.com"
 IDRE="^https://github.com/example/cache/.github/workflows/stage-promote.yml@refs/tags/v1.0.0$"
 IDF='"--certificate-identity-regexp='"$IDRE"'","--certificate-oidc-issuer='"$ISS"'"'
@@ -343,6 +348,19 @@ PROOFCASES=(
  'px-abbrev-ver|{"type":"shell","tool":"cosign","args":["verify","--ver","'"$RC"'"]}|NOPROOF'
  'px-cluster-h|{"type":"shell","tool":"cosign","args":["verify","-dh","'"$RC"'"]}|NOPROOF'
  'px-att-help-true|{"type":"shell","tool":"cosign","args":["verify-attestation","--type","slsaprovenance","--help=true","'"$RC"'"]}|NOPROOF'
+ 'px-key-release|{"type":"shell","tool":"cosign","args":["verify","--key","release.rsa.pub","'"$RC"'"]}|PROOF'
+ 'px-key-release-eq|{"type":"shell","tool":"cosign","args":["verify","--key=release.rsa.pub","'"$RC"'"]}|PROOF'
+ 'px-key-release-after|{"type":"shell","tool":"cosign","args":["verify","'"$RC"'","--key","release.rsa.pub"]}|PROOF'
+ 'px-key-other-file|{"type":"shell","tool":"cosign","args":["verify","--key","cosign.pub","'"$RC"'"]}|NOPROOF'
+ 'px-key-release-dotslash|{"type":"shell","tool":"cosign","args":["verify","--key","./release.rsa.pub","'"$RC"'"]}|NOPROOF'
+ 'px-key-release-abs|{"type":"shell","tool":"cosign","args":["verify","--key","/tmp/release.rsa.pub","'"$RC"'"]}|NOPROOF'
+ 'px-key-release-suffix|{"type":"shell","tool":"cosign","args":["verify","--key","release.rsa.pub.evil","'"$RC"'"]}|NOPROOF'
+ 'px-key-release-kms|{"type":"shell","tool":"cosign","args":["verify","--key","awskms:///alias/fosterstack-release-signing","'"$RC"'"]}|NOPROOF'
+ 'px-key-release-insecure|{"type":"shell","tool":"cosign","args":["verify","--key","release.rsa.pub","--insecure-ignore-tlog","'"$RC"'"]}|NOPROOF'
+ 'px-key-release-offline|{"type":"shell","tool":"cosign","args":["verify","--key","release.rsa.pub","--offline","'"$RC"'"]}|NOPROOF'
+ 'px-key-release-identity|{"type":"shell","tool":"cosign","args":["verify","--key","release.rsa.pub",'"$IDF"',"'"$RC"'"]}|NOPROOF'
+ 'px-key-release-twice|{"type":"shell","tool":"cosign","args":["verify","--key","release.rsa.pub","--key","other.pub","'"$RC"'"]}|NOPROOF'
+ 'px-key-release-otherdigest|{"type":"shell","tool":"cosign","args":["verify","--key","release.rsa.pub","'"$OTHER"'"]}|NOPROOF'
 )
 for pc in "${PROOFCASES[@]}"; do
   name=${pc%%|*}; rest=${pc#*|}; act=${rest%|*}; want=${rest##*|}

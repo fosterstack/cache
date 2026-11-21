@@ -19,10 +19,13 @@ sha, so an old record then names a different sha and does not apply.
       line: no such pull request, or no readable writers policy, so the record rule stands. Exit 3: a GitHub API
       error, on stderr.
       It asks GitHub through gh with the caller's token and reads commits as git objects of DIR.
+  verify ... --compare-json FILE --pulls-json FILE (the judge, when bump finds no Dependabot pull request)
+      With --compare-json FILE (`gh api repos/R/compare/main...SHA?per_page=100`) and --pulls-json FILE (`gh api repos/R/commits/SHA/pulls`) a Dependabot pull request whose commits are Dependabot's passes without a record (bot_authored).
 
 Every doubt fails closed: a missing or malformed answer, a head that is not 40 lower-case hex, a missing policy file.
 """
 import argparse
+import datetime
 import json
 import os
 import re
@@ -32,7 +35,7 @@ import sys
 RECORD_MESSAGE = "audit record"       # the one fixed, neutral line the writer commits; the record names no tool, model or reviewer
 RECORD_FILE = "audit-record"          # the one file the record commit adds (createCommitOnBranch needs a change to make a commit); its content is the head sha
 WEB_FLOW = ("web-flow", 19864447)     # GitHub's own committer for commits it makes and signs on an actor's behalf
-_SHA = re.compile(r"^[0-9a-f]{40}$")
+_SHA = re.compile(r"[0-9a-f]{40}")
 WRITERS_PATH = ".github/policy/audit-writers.json"
 DEPENDABOT = ("dependabot[bot]", 49699333)   # GitHub's own Dependabot, the user of a pull request it opened
 # the check run dependabot-reviewer.yml publishes as its verdict on a head
@@ -42,6 +45,7 @@ OTHER_VERSION = "a success of another reviewer version"
 # reviewer_verdict's answer for a commit the reviewer has not run on; no string a run can carry equals it
 NO_RUN = object()
 MAX_UPDATES = 50                             # the merges of main followed back from a head
+ITEMS_PATH = ".auditor/accepted-items.json"
 
 
 def record_branch(head):
@@ -75,7 +79,7 @@ def verify_record(head, base_ref, ref, commit, writers):
         return False, "the pull request's base branch is unknown"
     if base_ref != "main":
         return True, ""
-    if not isinstance(head, str) or not _SHA.match(head):
+    if not isinstance(head, str) or not _SHA.fullmatch(head):
         return False, "the pull request's head sha is not 40 lower-case hex"
     allowed = _writers(writers)
     if allowed is None:
@@ -84,7 +88,8 @@ def verify_record(head, base_ref, ref, commit, writers):
     if not isinstance(ref, dict) or ref.get("ref") != "refs/heads/" + want:
         return False, "no passed-audit record for this head: there is no branch %s" % want
     obj = ref.get("object")
-    if not isinstance(obj, dict) or obj.get("type") != "commit" or not isinstance(obj.get("sha"), str) or not _SHA.match(obj["sha"]):
+    if not isinstance(obj, dict) or obj.get("type") != "commit" or not (
+            isinstance(obj.get("sha"), str) and _SHA.fullmatch(obj["sha"])):
         return False, "the record branch %s does not point at a commit" % want
     if not isinstance(commit, dict) or commit.get("sha") != obj["sha"]:
         return False, "the record commit answer is not the commit the branch %s points at" % want
@@ -149,7 +154,7 @@ def bump_pull(head, pulls):
 
 
 def _reviewer_version(root):
-    """The reviewer's version, from the script of the checkout of main that holds the list of the files behind it."""
+    """The reviewer's version, from the version file of the checkout of main that holds the list of the files behind it."""
     out = subprocess.run(["bash", "bin/dependabot-reviewer-version.sh"],
                          cwd=root, capture_output=True, text=True, check=True)
     return out.stdout.strip()
@@ -204,17 +209,52 @@ def bump_passes(head, verdict_of, update_of):
     return False, "the Dependabot reviewer has not passed this head or any of the %d before it" % MAX_UPDATES
 
 
-# matches v1.2.3, v0.3.0, v1.0.0-rc.2; refuses v1.2, v01.2.3, v1.2.3-rc1, v1.2.3-rc.
-_RELEASE_TAG = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[0-9]+)?$")
-# matches v1.2.3, v0.9.10; refuses v1.2.0, v1.2.3-rc.1, v01.2.3, v1.2.
-_PATCH_TAG = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.[1-9][0-9]*$")
+def _dependabot_prs(pulls):
+    """True when GitHub lists at least one pull request for the head and every one was opened by Dependabot itself."""
+    if not isinstance(pulls, list) or not pulls:
+        return False
+    for pr in pulls:
+        u = pr.get("user") if isinstance(pr, dict) else None
+        if not (isinstance(u, dict) and (u.get("login"), u.get("id")) == DEPENDABOT and u.get("type") == "Bot"):
+            return False
+    return True
+
+
+def bot_authored(compare, pulls, writers):
+    """True for a Dependabot pull request (every PR of the head is Dependabot's) whose commits past main are all
+    verified by GitHub, committed by an audit writer or GitHub itself, and authored by Dependabot or an audit writer.
+    The author field is free text, so it only narrows: the PR's author and the signed committer carry the trust.
+    A list that is cut, or any other PR author, committer or signature, is False and the record rule stands."""
+    allowed = _writers(writers)
+    commits = compare.get("commits") if isinstance(compare, dict) else None
+    if allowed is None or not _dependabot_prs(pulls):
+        return False
+    if not isinstance(commits, list) or not commits or compare.get("total_commits") != len(commits):
+        return False
+    bots = allowed | {DEPENDABOT}
+    for c in commits:
+        if not isinstance(c, dict) or not isinstance(c.get("commit"), dict):
+            return False
+        ver, a, k = c["commit"].get("verification"), c.get("author"), c.get("committer")
+        if not (isinstance(ver, dict) and ver.get("verified") is True and ver.get("reason") == "valid"
+                and isinstance(a, dict) and a.get("type") == "Bot" and (a.get("login"), a.get("id")) in bots
+                and isinstance(k, dict) and (k.get("login"), k.get("id")) in allowed | {WEB_FLOW}):
+            return False
+    return True
+
+
+# matches v1.2.3, v0.3.0, v1.0.0-rc.2, v1.0.0-rc2 (the chain's form); refuses v1.2, v01.2.3, v1.2.3-rc, v1.2.3-rc.
+# fullmatch: a trailing newline is not part of a tag
+_RELEASE_TAG = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.?[0-9]+)?")
+# matches v1.2.3, v0.9.10; refuses v1.2.0, v1.2.3-rc.1, v1.2.3-rc1, v01.2.3, v1.2.
+_PATCH_TAG = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.[1-9][0-9]*")
 # matches "Audit-approved: " plus 40 lower-case hex; refuses upper-case hex, 39 or 41 digits, a trailing space.
-_APPROVED = re.compile(r"^Audit-approved: ([0-9a-f]{40})$")
+_APPROVED = re.compile(r"Audit-approved: ([0-9a-f]{40})")
 _SIG_BEGIN = ("-----BEGIN SSH SIGNATURE-----", "-----BEGIN SIGNED MESSAGE-----", "-----BEGIN PGP SIGNATURE-----")
 
 
 def is_patch_tag(tag):
-    return isinstance(tag, str) and bool(_PATCH_TAG.match(tag))
+    return isinstance(tag, str) and bool(_PATCH_TAG.fullmatch(tag))
 
 
 def _approval(tag_object):
@@ -231,21 +271,51 @@ def _approval(tag_object):
         if ln in _SIG_BEGIN:
             break
         if ln.strip().lower().startswith("audit-approved"):
-            m = _APPROVED.match(ln)
+            m = _APPROVED.fullmatch(ln)
             if not m:
                 return None
             found.append(m.group(1))
     return found[0] if len(found) == 1 else None
 
 
-def verify_release(tag, tag_object, tagged_sha, ref, commit, policy):
+NO_ITEMS = {"accepted_items": []}      # what a missing .auditor/accepted-items.json means: no item is open
+
+
+def _is_date(value):
+    try:
+        return isinstance(value, str) and datetime.date.fromisoformat(value).isoformat() == value
+    except ValueError:
+        return False
+
+
+def _open_item(items, today):
+    """Why the parsed .auditor/accepted-items.json holds the release (an owner-decision item is open, or the file is
+    malformed), else None. An item is read as the auditor reads it: `threshold` at_or_above is an item waiting on the
+    owner (auditor-run.py:2430-2441), and an item whose `expiry` has come (ISO dates compare as text) is reopened
+    (auditor-run.py:1810); the auditor has no way to close an at_or_above item, so the gate never does either."""
+    listed = items.get("accepted_items") if isinstance(items, dict) else None
+    if not isinstance(listed, list) or not all(isinstance(i, dict) for i in listed):
+        return "%s is malformed: it must be an object whose accepted_items is a list of objects" % ITEMS_PATH
+    if not all(_is_date(i["expiry"]) for i in listed if "expiry" in i):
+        return "%s is malformed: expiry is not a date (YYYY-MM-DD)" % ITEMS_PATH
+    if any(i.get("threshold") == "at_or_above" or (i.get("expiry") and i["expiry"] <= today) for i in listed):
+        return "an owner-decision item is open or expired in %s" % ITEMS_PATH
+    return None
+
+
+def verify_release(tag, tag_object, tagged_sha, ref, commit, policy, items, today):
     """Gate 7 (release process rule 7): (True, "") for a patch tag or for a release tag whose commit has a
-    passed-audit record that the owner's signed tag message approves; else (False, reason).
+    passed-audit record that the owner's signed tag message approves; else (False, reason). Every tag is refused while
+    an owner-decision item is open in `items` (the parsed .auditor/accepted-items.json, REQ-AUD-17 AC5), `today` being
+    an ISO date.
     The tag's signature is verified by the admission step before this runs, so a line in the message is the
     owner's own."""
-    if not isinstance(tag, str) or not _RELEASE_TAG.match(tag):
+    if not isinstance(tag, str) or not _RELEASE_TAG.fullmatch(tag):
         return False, "the tag is not a release version"
-    if _PATCH_TAG.match(tag):
+    held = _open_item(items, today)
+    if held:
+        return False, held
+    if _PATCH_TAG.fullmatch(tag):
         return True, ""
     approved = _approval(tag_object)
     if approved is None:
@@ -268,7 +338,7 @@ def plan_release(head, cmp_json, actor=None, policy=None):
         return False, "the audit policy (%s of the default branch) is missing or malformed" % WRITERS_PATH
     if not isinstance(actor, str) or actor not in pol[1]:
         return False, "the dispatching actor is not named as a dispatcher in %s" % WRITERS_PATH
-    if not isinstance(head, str) or not _SHA.match(head):
+    if not isinstance(head, str) or not _SHA.fullmatch(head):
         return False, "the commit sha is not 40 lower-case hex"
     if not isinstance(cmp_json, dict) or cmp_json.get("status") not in ("identical", "ahead"):
         return False, "the commit is not on main (compare main...commit)"
@@ -287,7 +357,7 @@ def plan_record(number, head, pr, actor=None, policy=None):
         return False, "the dispatching actor is not named as a dispatcher in %s" % WRITERS_PATH
     if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
         return False, "the pull request number is not a positive integer"
-    if not isinstance(head, str) or not _SHA.match(head):
+    if not isinstance(head, str) or not _SHA.fullmatch(head):
         return False, "the head sha is not 40 lower-case hex"
     if not isinstance(pr, dict) or pr.get("number") != number:
         return False, "the pull request answer is missing or is another pull request"
@@ -305,7 +375,7 @@ def plan_record(number, head, pr, actor=None, policy=None):
 
 
 def _gh(path):
-    """The parsed answer of `gh api PATH` (gh and its token as the caller set them); None for a 404; _ApiError for
+    """The parsed answer of `gh api <endpoint>` (gh and its token as the caller set them); None for a 404; _ApiError for
     any other failure."""
     p = subprocess.run(["gh", "api", path], capture_output=True, text=True)
     if p.returncode != 0:
@@ -368,6 +438,13 @@ def _load(path):
         return None
 
 
+def _load_items(path):
+    """The parsed items file; NO_ITEMS when it is missing; None (malformed) when it exists but cannot be read."""
+    if not os.path.exists(path):
+        return NO_ITEMS
+    return _load(path)
+
+
 def main(argv):
     ap = argparse.ArgumentParser(prog="audit-record.py")
     sub = ap.add_subparsers(dest="cmd")
@@ -377,6 +454,8 @@ def main(argv):
     v.add_argument("--base-root", required=True)
     v.add_argument("--ref-json")
     v.add_argument("--commit-json")
+    v.add_argument("--compare-json")
+    v.add_argument("--pulls-json")
     r = sub.add_parser("release")
     r.add_argument("--tag", required=True)
     r.add_argument("--tag-object", required=True)
@@ -409,7 +488,9 @@ def main(argv):
         except OSError:
             obj = None
         ok, why = verify_release(a.tag, obj, a.tagged_sha, _load(a.ref_json), _load(a.commit_json),
-                                 _load(os.path.join(a.base_root, WRITERS_PATH)))
+                                 _load(os.path.join(a.base_root, WRITERS_PATH)),
+                                 _load_items(os.path.join(a.base_root, ITEMS_PATH)),
+                                 datetime.datetime.now(datetime.timezone.utc).date().isoformat())
         done = ("no whole-release record needed" if is_patch_tag(a.tag)
                 else "the owner's approval matches the passed-audit record")
         print("audit-record: " + ("release %s: %s" % (a.tag, done) if ok else why))
@@ -433,8 +514,11 @@ def main(argv):
         return 0 if ok else 1
     if a.cmd != "verify":
         return 2
-    ok, why = verify_record(a.head, a.base_ref, _load(a.ref_json), _load(a.commit_json),
-                            _load(os.path.join(a.base_root, WRITERS_PATH)))
+    writers = _load(os.path.join(a.base_root, WRITERS_PATH))
+    ok, why = verify_record(a.head, a.base_ref, _load(a.ref_json), _load(a.commit_json), writers)
+    if not ok and a.compare_json and a.pulls_json and bot_authored(_load(a.compare_json), _load(a.pulls_json), writers):
+        print("audit-record: " + a.head + " is a Dependabot pull request with Dependabot's commits: no record needed")
+        return 0
     print("audit-record: " + (why if not ok else ("passed-audit record found for " + a.head if a.base_ref == "main" else "base %r is not main: nothing to check" % a.base_ref)))
     return 0 if ok else 1
 

@@ -44,6 +44,8 @@ import uuid
 import shlex as _shlex
 
 warnings.simplefilter("ignore")        # nothing but the fixed lines is ever printed: no interpreter warning either
+RC_PERSONAS = ("gradle-platform-engineer", "maven-jenkins-ci", "readme-evaluator", "on-call-engineer")   # the release candidate runs these four; compliance-reviewer (it needs a signed, published image) runs weekly only
+RC_TAG = "rc"             # the tag the rc job pushed Build's image under on the runner's registry (persona-uat.yml); the on-call engineer's cluster holds it under that name
 PERSONAS = ("gradle-platform-engineer", "maven-jenkins-ci", "compliance-reviewer", "readme-evaluator", "on-call-engineer")
 TOOLS_FOR = {"maven-jenkins-ci": ("jenkins", "gitlab-runner"), "on-call-engineer": ("kind",)}
 DIGEST_REF = re.compile(r"^[a-z0-9][^\s@]*@sha256:[0-9a-f]{64}$")
@@ -86,8 +88,8 @@ INSTRUCTIONS = {
         "build to this cache from a Jenkins job, using the Jenkins container you are given; a GitLab runner container is given too (see the environment "
         "limits: do not try to run a GitLab job, report what a customer could not do here as friction)."),
     "compliance-reviewer": (
-        "You are a compliance reviewer. Following the documentation's guide, verify the image's signature (with the cosign tool: `cosign verify` of the image under "
-        "test named by the digest reference you are given, with the promotion workflow's certificate identity and the GitHub OIDC issuer the guide shows), fetch and "
+        "You are a compliance reviewer. Following the documentation's guide, verify the image's signature (with the cosign tool: `cosign verify --key release.rsa.pub` of the image under "
+        "test named by the digest reference you are given, with the release key file saved in your working directory, as the guide shows), fetch and "
         "inspect its SBOM, and read its VEX statements, exactly as the guide says, and judge whether the evidence is complete and verifiable."),
     "readme-evaluator": (
         "You are an evaluator who has only the README and ten minutes. Decide, from the README alone, what the product is, and try "
@@ -97,6 +99,12 @@ INSTRUCTIONS = {
         "version and a rollback to the previous one on the Kubernetes cluster you are given (its kubeconfig is in your working "
         "directory), and find and read the logs you need to diagnose a problem."),
 }
+RC_ON_CALL = (
+    "You are an on-call engineer in the middle of an incident. The Kubernetes cluster you are given (its kubeconfig is in your working directory) is empty: it runs no "
+    "release of this product. Following the documentation, install release 0.2.2 (the image ghcr.io/fosterstack/cache:0.2.2, which the cluster can pull), "
+    "then perform an upgrade from it to the release candidate image %s, which is already in the "
+    "cluster's node (use exactly that reference with imagePullPolicy IfNotPresent: the cluster cannot pull it), then a rollback to 0.2.2, "
+    "and find and read the logs you need to diagnose a problem.")
 LIMITS = (
     "each command runs in its own disposable container, so a foreground `kubectl port-forward` followed by commands 'in another terminal' cannot be held across actions",
     "there is no pre-seeded Jenkins job or credentials and no GitLab server or runner registration (the GitLab runner container exposes its metrics endpoint only)",
@@ -833,6 +841,17 @@ class Cluster:
         self.server, self.port, self.ca = m.group(1), int(m.group(2)), c.group(1)
         self.kubectl("wait", "--for=condition=Ready", "node", "--all", "--timeout=120s")       # `kind create cluster --wait 0s` returns before the node is Ready
 
+    def load(self, ref, timeout):
+        """the rc image goes into the kind node from the runner's loopback registry, which the node cannot reach: crane pull of ref to an archive, kind load of the archive (the node then holds it under ref)"""
+        arch = os.path.join(self.dir, "rc-image.tar")
+        try:
+            if host_run(["crane", "pull", ref, arch], timeout=timeout).returncode != 0:
+                raise RuntimeError("crane pull of the image failed")
+            if host_run(["kind", "load", "image-archive", arch, "--name", KIND_NAME], timeout=timeout).returncode != 0:
+                raise RuntimeError("kind load of the image failed")
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("loading the image into the cluster timed out")
+
     def join(self, docker, net):
         """the kind node joins the persona's network (by its own name, which the API server's certificate names), so the persona reaches the cluster without the host's loopback"""
         if docker.call("network", "connect", net, KIND_NODE).returncode != 0:
@@ -1399,11 +1418,22 @@ def cosign_operation(argv):
     return (sub, pos, flags) if sub else None
 
 
-# the ONLY flags a proving `cosign verify` may carry (docs/verify-images.md shows exactly the identity and the issuer; the rest is presentation). Anything else - a --key,
+# the ONLY flags a proving `cosign verify` may carry (docs/verify-images.md shows exactly the identity and the issuer, or `--key release.rsa.pub` from v0.3.0; the rest is presentation). Anything else - another --key,
 # --certificate, --offline, --insecure-ignore-*, a trusted root or Rekor override - changes WHAT is verified, so it proves nothing about FosterStack's signature.
 PROOF_FLAGS = {"--certificate-identity", "--certificate-identity-regexp", "--certificate-oidc-issuer", "-o", "--output", "--verbose", "-d", "--platform", "-a", "--annotations"}
+RELEASE_KEY_FILE = "release.rsa.pub"                                  # docs/verify-images.md: the release public key, fetched as build/keys/release.rsa.pub at the tag
+IDENTITY_FLAGS = {"--certificate-identity", "--certificate-identity-regexp", "--certificate-oidc-issuer"}
 OIDC_ISSUER = "https://token.actions.githubusercontent.com"       # docs/verify-images.md: --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
 PROMOTION_WORKFLOW = "stage-promote.yml"                           # docs/verify-images.md: the current chain signs the public image in stage-promote.yml
+
+
+def key_matches(sandbox, repo):
+    """True when release.rsa.pub in the reviewer's working folder has the same bytes as <repo>/build/keys/release.rsa.pub"""
+    mine = os.path.join(sandbox, RELEASE_KEY_FILE)
+    if os.path.islink(mine) or not os.path.isfile(mine):
+        return False
+    with open(mine, "rb") as f, open(os.path.join(repo, "build", "keys", RELEASE_KEY_FILE), "rb") as g:
+        return f.read() == g.read()
 
 
 def image_repo_path(image):
@@ -1428,11 +1458,11 @@ def identity_documented(value, repo_path):
     return re.fullmatch(r"[0-9][0-9A-Za-z.-]*", v[len(prefix):]) is not None
 
 
-def verified_digest(answer, image):
-    """the compliance reviewer's proof of exercising the RC image, derived from the public guide (docs/verify-images.md): a recorded ACTION whose tool is cosign and whose operation
+def verified_digest(answer, image, key_ok=False):
+    """the compliance reviewer's proof that it verified the image under test, derived from the public guide (docs/verify-images.md): a recorded ACTION whose tool is cosign and whose operation
     PARSES as `cosign verify` (never verify-attestation alone: the guide verifies provenance with gh, and a bare attestation proves nothing about the signature) of exactly ONE
     image argument that IS the image under test (the same registry and repository, @sha256:<the candidate digest>: not another repository with the same digest), carrying the
-    documented promotion-workflow identity and the documented OIDC issuer, with no flag that changes what is verified (--key, --certificate, --offline, --insecure-ignore-*...),
+    documented promotion-workflow identity and the documented OIDC issuer (or, from v0.3.0, exactly `--key release.rsa.pub`, no identity or issuer, and key_ok: the key file's bytes match the repository's), with no flag that changes what is verified (--certificate, --offline, --insecure-ignore-*...),
     no help/version spelling, exit 0. Words in echo, comments or shell actions are never proof."""
     digest = image.split("@")[-1]
     if not digest.startswith("sha256:") or "@" not in image:
@@ -1446,6 +1476,11 @@ def verified_digest(answer, image):
             continue
         sub, pos, flags = op
         if sub != "verify" or len(pos) != 1 or pos[0] != image:
+            continue
+        keys = [v for name, v in flags if name == "--key"]
+        if keys:   # v0.3.0 and later (docs/verify-images.md): the image is verified with the release public key, exactly `--key release.rsa.pub`, and with no certificate identity or issuer beside it
+            if key_ok and keys == [RELEASE_KEY_FILE] and all(name in PROOF_FLAGS - IDENTITY_FLAGS or name == "--key" for name, _ in flags):
+                return True
             continue
         if any(name not in PROOF_FLAGS for name, _ in flags):
             continue
@@ -1656,12 +1691,15 @@ def main():
             return 1
 
 
+ACTIVE = list(PERSONAS)   # the personas this run covers: all five, or RC_PERSONAS in rc mode
+
+
 def last_resort():
     """every persona without a result gets an encrypted blocking report saying the driver failed; then the usual pass/fail lines"""
     results, out_dir, recipient = STATE.get("results"), STATE.get("out_dir"), STATE.get("recipient")
     if results is None or not out_dir or not recipient:
         return 1
-    for persona in PERSONAS:
+    for persona in ACTIVE:
         if persona in results:
             continue
         text = report_text(persona, "blocking", [{"kind": "blocking", "text": "the driver failed before this persona could be recorded (driver error)"}], None, False,
@@ -1673,6 +1711,8 @@ def last_resort():
 
 def _main():
     a = parse_args()
+    ACTIVE[:] = RC_PERSONAS if a.mode == "rc" else PERSONAS
+    rc_ref = a.image.split("@")[0] + ":" + RC_TAG
     try:
         models, budget, tools = configure(a)
     except Refuse as e:
@@ -1775,13 +1815,13 @@ def _main():
         if answer:
             findings, tokens = list(answer["findings"]), answer["tokens"]
             if persona == "compliance-reviewer":
-                proven = verified_digest(answer, a.image)         # the reviewer never calls the endpoint: its proof is a successful verification of the RC's digest
+                proven = verified_digest(answer, a.image, key_ok)   # the reviewer never calls the endpoint
             if extra_blocking:
                 findings.append({"kind": "blocking", "text": extra_blocking})
             elif not proven:
                 # no proof of exercising the RC image blocks the persona whatever else it reported (friction stays information, and stays in the report)
                 findings.append({"kind": "blocking", "text": (
-                    "the persona did not exercise the image under test: no `cosign verify` of the image under test by its digest, with the documented promotion-workflow identity and OIDC issuer, exited 0"
+                    "the persona did not exercise the image under test: no `cosign verify` of the image under test by its digest, with the documented promotion-workflow identity and OIDC issuer (or the release key file), exited 0"
                     if persona == "compliance-reviewer" else
                     "the persona did not exercise the image under test: the endpoint was never exercised (its request counter did not move during this persona's run)")})
             capped = tokens >= budget
@@ -1807,7 +1847,7 @@ def _main():
         sys.stderr.write("persona-uat: %s: %s\n" % (persona, "fail" if verdict == "blocking" else "pass"))
 
     def all_did_not_run(reason):
-        for p in PERSONAS:
+        for p in ACTIVE:
             if p not in results:
                 record(p, None, "did not run: %s\n" % reason, reason)
 
@@ -1821,14 +1861,14 @@ def _main():
             all_did_not_run("the public README.md is missing")
             finish(results, out_dir)
             return 3
-        for persona in PERSONAS:
+        for persona in ACTIVE:
             if persona in results:
                 continue
             if teardown_failed:         # a survivor may still be sending traffic: no window after it is attributable, and nothing new is started
                 record(persona, None, "did not run: %s\n" % TD, "%s (an earlier teardown failed)" % TD)
                 continue
             # the job's time budget: this persona's agent timeout is what is left of the budget over the personas still to run (itself included), never above --agent-timeout
-            left = len([q for q in PERSONAS if q not in results])
+            left = len([q for q in ACTIVE if q not in results])
             persona_timeout = persona_time_limit(persona, a.agent_timeout, a.evaluator_seconds, a.job_budget, time.time() - job_t0, left)
             if persona_timeout < min(a.min_persona_seconds, a.agent_timeout):      # an explicitly short --agent-timeout is the caller's choice, not a lack of budget
                 why_ = "cannot prove: the job's time budget left no time for this persona (%d seconds each, %d needed)" % (max(persona_timeout, 0), a.min_persona_seconds)
@@ -1917,6 +1957,8 @@ def _main():
                             req_tools[tool] = {"container": tc, "endpoint": "http://gitlab-runner:9252"}
                         else:
                             cluster = Cluster(tools[tool], timeout=max(a.ready_timeout * 2, 3))
+                            if a.mode == "rc":
+                                cluster.load(rc_ref, max(a.ready_timeout * 2, 3))
                             cluster.join(docker, net)
                             kc = cluster.provision(token_seconds, KIND_SERVER)
                             with open(os.path.join(sandbox, "kubeconfig"), "w") as fh:
@@ -1935,7 +1977,7 @@ def _main():
                     continue
                 request = {
                     "docs_dir": sandbox, "endpoint": "http://endpoint:8080", "image": a.image,
-                    "instructions": INSTRUCTIONS[persona] + " " + CLASSIFY,
+                    "instructions": (RC_ON_CALL % rc_ref if a.mode == "rc" and persona == "on-call-engineer" else INSTRUCTIONS[persona]) + " " + CLASSIFY,
                     "model": models["PERSONA_UAT_COMPLIANCE_MODEL" if persona == "compliance-reviewer" else "PERSONA_UAT_MODEL"],
                     "persona": persona, "token_budget": budget, "tools": req_tools,
                 }
@@ -1960,6 +2002,7 @@ def _main():
                 if before is UNSETTLED:
                     before = None
                 answer, transcript, why = run_agent(agent_cmd, args, request, sandbox, persona_timeout, tfile, jfile)
+                key_ok = key_matches(sandbox, a.repo)       # read before cleanup empties the sandbox
                 # the window is closed BEHIND everything of this persona: its action containers are swept by label FIRST (whatever they were still sending is sent), THEN the sidecar is
                 # stopped (so its log holds all of it), then its tool containers and cluster are removed, THEN the counter is read once it has been unchanged for the quiet interval
                 swept = sweep(docker, label)
@@ -2036,8 +2079,8 @@ def _main():
 
 
 def finish(results, out_dir=None):
-    blocking = [p for p in PERSONAS if results[p]["verdict"] == "blocking"]
-    enc_failed = [p for p in PERSONAS if results[p].get("encfail")]
+    blocking = [p for p in ACTIVE if results[p]["verdict"] == "blocking"]
+    enc_failed = [p for p in ACTIVE if results[p].get("encfail")]
     if out_dir is not None:
         publish_artifacts(out_dir, not enc_failed)
     line = "persona-uat: overall: %s\n" % ("fail" if blocking else "pass")
@@ -2045,7 +2088,7 @@ def finish(results, out_dir=None):
     summ = os.environ.get("GITHUB_STEP_SUMMARY")
     if summ:
         with open(summ, "a") as fh:
-            for p in PERSONAS:
+            for p in ACTIVE:
                 fh.write("persona-uat: %s: %s\n" % (p, "fail" if results[p]["verdict"] == "blocking" else "pass"))
             fh.write(line)
     return 1 if blocking else 0

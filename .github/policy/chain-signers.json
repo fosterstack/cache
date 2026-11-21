@@ -1,0 +1,4 @@
+{
+ "_note": "Every signing call other than the SLSA provenance Sign writes, with the reason it exists (REQ-CHAIN-001-AC1). The automatic patch tag's keyless signer is out (handoff 0713 P8), so no tag-signing call is listed.",
+ "signers": []
+}
