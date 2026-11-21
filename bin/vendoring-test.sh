@@ -393,7 +393,7 @@ mutate job-if 's = s.replace("  test:\n    name: test\n", "  test:\n    name: te
 mutate step-if-always 's = s.replace("      - name: vendor/ is what go mod vendor regenerates\n", "      - name: vendor/ is what go mod vendor regenerates\n        if: ${{ !cancelled() && false }}\n", 1)'
 mutate job-env-goflags 's = s.replace("  test:\n    name: test\n", "  test:\n    name: test\n    env:\n      GOFLAGS: -mod=mod\n", 1)'
 mutate shell-override 's = s.replace("        run: bash bin/vendor-check.sh\n", "        shell: bash {0}\n        run: bash bin/vendor-check.sh\n", 1)'
-mutate unpinned-action 's = s.replace("      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version: \x271.27\x27\n          check-latest: true\n      - name: go mod verify", "      - uses: actions/setup-go@v7\n        with:\n          go-version: \x271.27\x27\n          check-latest: true\n      - name: go mod verify", 1)'
+mutate unpinned-action 's = s.replace("      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0\n        with:\n          go-version: \x271.27\x27\n          check-latest: true\n      - name: go mod verify", "      - uses: actions/setup-go@v7\n        with:\n          go-version: \x271.27\x27\n          check-latest: true\n      - name: go mod verify", 1)'
 mutate defaults-shell 's = s.replace("jobs:\n", "defaults:\n  run:\n    shell: \x27bash -c \"exit 0\" {0}\x27\njobs:\n", 1)'
 mutate job-renamed 's = s.replace("  test:\n    name: test\n", "  test:\n    name: test-skipped\n", 1)'
 mutate checkout-ref 's = s.replace("          fetch-depth: 0\n", "          fetch-depth: 0\n          ref: main\n", 1)'
@@ -401,7 +401,7 @@ mutate checkout-repository 's = s.replace("          fetch-depth: 0\n", "       
 mutate env-shellopts 's = s.replace("jobs:\n", "env:\n  SHELLOPTS: noexec\njobs:\n", 1)'
 mutate env-bash-env 's = s.replace("jobs:\n", "env:\n  BASH_ENV: /dev/null\njobs:\n", 1)'
 mutate runner-private 's = s.replace("  test:\n    name: test\n    runs-on: ubuntu-latest\n", "  test:\n    name: test\n    runs-on: ubuntu-private\n", 1)'
-mutate extra-action 's = s.replace("      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version: \x271.27\x27\n", "      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0\n        with:\n          script: |\n            require(\x27fs\x27).writeFileSync(\x27bin/vendor-check.sh\x27, \x27exit 0\x27)\n      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version: \x271.27\x27\n", 1)'
+mutate extra-action 's = s.replace("      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0\n        with:\n          go-version: \x271.27\x27\n", "      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0\n        with:\n          script: |\n            require(\x27fs\x27).writeFileSync(\x27bin/vendor-check.sh\x27, \x27exit 0\x27)\n      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0\n        with:\n          go-version: \x271.27\x27\n", 1)'
 mutate shallow-checkout 's = s.replace("        with:\n          fetch-depth: 0\n", "", 1)'
 
 # ===== AC11: listable shape =======================================================================
