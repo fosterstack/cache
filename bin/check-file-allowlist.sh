@@ -64,6 +64,10 @@ ALLOW_PATTERNS=(
   '^test-evidence/vex-scope/[A-Za-z0-9._-]+\.json$'
   # The suite guard (REQ-TEST-001): the guard, its test, the runner that measures the suites (a committed Python file run with -I), and the committed floors.
   '^bin/suite-guard(-test)?\.sh$'
+
+  # The runner of one suite of the suites matrix (ci.yml, job suites) and its test.
+  '^bin/run-ci-suite(\.py|-test\.sh)$'
+  '^bin/(chain-signing-trust|ci-suites-matrix|persona-uat-file|release-workflow-wiring)-test\.sh$'
   '^bin/suite-guard-run\.py$'
   '^test-evidence/suite-floors\.json$'
   '^test-evidence/dependabot-reviewer/[A-Za-z0-9._-]+\.json$'
@@ -108,6 +112,7 @@ ALLOW_PATTERNS=(
   '^bin/install-scanner-test\.sh$'
   '^bin/dependabot-reviewer\.py$'
   '^bin/dependabot-reviewer-version\.sh$'
+  '^bin/dependabot-screen\.sh$'
   '^bin/dependabot-reviewer-test\.sh$'
   '^bin/dependency-lanes-test\.sh$'
   '^bin/panel\.py$'
@@ -120,6 +125,8 @@ ALLOW_PATTERNS=(
   '^bin/release-patch-wiring-test\.sh$'
   '^bin/policy-merge-harness\.py$'
   '^bin/acceptance-maven-413-test\.sh$'
+  '^bin/acceptance-gradle-test\.sh$'
+  '^bin/acceptance-k8s-manifests-test\.sh$'
   '^bin/admission-tag-signer\.py$'
   '^bin/admission-tag-signer-test\.sh$'
   '^bin/panel-test\.sh$'
@@ -160,12 +167,13 @@ ALLOW_PATTERNS=(
   '^bin/chain-test-signers\.(py|json)$'
   '^\.github/policy/rekor\.pub$'
   '^\.github/policy/fulcio-chain\.pem$'
-  '^test-evidence/witness-real/(build|apk)-collection\.real\.txt$'
+  '^test-evidence/witness-real/(build|apk|scanners)-collection\.real\.txt$'
   '^results/\.gitkeep$'
   # The v0.3.0 release chain, Build and Rebuild (PR 2): the Witness wrapper, the per-job stage scripts and their snapshot variants, the admission
   # script (the former stage-admission.yml), the items and archive helpers, the list of the old admission steps the comparison test reads, and the
   # suites with their two test helpers
   '^bin/witnessed\.sh$'
+  '^bin/install-scanner-test-lib\.sh$'
   '^bin/witnessed-local\.sh$'
   '^bin/witness-sign-staged\.sh$'
   '^bin/witness-kms-test\.sh$'
@@ -175,18 +183,20 @@ ALLOW_PATTERNS=(
   '^bin/chain_items\.py$'
   '^bin/chain-admission-old-steps\.txt$'
   '^bin/chain-(sign-wiring|check-scripts)-fixtures\.txt$'
-  '^bin/chain-(bind|build-admit|build-wiring|install-witness|rebuild|snapshot)-test\.sh$'
+  '^bin/chain-(bind|build-admit|build-wiring|install-witness|pull-request-checks|rebuild|snapshot)-test\.sh$'
   '^bin/chain-(test-(harness|shape)|known-red)\.py$'
   '^test-evidence/known-red\.json$'
   # The v0.3.0 release chain, Check (PR 3): the check scripts and their two helpers, the shared acceptance suites (and the two helpers of the Kubernetes
   # suite), and the Check suites with their shape judge
   '^bin/loopback-get\.sh$'
   '^bin/loopback-get-test\.sh$'
-  '^bin/check-(stage|scan|fips|artifacts|acceptance|guide)\.sh$'
+  '^bin/check-(stage|scan|fips|artifacts|acceptance|guide|phase)\.sh$'
   '^bin/check-phase-(scanners|acceptance|runtime|arm64)\.sh$'
   '^bin/(un)?pack-govulncheck\.sh$'
   '^bin/check-records-digests\.sh$'
   '^bin/check-(guide-plan|osv-db|image-platforms|bind|osv-vex)\.py$'
+  '^bin/guide-judge-test\.sh$'
+  '^bin/guide_plan_judge\.py$'
   '^bin/acceptance-(gradle|gradle-capped|maven|maven-capped|egress|k8s|serve)\.sh$'
   '^bin/acceptance-k8s-(manifests|smoke)\.py$'
   '^bin/chain-check-(scripts|wiring)-test\.sh$'
@@ -199,9 +209,9 @@ ALLOW_PATTERNS=(
   # The marker-only pull request gate (REQ-CHAIN-001-AC6, slice 4b-6): the script and its suite.
   '^bin/marker-(pr-gate\.py|gate-test\.sh)$'
   # Release (PR 4): the six Witness-step scripts and the post-publish planner, the crane pin test, and the Release wiring and script tests with their judge.
-  '^bin/release-(verify|apks|compare|publish|sign|assets|postverify)\.sh$'
-  '^bin/release-(postverify|metadata|compare)\.py$'
-  '^bin/chain-(install-crane|release-scripts|release-wiring|release-metadata)-test\.sh$'
+  '^bin/release-(verify|apks|compare|publish|sign|signatures|stage|assets|postverify)\.sh$'
+  '^bin/release-(postverify|metadata|layout|compare|gate)\.py$'
+  '^bin/chain-(install-crane|release-scripts|release-wiring|release-metadata|tag-grammar)-test\.sh$'
   '^bin/chain-release-shape\.py$'
   # The auditor implementation now lands (Round 8): sealed command scripts, the
   # shared library, and their parser unit tests, plus the parser-test runner.
@@ -321,7 +331,7 @@ ALLOW_PATTERNS=(
   # sealed-proof, lock-proof, refresh-inputs, build-freeze (.sh); apk-tool, gen-recipes, go-module-sbom, install-host-bwrap (.py).
   '^bin/(build-apk|assemble-image|apko-lock|install-build-tools|release-sign-apks|sealed-proof|lock-proof|refresh-inputs)\.sh$'
   '^bin/build-freeze\.sh$'
-  '^bin/(apk-tool|gen-recipes|go-module-sbom|install-host-bwrap)\.py$'
+  '^bin/(apk-tool|gen-recipes|go-module-sbom|install-host-bwrap|refresh-inputs)\.py$'
   # The wrapper that hands the release role and its token file to a release step as AWS variables.
   '^bin/with-aws-token\.sh$'
   # The shared test library and the split build-chain tests.
@@ -359,11 +369,18 @@ ALLOW_PATTERNS=(
   '^bin/verify-key-page-test\.sh$'
   # Turns an OCI layout into a docker-save tar, so the scanner reads it without a Docker daemon, and its test.
   '^bin/layout-archive(-test)?\.sh$'
+  # The suite that judges the full suite's wiring, REQ-CI-001.
+  '^bin/full-suite-wiring-test\.sh$'
   # The monthly evidence letter (REQ-REL-013): the letter script, the fetch, publish, verify and presence scripts, the
   # two tests and the signatory text.
   '^bin/evidence-letter\.py$'
   '^bin/evidence-letter(-fetch|-publish|-verify|-present|-test|-job-test)\.sh$'
   '^docs/evidence-letter-signatory\.txt$'
+  # REQ-REL-009: CI cuts a patch tag and the one release KMS key signs it: the tag signer, the tag jobs judge and their tests
+  '^bin/tag-sign\.py$'
+  '^bin/tag-sign-(prepare|kms|test)\.sh$'
+  '^bin/chain-tag-jobs-(judge\.py|test\.sh)$'
+  '^bin/patch-tag-texts-test\.sh$'
 
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'

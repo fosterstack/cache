@@ -102,7 +102,7 @@ build/vm-keys/kernel-key-6165ee59.rsa.pub
 build/keys/assembly.rsa build/keys/assembly.rsa.pub build/keys/release.rsa.pub build/archive.json
 bin/build-apk.sh bin/assemble-image.sh bin/apko-lock.sh bin/install-build-tools.sh bin/release-sign-apks.sh
 bin/sealed-proof.sh bin/lock-proof.sh bin/refresh-inputs.sh bin/build-freeze.sh bin/with-aws-token.sh
-bin/apk-tool.py bin/gen-recipes.py bin/go-module-sbom.py bin/install-host-bwrap.py
+bin/apk-tool.py bin/gen-recipes.py bin/go-module-sbom.py bin/install-host-bwrap.py bin/refresh-inputs.py
 bin/melange-apko-lib.sh
 bin/build-helpers-test.sh bin/refresh-inputs-test.sh bin/build-apk-test.sh bin/assemble-image-test.sh bin/archive-test.sh
 bin/oci-digest.py bin/net-probe.py
@@ -119,8 +119,10 @@ build/probe/read-keydir.yaml.tmpl build/probe/read-token.yaml.tmpl build/probe/n
 bin/evidence-letter.py bin/evidence-letter-test.sh docs/evidence-letter-signatory.txt
 bin/evidence-letter-fetch.sh bin/evidence-letter-publish.sh bin/evidence-letter-job-test.sh
 bin/evidence-letter-verify.sh bin/evidence-letter-present.sh
+bin/full-suite-wiring-test.sh bin/tag-sign.py bin/tag-sign-prepare.sh bin/tag-sign-kms.sh bin/tag-sign-test.sh
+bin/chain-tag-jobs-judge.py bin/chain-tag-jobs-test.sh bin/patch-tag-texts-test.sh
 """.split())
-if len(DECLARED) != 96: errs.append("declared list is not 96 paths: %d" % len(DECLARED))
+if len(DECLARED) != 105: errs.append("declared list is not 105 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -131,7 +133,7 @@ ALLOWED_MENTIONS = {
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
 # 232 allow patterns: main's (with ^bin/dependabot-reviewer-version\.sh$ and ^bin/policy-merge-harness\.py$, without the tag observer's), plus the chain's forms that main's lines do not already match
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 232, 6
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 245, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -223,7 +225,7 @@ mutcheck() { # <desc> <sed-expr>
   if struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: $1" "$2"; else gp "struct check kills mutant: $1"; fi
 }
 mutcheck "suffix on one alternative"      "s/\(build-apk\|assemble-image\|/(build-apk|assemble-image[a-z]+|/"
-mutcheck "extension widened"              "s/\(apk-tool\|gen-recipes\|go-module-sbom\|install-host-bwrap\)\\\\\.py\\$/(apk-tool|gen-recipes|go-module-sbom|install-host-bwrap)\\\\.(json|py|sh)\$/"
+mutcheck "extension widened"              "s/\(apk-tool\|gen-recipes\|go-module-sbom\|install-host-bwrap\|refresh-inputs\)\\\\\.py\\$/(apk-tool|gen-recipes|go-module-sbom|install-host-bwrap|refresh-inputs)\\\\.(json|py|sh)\$/"
 mutcheck "group made optional"            "s/\^build\/melange\(-fips\)\?/^build\/melange(-fips)?(-x)?/"
 mutcheck "group repeated with +"          "s/\^build\/apko\(-fips\)\?/^build\/apko(-fips)+/"
 mutcheck "? turned into *"                "s/\^build\/melange\(-fips\)\?/^build\/melange(-fips)*/"
@@ -761,14 +763,14 @@ runeach fail "feature/x" "v030: the removed recipe comparer is no longer admitte
 passfam "feature/x" "v030: the freeze job script" "bin/build-freeze.sh"
 passfam "feature/x" "v030: the token wrapper of the release steps" "bin/with-aws-token.sh"
 passfam "feature/x" "v030: the build-chain scripts" "bin/build-apk.sh" "bin/assemble-image.sh" "bin/apko-lock.sh" "bin/install-build-tools.sh" "bin/release-sign-apks.sh" "bin/sealed-proof.sh" "bin/lock-proof.sh" "bin/refresh-inputs.sh"
-passfam "feature/x" "v030: the build-chain Python tools" "bin/apk-tool.py" "bin/gen-recipes.py" "bin/go-module-sbom.py" "bin/install-host-bwrap.py"
+passfam "feature/x" "v030: the build-chain Python tools" "bin/apk-tool.py" "bin/gen-recipes.py" "bin/go-module-sbom.py" "bin/install-host-bwrap.py" "bin/refresh-inputs.py"
 runeach fail "feature/x" "v030: bin/build-apk.py (other extension) refused"   "bin/build-apk.py"
 runeach fail "feature/x" "v030: bin/apk-tool.sh (swapped extension) refused"  "bin/apk-tool.sh"
 runeach fail "feature/x" "v030: bin/Build-apk.sh uppercase refused"           "bin/Build-apk.sh"
 runeach fail "feature/x" "v030: bin/x/assemble-image.sh (extra segment) refused" "bin/x/assemble-image.sh" "bin/x/go-module-sbom.py"
 runeach fail "feature/x" "v030: assemble-image.sh one directory up refused"   "assemble-image.sh" "gen-recipes.py"
 runeach fail "feature/x" "v030: suffixed script names refused"                "bin/assemble-image.sh.orig" "bin/apk-tool.py.bak"
-runeach fail "feature/x" "v030: sibling names refused"                        "bin/sealed-proof-test.sh" "bin/build-apk-lib.sh" "bin/melange-apko-test.sh" "bin/refresh-inputs.py" "bin/lock-proof.py"
+runeach fail "feature/x" "v030: sibling names refused"                        "bin/sealed-proof-test.sh" "bin/build-apk-lib.sh" "bin/melange-apko-test.sh" "bin/refresh-inputs.sh.bak" "bin/lock-proof.py"
 runeach fail "feature/x" "v030: bin/../build-apk.sh traversal refused"        "bin/../build-apk.sh"
 
 # .github/release-identity.json is for REQ-REL-009 AC13-17 (the auto-baseline PR, advisor step-5 acceptance Oct 9);
@@ -850,6 +852,14 @@ runeach fail "feature/x" "reviewer-version near-miss refused" \
   "bin/dependabot-reviewer-version.sh.bak" "bin/dependabot-reviewer-version-x.sh" \
   "bin/dependabot-reviewer-version.py" "bin/Dependabot-Reviewer-Version.sh" \
   "bin/sub/dependabot-reviewer-version.sh" "bin/dependabot-reviewer-version.sh "
+
+# The landing of the main-gate rows: the suites matrix runner and tests, the Check and Release scripts, the tag signer and the scanners witness.
+passfam "feature/x" "main-gate rows: the suites matrix runner and its tests" "bin/run-ci-suite.py" "bin/run-ci-suite-test.sh" "bin/chain-signing-trust-test.sh" "bin/ci-suites-matrix-test.sh" "bin/persona-uat-file-test.sh" "bin/release-workflow-wiring-test.sh"
+passfam "feature/x" "main-gate rows: the acceptance, pull request checks and tag grammar tests" "bin/acceptance-gradle-test.sh" "bin/acceptance-k8s-manifests-test.sh" "bin/chain-pull-request-checks-test.sh" "bin/chain-tag-grammar-test.sh"
+passfam "feature/x" "main-gate rows: the tag signer, the tag jobs judge and their tests" "bin/tag-sign.py" "bin/tag-sign-prepare.sh" "bin/tag-sign-kms.sh" "bin/tag-sign-test.sh" "bin/chain-tag-jobs-judge.py" "bin/chain-tag-jobs-test.sh" "bin/patch-tag-texts-test.sh"
+passfam "feature/x" "main-gate rows: the Check and Release scripts" "bin/check-phase.sh" "bin/dependabot-screen.sh" "bin/full-suite-wiring-test.sh" "bin/guide-judge-test.sh" "bin/guide_plan_judge.py" "bin/install-scanner-test-lib.sh" "bin/refresh-inputs.py" "bin/release-gate.py" "bin/release-layout.py" "bin/release-signatures.sh" "bin/release-stage.sh"
+passfam "feature/x" "main-gate rows: the scanners witness record" "test-evidence/witness-real/scanners-collection.real.txt"
+runeach fail "feature/x" "main-gate rows: near-miss siblings refused" "bin/run-ci-suite.sh" "bin/run-ci-suite-test.py" "bin/run-ci-suite.py.bak" "bin/x/run-ci-suite.py" "bin/ci-suites-matrix.sh" "bin/persona-uat-file.sh" "bin/acceptance-gradle-test.py" "bin/acceptance-k8s-manifests-test.py" "bin/chain-pull-request-checks.sh" "bin/chain-tag-grammar-test.py" "bin/chain-tag-jobs-judge.sh" "bin/tag-sign.sh" "bin/tag-sign-prepare.py" "bin/tag-sign-other.sh" "bin/check-phase.py" "bin/dependabot-screen.py" "bin/guide_plan_judge.sh" "bin/guide-plan-judge.py" "bin/release-gate.sh" "bin/release-layout.sh" "bin/release-signatures.py" "bin/release-stage.py" "bin/refresh-inputs.py.bak" "bin/refresh-inputs-test.py" "test-evidence/witness-real/scanners-collection.txt" "test-evidence/witness-real/scanners-collection.real.txt.bak" "test-evidence/witness-real/x/scanners-collection.real.txt" "test-evidence/scanners-collection.real.txt"
 
 # Deferred (not admitted until the PR that adds them): the vendored tree.
 
