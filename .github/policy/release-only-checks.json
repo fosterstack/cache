@@ -7,37 +7,12 @@
   ],
   "required_checks": [
     {
-      "context": "allowlist-persona",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
       "context": "allowlist-chain",
       "integration_id": 15368,
       "scope": "push"
     },
     {
-      "context": "allowlist-pins-auditor",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "acceptance-gradle",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "acceptance-maven (1.2.0)",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "acceptance-maven (1.2.3)",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "coverage",
+      "context": "acceptance / acceptance",
       "integration_id": 15368,
       "scope": "push"
     },

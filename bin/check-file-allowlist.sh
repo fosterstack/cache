@@ -30,11 +30,7 @@ ALLOW_PATTERNS=(
   '^docs/[A-Za-z0-9._-]+\.json$'
 
   # Build, lint, scan and release configuration.
-  '^\.(gitignore|golangci\.yml|goreleaser\.yaml|grype\.yaml|ko\.yaml|gremlins\.yaml)$'
-
-  # Image-assembly Dockerfiles (release chain stage 3), kept while main still has them: COPY-only, FROM
-  # pinned image:tag@sha256, watched by Dependabot's docker ecosystem.
-  '^build/docker/Dockerfile\.[a-z]+$'
+  '^\.(gitignore|golangci\.yml|grype\.yaml|ko\.yaml)$'
 
   # CI/CD. Note these are ALSO gated in autoMode soft_deny — the allowlist
   # says a workflow file may live here, not that it may change freely.
@@ -62,14 +58,12 @@ ALLOW_PATTERNS=(
   '^requirements/releases/[A-Za-z0-9._-]+\.yaml$'
   '^test-evidence/[A-Za-z0-9._-]+\.yaml$'
   '^test-evidence/vex-scope/[A-Za-z0-9._-]+\.json$'
-  # The suite guard (REQ-TEST-001): the guard, its test, the runner that measures the suites (a committed Python file run with -I), and the committed floors.
+  # The suite guard (REQ-TEST-001): the guard and its test.
   '^bin/suite-guard(-test)?\.sh$'
 
   # The runner of one suite of the suites matrix (ci.yml, job suites) and its test.
   '^bin/run-ci-suite(\.py|-test\.sh)$'
   '^bin/(chain-signing-trust|ci-suites-matrix|persona-uat-file|release-workflow-wiring)-test\.sh$'
-  '^bin/suite-guard-run\.py$'
-  '^test-evidence/suite-floors\.json$'
   '^test-evidence/dependabot-reviewer/[A-Za-z0-9._-]+\.json$'
   '^docs/quality/[A-Za-z0-9._-]+\.md$'
   '^docs/quality/releases/[A-Za-z0-9._-]+\.md$'
@@ -83,6 +77,7 @@ ALLOW_PATTERNS=(
   # The customer-word check: it fails a pull request that adds shop words to a file a customer can read.
   '^bin/check-customer-words\.py$'
   '^bin/check-customer-words-test\.sh$'
+  '^\.github/policy/customer-words-allow\.txt$'
   # The audit record (REQ-REL-012): the writer, its request/prepare/judge steps and their test.
   '^bin/audit-record(\.py|-(judge|prepare|request|test)\.sh)$'
   '^bin/vex-forms\.py$'
@@ -101,8 +96,6 @@ ALLOW_PATTERNS=(
   '^bin/check-version-literals\.sh$'
   '^bin/coverage-gate\.sh$'
   '^bin/check-workflow-permissions\.py$'
-  '^bin/authorize-acceptance-check\.py$'
-  '^bin/authorize-acceptance-check-test\.sh$'
   '^bin/rescan-statement\.py$'
   '^bin/rescan-statement-test\.sh$'
   '^bin/rescan-current-only-test\.sh$'
@@ -112,18 +105,11 @@ ALLOW_PATTERNS=(
   '^bin/install-scanner-test\.sh$'
   '^bin/dependabot-reviewer\.py$'
   '^bin/dependabot-reviewer-version\.sh$'
-  '^bin/dependabot-screen\.sh$'
   '^bin/dependabot-reviewer-test\.sh$'
+  '^bin/dependabot-screen\.sh$'
   '^bin/dependency-lanes-test\.sh$'
   '^bin/panel\.py$'
-  '^bin/scout-vex-scan\.sh$'
   '^bin/scout-selfcheck\.py$'
-  '^bin/scout-root-cause(\.py|\.sh|-test\.sh)$'
-  '^bin/scout-older-versions(\.sh|-test\.sh)$'
-  '^bin/patch-decide\.py$'
-  '^bin/patch-decide-test\.sh$'
-  '^bin/release-patch-wiring-test\.sh$'
-  '^bin/policy-merge-harness\.py$'
   '^bin/acceptance-maven-413-test\.sh$'
   '^bin/acceptance-gradle-test\.sh$'
   '^bin/acceptance-k8s-manifests-test\.sh$'
@@ -143,7 +129,6 @@ ALLOW_PATTERNS=(
   '^bin/go-freshness-wiring-test\.sh$'
   '^bin/pull-request-checks-test\.sh$'
   '^bin/dependabot-reviewer-gather-test\.sh$'
-  '^bin/dispatch-fixer\.sh$'
   '^bin/inspector-gate\.py$'
   '^bin/inspector-gate-test\.sh$'
   '^bin/inspector-reuse\.py$'
@@ -156,7 +141,6 @@ ALLOW_PATTERNS=(
   '^bin/vex-both-scanners-test\.sh$'
   '^bin/vex-scope-test\.sh$'
   '^bin/go-bump-open-pr\.sh$'
-  '^bin/go-bump-open-pr-test\.sh$'
   # The v0.3.0 release chain, Sign boundary (PR 1): the verifier, its tests, the hostile dry-run step and the signer table the
   # tests share; the Sigstore PUBLIC trust material the release policy pins (exact names: a private key never matches); results/
   # holds the dry run's per-attempt rows (.gitkeep only, the rows come from the run)
@@ -165,6 +149,7 @@ ALLOW_PATTERNS=(
   '^bin/chain-hostile-step\.sh$'
   '^bin/chain-(verify|hostile|records|sign-wiring|manifest|rekor-key|trust-files|no-keyless-tag)-test\.sh$'
   '^bin/chain-test-signers\.(py|json)$'
+  '^\.github/policy/cosign-signing-config\.json$'
   '^\.github/policy/rekor\.pub$'
   '^\.github/policy/fulcio-chain\.pem$'
   '^test-evidence/witness-real/(build|apk|scanners)-collection\.real\.txt$'
@@ -178,7 +163,7 @@ ALLOW_PATTERNS=(
   '^bin/witness-sign-staged\.sh$'
   '^bin/witness-kms-test\.sh$'
   '^bin/rebuild-records-digests\.sh$'
-  '^bin/build-stage-(apk|assemble|rebuild-apk|rebuild-assemble|snapshot-apk|snapshot-assemble|snapshot-rebuild-apk|snapshot-rebuild-assemble|refuse-mode)\.sh$'
+  '^bin/build-stage-(apk|assemble|rebuild-apk|snapshot-apk|snapshot-rebuild-apk|refuse-mode)\.sh$'
   '^bin/build-(admit|archives|version-check)\.py$'
   '^bin/chain_items\.py$'
   '^bin/chain-admission-old-steps\.txt$'
@@ -190,8 +175,7 @@ ALLOW_PATTERNS=(
   # suite), and the Check suites with their shape judge
   '^bin/loopback-get\.sh$'
   '^bin/loopback-get-test\.sh$'
-  '^bin/check-(stage|scan|fips|artifacts|acceptance|guide|phase)\.sh$'
-  '^bin/check-phase-(scanners|acceptance|runtime|arm64)\.sh$'
+  '^bin/check-(scan|fips|artifacts|acceptance|guide|phase)\.sh$'
   '^bin/(un)?pack-govulncheck\.sh$'
   '^bin/check-records-digests\.sh$'
   '^bin/check-(guide-plan|osv-db|image-platforms|bind|osv-vex)\.py$'
@@ -213,8 +197,8 @@ ALLOW_PATTERNS=(
   '^bin/release-(postverify|metadata|layout|compare|gate)\.py$'
   '^bin/chain-(install-crane|release-scripts|release-wiring|release-metadata|tag-grammar)-test\.sh$'
   '^bin/chain-release-shape\.py$'
-  '^bin/release-referrer-verify-test\.sh$'
   '^bin/release-sign-verify\.sh$'
+  '^bin/release-referrer-verify-test\.sh$'
   # The auditor implementation now lands (Round 8): sealed command scripts, the
   # shared library, and their parser unit tests, plus the parser-test runner.
   '^\.github/agent/bin/auditor-[a-z0-9-]+\.py$'
@@ -330,12 +314,12 @@ ALLOW_PATTERNS=(
   '^build/keys/assembly\.rsa(\.pub)?$'
   '^build/keys/release\.rsa\.pub$'
   # Build-chain scripts: build-apk, assemble-image, apko-lock, install-build-tools, release-sign-apks,
-  # sealed-proof, lock-proof, refresh-inputs, build-freeze (.sh); apk-tool, gen-recipes, go-module-sbom, install-host-bwrap (.py).
+  # sealed-proof, lock-proof, refresh-inputs (.sh); apk-tool, gen-recipes, go-module-sbom, refresh-inputs (.py).
   '^bin/(build-apk|assemble-image|apko-lock|install-build-tools|release-sign-apks|sealed-proof|lock-proof|refresh-inputs)\.sh$'
   '^bin/build-freeze\.sh$'
-  '^bin/(apk-tool|gen-recipes|go-module-sbom|install-host-bwrap|refresh-inputs)\.py$'
   # The wrapper that hands the release role and its token file to a release step as AWS variables.
   '^bin/with-aws-token\.sh$'
+  '^bin/(apk-tool|gen-recipes|go-module-sbom|install-host-bwrap|refresh-inputs)\.py$'
   # The shared test library and the split build-chain tests.
   '^bin/melange-apko-lib\.sh$'
   '^bin/(build-helpers|refresh-inputs|build-apk|assemble-image|archive)-test\.sh$'
@@ -369,11 +353,10 @@ ALLOW_PATTERNS=(
   '^bin/verify-release-guide-test\.sh$'
   # The release key page (docs/verify-key.md) is judged by bin/verify-key-page-test.sh, REQ-CHAIN-008.
   '^bin/verify-key-page-test\.sh$'
-  # Turns an OCI layout into a docker-save tar, so the scanner reads it without a Docker daemon, and its test.
   '^bin/layout-archive(-test)?\.sh$'
   # The suite that judges the full suite's wiring, REQ-CI-001.
   '^bin/full-suite-wiring-test\.sh$'
-  # The monthly evidence letter (REQ-REL-013): the letter script, the fetch, publish, verify and presence scripts, the
+  # The monthly evidence letter (REQ-REL-015): the letter script, the fetch, publish, verify and presence scripts, the
   # two tests and the signatory text.
   '^bin/evidence-letter\.py$'
   '^bin/evidence-letter(-fetch|-publish|-verify|-present|-test|-job-test)\.sh$'
@@ -381,6 +364,8 @@ ALLOW_PATTERNS=(
   # REQ-REL-009: CI cuts a patch tag and the one release KMS key signs it: the tag signer, the tag jobs judge and their tests
   '^bin/tag-sign\.py$'
   '^bin/tag-sign-(prepare|kms|test)\.sh$'
+  '^bin/patch-decide\.py$'
+  '^bin/patch-decide-test\.sh$'
   '^bin/chain-tag-jobs-(judge\.py|test\.sh)$'
   '^bin/patch-tag-texts-test\.sh$'
 
@@ -399,9 +384,8 @@ ALLOW_PATTERNS=(
   '^build/keys/retired/[0-9]{4}-[0-9]{2}-[0-9]{2}/release\.rsa\.pub$'
 )
 
-# Daily CVE auditor SUPPRESSION OUTPUTS — the .snyk / osv-scanner.toml ignore
-# files the scanners read, and the .auditor/accepted-items.json inventory the
-# release-authorization gate reads (REQ-AUD-11). These are generated, never
+# Daily CVE auditor SUPPRESSION OUTPUTS — the .auditor/accepted-items.json inventory the
+# release-authorization gate reads (REQ-AUD-11), and the other .auditor files below. These are generated, never
 # hand-authored, and delivered ONLY through the auditor's own PR lane
 # (auditor/<date>-<sha> branches; see _deliver_suppression_pr in
 # .github/agent/bin/auditor-run.py). They must be allowed to LIVE on main so
@@ -411,10 +395,8 @@ ALLOW_PATTERNS=(
 # The scoping is enforced by the head branch of the change: a pull_request from
 # a non-auditor branch that touches these paths is blocked; the auditor lane and
 # the merged state on main are allowed. (VEX itself already lives in .vex/ above,
-# published for anyone auditing an artifact; these are its scanner-native forms.)
+# published for anyone auditing an artifact; it is the only suppression a scanner reads.)
 SUPPRESSION_PATTERNS=(
-  '^\.snyk$'
-  '^osv-scanner\.toml$'
   '^\.auditor/accepted-items\.json$'
   # REQ-AUD-16: the generated knowledge document (AC3) and the model's merge-gated proposals
   # (AC4), carried in the auditor's own suppression PR. Like the inventory, they are generated,

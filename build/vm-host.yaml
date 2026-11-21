@@ -1,0 +1,8 @@
+# The packages the VM build runs ON the runner itself: QEMU, the machine
+# emulator melange's qemu runner starts. bin/refresh-inputs.sh resolves this
+# list against live Wolfi (apko lock, with the dependency closure), archives
+# every package by digest and writes build/locks/vm-host.lock; the build job
+# unpacks them from the archive, never from a package manager. x86_64 only:
+# the arm build stays on bubblewrap.
+packages:
+  - qemu-system-x86_64

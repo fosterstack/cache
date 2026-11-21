@@ -1,0 +1,21 @@
+{
+ "_note": "The build configuration outside bin/ and .github/ that the build tooling reads (the file allowlist's config files). bin/chain-sign-wiring-test.sh fails on a missing or unlisted one (REQ-CHAIN-001-AC1): a new one is listed in the same pull request.",
+ "files": [
+  {
+   "path": ".githooks/pre-commit",
+   "reason": "a local developer hook (never run in CI)"
+  },
+  {
+   "path": ".gitignore",
+   "reason": "git's ignore list"
+  },
+  {
+   "path": ".golangci.yml",
+   "reason": "the Go linter configuration (lint job)"
+  },
+  {
+   "path": ".grype.yaml",
+   "reason": "the grype scanner configuration"
+  }
+ ]
+}

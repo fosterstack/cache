@@ -1,114 +1,14 @@
 # shellcheck shell=bash
-# rules covered (ratified 2026-10-09): rule 11-24 (Building the package), rule 25-38 (Building the image), rule 38a 38b 39-43 (Sealed-off
-# build), rule 44-49 (Keeping inputs fresh), and the parts of rule 72 and 73 that touch our build, of the RATIFIED v0.3.0 rules
-# v2 (ops/docs/ratify/2026-10-09-v030-rules.md, owner "ratify all", Oct 9 2026). The requirements are in requirements/requirements.yaml
-# and each per-PR test file carries its own "proves:" header. Each assertion is tagged with the rule number it serves ("rule N").
+# The harness the build and image tests share: build-apk-test.sh, build-baselayout-apk-test.sh, build-helpers-test.sh,
+# assemble-image-test.sh and refresh-inputs-test.sh source it and then run their own cases.
 #
-# STATUS: the harness of the per-PR test files bin/*-test.sh (each sources this file); the files named below exist. The suite is offline: no network, no
-# docker, no real melange or apko, no sudo. Where the real tool would run, the tools (melange, apko, sudo, unshare, sysctl,
-# uname, curl, git, gh) are replaced by STUBS on PATH that record their argv in a call log; the suite asserts the flags and the
-# order of the calls. Static rules are asserted on the file they live in (recipe, apko config, lock file, driver script,
-# workflow job, doc). Cases that need the real tools on a real runner are listed at the bottom (NOT TESTABLE HERE).
-#
-# ALLOWLIST (bin/check-file-allowlist.sh lists bin files one by one and has no build/ pattern; the allowlist change is its own PR):
-#   build/melange.yaml  build/melange-fips.yaml  build/apko.yaml  build/apko-fips.yaml
-#   build/locks/apko.base.lock.json  build/locks/apko-fips.base.lock.json  build/locks/melange.lock
-#   build/keys/assembly.rsa  build/keys/assembly.rsa.pub  build/keys/release.rsa.pub
-#   docs/apk-signing-key.md  (the existing docs pattern matches it)
-#   bin/build-apk.sh  bin/assemble-image.sh  bin/apko-lock.sh  bin/apk-tool.py  bin/gen-recipes.py  bin/go-module-sbom.py  bin/oci-digest.py  bin/net-probe.py
-#   bin/install-build-tools.sh  bin/release-sign-apks.sh  bin/sealed-proof.sh  bin/lock-proof.sh  bin/refresh-inputs.sh
-#   bin/melange-apko-test.sh
-# EDITED, not created: .github/workflows/go-freshness.yml (two new JOBS, no new workflow file: standing rule "no workflow
-# sprawl"). bin/go-freshness-wiring-test.sh pins the set of jobs that may touch the agent environment: if the refresh job uses
-# the auditor App token, that test's ALLOWED list needs ("go-freshness.yml", "refresh") added in the same PR.
-#
-# ARCHIVE layout the suite assumes (the "archive", rule 12/15/29):
-#   ARCHIVE/<arch>/<name>-<ver>.apk + ARCHIVE/<arch>/APKINDEX.tar.gz   (arch: x86_64 aarch64)
-#   ARCHIVE/keys/wolfi-signing.rsa.pub     ARCHIVE/go/go<ver>.linux-<amd64|arm64>.tar.gz
-# apko config paths (fixed, so the lock names the same literal paths in Build and Rebuild, rule 31):
-#   repositories ["/work/archive", "/work/melange-repo"]; keyring ["/work/keyring/wolfi-signing.rsa.pub",
-#   "/work/keyring/assembly.rsa.pub"]. The driver makes /work/* visible only through `sudo` calls (stubbed here).
-#
-# INTERFACES (the names below are the ones the scripts implement). Exit 0 ok; exit 2 = refusal naming the reason on stderr;
-# a repeated flag: the LAST one wins.
-#  I1 build/melange.yaml (package fscache) and build/melange-fips.yaml (package fscache-fips); package.version "@VERSION@",
-#     epoch 0. Build environment: only name=version pins, no go package, no repositories/keyring of its own (the driver passes
-#     --repository-append and --keyring-append). Go comes from `uses: fetch` steps (one per arch, go.dev uri,
-#     expected-sha256), found offline in the cache dir. The build writes `go version -m /usr/bin/fscache` to
-#     usr/share/fscache/buildinfo.txt inside the apk.
-#  I2 build/apko.yaml (fscache) and build/apko-fips.yaml (fscache-fips); the fscache line is "fscache=@FSCACHE_VERSION@-r0".
-#  I3 bin/build-apk.sh --variant standard|fips --arch x86_64|aarch64 --version X.Y.Z --source-dir DIR --repo DIR --keyring FILE
-#        --go-archive DIR --melange-lock FILE --out DIR [--recipe FILE] [--render-dir DIR] [--apk-cache-dir DIR]
-#     and  --print-source-date-epoch --source-dir DIR.  Env required: SOURCE_DATE_EPOCH (digits). Refused: --signing-key,
-#     APK_RELEASE_SIGNING_KEY in the environment, GOPROXY other than off, HTTP(S)_PROXY. It runs, in this order,
-#       sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-#       sudo [env SOURCE_DATE_EPOCH=..] unshare -n melange build ... (the only network cut; melange called directly on the VM)
-#     signs with the committed assembly key build/keys/assembly.rsa, then writes OUT/<arch>/*.apk, OUT/fscache-modules.spdx.json
-#     and OUT/inputs-manifest.json.
-#  I4 bin/assemble-image.sh --variant production|fips --version X.Y.Z --archive DIR --melange-repo DIR --keyring-dir DIR
-#        --out DIR [--apko-config FILE] [--base-lock FILE] [--render-dir DIR]. Env: SOURCE_DATE_EPOCH. Order: verify the base
-#     lock against the archive -> sudo unshare -n apko lock (full lock) -> compare base vs full -> verify full -> sudo unshare -n
-#     apko build --offline --lockfile FULL --sbom-path DIR. OUT gets <variant>.full.lock.json, <variant>/ (the image as an OCI layout
-#     DIRECTORY: oci-layout, index.json, blobs/sha256/<hex>; no tarball, advisor 0393), <variant>.digest (ONE line sha256:<hex>: the OCI
-#     INDEX digest), <variant>.manifests (one line `<arch> sha256:<hex>` per per-arch manifest: amd64, arm64) and <variant>-sbom/sbom.json.
-#     --version is X.Y.Z, X.Y.Z-rcN or 0.0.0-rc.1; it runs from the repository root only (exit 2 elsewhere).
-#  I4b CHANGED/NEW (advisor): bin/oci-digest.py TAR  reads the OCI layout tarball: oci-layout, index.json -> index blob, per-arch
-#     manifest blobs under blobs/sha256/; every blob must hash to its name. Prints `index sha256:<hex>` then `<arch> sha256:<hex>`
-#     lines; exit 1 naming the file/blob on a missing index.json or a blob whose hash differs.
-#  I3b NEW (advisor reading, rule 40): exit codes of build-apk.sh and assemble-image.sh: 0 ok, 2 named refusal, 4 = "a network
-#     attempt was made inside the sealed call". Detection: the sealed tool exited non-zero AND its stderr shows ENETUNREACH / network
-#     is unreachable / dial tcp / no such host AND a probe run in the same setup, `sudo unshare -n python3 bin/net-probe.py`, exits
-#     101 (ENETUNREACH: the namespace has no route, so the attempt was real). bin/net-probe.py connects to 192.0.2.1:9 and exits
-#     with the connect errno (0 = connected). Probe not 101 -> the namespace is not sealed: non-zero, not 4. Other failures: 1.
-#     Also new: bin/oci-digest.py and bin/net-probe.py (allowlist).
-#  I5 bin/apko-lock.sh   compare BASE FULL --apk NAME   arch-check LOCK
-#                        verify-archive --lock L --archive DIR [--melange-repo DIR]   evidence --lock L --archive DIR --out DIR
-#                        (evidence writes OUT/archive-checksums.txt in sha256sum format, relative to ARCHIVE, plus OUT/*.lock.json)
-#  I6 bin/apk-tool.py    digest APK | same A B | signer APK | cat APK MEMBER | binary-check APK FILE
-#                        | inputs-manifest --apk APK --melange-lock FILE --out FILE
-#  I7 bin/gen-recipes.py --template T --regular A --fips B --check|--write   bin/go-module-sbom.py --modules vendor/modules.txt --provenance dependency-provenance.json --buildinfo F --out F
-#     (SBOM = the modules the binary embeds; every embedded path@version must be in BOTH vendor/modules.txt and
-#     dependency-provenance.json {"modules":[{"path":..,"version":..}]}: SUBSET, not equality; vendored-but-unbuilt modules are in the
-#     dependency list, not the SBOM)
-#     bin/install-build-tools.sh melange|apko [DEST]   bin/release-sign-apks.sh --build-dir A --rebuild-dir B --key K
-#  I8 bin/sealed-proof.sh and bin/lock-proof.sh (the real-run proofs of rules 36, 39-42; see the groups below)
-#  I9 bin/refresh-inputs.sh refresh --repo-dir D --archive D   |   fips-module --go-root D --repo-dir D
-#     and two jobs in .github/workflows/go-freshness.yml: `refresh` (daily) and `fips-module` (weekly). refresh makes three locks
-#     with `apko lock --output ...` (the melange-environment config and its output file are named *melange*, the fips ones *fips*);
-#     it writes build/locks/*, archives new packages by digest into ARCHIVE/<arch>/ (curl), verifies them, rewrites lock urls to
-#     /work/archive/..., then git checkout -b refresh/..., commit, push that branch, gh pr create. Exit 3 = Wolfi key changed.
-# ---------------------------------------------------------------------------------------------------------------
-# RULE -> ASSERTION GROUP (the rules are the ratified v0.3.0 rules; the groups below say where each is asserted)
-#  11  recipes build fscache from source (no Dockerfile/FROM/buildx/goreleaser), native arch only (driver refuses a foreign arch)
-#  12  Go from go.dev: fetch steps with checksums, no Wolfi go apk, GOTOOLCHAIN=local, go.mod go line <= archived Go, tarball
-#      pre-seeded from the archive into the cache dir, tamper/missing refused
-#  13  FIPS recipe: GOFIPS140=v1.0.0 and a proof that the binary records v1.0.0-c2097c7c; standard recipe has no GOFIPS140
-#  14  binary in the archive == binary in the apk (apk-tool binary-check)
-#  15  inputs manifest = our melange lock + the .melange.yaml environment read back from the apk; recipe pinned == lock
-#  16  melange/apko installer: checksum pin per tool and arch, verified before extraction, no container digest
-#  17  build-apk.sh takes no --signing-key and refuses a release key in the environment; only the assembly key is passed
-#  18  docs/apk-signing-key.md (yearly rotation, leak procedure, public key, disclosure timing) and the committed keys
-#  19  no --ignore-signatures / --allow-untrusted anywhere; keys appended on every tool call
-#  20  apk SBOM by melange, image SBOM by apko --sbom-path, Go module list by go-module-sbom.py; no scanner in the path
-#  21  gen-recipes.py: both recipes are generated from one template; they differ only in name, description and the FIPS lines
-#  22  assembly-key signing; apk-tool digest/same/signer; release-sign-apks.sh compares then signs with the release key
-#  23  Build holds no key: no secret in the melange environment; a release key in the environment is refused
-#  24  version stamp recipe steps (the draft's four fixes), post-build buildinfo check refuses (devel)/dirty
-#  25-27 apko configs, pre-flight on the base lock, missing package / missing index refuse with no fallback
-#  28  tampered archived package refused at the lock checksum; the build always passes --lockfile
-#  29  evidence: lock + checksum list of every archived package, the indexes, the Wolfi key (and the Go tarballs)
-#  30  rebuild from the archive alone: apko build --offline --lockfile under unshare -n, digest file
-#  31  SOURCE_DATE_EPOCH in both tools, --build-date, same inputs -> same full lock and digest
-#  32  refresh job compares the live Wolfi key (see 46)
-#  33  one apko build per variant for both archs; arch-check fails when per-arch versions differ
-#  34  -fips image has no shell      36  lock-proof.sh (four failing-first cases)      37  two lock files and their compare
-#  38  user 65532 and its home      38a melange hermetic       38b apko hermetic       39-42 sealed-proof.sh
-#  43  NOT TESTABLE HERE (a report, no gate)
-#  44-49 refresh job and bin/refresh-inputs.sh (re-lock, dependabot silent, key change stops, gone version noted, no 7-day wait,
-#      PR only)       72  build-side FIPS checks (buildinfo of the -fips apk)       73  weekly certified-module check
+# The suites run offline. The tools the scripts call are stubs first on PATH that record their arguments in $CALLS, so a
+# case can assert the flags and the order of the calls without network, docker, sudo or a real melange.
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
-work=$(mktemp -d); trap 'chmod -R u+w "$work" 2>/dev/null; rm -rf "$work"' EXIT
+# the scripts under test make their scratch in the work folder, so the trap below gives it write back
+work=$(mktemp -d); export TMPDIR=$work
+trap 'chmod -R u+w "$work" 2>/dev/null; rm -rf "$work"' EXIT
 pass=0 failn=0
 ok()  { pass=$((pass+1)); }
 bad() { failn=$((failn+1)); echo "FAIL [$1] $2"; [ -n "${MA_DEBUG:-}" ] && { echo "  --- rc=$(cat "$work/rc" 2>/dev/null) log:"; tail -5 "$work/log" 2>/dev/null | sed "s/^/  | /"; echo "  --- calls:"; tail -4 "$CALLS" 2>/dev/null | cut -c1-200 | sed "s/^/  | /"; }; true; }
@@ -126,10 +26,10 @@ fx="$work/fx"; stubs="$work/stubs"; stubs2="$work/stubs2"; mkdir -p "$stubs" "$s
 
 # ---------- python library: fixtures, stub back-ends, mutations ------------------------------------------------------
 cat >"$work/lib.py" <<'PY'
-import base64, gzip, hashlib, io, json, os, re, shutil, subprocess, sys, tarfile, zlib
+import base64, gzip, hashlib, io, json, os, re, shutil, stat, subprocess, sys, tarfile, zlib
 import yaml
 ARCHS = ["x86_64", "aarch64"]
-BASE = [("wolfi-baselayout", "20230201-r5"), ("ca-certificates-bundle", "20260101-r0"), ("tzdata", "2026a-r0")]
+BASE = [("tzdata", "2026a-r0")]   # the archive packages the images keep: no CA bundle and no Wolfi base layout (0710)
 ENVPK = [("busybox", "1.37.0-r5"), ("git", "2.50.1-r0"), ("wget", "1.25.0-r0"), ("ca-certificates-bundle", "20260102-r0")]
 def tarb(members):
     b = io.BytesIO()
@@ -138,6 +38,9 @@ def tarb(members):
             i = tarfile.TarInfo(n); i.size = len(d); i.mtime = 0; i.mode = 0o644
             t.addfile(i, io.BytesIO(d))
     return b.getvalue()
+def sigtar(members):
+    """the signature segment as melange and apk-tools make it: header and data blocks only, NO end-of-archive blocks (apk reads the three streams as one tar)"""
+    return tarb(members)[:sum(512 + (len(d) + 511) // 512 * 512 for _, d in members)]
 def gz(b):
     o = io.BytesIO()
     with gzip.GzipFile(fileobj=o, mode="wb", mtime=0) as g: g.write(b)
@@ -150,8 +53,9 @@ def realsig(ctrl, keyfile, alg):
     with tempfile.TemporaryDirectory() as d:
         open(d + "/k", "w").write(pem); open(d + "/c", "wb").write(ctrl)
         return subprocess.run(["openssl", "dgst", "-" + alg, "-sign", d + "/k", d + "/c"], capture_output=True, check=True).stdout
-def mkapk(path, name, ver, files, control=None, signer="assembly.rsa.pub", sigalg="RSA", datahash=None, signkey=None):
-    data = gz(tarb(sorted(files.items())))
+def mkapk(path, name, ver, files, control=None, signer="assembly.rsa.pub", sigalg="RSA256",
+          datahash=None, signkey=None, datatar=None):
+    data = gz(datatar or tarb(sorted(files.items())))
     dh = datahash or hashlib.sha256(data).hexdigest()   # a real apk's .PKGINFO carries the sha256 of its data stream
     ctl = [(".PKGINFO", ("pkgname = %s\npkgver = %s\ndatahash = %s\n" % (name, ver, dh)).encode())] + sorted((control or {}).items())
     ctrl = gz(tarb(ctl))
@@ -162,7 +66,7 @@ def mkapk(path, name, ver, files, control=None, signer="assembly.rsa.pub", sigal
         sigbytes = realsig(ctrl, key, "sha256" if sigalg == "RSA256" else "sha1")
     else:
         sigbytes = ("sig-%s-%s" % (signer, name)).encode()
-    sig = gz(tarb([(".SIGN." + sigalg + "." + signer, sigbytes)])) if signer else b""
+    sig = gz(sigtar([(".SIGN." + sigalg + "." + signer, sigbytes)])) if signer else b""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     open(path, "wb").write(sig + ctrl + data)
     return sig, ctrl, data
@@ -192,8 +96,7 @@ CFG = """contents:
     - /work/keyring/wolfi-signing.rsa.pub
     - /work/keyring/assembly.rsa.pub
   packages:
-    - wolfi-baselayout
-    - ca-certificates-bundle
+    - fscache-baselayout=@FSCACHE_VERSION@-r0
     - tzdata
     - %(fs)s=@FSCACHE_VERSION@-r0
 accounts:
@@ -276,6 +179,7 @@ def fixtures(fx):
         open("%s/envrepo/%s/APKINDEX.tar.gz" % (fx, a), "wb").write(b"envrepo-index-" + a.encode())
         for n, mel in (("fscache", "melrepo"), ("fscache-fips", "melrepo-fips")):
             P[(n, "0.3.0-r0", a)] = mkapk("%s/%s/%s/%s-0.3.0-r0.apk" % (fx, mel, a, n), n, "0.3.0-r0", {"usr/bin/fscache": ("bin-%s-%s" % (n, a)).encode()})
+            P[("fscache-baselayout", "0.3.0-r0", a, mel)] = mkapk("%s/%s/%s/fscache-baselayout-0.3.0-r0.apk" % (fx, mel, a), "fscache-baselayout", "0.3.0-r0", {"etc/passwd": b"nonroot"})
             open("%s/%s/%s/APKINDEX.tar.gz" % (fx, mel, a), "wb").write(b"index-" + a.encode())
     os.makedirs(fx + "/archive/keys", exist_ok=True)
     open(fx + "/archive/keys/wolfi-signing.rsa.pub", "w").write("-----BEGIN PUBLIC KEY-----\nwolfi-fixture\n-----END PUBLIC KEY-----\n")
@@ -288,11 +192,12 @@ def fixtures(fx):
         p = "%s/archive/go/go1.27.2.linux-%s.tar.gz" % (fx, g)
         open(p, "wb").write(("fake-go-" + g).encode()); sums.append(hashlib.sha256(open(p, "rb").read()).hexdigest())
     def ent(n, v, a, pre): return entry(n, v, a, "%s/%s/%s-%s.apk" % (pre, a, n, v), P[(n, v, a)])
+    def own_ent(a, fs): return entry("fscache-baselayout", "0.3.0-r0", a, "/work/melange-repo/%s/fscache-baselayout-0.3.0-r0.apk" % a, P[("fscache-baselayout", "0.3.0-r0", a, "melrepo-fips" if fs == "fscache-fips" else "melrepo")])
     base = [ent(n, v, a, "/work/archive") for a in ARCHS for n, v in BASE]
     wj(fx + "/base.lock.json", lockdoc(base, "cfg-base", ["/work/archive"]))
     wj(fx + "/base-fips.lock.json", lockdoc(base, "cfg-base-fips", ["/work/archive"]))
     for fs, out in (("fscache", "full"), ("fscache-fips", "full-fips")):
-        ents = [ent(n, v, a, "/mnt/other/archive") for a in ARCHS for n, v in reversed(BASE)] + [ent(fs, "0.3.0-r0", a, "/work/melange-repo") for a in ARCHS]
+        ents = [ent(n, v, a, "/mnt/other/archive") for a in ARCHS for n, v in reversed(BASE)] + [ent(fs, "0.3.0-r0", a, "/work/melange-repo") for a in ARCHS] + [own_ent(a, fs) for a in ARCHS]
         wj("%s/%s.lock.json" % (fx, out), lockdoc(ents, "cfg-full-" + fs, ["/work/archive", "/work/melange-repo"]))
     live = [ent(n, v, a, "https://packages.wolfi.dev/os") for a in ARCHS for n, v in BASE]
     wj(fx + "/live-same.lock.json", lockdoc(live, "live", ["https://packages.wolfi.dev/os"]))
@@ -309,19 +214,20 @@ def fixtures(fx):
     open(fx + "/apko.yaml", "w").write(CFG % dict(fs="fscache")); open(fx + "/apko-fips.yaml", "w").write(CFG % dict(fs="fscache-fips"))
     open(fx + "/fips-module.txt", "w").write("v1.0.0-c2097c7c\n")
     open(fx + "/melange.yaml.tmpl", "w").write(recipe(fx, sums))
-    subprocess.run([sys.executable, os.path.join(os.environ["FSCACHE_ROOT"], "bin/gen-recipes.py"), "--template", fx + "/melange.yaml.tmpl", "--regular", fx + "/melange.yaml", "--fips", fx + "/melange-fips.yaml", "--melange-lock", fx + "/melange.lock", "--fips-module", fx + "/fips-module.txt", "--write"], check=True)
+    shutil.copy(os.environ["FSCACHE_ROOT"] + "/build/melange-baselayout.yaml.tmpl", fx + "/melange-baselayout.yaml.tmpl")   # the real base-layout template
+    shutil.copy(os.path.join(os.environ["FSCACHE_ROOT"], "bin/gen-recipes.py"), fx + "/gen-recipes.py")
+    subprocess.run([sys.executable, fx + "/gen-recipes.py", "--template", fx + "/melange.yaml.tmpl", "--regular", fx + "/melange.yaml", "--fips", fx + "/melange-fips.yaml", "--baselayout-template", fx + "/melange-baselayout.yaml.tmpl", "--baselayout", fx + "/melange-baselayout.yaml", "--melange-lock", fx + "/melange.lock", "--fips-module", fx + "/fips-module.txt", "--write"], check=True)
     # a repo tree for the refresh job
     r = fx + "/repo"
     os.makedirs(r + "/build/locks", exist_ok=True)
-    for f in ("apko.yaml", "apko-fips.yaml", "melange.yaml", "melange-fips.yaml"): shutil.copy(fx + "/" + f, r + "/build/" + f)
+    for f in ("apko.yaml", "apko-fips.yaml", "melange.yaml", "melange-fips.yaml", "melange-baselayout.yaml"): shutil.copy(fx + "/" + f, r + "/build/" + f)
     shutil.copy(fx + "/base.lock.json", r + "/build/locks/apko.base.lock.json"); shutil.copy(fx + "/base-fips.lock.json", r + "/build/locks/apko-fips.base.lock.json")
-    shutil.copy(fx + "/melange.lock", r + "/build/locks/melange.lock"); shutil.copy(fx + "/fips-module.txt", r + "/build/locks/fips-module.txt"); shutil.copy(fx + "/melange.yaml.tmpl", r + "/build/melange.yaml.tmpl")
+    shutil.copy(fx + "/melange.lock", r + "/build/locks/melange.lock"); shutil.copy(fx + "/fips-module.txt", r + "/build/locks/fips-module.txt"); shutil.copy(fx + "/melange.yaml.tmpl", r + "/build/melange.yaml.tmpl"); shutil.copy(fx + "/melange-baselayout.yaml.tmpl", r + "/build/melange-baselayout.yaml.tmpl")
     # apks for tools
     pr = fx + "/pair"
     mkapk(pr + "/a.apk", "fscache", "0.3.0-r0", {"usr/bin/fscache": b"binA", "usr/share/x": b"same"})
     mkapk(pr + "/b.apk", "fscache", "0.3.0-r0", {"usr/bin/fscache": b"binA", "usr/share/x": b"same"}, signer="release.rsa.pub")
     mkapk(pr + "/c.apk", "fscache", "0.3.0-r0", {"usr/bin/fscache": b"binC", "usr/share/x": b"same"})
-    mkapk(pr + "/rsa256.apk", "fscache", "0.3.0-r0", {"usr/bin/fscache": b"binA", "usr/share/x": b"same"}, sigalg="RSA256")   # real melange writes .SIGN.RSA256.<key> (real-run finding Oct 9)
     mkapk(pr + "/unsigned.apk", "fscache", "0.3.0-r0", {"usr/bin/fscache": b"binA", "usr/share/x": b"same"}, signer=None)
     open(pr + "/binA", "wb").write(b"binA"); open(pr + "/binC", "wb").write(b"binC")
     envy = lambda pk: yaml.safe_dump({"package": {"name": "fscache"}, "environment": {"contents": {"packages": pk}}})
@@ -375,7 +281,7 @@ def stubsign(path, signame, key=None):
     rest = b"".join(p[0] for p in (parts[1:] if has_sig else parts))
     ctrl = (parts[1:] if has_sig else parts)[0][0]
     sigbytes = realsig(ctrl, key, "sha256") if key and os.path.exists(key) and not os.environ.get("STUB_FAKE_SIG") else b"stub-signature"
-    open(path, "wb").write(gz(tarb([(".SIGN.RSA256." + signame, sigbytes)])) + rest)
+    open(path, "wb").write(gz(sigtar([(".SIGN.RSA256." + signame, sigbytes)])) + rest)
 def tamper(path):
     b = bytearray(open(path, "rb").read()); b[len(b) - 12] ^= 0xFF; open(path, "wb").write(bytes(b))
 def split(raw):
@@ -384,6 +290,35 @@ def split(raw):
         d = zlib.decompressobj(31); data = d.decompress(raw); used = len(raw) - len(d.unused_data)
         out.append((raw[:used], data)); raw = d.unused_data
     return out
+def baselayout_tree(recipe, ver):
+    """the data section of the base-layout apk the stub makes: the recipe's `runs:` steps run into a temp destdir (from the checkout, as melange runs them),
+    then every entry is packed with its real type and mode, plus melange's SBOM file; STUB_BL_BAD / STUB_BL_BUNDLE tamper with it"""
+    import tempfile
+    dest = tempfile.mkdtemp(prefix="bl-dest.")
+    for st in recipe["pipeline"]:
+        r = subprocess.run(["bash", "-e", "-c", "umask 022\n" + st["runs"].replace("${{targets.destdir}}", dest)], cwd=os.environ["STUB_SRC"], capture_output=True, text=True)
+        if r.returncode: sys.exit("stub melange: a recipe step failed: " + r.stderr)
+    sbom = "var/lib/db/sbom/fscache-baselayout-%s-r0.spdx.json" % ver
+    os.umask(0o022)
+    os.makedirs(os.path.join(dest, os.path.dirname(sbom)), exist_ok=True)
+    open(os.path.join(dest, sbom), "w").write("{}")
+    bad = os.environ.get("STUB_BL_BAD")
+    if bad: open(os.path.join(dest, bad), "ab").write(b"tampered")
+    if os.environ.get("STUB_BL_BUNDLE"):
+        os.makedirs(os.path.join(dest, "etc/ssl/certs"), exist_ok=True)
+        open(os.path.join(dest, "etc/ssl/certs/ca-certificates.crt"), "wb").write(b"bundle")
+    b = io.BytesIO()
+    with tarfile.open(fileobj=b, mode="w", format=tarfile.GNU_FORMAT) as t:
+        for root_, dirs, fs in os.walk(dest):
+            dirs.sort()
+            for n in sorted(dirs + fs):
+                p = os.path.join(root_, n); rel = os.path.relpath(p, dest); st = os.lstat(p)
+                i = tarfile.TarInfo(rel); i.mtime = 0; i.mode = stat.S_IMODE(st.st_mode)
+                if os.path.islink(p): i.type = tarfile.SYMTYPE; i.linkname = os.readlink(p); t.addfile(i)
+                elif os.path.isdir(p): i.type = tarfile.DIRTYPE; t.addfile(i)
+                else:
+                    data = open(p, "rb").read(); i.size = len(data); t.addfile(i, io.BytesIO(data))
+    return b.getvalue()
 def stubbuild(recipe_path, out, arch, cache):
     d = yaml.safe_load(open(recipe_path)); pkg = d["package"]; name = pkg["name"]; ver = str(pkg["version"])
     goarch = {"x86_64": "amd64", "aarch64": "arm64"}[arch]
@@ -399,10 +334,13 @@ def stubbuild(recipe_path, out, arch, cache):
                 "\tdep\tgithub.com/example/x\tv1.0.0\n\tdep\tgolang.org/x/sys\tv0.30.0\n\tbuild\t-trimpath=true\n\tbuild\tvcs.revision=" + subprocess.run(["git", "-C", os.environ.get("STUB_SRC", "."), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip() + "\n\tbuild\tvcs.modified=false\n")
         if name.endswith("-fips"): text += "\tbuild\tGOFIPS140=v1.0.0-c2097c7c\n"
     files = {"usr/bin/fscache": ("fscache-binary %s %s %s" % (name, arch, os.environ.get("STUB_SALT", ""))).encode(), "usr/share/fscache/buildinfo.txt": text.encode()}
+    datatar = None
+    if name == "fscache-baselayout":   # the file-only recipe (0710): its own steps run into a folder and that real tree is packed, links included
+        datatar = baselayout_tree(d, ver)
     envd = d.get("environment", {})
     if os.environ.get("STUB_ENV_EXTRA"): envd = {"contents": {"packages": list(envd.get("contents", {}).get("packages", [])) + [os.environ["STUB_ENV_EXTRA"]]}}   # a package melange used that is not in the lock
     ctl = {".melange.yaml": yaml.safe_dump({"package": {"name": name}, "environment": envd}).encode()}
-    mkapk("%s/%s/%s-%s-r0.apk" % (out, arch, name, ver), name, ver + "-r0", files, control=ctl, signer=os.environ.get("STUB_SIGNER", "assembly.rsa.pub"), signkey=os.environ.get("STUB_SIGNKEY") or None)
+    mkapk("%s/%s/%s-%s-r0.apk" % (out, arch, name, ver), name, ver + "-r0", files, datatar=datatar, control=ctl, signer=os.environ.get("STUB_SIGNER", "assembly.rsa.pub"), signkey=os.environ.get("STUB_SIGNKEY") or None)
     open("%s/%s/APKINDEX.tar.gz" % (out, arch), "wb").write(b"index")
 def stuboci(out, lockfile, salt, sde, tamper=False, noindex=False):
     seed = hashlib.sha256(open(lockfile, "rb").read()).hexdigest() + salt + sde
@@ -444,7 +382,7 @@ def lockshape(path, variant):
     d = json.load(open(path)); assert d["version"] == "v1"
     pk = d["contents"]["packages"]; assert pk, "no packages"
     names = {e["name"] for e in pk}
-    assert {"wolfi-baselayout", "ca-certificates-bundle", "tzdata"} <= names, sorted(names)
+    assert "tzdata" in names and not names & {"wolfi-baselayout", "ca-certificates-bundle"}, sorted(names)
     assert not any(n.startswith("fscache") for n in names), "base lock holds our apk"
     for a in ARCHS: assert any(e["architecture"] == a for e in pk), a
     seen = {}
@@ -466,7 +404,7 @@ PY
 
 # ---------- static checker (yaml/json/md on the file a rule lives in) ---------------------------------------------------
 cat >"$work/chk.py" <<'PY'
-import glob, json, os, re, sys, yaml
+import glob, json, os, re, subprocess, sys, yaml
 mode, path = sys.argv[1], sys.argv[2]
 arg = sys.argv[3] if len(sys.argv) > 3 else ""
 root = os.environ.get("ROOT", ".")
@@ -477,6 +415,14 @@ def names(c): return {p.split("=")[0] for p in pk(c)}
 def pipe(d): return "\n".join(str(s.get("runs", "")) for s in d.get("pipeline", []))
 def kv(blob, k, v): return re.search(r"%s\s*[=:]\s*[\"']?%s[\"']?(\s|$)" % (re.escape(k), re.escape(v)), blob)
 PINNED = r"[a-z0-9.+_-]+=\d[\w.+~-]*"
+def fipsmod():
+    """the module id the FIPS recipe must use: the one build/locks/fips-module.txt names (FIPS_LOCK names another lock file in a test), read as one line
+    vMAJOR.MINOR.PATCH-<8 lower-case hex> and a plain newline, the grammar the driver and the daily refresh read it with; anything else fails"""
+    f = os.environ.get("FIPS_LOCK") or os.path.join(root, "build/locks/fips-module.txt")
+    raw = open(f, "rb").read().decode("ascii")
+    num = r"(?:0|[1-9][0-9]*)"
+    assert raw.endswith("\n") and raw.count("\n") == 1 and re.fullmatch(r"v%s\.%s\.%s-[0-9a-f]{8}" % (num, num, num), raw[:-1]), "%s is not one module id line" % f
+    return raw[:-1]
 if mode == "mel-name":
     d = load(); assert d["package"]["name"] == arg, d["package"]["name"]
     assert d["package"]["version"] == "@VERSION@" and int(d["package"]["epoch"]) == 0 and d["package"].get("copyright")
@@ -490,10 +436,21 @@ elif mode == "mel-env":
     for x in ("-mod=mod", "-mod=readonly", "go mod download", "go get ", "curl ", "GOPROXY=http", "GOSUMDB=off"): assert x not in b, x
 elif mode == "mel-fips":
     b = text()
-    if arg == "fips": assert kv(b, "GOFIPS140", "v1.0.0"), "fips recipe does not set GOFIPS140=v1.0.0"
+    if arg == "fips":
+        v = fipsmod().split("-")[0]
+        assert kv(b, "GOFIPS140", v), "fips recipe does not set GOFIPS140=%s (the version of the module build/locks/fips-module.txt names)" % v
     else: assert "GOFIPS140" not in b, "standard recipe mentions GOFIPS140"
 elif mode == "mel-fipsproof":
-    p = pipe(load()); assert "go version -m" in p and "GOFIPS140=v1.0.0-c2097c7c" in p, "no proof of the recorded v1.0.0-c2097c7c"
+    # one whole-line grep (-x) on the build line, the id's dots escaped: a longer or shorter id is another module.
+    # Each bare '.' is the tab Go writes around "build" (the template allows no tab or bracket); -x anchors both ends.
+    m = fipsmod(); p = pipe(load()); want = "grep -Eqx '.build.GOFIPS140=%s' /tmp/fscache-gobuildinfo.txt" % m.replace(".", "\\.")
+    greps = [l.strip() for l in p.split("\n") if l.strip().startswith("grep ") and "/tmp/fscache-gobuildinfo.txt" in l]
+    assert "go version -m" in p and greps == [want], "the proof lines are %r, wanted exactly [%r]" % (greps, want)
+elif mode == "mel-proofrun":
+    # runs the recipe's own grep line (its text, the path swapped for arg) and exits with the grep's status
+    ln = [l.strip() for l in pipe(load()).split("\n") if l.strip().startswith("grep ") and "/tmp/fscache-gobuildinfo.txt" in l]
+    assert len(ln) == 1, "need exactly one proof grep line, got %d" % len(ln)
+    sys.exit(subprocess.run(["bash", "-c", ln[0].replace("/tmp/fscache-gobuildinfo.txt", arg)]).returncode)
 elif mode == "mel-go":
     d = load(); ps = pk(d["environment"])
     assert not any(re.match(r"go([-=.]|$)", p) for p in ps), "a Wolfi go package is installed"
@@ -550,9 +507,9 @@ elif mode == "mel-buildinfo":
     p = pipe(load()); assert "usr/share/fscache/buildinfo.txt" in p and "go version -m" in p
 elif mode == "apko-pkgs":
     d = load(); fs = "fscache-fips" if arg == "fips" else "fscache"
-    assert names(d) == {"wolfi-baselayout", "ca-certificates-bundle", "tzdata", fs}, sorted(names(d))
-    assert f"{fs}=@FSCACHE_VERSION@-r0" in pk(d)
-    for p in pk(d): assert re.fullmatch(PINNED, p) or p == f"{fs}=@FSCACHE_VERSION@-r0" or "=" not in p, p
+    assert names(d) == {"fscache-baselayout", "tzdata", fs}, sorted(names(d))
+    assert f"{fs}=@FSCACHE_VERSION@-r0" in pk(d) and "fscache-baselayout=@FSCACHE_VERSION@-r0" in pk(d)
+    for p in pk(d): assert re.fullmatch(PINNED, p) or p in (f"{fs}=@FSCACHE_VERSION@-r0", "fscache-baselayout=@FSCACHE_VERSION@-r0") or "=" not in p, p
     assert "baseimage" not in text().lower() and "include" not in d and "debug" not in text().lower()
 elif mode == "apko-repos":
     c = load()["contents"]; assert c["repositories"] == ["/work/archive", "/work/melange-repo"], c["repositories"]
@@ -578,7 +535,7 @@ elif mode == "dependabot":
     d = load()
     for u in d["updates"]:
         assert not re.search(r"apko|melange|apk|lock|/build/locks", json.dumps(u), re.I), u
-        assert u["directory"] in ("/", "/build/docker", "/.github/agent", "/tools/requirements"), u["directory"]   # build/docker stays until the Dockerfile goes; /tools/requirements: the second Go module (its own gomod entry, rule 12), not an apk, apko, melange or lock-file entry
+        assert u["directory"] in ("/", "/.github/agent", "/tools/govulncheck", "/tools/requirements"), u["directory"]   # /tools/requirements: the second Go module (its own gomod entry, rule 12); /tools/govulncheck: the Check stage's pinned Go source scanner is its own module (advisor Oct 12, ruling G); it is not an apk, apko, melange or lock-file entry
 elif mode == "wf":
     d = load(); on = d.get(True) or d.get("on"); jobs = d["jobs"]; j = jobs[arg]; blob = json.dumps(j)
     if arg == "refresh":

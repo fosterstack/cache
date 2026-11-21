@@ -2,8 +2,9 @@
 """SYNTHETIC TEST DOUBLE — not the auditor.
 
 A canned-answer adjudicator that satisfies the same interface the real model
-client will: read one adjudication request as JSON on stdin, print one JSON
-answer on stdout. It holds NO judgment logic — it is a lookup table keyed by
+client does: read one adjudication request as JSON on stdin, print one JSON
+answer on stdout, or with --serve answer one request per input line until stdin
+closes. Every answer carries token_usage 1000. It holds NO judgment logic — it is a lookup table keyed by
 (finding_id, attempt) — so tests that drive it are deterministic and never call
 a real model.
 
@@ -13,7 +14,7 @@ correct classify can actually reach these answers. The refusal case uses a real,
 famous "cyber" CVE (CVE-2021-44228) that is deliberately NOT in the scan manifest,
 so its refuse-then-fallback answers never collide with a classify answer.
 
-Independent model-call ledger: on every invocation this appends one line
+Independent model-call ledger: on every request this appends one line
     <finding_id>|<attempt>|<model_role>
 to the file named by $AUDITOR_MODEL_LEDGER (if set). A test proves a phase made
 no model call by asserting that ledger is empty, and proves the fallback order /
@@ -53,7 +54,7 @@ CANNED = {
                     "keys": [{"scanner": "grype", "finding_id": "CVE-2099-PROPOSE",
                               "purl": "pkg:deb/debian/libpropose@1.0"}],
                     "note": "generalises from a recorded no-DSA pattern",
-                    "evidence": "debian security tracker: no-DSA (minor)"}},
+                    "evidence": "README.md"}},
     # a MALFORMED proposal (unsupported kind, no evidence) — must be dropped, never forwarded.
     ("CVE-2099-BADPROP", "primary"): {
         "refused": False, "category": "false_positive", "justification": "vulnerable_code_not_present",
@@ -65,7 +66,8 @@ CANNED = {
         "refused": False, "pullable": False, "hold": "upstream-held",
         "component_fixed": "3.0.13", "candidate_release": None,
         "bump_attempted": False, "bump_result": "no carrier release yet embeds openssl >= 3.0.13",
-        "lift_trigger": "nodejs >= 20.11.0 (embeds openssl >= 3.0.13)",
+        "lift_trigger": {"carrier": "nodejs", "min_version": "20.11.0", "component": "openssl",
+            "component_min_version": "3.0.13"},
         "evidence": {"how": "statically linked", "carrier": "nodejs", "carrier_version": "18.19.0",
                      "source": "SBOM relationship + upstream release notes"}},
     ("CVE-2099-POLICY", "pullability"): {
@@ -73,7 +75,8 @@ CANNED = {
         "component_fixed": "1.2.3-1", "repo_version": "1.2.3-1", "base_release": "debian 12.0",
         "candidate_release": "debian 12.6",
         "bump_attempted": False, "bump_result": "fix is in the debian repo; base pin predates it",
-        "lift_trigger": "base release >= debian 12.6",
+        "lift_trigger": {"carrier": "debian", "min_version": "12.6", "component": "libpolicy",
+            "component_min_version": "1.2.3-1"},
         "evidence": {"how": "base/OS release pin (reproducibility policy)", "source": "distro security tracker"}},
     ("CVE-2099-LIFT", "pullability"): {
         "refused": False, "pullable": True, "component_fixed": "3.0.13",

@@ -1,18 +1,17 @@
 {
   "comment": [
-    "The required-check set on main, read by release admission only: the source-admission",
-    "stage (stage-admission.yml), the patch release's ready step (release.yml) and",
-    "bin/policy-merge-harness.py. Release admission also requires the checks in",
-    "release-only-checks.json, which the ruleset does not list. The GitHub ruleset",
-    "(main-protection) is the only required list for merges; nothing compares this file",
-    "to it. Edit this list when the ruleset changes, so admission asks for the same checks.",
+    "What the release chain's source-admission stage requires green on a tagged commit.",
+    "Only release admission (bin/build-admit.py) reads this file. The GitHub ruleset (main-protection)",
+    "is the only required list for merges; no job or test compares the two, so keep this list to the",
+    "checks admission should demand.",
     "integration_id 15368 is GitHub Actions: it pins each context to check runs produced",
-    "by Actions, so a check run with the same name from any other app does not satisfy",
-    "the requirement.",
+    "by Actions, so a check run with the same name from any other app does not satisfy it.",
     "scope: 'push' means the check runs on main commits and release",
     "admission requires it green on the exact tagged SHA; 'pull_request'",
     "means it only ever runs on PRs, so admission requires it green on",
-    "the head of the merged PR that produced the tagged commit (F02)."
+    "the head of the merged PR that produced the tagged commit (F02).",
+    "promotion_checks are the full suite (REQ-CI-007-AC2): admission requires each green on the exact tagged commit for a",
+    "release-candidate tag only, as a schedule or dispatch run of the one workflow file bin/build-admit.py binds it to."
   ],
   "required_checks": [
     {
@@ -22,11 +21,6 @@
     },
     {
       "context": "lint",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "gosec",
       "integration_id": 15368,
       "scope": "push"
     },
@@ -46,17 +40,17 @@
       "scope": "push"
     },
     {
-      "context": "dependency-review",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
       "context": "fips140-only",
       "integration_id": 15368,
       "scope": "push"
     },
     {
       "context": "requirements",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "go-exact-pins",
       "integration_id": 15368,
       "scope": "push"
     },
@@ -69,9 +63,38 @@
       "context": "scan",
       "integration_id": 15368,
       "scope": "push"
+    }
+  ],
+  "promotion_checks": [
+    {
+      "context": "analyze (go)",
+      "integration_id": 15368,
+      "scope": "push"
     },
     {
-      "context": "vendor",
+      "context": "reproducibility",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "scan",
+      "integration_id": 15368,
+      "scope": "push"
+    }
+  ],
+  "promotion_checks": [
+    {
+      "context": "analyze (go)",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "reproducibility",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "scan",
       "integration_id": 15368,
       "scope": "push"
     }

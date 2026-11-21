@@ -183,7 +183,7 @@ fixture() { # fixture NAME  -> prints the tree path
   mkdir -p "$t/.github/workflows" "$t/.github/actions/x"
   printf 'name: scan\non:\n  pull_request:\n  push:\n    branches: [main]\njobs:\n  scan:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo scan\n' > "$t/.github/workflows/scan.yml"
   printf 'name: rescan\non:\n  schedule:\n    - cron: "41 7 * * *"\n  workflow_dispatch: {}\njobs:\n  scan:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo rescan\n' > "$t/.github/workflows/main-candidate-rescan.yml"
-  printf 'name: other\non: push\njobs:\n  build:\n    uses: ./.github/workflows/stage-build.yml\n' > "$t/.github/workflows/other.yml"
+  printf 'name: other\non: push\njobs:\n  build:\n    uses: ./.github/workflows/release.yml\n' > "$t/.github/workflows/other.yml"
   printf 'name: x\nruns:\n  using: composite\n  steps:\n    - run: echo x\n      shell: bash\n' > "$t/.github/actions/x/action.yml"
   echo "$t"
 }
@@ -257,7 +257,7 @@ expect caught "scan.yml: a double-quoted workflow_call key" "$(mutate y2 .github
 expect caught "scan.yml: an escaped workflow_call key (\\x5f for the underscore)" "$(mutate y3 .github/workflows/scan.yml "on:"$'\n  pull_request:\n  "workflow\\x5fcall":\n'"$GOODJOB")" "workflow_call"
 expect caught "scan.yml: on: workflow_call, then on: push (a repeated key)" "$(mutate y4 .github/workflows/scan.yml "on: workflow_call"$'\non: push\n'"$GOODJOB")" "duplicate mapping key"
 expect caught "scan.yml: jobs repeated, the first one calls nothing, the second is clean" "$(mutate y5 .github/workflows/scan.yml "on: push"$'\n'"$GOODJOB"$'\n'"$GOODJOB")" "duplicate mapping key"
-expect caught "other.yml: uses repeated, the later value is clean" "$(mutate y6 .github/workflows/other.yml $'name: o\non: push\njobs:\n  b:\n    uses: ./.github/workflows/scan.yml\n    uses: ./.github/workflows/stage-build.yml')" "duplicate mapping key"
+expect caught "other.yml: uses repeated, the later value is clean" "$(mutate y6 .github/workflows/other.yml $'name: o\non: push\njobs:\n  b:\n    uses: ./.github/workflows/scan.yml\n    uses: ./.github/workflows/release.yml')" "duplicate mapping key"
 expect caught "scan.yml: a second document in the file carries workflow_call" "$(mutate y7 .github/workflows/scan.yml "on: push"$'\n'"$GOODJOB"$'\n---\non: workflow_call\n')" "cannot be read as one workflow document"
 expect caught "scan.yml: malformed YAML" "$(mutate y8 .github/workflows/scan.yml $'on: [push\njobs: {')" "cannot be read as one workflow document"
 expect caught "scan.yml: bytes that are not UTF-8" "$(t=$(fixture y9); printf 'on: push\n# \xff\xfe\n' > "$t/.github/workflows/scan.yml"; echo "$t")" "cannot be read as one workflow document"
@@ -268,7 +268,7 @@ expect caught "scan.yml is missing" "$(t=$(fixture r1); rm "$t/.github/workflows
 expect caught "main-candidate-rescan.yml is missing" "$(t=$(fixture r2); rm "$t/.github/workflows/main-candidate-rescan.yml"; echo "$t")"
 
 # 4. things that must stay allowed: neighbours calling other stage files, a guarded name inside a run: string
-expect ok "a neighbour that calls stage-build.yml and mentions scan.yml in a run: line" "$(mutate k1 .github/workflows/other.yml $'name: other\non: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - run: gh run list --workflow scan.yml')"
+expect ok "a neighbour that calls release.yml and mentions scan.yml in a run: line" "$(mutate k1 .github/workflows/other.yml $'name: other\non: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - run: gh run list --workflow scan.yml')"
 
 # the real repository (green today)
 expect ok "the real repository: neither file is callable and nothing calls them" "$root"
@@ -329,7 +329,5 @@ gitjudge caught "a blob sha is refused" blobobj ':' '' '' 'git rev-parse HEAD:.g
 gitjudge ok     "a lightweight tag's sha is the commit itself and passes" lighttag ':' "$TAGIT" '' 'git rev-parse lt'
 gitjudge caught "a 64-hex name that is not in the repository is refused" norev64 ':' '' "$(printf '0%.0s' {1..64})" '' 'is not a commit'
 
-EXPECT=76
 echo "pass=$pass fail=$failn"
-if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

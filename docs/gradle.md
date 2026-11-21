@@ -169,6 +169,8 @@ A warm *local* cache still serves hits regardless of whether the remote is
 working, so a build can look fast while the remote is rejecting requests (Gradle then switches it off for that build); the
 401 line above is how you notice (see §6).
 
+What the server answers to each request, and why a request is refused: [server responses](server-responses.md).
+
 ## 6. Verify it's actually being used
 
 Run twice. The second build is the one that tells you anything:

@@ -1,0 +1,2200 @@
+#!/usr/bin/env bash
+# proves: REQ-CHAIN-007-AC22, REQ-CHAIN-008-AC1, REQ-CHAIN-008-AC2, REQ-CHAIN-008-AC3, REQ-CHAIN-008-AC4, REQ-CHAIN-008-AC5, REQ-CHAIN-007-AC4, REQ-CHAIN-007-AC5, REQ-CHAIN-007-AC6, REQ-CHAIN-007-AC7, REQ-CHAIN-007-AC8, REQ-CHAIN-007-AC9, REQ-CHAIN-007-AC10, REQ-CHAIN-007-AC14, REQ-CHAIN-007-AC17, REQ-CHAIN-007-AC19, REQ-CHAIN-007-AC20, REQ-CHAIN-007-AC21, REQ-CHAIN-005-AC4
+#
+# Behaviour of the release scripts. Every script is run in a throw-away tree with FAKE tools first on PATH
+# (crane over a directory "registry", cosign, gh, melange, and fakes of bin/chain-verify.py, bin/apk-tool.py and
+# bin/vendor-provenance.py); no network, no real credential, no real key. Credentials are SENTINEL strings: they must
+# reach only the tool that needs them and never appear in any output, any file the script writes or any command line
+# (stdin is allowed). Runs on ubuntu-24.04 or macOS with bash, python3, jq.
+# RELEASE_BIN can point at another directory of scripts (default bin/).
+#
+# Fixed paths the scripts read and write (what the stage's downloads and uploads carry; the scripts take no arguments
+# because the stage runs them as `bash bin/witnessed.sh STEP bin/STEP.sh`):
+#   in : Build's REAL interface (REQ-CHAIN-007-AC17, the fixed table; Build is the reviewed source of truth): witness-build/digests.json with the keys
+#        image-production, image-fips, apk-standard-amd64, apk-standard-arm64, apk-fips-amd64, apk-fips-arm64 (bin/chain_items.py digests_of),
+#        witness-build/build-collection.json, witness-rebuild/..., witness-check/..., provenance/provenance.json, images/<variant>/ (an OCI layout directory) + images/<variant>.digest,
+#        images/<variant>.full.lock.json and images/<variant>-sbom/sbom.json, apks/<runner>/<apk arch>/fscache[-fips]-0.3.0-r0.apk (the artifacts
+#        apk-ubuntu-24.04 -> x86_64 and apk-ubuntu-24.04-arm -> aarch64), rapks/<runner>/... (Rebuild's, same layout), dist/*, policy.json
+#   out: release-apks/<apk arch>/*.apk, release-evidence/ (bundles, vendor-evidence.json, release-policy.bundle)
+# Registries: ghcr.io/fosterstack/cache and docker.io/fosterstack/cache; tags 0.3.0 and 0.3.0-fips (a final
+# release also floating tags).
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+export RELEASE_BIN="${RELEASE_BIN:-$root/bin}"
+export RELEASE_ROOT="$root"
+export REPO_ROOT="$root"
+python3 - "$@" <<'PY'
+import ast, atexit, base64, datetime, hashlib, json, os, re, shutil, stat, subprocess, sys, tarfile, tempfile
+BIN = os.environ["RELEASE_BIN"]
+SCRATCH = tempfile.mkdtemp()
+tempfile.tempdir = SCRATCH      # a failing or aborted run leaves nothing in TMPDIR
+atexit.register(shutil.rmtree, SCRATCH, ignore_errors=True)
+SENT = {"DOCKERHUB_USERNAME": "sentinel-user-91", "DOCKERHUB_TOKEN": "SENTINEL-HUB-TOKEN-5c2e", "GH_TOKEN": "SENTINEL-GH-TOKEN-b814"}
+passn, failn = 0, 0
+def ok(l): global passn; passn += 1; print("ok   " + l)
+def bad(l): global failn; failn += 1; print("FAIL " + l)
+LAST = [0]   # the exit code of the last script run: a missing script (127) fails every check that follows, so nothing passes vacuously
+def check(c, l, why=""):
+    if LAST[0] == 127: bad(l + " -> the script does not exist")
+    else: ok(l) if c else bad(l + (" -> " + why if why else ""))
+def drop(t, rel, label):
+    """remove a file a case needs gone; when the signer left no such file the case FAILS by its label (never a FileNotFoundError that ends the suite)"""
+    pth = os.path.join(t, rel)
+    if not os.path.lexists(pth): check(False, label, "the file to remove (%s) is not there: the signing step left none" % rel); return False
+    os.remove(pth); return True
+FAKES = {
+ "crane": r'''#!/usr/bin/env bash
+echo "crane $*" >> "$LOG"
+case "$1" in
+  auth) cat > /dev/null; mkdir -p "$REG/.login"; : > "$REG/.login/$3"
+        d="${DOCKER_CONFIG:-$HOME/.docker}"; mkdir -p "$d"; echo "login $3" >> "$d/config.json"; echo "$d" >> "$LOG.dockercfg" ;;
+  push) host=${3%%/*};
+        # release-sign's referrer: a layout DIRECTORY pushed by a digest ref (REF@sha256:...); FAKE_PUSH_FAIL_ON names a substring of the ref that fails;
+        # a copy of the directory is kept as calls.log.push.N.tar (the step removes its own scratch) and the ref in calls.log.pushmap
+        # (it is logged in by cosign login, which shares the DOCKER_CONFIG of the step)
+        if [[ "$3" == *@sha256:* ]]; then
+          grep -q "login $host" "${DOCKER_CONFIG:-$HOME/.docker}/config.json" 2>/dev/null || { echo "UNAUTHORIZED $host" >&2; exit 1; }
+          [ -z "${FAKE_PUSH_FAIL_ON:-}" ] || case "$3" in *"$FAKE_PUSH_FAIL_ON"*) echo "crane: push $3 failed" >&2; exit 1;; esac
+          [ -d "$2" ] && [ -f "$2/oci-layout" ] && [ -f "$2/index.json" ] || { echo "crane: $2 is not an OCI image layout directory" >&2; exit 1; }
+          n=$(( $(cat "$LOG.pushmap" 2>/dev/null | wc -l) + 1 )); tar -C "$2" -cf "$LOG.push.$n.tar" .; printf '%s\t%s\n' "$3" "$LOG.push.$n.tar" >> "$LOG.pushmap"; exit 0
+        fi
+        [ -e "$REG/.login/$host" ] || { echo "UNAUTHORIZED $host" >&2; exit 1; }
+        # images/<variant>/ is an OCI image layout DIRECTORY. MEASURED with crane 0.22.1: pushing a
+        # docker-format tarball re-creates the manifest (the digest changes), pushing an OCI layout directory keeps the digest. A tarball is refused here.
+        [ -d "$2" ] && [ -f "$2/oci-layout" ] && [ -f "$2/index.json" ] || { echo "crane: $2 is not an OCI image layout directory" >&2; exit 1; }
+        d=$(cat "${2}.digest"); p="$REG/${3/://}"; mkdir -p "$(dirname "$p")"
+        [ "${REG_CORRUPT:-}" = "$host" ] && d="sha256:$(printf 'f%.0s' $(seq 64))"; echo "$d" > "$p" ;;
+  manifest) [ -z "${FAKE_MANIFEST_FAIL_ON:-}" ] || case "$2" in *"$FAKE_MANIFEST_FAIL_ON"*) echo "crane: manifest $2 failed" >&2; exit 1;; esac
+            printf '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","size":2,"digest":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"},"layers":[],"annotations":{"ref":"%s"}}' "$2" ;;
+  digest) p="$REG/${2/://}"; [ -e "$p" ] && cat "$p" || { echo "NAME_UNKNOWN $2" >&2; exit 1; } ;;
+  ls) [ -z "${LS_FAIL:-}" ] || { echo "connection refused" >&2; exit 1; }
+      [ -d "$REG/$2" ] || { echo "NAME_UNKNOWN $2" >&2; exit 1; }
+      # LS_RACE_AFTER=N: after answering the Nth listing, a concurrent publication of the higher release 0.3.1 completes in both registries
+      # (its exact tags, :0 and :latest, all at another digest): a higher release published between the two listings
+      n=$(( $(cat "$REG/.lsn" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$REG/.lsn"; out=$(ls "$REG/$2")
+      if [ "${LS_RACE_AFTER:-}" = "$n" ]; then
+        for h in ghcr.io docker.io; do d="$REG/$h/fosterstack/cache"; mkdir -p "$d"; for x in 0.3.1 0.3.1-fips 0 latest; do echo "sha256:$(printf '8%.0s' $(seq 64))" > "$d/$x"; done; done
+      fi
+      printf '%s\n' "$out" ;;
+  *) echo "crane: unexpected $1" >&2; exit 2 ;;
+esac''',
+ "cosign": r'''#!/usr/bin/env bash
+echo "cosign $*" >> "$LOG"
+echo "$PWD" >> "$LOG.cwd"
+for a in "$@"; do if [ "$a" = release.rsa.pub ]; then [ -f release.rsa.pub ] || { echo "open release.rsa.pub: no such file or directory" >&2; exit 1; }; cat release.rsa.pub >> "$LOG.keyseen"; fi; done
+if [ -n "${FAKE_NEEDFILES:-}" ]; then for a in "$@"; do case "$a" in *.json|*.bundle|*.txt|*"{"*|*"*"*) [ -f "$a" ] || { echo "open $a: no such file or directory" >&2; exit 1; };; esac; done; fi
+[ -z "${COSIGN_FAIL:-}" ] || { echo "cosign failed" >&2; exit 1; }
+[ -z "${COSIGN_FAIL_ON:-}" ] || case "$*" in *"$COSIGN_FAIL_ON"*) echo "cosign failed" >&2; exit 1;; esac
+if [ "$1" = login ]; then cat > /dev/null; d="${DOCKER_CONFIG:-$HOME/.docker}"; mkdir -p "$d"; echo "login $*" >> "$d/config.json"; echo "$d" >> "$LOG.dockercfg"; fi
+[ "$1" != verify-attestation ] || [ -z "${FAKE_VERIFY_ATT_FAIL_ON:-}" ] || case "${*: -1}" in *"$FAKE_VERIFY_ATT_FAIL_ON"*) echo "cosign verify-attestation failed on ${*: -1}" >&2; exit 1;; esac
+exit 0''',
+ "git": r'''#!/usr/bin/env bash
+# release-assets reads the release tag's object (cat-file tag); release-sign asks for the admitted commit's committer date (log -1 --format=%ct)
+if [ "$1 $2" = "cat-file tag" ]; then
+  echo "git $*" >> "$LOG"
+  # the tag object of the release tag: TAG_OBJECT names a file; no such file = the tag cannot be read
+  if [ -n "${TAG_OBJECT:-}" ] && [ -f "$TAG_OBJECT" ]; then cat "$TAG_OBJECT"; elif [ -n "${TAG_REPO:-}" ]; then GIT_DIR="$TAG_REPO" exec "$REAL_GIT" "$@"; else echo "fatal: not a valid tag" >&2; exit 128; fi
+  exit 0
+fi
+echo "git $*" >> "$LOG.git"
+# any other call goes to the REAL git over TAG_REPO (a real repository holding the release tag), so release-sign may read the tag in any standard way
+if [ "$1 $2 $3" != "log -1 --format=%ct" ] && [ -n "${TAG_REPO:-}" ]; then
+  sed -i '$d' "$LOG.git"; echo "git $*" >> "$LOG.gitreal"; GIT_DIR="$TAG_REPO" exec "$REAL_GIT" "$@"
+fi
+[ "$1 $2 $3" = "log -1 --format=%ct" ] || { echo "git: unexpected $*" >&2; exit 2; }
+[ -z "${GIT_FAIL:-}" ] || { echo "fatal: bad object $4" >&2; exit 128; }
+printf '%s\n' "${GIT_EPOCH-1760000000}"''',
+ "gh": r'''#!/usr/bin/env bash
+echo "gh $*" >> "$LOG"
+[ -z "${GH_FAIL:-}" ] || { echo "gh failed" >&2; exit 1; }
+[ -z "${GH_FAIL_ON:-}" ] || case "$*" in *"$GH_FAIL_ON"*) echo "gh failed" >&2; exit 1;; esac
+[ -z "${GH_VIEW_ERR:-}" ] || [ "$1 $2" != "release view" ] || { echo "$GH_VIEW_ERR" >&2; exit 1; }
+# release list answers the releases made by this run's create calls plus GH_LIST (a JSON array of {tagName,isDraft}); GH_LIST_FAIL fails it
+if [ "$1 $2" = "release list" ]; then [ -z "${GH_LIST_FAIL:-}" ] || { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
+  { echo "${GH_LIST:-[]}"; [ ! -f "$LOG.rels" ] || cat "$LOG.rels"; } | jq -s '[.[][]]'; exit 0; fi
+if [ "$1 $2" = "release create" ]; then printf '[{"tagName":"%s","isDraft":true}]\n' "$3" >> "$LOG.rels"; a=("$@"); for i in "${!a[@]}"; do
+  [ "${a[$i]}" = --notes ] && printf %s "${a[$((i+1))]}" > "$LOG.notes"
+  [ "${a[$i]}" = --notes-file ] && cp "${a[$((i+1))]}" "$LOG.notes"; done; fi
+pub="$LOG.published"
+if [ "$1 $2" = "release upload" ]; then shift 3; mkdir -p "$pub"; clobber=0; ex=
+  for f in "$@"; do [ "$f" = --clobber ] && clobber=1; done
+  # like gh (v2.45.0): without --clobber it checks every name first, and one attached name refuses the whole upload
+  if [ "$clobber" = 0 ]; then for f in "$@"; do [ ! -e "$pub/${f##*/}" ] || ex="$ex ${f##*/}"; done
+    [ -z "$ex" ] || { echo "asset under the same name already exists:$ex" >&2; exit 1; }; fi
+  for f in "$@"; do [ "$f" = --clobber ] || cp "$f" "$pub/"; done
+elif [ "$1 $2" = "release download" ]; then d=; while [ $# -gt 0 ]; do [ "$1" = -D ] && d=$2; shift; done; mkdir -p "$d"; cp "$pub"/* "$d"/ 2>/dev/null || true
+  [ -z "${GH_DROP:-}" ] || rm -f "$d/$GH_DROP"; [ -z "${GH_ALTER:-}" ] || printf x >> "$d/$GH_ALTER"; fi''',
+ "bin/vex-forms.py": r'''import json, os, sys
+a = sys.argv[1:]
+open(os.environ["LOG"], "a").write("vex-forms %s\n" % " ".join(a))
+if os.environ.get("VEXFORMS_FAIL"): print("vex-forms: image digests missing", file=sys.stderr); sys.exit(1)
+ver = a[a.index("--version") + 1]; out = a[a.index("--out-dir") + 1]
+json.load(open(a[a.index("--images") + 1]))
+open(os.path.join(out, "fosterstack-cache-%s.csaf.json" % ver), "w").write("{}"); open(os.path.join(out, "fosterstack-cache-%s.inspector-filters.json" % ver), "w").write("{}")''',
+ "bin/apk-tool.py": r'''import hashlib, sys
+cmd, f = sys.argv[1], sys.argv[2]
+lines = open(f).read().split("\n")
+if cmd == "digest": print("sha256:" + hashlib.sha256(lines[2].split(": ", 1)[1].encode()).hexdigest())
+elif cmd == "control": open(sys.argv[3], "w").write(lines[2].split(": ", 1)[1])     # the model's control stream is the data line, so its sha256 is the apk's attested digest
+elif cmd == "signer": print(lines[1].split(": ", 1)[1])
+elif cmd == "same": sys.exit(0 if open(f).read().split("\n")[2:] == open(sys.argv[3]).read().split("\n")[2:] else 1)
+else: sys.exit(2)''',
+ "bin/release-sign-apks.sh": r'''#!/usr/bin/env bash
+# a model of cache's bin/release-sign-apks.sh (S2): --build-dir A and --signatures S (Sign's release-signed/apks); no key, no aws, no RELEASE_* name;
+# each apk of A gets the release signature (the model stamps the signer) and Sign's Rekor bundle <apk>.bundle beside it
+echo "release-sign-apks $*" >> "$LOG"
+set -euo pipefail
+while [ $# -gt 0 ]; do case $1 in --build-dir) a=$2;; --signatures) sg=$2;; *) echo "release-sign-apks.sh: unknown argument: $1" >&2; exit 2;; esac; shift 2; done
+[ -d "${sg:-}" ] || { echo "release-sign-apks.sh: --signatures is not a directory" >&2; exit 2; }
+env | grep -E '^(RELEASE_|AWS_)' >> "$LOG.leak" || true
+[ -z "${SIGN_FAIL:-}" ] || exit 1
+for f in "$a"/*/*.apk; do
+  arch=$(basename "$(dirname "$f")")
+  [ -n "${SIGN_BREAK:-}" ] || sed -i.bak "s/^signer: .*/signer: release.rsa.pub/" "$f"
+  [ -z "${SIGN_TAMPER:-}" ] || sed -i.bak "s/^data: .*/data: tampered/" "$f"
+  rm -f "$f.bak"
+  [ -n "${SIGN_NOBUNDLE:-}" ] || cp "$sg/$arch/$(basename "$f").bundle" "$f.bundle"
+done''',
+ "bin/with-aws-token.sh": r'''#!/usr/bin/env bash
+# a model of Sign's one-call wrapper: it records the call and hands the arguments to the (fake) verifier
+echo "with-aws-token $*" >> "$LOG"
+[ "$1" = kms-sign ] || { echo "with-aws-token: only kms-sign is modelled" >&2; exit 2; }
+exec python3 -I -B "$(dirname "$0")/chain-verify.py" "$@"''',
+ "bin/vendor-provenance.py": r'''import json, os, sys
+open(os.environ["LOG"], "a").write("vendor-provenance %s\n" % " ".join(sys.argv[1:]))
+if os.environ.get("EVIDENCE_FAIL"): sys.exit(1)
+out = sys.argv[sys.argv.index("--out") + 1]; os.makedirs(out, exist_ok=True)
+json.dump({"mode": "vendor"}, open(os.path.join(out, "vendor-evidence.json"), "w"))''',
+ "bin/chain-verify.py": r'''import json, os, subprocess, sys
+a = sys.argv[1:]
+open(os.environ["LOG"], "a").write("chain-verify %s\n" % " ".join(a))
+if a[0] == "key-ref-check":     # W2 + KA-0 (a model of the one check in bin/chain-verify.py): the job's key reference must be the release key's, byte for byte; --algorithm-guard asks the key's algorithm list
+    if os.environ.get("RELEASE_KMS_KEY_REF") != "awskms:///alias/fosterstack-release-signing":
+        print("error: key-ref-check needs RELEASE_KMS_KEY_REF set to the release key (got %r): not a KMS key reference of the release key" % os.environ.get("RELEASE_KMS_KEY_REF"), file=sys.stderr); sys.exit(2)
+    if "--algorithm-guard" in a and os.environ.get("KEYREF_AWS_FAIL"):     # KA-0: the aws CLI that lists the key's algorithms fails: exit 1, a different status from the refusal
+        print("error: the aws CLI failed: could not list the release key's signing algorithms", file=sys.stderr); sys.exit(1)
+    if "--algorithm-guard" in a and os.environ.get("KEYREF_ALG_FAIL"):
+        print("key-ref-check: refused: the release key does not support RSASSA_PKCS1_V1_5_SHA_256 (it lists: RSASSA_PSS_SHA_256)", file=sys.stderr); sys.exit(2)
+    sys.exit(0)
+if a[0] == "kms-sign":     # KA-2 (a model of the one blob signer, KA-1): the caller names the sha256 of the signed bytes, the key, the config and the public key; it writes the raw signature and the v0.3 bundle (exclusively)
+    g = lambda k: a[a.index(k) + 1] if k in a else None
+    dsse = "--dsse-statement" in a     # KA-2 p4 (image kinds, a model of the DSSE kind): the statement file is the payload, verbatim; no --digest, no --out; the bundle holds the envelope and one Rekor entry
+    for k in (("--aws", "--key-ref", "--signing-config", "--public-key", "--bundle") if dsse else ("--aws", "--key-ref", "--digest", "--signing-config", "--public-key", "--out", "--bundle")):
+        if g(k) is None: print("kms-sign: usage: %s is required" % k, file=sys.stderr); sys.exit(2)
+    if dsse and (g("--digest") is not None or g("--out") is not None): print("kms-sign: usage: --dsse-statement takes no --digest and no --out", file=sys.stderr); sys.exit(2)
+    pk = open(g("--public-key")).read() if os.path.isfile(g("--public-key")) else ""
+    if "-----BEGIN PUBLIC KEY-----" not in pk: print("kms-sign: refused: cannot read the Rekor URL of the signing config %s or the public key %s" % (g("--signing-config"), g("--public-key")), file=sys.stderr); sys.exit(1)
+    # KA-2 p4 key compare (model): the KMS key (KMSSIGN_KMSKEY, when the case sets one) must be the key file handed as --public-key (the one the Rekor entry carries), compared before anything is signed; the real compare is in build-apk-test.sh
+    kk = os.environ.get("KMSSIGN_KMSKEY")
+    kf = open(g("--public-key")).read() if os.path.isfile(g("--public-key")) else None
+    if kf is None or (kk is not None and "".join(kf.split()) != "".join(kk.split())): print("kms-sign: refused: the key file %s does not match the KMS key" % g("--public-key"), file=sys.stderr); sys.exit(1)
+    if os.path.lexists(g("--bundle")) or (not dsse and os.path.lexists(g("--out"))): print("kms-sign: refused: %s already exists" % g("--bundle"), file=sys.stderr); sys.exit(1)
+    if os.environ.get("KMSSIGN_FAIL_ON") and os.environ["KMSSIGN_FAIL_ON"] in g("--bundle"): print("kms-sign: refused: the release key does not support RSASSA_PKCS1_V1_5_SHA_256", file=sys.stderr); sys.exit(1)
+    b64 = __import__("base64").b64encode
+    if not dsse:     # a real RSA PKCS#1 v1.5 SHA-256 signature over the digest, made with the test's own throw-away key (KMSSIGN_PRIV)
+        sig = subprocess.run(["openssl", "pkeyutl", "-sign", "-inkey", os.environ["KMSSIGN_PRIV"], "-pkeyopt", "digest:sha256"], input=bytes.fromhex(g("--digest")), capture_output=True).stdout
+        open(g("--out"), "wb").write(sig)
+    if dsse:     # the model keeps what it signed (path, then the statement text, one line each) so a case reads the statements the script built
+        stm = open(g("--dsse-statement"), "rb").read(); open(os.environ["LOG"] + ".stmts", "a").write(g("--dsse-statement") + "\t" + stm.decode() + "\n")
+    if os.environ.get("KMSSIGN_NOBUNDLE") in ("ALL", os.path.basename(g("--bundle"))): sys.exit(0)     # a signer that exits 0 and leaves no bundle (KA-2 p4 g3: no case may crash on the missing file, each must fail by its label)
+    ent = '{"logIndex":"1","integratedTime":"1760000000","logId":{"keyId":"%s"},"canonicalizedBody":"e30=","inclusionPromise":{"signedEntryTimestamp":"c2V0"}}' % b64(b"logkey").decode()
+    tl = "[]" if os.environ.get("COSIGN_NOREKOR") == os.path.basename(g("--bundle")) else "[" + ent + "]"
+    ms = ', "messageSignature": {"messageDigest": {"algorithm": "SHA2_256", "digest": "%s"}, "signature": "%s"}' % (b64(bytes.fromhex(g("--digest"))).decode(), b64(sig).decode()) if not dsse else ""
+    env = ', "dsseEnvelope": {"payloadType": "application/vnd.in-toto+json", "payload": "%s", "signatures": [{"sig": "c2ln"}]}' % __import__("base64").b64encode(stm).decode() if dsse else ""
+    open(g("--bundle"), "w").write('{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json","verificationMaterial":{"tlogEntries":%s}%s}' % (tl, env if dsse else ms)); sys.exit(0)
+if a[0] == "bundle-check":     # a model of the one bundle check: exactly one Rekor entry, and the bundle is the signature of exactly this digest (the real RSA check is the caller's own openssl)
+    g = lambda k: a[a.index(k) + 1] if k in a else None
+    for k in ("--bundle", "--digest", "--public-key", "--signing-config"):
+        if g(k) is None: print("bundle-check: usage: %s is required" % k, file=sys.stderr); sys.exit(2)
+    try: bj = json.load(open(g("--bundle")))
+    except Exception as e: print("bundle-check: %s is not a bundle" % g("--bundle"), file=sys.stderr); sys.exit(1)
+    if len(bj.get("verificationMaterial", {}).get("tlogEntries", [])) != 1: print("bundle-check: the bundle holds no single Rekor entry (a signature with no Rekor entry is refused)", file=sys.stderr); sys.exit(1)
+    if bj.get("messageSignature", {}).get("messageDigest", {}).get("digest") != __import__("base64").b64encode(bytes.fromhex(g("--digest"))).decode(): print("bundle-check: the bundle is the signature of another digest", file=sys.stderr); sys.exit(1)
+    sys.exit(0)
+if a[0] == "policy":
+    if os.environ.get("POLICY_FAIL"): print("refused at release: policy", file=sys.stderr); sys.exit(1)
+    open(a[a.index("--out") + 1], "w").write("{}"); sys.exit(0)
+if a[0] == "bind-items":     # items.json (and, with --product, admission-baseline.json) must be a product of Build's record: modelled as the two files existing
+    prev = "baseline" if "--product" in a else "items"
+    if "--product" in a and a[a.index("--product") + 1] != "admission-baseline.json": print("refused at build: product: only admission-baseline.json", file=sys.stderr); sys.exit(1)
+    if os.environ.get("FAIL_STAGE") == prev: print("refused at build: %s: %s is not the file Build's record holds" % (prev, prev), file=sys.stderr); sys.exit(1)
+    for f in (a[a.index("--record") + 1], a[a.index("--items") + 1]):
+        if not os.path.exists(f): print("refused at build: missing %s" % f, file=sys.stderr); sys.exit(1)
+    sys.exit(0)
+if a[0] == "bind-check":     # ruling G and ruling 7 of cache#921: the ubuntu-24.04 runner's check-results/ubuntu-24.04/govulncheck.json must be a product of that runner's verified scanners record: modelled as the files existing
+    if os.environ.get("FAIL_STAGE") == "govulncheck": print("refused at check: govulncheck.json: it is not the file Check's record holds", file=sys.stderr); sys.exit(1)
+    if a[a.index("--record") + 1] != "witness-check/ubuntu-24.04/witness-scanners/scanners-collection.json" or a[a.index("--file") + 1] != "check-results/ubuntu-24.04/govulncheck.json":
+        print("refused at check: govulncheck.json is bound only to the ubuntu-24.04 runner's scanners record", file=sys.stderr); sys.exit(1)
+    for f in (a[a.index("--record") + 1], a[a.index("--file") + 1], a[a.index("--digests") + 1]):
+        if not os.path.exists(f): print("refused at check: missing %s" % f, file=sys.stderr); sys.exit(1)
+    if a[a.index("--product") + 1] != "check-results/govulncheck.json": print("refused at check: product: only check-results/govulncheck.json", file=sys.stderr); sys.exit(1)
+    sys.exit(0)
+if a[0] == "check-list":     # exactly six records, one per runner and step
+    d = a[a.index("--dir") + 1]
+    if os.environ.get("FAIL_STAGE") == "check": print("refused at check: a record is invalid", file=sys.stderr); sys.exit(1)
+    for r in ("ubuntu-24.04", "ubuntu-24.04-arm"):
+        for n in ("scanners", "acceptance", "runtime"):
+            if not os.path.exists(os.path.join(d, r, "witness-" + n, n + "-collection.json")): print("refused at check: missing the %s record of %s" % (n, r), file=sys.stderr); sys.exit(1)
+    sys.exit(0)
+if a[0] == "apk-compare":    # the comparison job's result file: modelled as the file and the digest list existing
+    if os.environ.get("FAIL_STAGE") == "apkcompare": print("refused at rebuild: apk-compare: the result is not a pass", file=sys.stderr); sys.exit(1)
+    for f in (a[a.index("--file") + 1], a[a.index("--digests") + 1]):
+        if not os.path.exists(f): print("refused at rebuild: apk-compare: missing %s" % f, file=sys.stderr); sys.exit(1)
+    sys.exit(0)
+prev = a[a.index("--previous") + 1]; rec = a[a.index("--record") + 1]
+if not os.path.exists(rec): print("refused at %s: missing record %s" % (prev, rec), file=sys.stderr); sys.exit(1)
+if os.environ.get("FAIL_STAGE") == prev: print("refused at %s: the record is invalid" % prev, file=sys.stderr); sys.exit(1)''',
+}
+def make_layout(root, variant):
+    """A real OCI image layout directory: every blob is named by its sha256, the index blob holds the two linux child
+    manifests, index.json holds the one descriptor. Returns the index digest."""
+    blobs = os.path.join(root, "blobs", "sha256"); os.makedirs(blobs)
+    def put(data):
+        h = hashlib.sha256(data).hexdigest(); open(os.path.join(blobs, h), "wb").write(data); return {"digest": "sha256:" + h, "size": len(data)}
+    kids = []
+    for arch in ("amd64", "arm64"):
+        cfg = put(("config %s %s" % (variant, arch)).encode()); lay = put(("layer %s %s" % (variant, arch)).encode())
+        m = put(json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                            "config": dict(cfg, mediaType="application/vnd.oci.image.config.v1+json"),
+                            "layers": [dict(lay, mediaType="application/vnd.oci.image.layer.v1.tar+gzip")]}, sort_keys=True).encode())
+        kids.append(dict(m, mediaType="application/vnd.oci.image.manifest.v1+json", platform={"architecture": arch, "os": "linux"}))
+    idx = put(json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": kids}, sort_keys=True).encode())
+    open(os.path.join(root, "oci-layout"), "w").write('{"imageLayoutVersion":"1.0.0"}')
+    json.dump({"schemaVersion": 2, "manifests": [dict(idx, mediaType="application/vnd.oci.image.index.v1+json")]}, open(os.path.join(root, "index.json"), "w"))
+    return idx["digest"]
+LAYOUTS = tempfile.mkdtemp()
+PRIV = os.path.join(LAYOUTS, "release.key")      # the throw-away release key of these cases: the fake kms-sign signs with it, the scripts under test verify with its public half
+subprocess.run(["openssl", "genrsa", "-out", PRIV, "2048"], capture_output=True, check=True)
+KEYTXT = subprocess.run(["openssl", "pkey", "-in", PRIV, "-pubout"], capture_output=True, text=True, check=True).stdout
+DIG = {"image-" + v: make_layout(os.path.join(LAYOUTS, v), v) for v in ("production", "fips")}
+def apk_data(variant, arch): return "data-%s-%s" % (variant, arch)
+# REQ-CHAIN-007-AC17, the fixed Build interface table: artifact (runner) -> apk architecture directory -> short name; variant -> file name
+RUNNERS = (("ubuntu-24.04", "x86_64", "amd64"), ("ubuntu-24.04-arm", "aarch64", "arm64"))
+GV = "check-results/ubuntu-24.04/govulncheck.json"      # the govulncheck stream: the only runner that runs govulncheck is ubuntu-24.04
+CHECK_RECS = ["witness-check/%s/witness-%s/%s-collection.json" % (r, n, n) for r, _, _ in RUNNERS for n in ("scanners", "acceptance", "runtime")]      # Check's six records: three steps on each of the two chips
+APKS = (("standard", "fscache-0.3.0-r0.apk"), ("fips", "fscache-fips-0.3.0-r0.apk"))
+# Build's Go module lists, in out/ beside each runner's apks
+MODULE_SBOMS = (("standard", "fscache-modules.spdx.json"), ("fips", "fscache-modules-fips.spdx.json"))
+def module_sbom(variant): return "module sbom " + variant
+def sha_of(text): return "sha256:" + hashlib.sha256(text.encode()).hexdigest()
+def adm(t, tag, base, **over):
+    """witness-build/admission-baseline.json as Build's assemble job writes it (REQ-CHAIN-007-AC19): the tag, the commit and the baseline admission chose."""
+    d = {"tag": tag, "sha": "c" * 40, "baseline_version": base, "baseline": "requirements/releases/%s.yaml" % base}
+    d.update(over)
+    json.dump(d, open(os.path.join(t, "witness-build/admission-baseline.json"), "w"))
+# (moved up from the post-publish section: release-apks runs the same key helpers)
+# ---- REQ-CHAIN-008: the keys and the manifests of these cases, made with openssl here (a throwaway root key signs; no real key is read) -----------------
+KEYS = tempfile.TemporaryDirectory(prefix="release-key-manifest-")
+def kfile(n): return os.path.join(KEYS.name, n)
+def openssl(*a): return subprocess.run(["openssl", *a], check=True, capture_output=True).stdout
+def genkey(name, *opts):
+    openssl("genpkey", *opts, "-out", kfile(name + ".key")); openssl("pkey", "-in", kfile(name + ".key"), "-pubout", "-out", kfile(name + ".pub"))
+for n in ("root", "otherroot"): genkey(n, "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256")
+genkey("rel", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:4096")      # the release key, as in KMS
+genkey("rsaroot", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048")
+genkey("edroot", "-algorithm", "ED25519")
+def kpem(n): return open(kfile(n + ".pub")).read()
+def kid(n): return hashlib.sha256(openssl("pkey", "-pubin", "-in", kfile(n + ".pub"), "-outform", "DER")).hexdigest()
+def at(days):      # the window is judged by the real clock, so a window is a date in the past or the future
+    return (datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0) + datetime.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+def manifest(**over):
+    m = {"public_key": kpem("rel"), "key_id": kid("rel"), "valid_from": at(-30)}
+    m.update(over)
+    return {k: v for k, v in m.items() if v is not None}
+def body_of(m): return json.dumps(m, sort_keys=True, indent=1).encode() + b"\n"
+def sig_of(signer, body):
+    if signer == "edroot": return base64.b64encode(os.urandom(64)).decode() + "\n"      # openssl dgst cannot sign with Ed25519
+    open(kfile("body.tmp"), "wb").write(body)
+    return base64.b64encode(openssl("dgst", "-sha256", "-sign", kfile(signer + ".key"), kfile("body.tmp"))).decode() + "\n"
+def seed_manifest(t, body=None, signer="root", root_pub="root", sig=None, drop=(), link=None, as_dir=None, no_root=False):
+    """A good release's key files: the committed root key in .github/policy/, the manifest and its signature as downloaded into release-published/.
+    body: a dict (made into JSON) or the file's bytes; sig: the signature file's text, else made by `signer`; drop: file names to remove; link: a file name made a symlink; as_dir: a file name made an empty directory."""
+    body = body_of(manifest()) if body is None else body_of(body) if isinstance(body, dict) else body
+    os.makedirs(os.path.join(t, ".github/policy"), exist_ok=True)
+    root = os.path.join(t, ".github/policy/release-key-root.pub")
+    if no_root and os.path.exists(root): os.remove(root)      # tree() already holds a placeholder root key
+    if not no_root: open(root, "w").write(kpem(root_pub))
+    rp = os.path.join(t, "release-published")
+    if not os.path.isdir(rp): return
+    files = {"release-key-manifest.json": body, "release-key-manifest.sig": (sig if sig is not None else sig_of(signer, body)).encode()}
+    for n, data in files.items(): open(os.path.join(rp, n), "wb").write(data)
+    for n in drop: os.remove(os.path.join(rp, n))
+    if link:
+        os.replace(os.path.join(rp, link), os.path.join(t, "elsewhere-" + link)); os.symlink(os.path.join(t, "elsewhere-" + link), os.path.join(rp, link))
+    if as_dir:
+        os.remove(os.path.join(rp, as_dir)); os.mkdir(os.path.join(rp, as_dir))
+def real_verifier(t):
+    """release-postverify.py loads the verifier and the verifier loads its helpers: the real files go over the fake chain-verify.py the other scripts' tests use"""
+    for extra in ("build-admit.py", "chain-verify.py", "chain_common.py", "chain_hostile.py", "chain_items.py"):
+        if os.path.exists(os.path.join(BIN, extra)): shutil.copy(os.path.join(BIN, extra), os.path.join(t, "bin", extra))
+    if os.path.exists(os.path.join(BIN, "..", ".github/policy/chain-scripts.json")):
+        os.makedirs(os.path.join(t, ".github/policy"), exist_ok=True); shutil.copy(os.path.join(BIN, "..", ".github/policy/chain-scripts.json"), os.path.join(t, ".github/policy/chain-scripts.json"))
+KEYFILES = ("release-key-manifest.json", "release-key-manifest.sig", "release-key-root.pub")
+def tree():
+    t = tempfile.mkdtemp(); fb = os.path.join(t, ".fakebin"); os.makedirs(fb); os.makedirs(os.path.join(t, "bin")); os.makedirs(os.path.join(t, "reg"))
+    for n, body in FAKES.items():
+        if n.startswith("bin/"):
+            open(os.path.join(t, n), "w").write(body)
+        else:
+            open(os.path.join(fb, n), "w").write(body); os.chmod(os.path.join(fb, n), 0o755)
+    for s in ("release-verify", "release-apks", "release-publish", "release-sign", "release-sign-verify", "release-signatures", "release-stage", "release-assets", "release-postverify"):
+        src = os.path.join(BIN, s + ".sh")
+        if os.path.exists(src): shutil.copy(src, os.path.join(t, "bin", s + ".sh"))
+    for extra in ("build-admit.py", "release-postverify.py", "release-metadata.py", "release-gate.py", "patch-decide.py", "release-layout.py", "chain_common.py", "guide_plan_judge.py"):
+        if os.path.exists(os.path.join(BIN, extra)): shutil.copy(os.path.join(BIN, extra), os.path.join(t, "bin", extra))
+    os.makedirs(os.path.join(t, "build/keys")); open(os.path.join(t, "build/keys/release.rsa.pub"), "w").write("-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----\n")
+    os.makedirs(os.path.join(t, ".vex")); open(os.path.join(t, ".vex/fosterstack-cache.openvex.json"), "w").write("{}")
+    os.makedirs(os.path.join(t, "requirements/releases")); os.makedirs(os.path.join(t, "test-evidence"))
+    for tg in ("v0.3.0", "v0.3.1"): open(os.path.join(t, "requirements/releases/%s.yaml" % tg), "w").write("baseline " + tg + "\n")
+    open(os.path.join(t, "test-evidence/mappings.yaml"), "w").write("evidence\n")
+    digs = dict(DIG)
+    # Build's apk-<runner> artifacts, downloaded to apks/<runner>; Rebuild's apks never reach Release
+    for top in ("apks",):
+        for runner, archdir, short in RUNNERS:
+            d = os.path.join(t, top, runner, archdir); os.makedirs(d)
+            for variant, name in APKS:
+                open(os.path.join(d, name), "w").write("apk\nsigner: assembly.rsa.pub\ndata: %s\n" % apk_data(variant, short))
+                digs["apk-%s-%s" % (variant, short)] = "sha256:" + hashlib.sha256(apk_data(variant, short).encode()).hexdigest()
+            for variant, name in MODULE_SBOMS:
+                open(os.path.join(t, top, runner, name), "w").write(module_sbom(variant))
+    for v in ("production", "fips"):
+        os.makedirs(os.path.join(t, "images", v + "-sbom"), exist_ok=True)
+        shutil.copytree(os.path.join(LAYOUTS, v), os.path.join(t, "images", v))
+        open(os.path.join(t, "images", v + ".digest"), "w").write(DIG["image-" + v] + "\n")
+        open(os.path.join(t, "images", v + ".manifests"), "w").write("amd64 sha256:" + "1" * 64 + "\narm64 sha256:" + "2" * 64 + "\n")
+        open(os.path.join(t, "images", v + ".full.lock.json"), "w").write("lock " + v); open(os.path.join(t, "images", v + "-sbom", "sbom.json"), "w").write("sbom " + v)
+    for d in ("witness-build", "witness-rebuild", "witness-check", "provenance", "dist", "check-results", "apk-compare"):
+        os.makedirs(os.path.join(t, d), exist_ok=True)
+    open(os.path.join(t, "apk-compare/apk-compare.json"), "w").write("{}")   # the comparison job's result file (modelled as existing; chain-verify apk-compare judges it)
+    os.makedirs(os.path.join(t, "check-results/ubuntu-24.04"), exist_ok=True)
+    open(os.path.join(t, GV), "w").write('{"config":{"scanner_name":"govulncheck"}}\n')   # Check's product (ruling G), the ubuntu-24.04 runner's, bound by release-verify
+    for k in ("archive-linux-amd64", "archive-linux-arm64", "archive-fips-linux-amd64", "archive-fips-linux-arm64"): digs[k] = "sha256:" + hashlib.sha256(k.encode()).hexdigest()
+    json.dump(digs, open(os.path.join(t, "witness-build/digests.json"), "w"))
+    items = {}
+    for v in ("production", "fips"):
+        items.update({"image-" + v: DIG["image-" + v], "lock-" + v: "sha256:" + hashlib.sha256(("lock " + v).encode()).hexdigest(), "sbom-" + v: "sha256:" + hashlib.sha256(("sbom " + v).encode()).hexdigest(),
+                      "image-%s-manifest-amd64" % v: "sha256:" + "1" * 64, "image-%s-manifest-arm64" % v: "sha256:" + "2" * 64})
+    for variant, name in MODULE_SBOMS:
+        items["modules-sbom-" + variant] = sha_of(module_sbom(variant))
+    json.dump(items, open(os.path.join(t, "witness-build/items.json"), "w"))
+    adm(t, "v0.3.0", "v0.3.0")
+    for f in ["provenance/provenance.rekor.json", "provenance/provenance.bundle.json"]:      # Sign's three files (REQ-CHAIN-007-AC9: attached to the release; provenance.json is below)
+        open(os.path.join(t, f), "w").write("{}")
+    for f in ["witness-build/build-collection.json", "witness-rebuild/rebuild-collection.json", "provenance/provenance.json"] + CHECK_RECS:
+        os.makedirs(os.path.dirname(os.path.join(t, f)), exist_ok=True); open(os.path.join(t, f), "w").write("{}")
+        # the entries file Sign keeps beside each record
+        if f.endswith("-collection.json"): open(os.path.join(t, f[:-len(".json")] + ".rekor.json"), "w").write("{}")
+    for k, n in (("archive-linux-amd64", "fscache_0.3.0_linux_amd64.tar.gz"), ("archive-linux-arm64", "fscache_0.3.0_linux_arm64.tar.gz"),      # the four Linux archives Build uploaded as `dist` (REQ-CHAIN-007-AC21: checksums.txt is NOT among them; release-sign.sh makes it)
+                 ("archive-fips-linux-amd64", "fscache-fips_0.3.0_linux_amd64.tar.gz"), ("archive-fips-linux-arm64", "fscache-fips_0.3.0_linux_arm64.tar.gz")):
+        open(os.path.join(t, "dist", n), "wb").write(k.encode())
+    os.makedirs(os.path.join(t, "docs"), exist_ok=True); open(os.path.join(t, "docs/verify-release.cannot-run.json"), "w").write("[]")
+    open(os.path.join(t, "docs/verify-release.md"), "w").write("# Verify a release\n\nA minimal guide for the post-publish fixture: it holds no command block, so only the cannot-run list's image commands run.\n")   # release-postverify reads the guide first
+    os.makedirs(os.path.join(t, "build/keys"), exist_ok=True); open(os.path.join(t, "build/keys/release.rsa.pub"), "w").write(KEYTXT)
+    os.makedirs(os.path.join(t, ".github/policy"), exist_ok=True); open(os.path.join(t, ".github/policy/cosign-signing-config.json"), "w").write("{}")
+    os.makedirs(os.path.join(t, "release-published"), exist_ok=True)   # what release-stage.sh copies release-upload into and release-assets.sh downloads the published release into
+    open(os.path.join(t, "dependency-provenance.json"), "w").write("{}"); open(os.path.join(t, "policy.json"), "w").write("{}")
+    os.makedirs(os.path.join(t, ".github/policy"), exist_ok=True)      # the committed key manifest, its signature and the offline root key
+    for n in KEYFILES: open(os.path.join(t, ".github/policy", n), "w").write("committed " + n + "\n")
+    return t
+STAGE_STUB = '#!/usr/bin/env bash\necho "release-stage ran" >> "$LOG.stage"\n[ -z "${STAGE_FAIL:-}" ] || { echo "release-stage: stub refusal" >&2; exit 1; }\n'      # what release-postverify.sh runs first, for the cases that judge only what comes after it
+def vtree():
+    """a tree for release-verify: the signed key manifest, its signature and the offline root key committed in .github/policy/ (B-F22: release-verify checks they exist)"""
+    t = tree(); os.makedirs(os.path.join(t, ".github/policy"), exist_ok=True)
+    for n in KEYFILES: open(os.path.join(t, ".github/policy", n), "w").write("committed " + n + "\n")
+    return t
+KMS = "awskms:///alias/fosterstack-release-signing"      # the value stage-promote.yml gives RELEASE_KMS_KEY_REF; the P3 workflow cases below read it from that file
+def stage_before_publish(t):
+    """What release-apks needs for its pre-publish pass (R2): a guide with provenance commands, the committed key manifest, and a key-signed provenance bundle."""
+    if not os.path.exists(os.path.join(t, "bin/release-postverify.py")): return
+    real_verifier(t); seed_manifest(t)
+    guide_with(t, [PBF0, PJX0])
+    open(os.path.join(t, "provenance/provenance.bundle.json"), "w").write(OKB)
+    rp = os.path.join(t, "release-published")
+    for n in ("release-key-manifest.json", "release-key-manifest.sig"):
+        if os.path.exists(os.path.join(rp, n)): os.replace(os.path.join(rp, n), os.path.join(t, ".github/policy", n))
+def guide_with(t, cmds, listed=()):
+    open(os.path.join(t, "docs/verify-release.md"), "w").write("# Verify a release\n\n```sh\n" + "\n".join(cmds) + "\n```\n")
+    json.dump([{"command": c, "reason": "needs the image in a registry"} for c in listed], open(os.path.join(t, "docs/verify-release.cannot-run.json"), "w"))
+IDQ0 = "--key release.rsa.pub"
+PBF0 = "cosign verify-blob-attestation --bundle provenance.bundle.json --type https://slsa.dev/provenance/v1 --check-claims=false " + IDQ0
+PJX0 = "jq -e '.messageSignature' provenance.bundle.json"
+SBOM0 = "cosign verify-blob " + IDQ0 + " --bundle production.sbom.json.bundle production.sbom.json"
+IMG0 = "cosign verify " + IDQ0 + " <IMAGE_REF>"
+OKB = json.dumps({"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "verificationMaterial": {"publicKey": {"hint": "k"}}, "messageSignature": True})
+REAL_GIT = shutil.which("git")
+GITENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"}
+def tag_repo(kind, msg="", name="v0.3.0"):
+    """a REAL git repository holding the release tag: kind annotated (message msg, as written), lightweight, or none (no such tag)"""
+    d = tempfile.mkdtemp(); g = lambda *a, inp=None: subprocess.run([REAL_GIT, *a], env={**GITENV, "GIT_DIR": d}, input=inp, capture_output=True, text=True, check=True).stdout.strip()
+    g("init", "-q"); tree_id = g("hash-object", "-t", "tree", "-w", "--stdin", inp=""); c = g("commit-tree", tree_id, "-m", "c")
+    if kind == "lightweight": g("update-ref", "refs/tags/" + name, c)
+    elif kind == "annotated":
+        t = g("mktag", inp="object %s\ntype commit\ntag %s\ntagger t <t@example.invalid> 1760000000 +0000\n\n%s" % (c, name, msg)); g("update-ref", "refs/tags/" + name, t)
+    return d
+DEFTAGS = {}
+def deftag(tag):
+    """the default tag repository of a run: an annotated tag of that name, made once"""
+    if tag not in DEFTAGS: DEFTAGS[tag] = tag_repo("annotated", "Release %s: the owner's own words\n\nsecond paragraph\n" % tag[1:], tag)
+    return DEFTAGS[tag]
+def run(t, script, env=None, creds=None, tag="v0.3.0", args=()):
+    path = os.path.join(t, "bin", script + ".sh")
+    if not os.path.exists(path): LAST[0] = 127; return 127, "", "the script " + script + ".sh does not exist"
+    ver = tag[1:]
+    dist = os.path.join(t, "dist")
+    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", ver) and ver != "0.3.0" and os.path.isdir(dist):      # the four archives carry the version of the tag the run is for (their digests are by item, not by name)
+        for n in os.listdir(dist):
+            if "_0.3.0_linux_" in n and not os.path.exists(os.path.join(dist, n.replace("_0.3.0_", "_%s_" % ver))): os.rename(os.path.join(dist, n), os.path.join(dist, n.replace("_0.3.0_", "_%s_" % ver)))
+    LAST[0] = 0
+    e = {"PATH": os.path.join(t, ".fakebin") + ":" + os.environ["PATH"], "HOME": t, "LOG": os.path.join(t, "calls.log"), "REG": os.path.join(t, "reg"), "GITHUB_REF_NAME": tag, "GITHUB_SHA": "c" * 40, "GITHUB_SERVER_URL": "https://github.com", "GITHUB_REPOSITORY": "fosterstack/cache", "GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_WORKFLOW_REF": "fosterstack/cache/.github/workflows/release.yml@refs/tags/" + tag}
+    e.update({k: SENT[k] for k in (creds or [])}); e.update(env or {})
+    e["KMSSIGN_PRIV"] = PRIV
+    if script in ("release-signatures", "release-sign-apks"): e.setdefault("RELEASE_KMS_KEY_REF", KMS); e.setdefault("RUNNER_TEMP", os.path.join(t, "rt"))      # only Sign's steps are handed the key reference; the pinned aws CLI is at RUNNER_TEMP/aws-cli/aws
+    e.update(env or {})
+    if script == "release-signatures": e.setdefault("TAG_REPO", deftag(tag)); e["REAL_GIT"] = REAL_GIT      # the real tag the step reads its reason from
+    if script == "release-apks": stage_before_publish(t)
+    for k in [k for k, v in e.items() if v is None]: del e[k]      # an env value None unsets the name
+    if script == "release-postverify" and not (env or {}).get("REAL_STAGE"): open(os.path.join(t, "bin/release-stage.sh"), "w").write(STAGE_STUB)      # the post-publish cases below judge release-postverify.py; the stage's own cases run the real script
+    e.pop("REAL_STAGE", None)
+    r = subprocess.run(["bash", path, *args], cwd=t, env=e, capture_output=True, text=True)
+    LAST[0] = r.returncode if r.returncode == 127 else 0
+    return r.returncode, r.stdout, r.stderr
+def log(t):
+    p = os.path.join(t, "calls.log"); return open(p).read().split("\n") if os.path.exists(p) else []
+SBASE = []
+def stree():
+    """a tree as the Release job holds it for release-publish: Sign's output is in release-signed/ (one run of release-signatures, copied for each case)"""
+    if not SBASE: b = tree(); run(b, "release-signatures"); SBASE.append(b)
+    t = tempfile.mkdtemp(); shutil.rmtree(t); shutil.copytree(SBASE[0], t, symlinks=True)
+    for f in os.listdir(t):
+        if f.startswith("calls.log"): os.remove(os.path.join(t, f))
+    return t
+def tree_text(t):
+    out = ""
+    for dp, dn, fn in os.walk(t):
+        for f in fn:
+            if f in ("calls.log.ref",): continue   # the fake signer's own capture of the key reference it was handed
+            try: out += open(os.path.join(dp, f), errors="replace").read()
+            except Exception: pass
+    return out
+def first(s): return s.strip().split("\n")[0] if s.strip() else ""
+# ---- AC4/AC5: release-verify.sh ------------------------------------------------------------------------------------------------------
+STAGES = ["build", "items", "baseline", "sign", "rebuild", "apkcompare", "check", "govulncheck"]     # items: bind-items (REQ-CHAIN-007-AC16); baseline: bind-items --product admission-baseline.json (AC19, ruling B); check: the list verifier of the four Check records
+def stage_of(c): return c.split("--previous ")[1].split()[0] if "--previous" in c else (("baseline" if "--product admission-baseline.json" in c else "items") if c.startswith("chain-verify bind-items") else "govulncheck" if c.startswith("chain-verify bind-check") else "check" if c.startswith("chain-verify check-list") else "apkcompare" if c.startswith("chain-verify apk-compare") else None)
+t = vtree(); rc, so, se = run(t, "release-verify")
+calls = [l for l in log(t) if l.startswith("chain-verify")]
+check(rc == 0, "AC5 a good v0.3.0 passes", se)
+check([stage_of(c) for c in calls if stage_of(c)] == STAGES and calls and calls[0].startswith("chain-verify policy make"), "AC4 the policy is made first, then build, sign, rebuild, check are verified in that order", str(calls))
+check(all("--digests witness-build/digests.json" in c for c in calls if stage_of(c) and stage_of(c) not in ("items", "baseline")) and any("--tag v0.3.0" in c for c in calls if "policy" in c), "AC4 every record is checked against the same digest list and the policy is made for the tag")
+# REQ-CHAIN-007-AC14: a release candidate is vX.Y.Z-rcN by the one tag grammar of bin/build-admit.py (REQ-CHAIN-004-AC20):
+# case-sensitive, anchored, no leading zero in any number, an rc number of at least 1
+for tag in ("v0.3.0-rc1", "v10.20.30-rc12"):
+    t = vtree(); rc, so, se = run(t, "release-verify", tag=tag); check(rc == 0, "AC14 the release candidate %s passes release-verify exactly like a final" % tag, se)
+for tag in ("v01.02.03-rc01", "v0.3.0-rc0", "v0.3", "v0.3.0-rc", "v0.3.0-rc.1", "v0.3.0-rc.x", "v0.3.0-rc1x", "v0.3.0-rc1.2", "v0.3.0-RC1", "v0.3.0-Rc1", "v0.3.0rc1", "v0.rc1.3.0", "rc1", "v0.3.0-1rc1", "v0.3.0-rc-1", "v0.3.0-beta.1", "v0.3.0.1", "0.3.0", "main", "refs/heads/x", "v0.3.0-rc1\n", "v0.3.0\n", ""):
+    t = vtree(); rc, so, se = run(t, "release-verify", tag=tag)
+    check(rc != 0 and first(se).startswith("refused at tag") and not [l for l in log(t) if l.startswith("chain-verify")], "AC5 the tag %r is refused first, naming the tag, before any verification" % tag, "rc=%s %s" % (rc, first(se)))
+for s in STAGES:
+    t = vtree(); rc, so, se = run(t, "release-verify", env={"FAIL_STAGE": s})
+    after = STAGES[STAGES.index(s) + 1:]
+    seen = " ".join(l for l in log(t) if l.startswith("chain-verify"))
+    check(rc != 0 and first(se).startswith("refused at " + ("build" if s in ("items", "baseline") else "check" if s == "govulncheck" else "rebuild" if s == "apkcompare" else s) + ":") and not any(("--previous " + a in seen) or (a == "check" and "check-list" in seen) or (a == "items" and "bind-items" in seen) or (a == "baseline" and "--product admission-baseline.json" in seen) or (a == "govulncheck" and "bind-check" in seen) or (a == "apkcompare" and "apk-compare" in seen) for a in after), "AC5 an invalid %s record stops release at %s and no later record is checked" % (s, s), "rc=%s %s" % (rc, first(se)))
+    t = vtree(); rec = {"build": "witness-build/build-collection.json", "sign": "provenance/provenance.json", "rebuild": "witness-rebuild/rebuild-collection.json", "check": "witness-check/ubuntu-24.04-arm/witness-runtime/runtime-collection.json", "items": "witness-build/items.json", "baseline": "witness-build/admission-baseline.json", "govulncheck": GV, "apkcompare": "apk-compare/apk-compare.json"}[s]
+    os.remove(os.path.join(t, rec)); rc, so, se = run(t, "release-verify")
+    check(rc != 0 and "refused at " + ("build" if s in ("items", "baseline") else "check" if s == "govulncheck" else "rebuild" if s == "apkcompare" else s) in first(se) and "missing" in first(se), "AC5 a missing %s record stops release, naming it" % s, "rc=%s %s" % (rc, first(se)))
+# Release does not rely on Check having verified Sign; it verifies Sign's provenance itself, whatever Check's
+# four records say
+t = vtree(); rc, so, se = run(t, "release-verify", env={"FAIL_STAGE": "sign"}); seen = [l for l in log(t) if "--previous sign" in l]
+check(rc != 0 and first(se).startswith("refused at sign:") and len(seen) == 1 and "provenance/provenance.json" in seen[0] and "--rekor-entries provenance/provenance.rekor.json" in seen[0], "AC4 (rule 58) Release verifies Sign's provenance and its Rekor entry itself; four valid Check records do not stand in for it", "rc=%s %s" % (rc, first(se)))
+t = vtree(); os.remove(os.path.join(t, "provenance/provenance.json")); rc, so, se = run(t, "release-verify")
+check(rc != 0 and "refused at sign" in first(se) and [l for l in log(t) if "check-list" in l] == [] , "AC4 (rule 58) without Sign's provenance the release stops at sign, before the Check records are looked at", "rc=%s %s" % (rc, first(se)))
+t = vtree(); rc, so, se = run(t, "release-verify", env={"POLICY_FAIL": "1"}); check(rc != 0 and not [l for l in log(t) if stage_of(l)], "AC5 a policy that cannot be made stops release before any record is checked")
+t = vtree(); rc, so, se = run(t, "release-verify", creds=list(SENT))
+check(rc == 0 and not [l for l in log(t) if l.split(" ")[0] in ("crane", "cosign", "gh", "melange")], "AC5 the verify script calls no registry, signing or release tool")
+# B-F22: the signed key manifest, its signature and the offline root key are looked for before any verifier call, and a link is no file
+for n in KEYFILES:
+    t = vtree(); os.remove(os.path.join(t, ".github/policy", n)); rc, so, se = run(t, "release-verify")
+    check(rc == 1 and first(se) == "release-verify: .github/policy/%s is missing: the release is refused before any credential step" % n and not log(t), "B-F22 without %s release-verify stops before any verifier call, naming it" % n, "rc=%s %s calls=%s" % (rc, first(se), log(t)[:1]))
+    t = vtree(); os.replace(os.path.join(t, ".github/policy", n), os.path.join(t, "elsewhere")); os.symlink(os.path.join(t, "elsewhere"), os.path.join(t, ".github/policy", n)); rc, so, se = run(t, "release-verify")
+    check(rc == 1 and n in first(se) and "missing" in first(se) and not log(t), "B-F22 %s as a symlink is refused like a missing file, before any verifier call" % n, "rc=%s %s" % (rc, first(se)))
+t = tree(); os.remove(os.path.join(t, ".github/policy/release-key-manifest.json")); rc, so, se = run(t, "release-verify", tag="v0.3.0-rc1")
+check(rc == 1 and "release-key-manifest.json" in first(se), "B-F22 a release candidate is held to the key files too", "rc=%s %s" % (rc, first(se)))
+def script_lines(name): return open(os.path.join(BIN, name)).read().split("\n")
+def py_lines(name): return [l for l in script_lines(name) if "python3" in l and not l.lstrip().startswith("#")]
+for name in ("release-verify.sh", "release-assets.sh"):
+    bare = [l[:60] for l in py_lines(name) if "python3 -I -B " not in l]
+    check(py_lines(name) and not bare, "REQ-CHAIN-007-AC12 every python3 line of %s runs python3 -I -B" % name, str(bare))
+long_ = [l[:50] for l in script_lines("release-verify.sh") if len(l) > 120]
+check(not long_, "release-verify.sh has no line longer than 120 characters", "%d long, first: %s" % (len(long_), long_[:1]))
+# ---- AC6: release-apks.sh (maps Build's names through the fixed table, checks the four attested digests, then calls cache's release-sign-apks.sh) ---------------
+KEY = []   # release-apks reads no secret and holds no key: Sign's signatures (release-signed/apks) are its input
+def apk_sigs(t):
+    """what Sign's step leaves for the apks: release-signed/apks/<arch>/<apk>.kms.sig and .bundle"""
+    for _r, a, _s in RUNNERS:
+        d = os.path.join(t, "release-signed/apks", a); os.makedirs(d)
+        for _v, n in APKS: open(os.path.join(d, n + ".kms.sig"), "w").write("sig"); open(os.path.join(d, n + ".bundle"), "w").write('{"verificationMaterial":{"tlogEntries":[{}]}}')
+    return t
+def atree(): return apk_sigs(tree())
+ALLAPKS = [(archdir, name) for _r, archdir, _s in RUNNERS for _v, name in APKS]
+def signers(t):
+    return [subprocess.run(["python3", os.path.join(t, "bin/apk-tool.py"), "signer", os.path.join(t, "release-apks", a, n)], capture_output=True, text=True).stdout.strip()
+            for a, n in ALLAPKS if os.path.exists(os.path.join(t, "release-apks", a, n))]
+t = atree(); rc, so, se = run(t, "release-apks", creds=KEY)
+check(rc == 0 and signers(t) == ["release.rsa.pub"] * 4 and all(os.path.isfile(os.path.join(t, "release-apks", a, n + ".bundle")) for a, n in ALLAPKS), "AC6 all four apks (standard and fips, x86_64 and aarch64) come out signed by the release key with their Rekor bundle beside them, laid out as release-apks/<apk arch>/<file>", "rc=%s %s %s" % (rc, signers(t), first(se)))
+cs = [l for l in log(t) if l.startswith("release-sign-apks")]
+check(cs == ["release-sign-apks --build-dir release-apks-build --signatures release-signed/apks"], "AC6 I4 cache's bin/release-sign-apks.sh is called once, with --build-dir release-apks-build --signatures release-signed/apks and nothing else (no --key, no --rebuild-dir)", cs)
+check(not [os.path.join(dp, f) for dp, dn, fn in os.walk(t) for f in fn if f == "release.rsa" or f.endswith(".rsa")], "AC6 no key file of any name exists in the tree or its temporary files")
+check(not any(open(os.path.join(dp, f), errors="replace").read().find("PRIVATE KEY") >= 0 for dp, dn, fn in os.walk(os.path.join(t, "release-apks")) for f in fn) and not os.path.exists(os.path.join(t, "release-evidence")), "AC6 no private key text is in any output file")
+for label, env in (("unset", {}), ("empty", {"RELEASE_KMS_KEY_REF": ""}), ("set", {"RELEASE_KMS_KEY_REF": KMS, "RELEASE_ROLE_ARN": "arn:aws:iam::1:role/x", "RELEASE_TOKEN_FILE": "/nonexistent"})):
+    t = atree(); rc, so, se = run(t, "release-apks", env=env)
+    check(rc == 0 and "RELEASE_KMS_KEY_REF" not in se and len([l for l in log(t) if l.startswith("release-sign-apks")]) == 1, "AC6 I4 release-apks needs no key reference (%s): the Release job holds none" % label, "rc=%s %s" % (rc, first(se)))
+for key in ("apk-standard-amd64", "apk-standard-arm64", "apk-fips-amd64", "apk-fips-arm64"):   # each row of the digest table is tested
+    t = atree(); d = json.load(open(os.path.join(t, "witness-build/digests.json"))); d[key] = "sha256:" + "0" * 64; json.dump(d, open(os.path.join(t, "witness-build/digests.json"), "w"))
+    rc, so, se = run(t, "release-apks", creds=KEY)
+    check(rc != 0 and "differs" in se and not [l for l in log(t) if l.startswith("release-sign-apks")] and not os.path.exists(os.path.join(t, "release-apks")), "AC6 the attested digest %s not matching its apk stops before anything is signed" % key, "rc=%s %s" % (rc, first(se)))
+t = atree(); d = json.load(open(os.path.join(t, "witness-build/digests.json"))); del d["apk-fips-arm64"]; json.dump(d, open(os.path.join(t, "witness-build/digests.json"), "w"))
+rc, so, se = run(t, "release-apks", creds=KEY); check(rc != 0 and "apk-fips-arm64" in se and not log(t), "AC6 a missing attested digest key is refused, naming it")
+t = atree(); os.makedirs(os.path.join(t, "rapks/ubuntu-24.04-arm/aarch64")); open(os.path.join(t, "rapks/ubuntu-24.04-arm/aarch64/fscache-fips-0.3.0-r0.apk"), "w").write("apk\nsigner: assembly.rsa.pub\ndata: other\n")
+rc, so, se = run(t, "release-apks", creds=KEY)
+check(rc == 0 and signers(t) == ["release.rsa.pub"] * 4 and "rapks" not in " ".join(log(t)), "AC6 Rebuild's apks are never read by release-apks (a differing file under rapks/ changes nothing: the comparison is the compare job's, in a job without the key)", "rc=%s %s" % (rc, first(se)))
+RA = open(os.path.join(BIN, "release-apks.sh")).read()
+check("rapks" not in RA and "rebuild-dir" not in RA and "release-apks-rebuild" not in RA, "AC6 release-apks.sh names neither rapks/ nor --rebuild-dir nor a rebuild staging directory")
+check(not re.search(r"RELEASE_(KMS_KEY_REF|ROLE_ARN|TOKEN_FILE)|AWS_[A-Z]|\baws\b|kms-sign", "\n".join(l for l in RA.split("\n") if not l.lstrip().startswith("#"))), "R1 release-apks.sh names no KMS key reference, role, token file, aws or kms-sign: the Release job reaches no key")
+t = atree(); rc, so, se = run(t, "release-apks", creds=KEY, env={"SIGN_BREAK": "1"})
+check(rc != 0 and "release" in se.lower() and "signed" in se.lower(), "AC6 an apk the signer left signed by another key is refused ('not signed by the release key')", "rc=%s %s" % (rc, first(se)))
+t = atree(); rc, so, se = run(t, "release-apks", creds=KEY, env={"SIGN_FAIL": "1"})
+check(rc != 0, "AC6 a failing signer fails the script")
+check(not os.path.exists(os.path.join(t, "release-apks")), "AC6 a failing signer leaves nothing in release-apks")
+t = atree(); rc, so, se = run(t, "release-apks", creds=KEY, env={"SIGN_TAMPER": "1"})
+check(rc != 0 and "differs from the attested digest" in se and not os.path.exists(os.path.join(t, "release-apks")),
+      "AC6 an apk whose digest changed during signing is refused and nothing is laid out", "rc=%s %s" % (rc, first(se)))
+t = atree(); rc, so, se = run(t, "release-apks", creds=KEY, env={"SIGN_NOBUNDLE": "1"})
+check(rc != 0 and "bundle" in se.lower() and not os.path.exists(os.path.join(t, "release-apks")), "AC6 a signed apk with no Rekor bundle beside it is refused and nothing is laid out", "rc=%s %s" % (rc, first(se)))
+t = atree(); shutil.rmtree(os.path.join(t, "apks")); os.makedirs(os.path.join(t, "apks")); rc, so, se = run(t, "release-apks", creds=KEY)
+check(rc != 0 and "no apk" in se.lower(), "AC6 no apks to sign is an error, not a success")
+t = atree(); os.remove(os.path.join(t, "apks/ubuntu-24.04-arm/aarch64/fscache-0.3.0-r0.apk")); rc, so, se = run(t, "release-apks", creds=KEY)
+check(rc != 0 and "no apk" in se.lower() and "aarch64" in se, "AC6 one missing apk (the artifact table row for aarch64) is an error naming the architecture")
+t = atree(); shutil.copy(os.path.join(t, "apks/ubuntu-24.04/x86_64/fscache-0.3.0-r0.apk"), os.path.join(t, "apks/ubuntu-24.04/x86_64/fscache-9.9.9-r0.apk")); rc, so, se = run(t, "release-apks", creds=KEY)
+check(rc != 0 and "exactly one" in se, "AC6 two standard apks in one architecture directory are refused (Build attests exactly one)")
+for tag in ("v0.3.0-rc1", "v0.3.0-rc.1", "main"):
+    t = atree(); rc, so, se = run(t, "release-apks", creds=KEY, tag=tag); check(rc != 0 and "tag" in se and not log(t), "AC14 release-apks refuses the tag %r (only a final vX.Y.Z reaches it; a release candidate never signs)" % tag, "rc=%s %s" % (rc, first(se)))
+# ---- AC7: release-publish.sh -------------------------------------------------------------------------------------------------------------
+REG = ["DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN"]
+def pushes(t): return [l.split(" ") for l in log(t) if l.startswith("crane push")]
+t = stree(); rc, so, se = run(t, "release-publish", creds=REG); P = pushes(t)
+check(rc == 0, "AC7 a good v0.3.0 publishes", se)
+need = {(h, tag) for h in ("ghcr.io", "docker.io") for tag in ("0.3.0", "0.3.0-fips")}
+got = {(p[3].split("/")[0], p[3].split(":")[1]) for p in P}
+check(need <= got, "AC7 both variants are pushed to ghcr.io and the Docker Hub mirror with their version tags", str(sorted(got)))
+check(bool(P) and all(p[2].startswith("images/") for p in P) and not [l for l in log(t) if re.match(r"crane (copy|pull)", l)], "AC7 the bytes pushed are the ones Build handed over (images/<variant>.tar), nothing is pulled or rebuilt")
+check(bool(P) and P[0][3].startswith("ghcr.io/"), "AC7 ghcr.io comes first")
+check(bool(P) and all(os.path.exists(os.path.join(t, "reg", p[3].replace(":", "/", 1))) and open(os.path.join(t, "reg", p[3].replace(":", "/", 1))).read().strip() == DIG["image-production" if "fips" not in p[3] else "image-fips"] for p in P), "AC7 the registry shows the attested index digest for every tag pushed")
+check(any(l.startswith("crane digest") for l in log(t)), "AC7 each registry is read back")
+check(SENT["DOCKERHUB_TOKEN"] not in "\n".join(log(t)) + so + se and SENT["GH_TOKEN"] not in "\n".join(log(t)) + so + se, "AC7 the credentials go in by standard input, never on a command line or in output")
+# REQ-CHAIN-004-AC20 / REQ-CHAIN-007-AC14: the tag is judged once, in release-verify; the three scripts that hold credentials judge none
+for s in ("release-sign", "release-publish", "release-assets"):
+    src = open(os.path.join(BIN, s + ".sh")).read()
+    check(not re.search(r"build-admit|tag-ok|tag-pattern|TAG_PATTERN|v\[0-9\]|\^v|-rc\[", src), "AC14 bin/%s.sh holds no tag regex and does not call or load bin/build-admit.py (the tag is judged once, in release-verify)" % s)
+import yaml
+_rel = yaml.safe_load(open(os.path.join(os.environ["RELEASE_ROOT"], ".github/workflows/release.yml")))["jobs"]["release"]
+check("!contains(github.ref_name, '-')" in str(_rel.get("if")) and {"release-verify", "release-compare"} <= set(_rel.get("needs", [])), "AC14 the release job, which holds the credentials, needs the release-verify and release-compare jobs and its if: holds the condition !contains(github.ref_name, '-')")
+t = stree(); rc, so, se = run(t, "release-publish", creds=REG, env={"REG_CORRUPT": "docker.io"})
+check(rc != 0 and "differ" in se and DIG["image-production"] in se and "docker.io" in se, "AC7 a registry that shows another digest blocks release, naming the image and both digests", "rc=%s %s" % (rc, first(se)))
+t = stree(); rc, so, se = run(t, "release-publish", creds=REG, env={"REG_CORRUPT": "ghcr.io"}); h = [p[3].split("/")[0] for p in pushes(t)]
+check(rc != 0 and "docker.io" not in h, "AC7 a mismatch at ghcr.io stops everything: nothing is pushed to the mirror afterwards", str(h))
+t = stree(); os.makedirs(os.path.join(t, "reg/ghcr.io/fosterstack/cache"), exist_ok=True); open(os.path.join(t, "reg/ghcr.io/fosterstack/cache/0.3.0"), "w").write("sha256:" + "9" * 64)
+rc, so, se = run(t, "release-publish", creds=REG)
+check(rc != 0 and "already" in se.lower() and not pushes(t), "AC7 a target tag that already shows another digest is refused before anything is pushed")
+t = stree(); os.makedirs(os.path.join(t, "reg/ghcr.io/fosterstack/cache"), exist_ok=True); open(os.path.join(t, "reg/ghcr.io/fosterstack/cache/0.3.0"), "w").write(DIG["image-production"])
+rc, so, se = run(t, "release-publish", creds=REG); check(rc == 0, "AC7 a rerun on a tag that already shows the attested digest passes", se)
+t = stree(); open(os.path.join(t, "images/fips.digest"), "w").write("sha256:" + "c" * 64 + "\n"); rc, so, se = run(t, "release-publish", creds=REG)
+check(rc != 0 and not pushes(t), "AC7 an image whose own digest is not the attested one is refused before any push")
+for miss in ("DOCKERHUB_TOKEN", "DOCKERHUB_USERNAME", "GH_TOKEN"):
+    t = stree(); rc, so, se = run(t, "release-publish", creds=[c for c in REG if c != miss])
+    check(rc == 2 and miss in se and not pushes(t), "AC7 a missing %s is refused with exit 2, naming it, before any push" % miss, "rc=%s %s" % (rc, first(se)))
+# ---- R4 and R5 (S2) ---------------------------------------------------------------------------------------------------------------------------------------
+def code_lines(name): return [l for l in open(os.path.join(BIN, name)).read().split("\n") if not l.lstrip().startswith("#")]
+for name in ("release-signatures.sh", "release-sign.sh", "release-sign-apks.sh", "release-apks.sh", "release-publish.sh"):
+    badpy = [l.strip() for l in code_lines(name) if re.search(r'(?<![\w./-])python3(?![\w-])|"\$PY3"', l) and not re.search(r'(?<![\w./-])(python3|"\$PY3") -I -B ', l)]
+    check(not badpy, "R4 every python3 line of bin/%s is `python3 -I -B` (none is `python3 bin/...`)" % name, str(badpy[:2]))
+    check(not [l for l in code_lines(name) if re.search(r"python3 +bin/", l)], "R4 no `python3 bin/` without -I -B in bin/%s" % name)
+check(not [l for l in code_lines("release-publish.sh") if re.search(r"(?<![\w-])final(?![\w-])", l)], "R5 bin/release-publish.sh has no `final` variable or test: only vX.Y.Z tags reach it")
+
+# ---- REQ-REL-009-AC11: the floating tags of a FINAL release --------
+# AC11: ":X.Y to itself every time, :X and :latest only when it is the highest released version, on GHCR and the Docker Hub mirror alike, by digest".
+# The released versions are the plain X.Y.Z tags of ghcr.io/fosterstack/cache (rc tags, -fips tags and the floating tags themselves are not versions).
+# NOT in AC11 and so not built: floating tags of the -fips image (it gets its exact tag only), and any flag. The registry fake lists tags with `crane ls`.
+def seed(t, tags, hosts=("ghcr.io", "docker.io"), dig="7"):
+    for host in hosts:
+        d = os.path.join(t, "reg", host, "fosterstack", "cache"); os.makedirs(d, exist_ok=True)
+        for x in tags: open(os.path.join(d, x), "w").write("sha256:" + dig * 64)
+def float_run(tag, tags, env=None, creds=REG):
+    t = stree()
+    if tags is not None: seed(t, tags)
+    rc, so, se = run(t, "release-publish", creds=creds, env=env, tag=tag)
+    return t, rc, so, se
+def tagset(t): return {(p[3].split("/")[0], p[3].split(":")[1]) for p in pushes(t)}
+def want(*tags): return {(h, x) for h in ("ghcr.io", "docker.io") for x in tags}
+t, rc, so, se = float_run("v0.3.0", ["0.2.2"]); got = tagset(t)
+check(rc == 0 and got == want("0.3.0", "0.3.0-fips", "0.3", "0", "latest") and any(l.startswith("crane ls") for l in log(t)) and sum(1 for l in log(t) if l.startswith("crane digest")) >= 5,
+      "R5 a vX.Y.Z tag always pushes the floating tags and always checks the end state of both registries (the listing and the read-backs run)", "rc=%s %s" % (rc, sorted(got)))
+t, rc, so, se = float_run("v0.3.0", ["0.2.2", "0.2.1", "latest", "0.2"]); got = tagset(t)
+check(rc == 0 and got == want("0.3.0", "0.3.0-fips", "0.3", "0", "latest"), "AC11 the highest released version moves :X.Y, :X and :latest (production image), the -fips image gets its exact tag only, in both registries", "rc=%s %s %s" % (rc, sorted(got), first(se)))
+t, rc, so, se = float_run("v0.3.1", ["0.3.0", "0.4.0", "0.4", "0", "latest"]); got = tagset(t)
+check(
+    rc == 0 and got == want("0.3.1", "0.3.1-fips", "0.3"),
+    "AC11 a patch of an older line moves :X.Y only: 0.4.0 is higher, so neither :0 nor :latest moves (the old stage "
+    "moved :latest always)",
+    "rc=%s %s %s" % (rc, sorted(got), first(se))
+)
+t, rc, so, se = float_run("v0.3.0", ["1.0.0", "1.0", "1", "latest"]); got = tagset(t)
+check(rc == 0 and "latest" not in {x for _, x in got} and "0" not in {x for _, x in got} and ("ghcr.io", "0.3") in got, "AC11 :latest is never moved by a version lower than a released one (1.0.0 exists)", str(sorted(got)))
+t, rc, so, se = float_run("v0.3.0", ["0.4.0-rc.1", "0.2.0-fips", "latest", "0.3", "0", "9.9.9-fips", "1.0.0-rc.2", "v9.9.9", "latest-fips"]); got = tagset(t)
+check(rc == 0 and got == want("0.3.0", "0.3.0-fips", "0.3", "0", "latest"), "AC11 only plain X.Y.Z tags are released versions: rc tags, -fips tags, floating tags and malformed tags do not block :latest", "rc=%s %s %s" % (rc, sorted(got), first(se)))
+t, rc, so, se = float_run("v0.3.0", None); got = tagset(t)
+check(rc == 0 and got == want("0.3.0", "0.3.0-fips", "0.3", "0", "latest"), "AC11 a repository with no tag yet (NAME_UNKNOWN) means this is the highest version", "rc=%s %s %s" % (rc, sorted(got), first(se)))
+t, rc, so, se = float_run("v0.3.0", ["0.2.2"], env={"LS_FAIL": "1"})
+check(rc != 0 and not pushes(t) and "ghcr.io" in se and "list" in se.lower(), "AC11 a tag list that cannot be read stops the release before any push (it never guesses that this is the highest)", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = float_run("v0.3.0", ["0.2.2"], env={"REG_CORRUPT": "docker.io"})
+check(rc != 0 and "differ" in se and "docker.io" in se, "AC11 a floating tag is read back like an exact one (a mirror that shows another digest blocks the release)", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = float_run("v0.3.0", ["0.2.2"]); L = [l for l in log(t) if l.startswith("crane push")]
+check(L and all(re.search(r" images/(production|fips) ", l + " ") for l in L) and not [l for l in log(t) if l.startswith("crane tag")], "AC11 floating tags are pushed from the same attested bytes, nothing is retagged from a registry")
+# ---- a higher release published between the first listing and the floating pushes: :0 and :latest are not
+# moved back ----
+# The remaining window (a publication after the last listing) is closed by the release job's concurrency group
+# (asserted in bin/chain-build-wiring-test.sh).
+HIGHER = "sha256:" + "8" * 64
+def regtag(t, host, tag):
+    p = os.path.join(t, "reg", host, "fosterstack", "cache", tag)
+    return open(p).read().strip() if os.path.exists(p) else None
+def again(t, tag="v0.3.0", env=None): return run(t, "release-publish", creds=REG, env=env, tag=tag)
+t, rc, so, se = float_run("v0.3.0", ["0.2.2"], env={"LS_RACE_AFTER": "1"})
+check(rc != 0 and all(regtag(t, h, x) == HIGHER for h in ("ghcr.io", "docker.io") for x in ("0", "latest")) and ("ghcr.io", "latest") not in tagset(t) and ("docker.io", "0") not in tagset(t) and "0.3.1" in se,
+      "AC11 a higher release that appears after the first listing keeps :0 and :latest "
+      "(neither is moved back to 0.3.0) in both registries; :0.3 (always moved, ratified) "
+      "now differs from the line's highest, so the end-state check fails naming 0.3.1",
+      "rc=%s 0=%s latest=%s pushed=%s %s" % (rc, regtag(t, "ghcr.io", "0"), regtag(t, "docker.io", "latest"),
+                                           sorted(tagset(t)), first(se)))
+t, rc, so, se = float_run("v0.3.0", ["0.2.2"], env={"LS_RACE_AFTER": "2"})
+check(
+    rc != 0 and "0.3.1" in se,
+    "AC11 a higher release that completes after the last listing but before the floating push: the end-state check "
+    "fails the step naming 0.3.1",
+    "rc=%s %s" % (rc, first(se))
+)
+# A RETRY must not go green over a rolled-back state. The end state of every final run is checked in BOTH
+# registries (the highest plain X.Y.Z on
+# ghcr exists on each registry with ghcr's digest; :latest and :<major> equal it; :X.Y equals the line's highest); digests are compared, nothing is retagged.
+t, rc, so, se = float_run("v0.3.0", ["0.2.2"], env={"LS_RACE_AFTER": "2"}); rc2, so2, se2 = again(t)
+check(
+    rc != 0 and rc2 != 0 and "0.3.1" in se2,
+    "AC11 re-running 0.3.0 on the registry the race-2 run left behind (ghcr :0/:latest rolled back) fails naming "
+    "0.3.1 instead of passing",
+    "rc=%s rc2=%s %s" % (rc, rc2, first(se2))
+)
+t, rc, so, se = float_run("v0.3.0", ["0.2.2"], env={"LS_RACE_AFTER": "3"}); rc2, so2, se2 = again(t)
+check(
+    rc != 0 and rc2 != 0 and "docker.io" in se2 and "0.3.1" in se2,
+    "AC11 re-running 0.3.0 after the race-3 run (the mirror rolled back, ghcr correct) fails naming the mirror and "
+    "0.3.1",
+    "rc=%s rc2=%s %s" % (rc, rc2, first(se2))
+)
+t = stree(); seed(t, ["0.3.1", "0.3", "0", "latest"], hosts=("ghcr.io",), dig="8"); seed(t, ["0.3.1"], hosts=("docker.io",), dig="8"); seed(t, ["0", "latest", "0.3"], hosts=("docker.io",), dig="7")
+rc, so, se = run(t, "release-publish", creds=REG, tag="v0.3.0")
+check(
+    rc != 0 and "docker.io" in se and "0.3.1" in se,
+    "AC11 a mirror holding stale :0/:latest (no race, ghcr correct at the higher release) fails the older release's "
+    "run naming the mirror and 0.3.1",
+    "rc=%s %s" % (rc, first(se))
+)
+t, rc, so, se = float_run("v0.3.0", ["0.3.1", "0.3.1-fips", "0.3", "0", "latest"])
+check(
+    rc != 0 and ("ghcr.io", "0.3") in tagset(t) and ("ghcr.io", "latest") not in tagset(t)
+    and "0.3.1" in se and "0.3" in se,
+    "AC11 a resumed older patch of the same line still moves :0.3 (the owner's 'always move :X.Y') but the step "
+    "fails naming the line's highest, 0.3.1: the rollback is never silent",
+    "rc=%s %s %s" % (rc, sorted(tagset(t)), first(se))
+)
+t, rc, so, se = float_run("v0.3.0", ["0.2.2"], env={"LS_RACE_AFTER": "9"}); got = tagset(t)
+check(
+    rc == 0 and got == want("0.3.0", "0.3.0-fips", "0.3", "0", "latest"),
+    "AC11 no concurrent publication: unchanged, the highest release moves :0 and :latest",
+    "rc=%s %s" % (rc, sorted(got))
+)
+t = stree(); import shutil as _sh; _sh.rmtree(os.path.join(t, "images/production")); open(os.path.join(t, "images/production"), "w").write("a tarball, not a layout directory")
+rc, so, se = run(t, "release-publish", creds=REG); check(rc != 0 and "production" in se and not pushes(t), "AC7 an image that is not an OCI layout directory (a tarball) is refused before any push, naming it", "rc=%s %s" % (rc, first(se)))
+# a signing run that leaves one of the four apks of the attested list missing is refused (no empty glob skips
+# validation)
+for top in ("apks",):
+    t = atree(); os.remove(os.path.join(t, top, "ubuntu-24.04-arm/aarch64/fscache-fips-0.3.0-r0.apk"))
+    rc, so, se = run(t, "release-apks", creds=KEY)
+    check(
+        rc != 0 and "fips" in se and "aarch64" in se,
+        "AC6 the %s tree missing the arm64 -fips apk is refused naming the apk (an empty glob does not skip it)" % top,
+        "rc=%s %s" % (rc, first(se))
+    )
+def signed_released(tag="v0.3.0", env=None):
+    """Sign's step (release-signatures), then Release's step (release-sign) over its output, in one tree: what the Release job holds after its signing step"""
+    t = tree(); run(t, "release-signatures", tag=tag); rc, so, se = run(t, "release-sign", creds=REG, tag=tag, env=env)
+    return t, rc, so, se
+# a registry login lives in a private DOCKER_CONFIG of the step and is gone when the step ends, success or failure
+def login_gone(t, what):
+    home_cfg = os.path.join(t, ".docker")
+    f = os.path.join(t, "calls.log.dockercfg"); used = open(f).read().split() if os.path.exists(f) else []
+    check(
+        bool(used) and home_cfg not in used and not os.path.exists(home_cfg),
+        "AC10 %s: the login is not in the runner's shared ~/.docker" % what,
+        "used=%s" % used
+    )
+    check(
+        all(not os.path.exists(d) for d in used) and bool(used),
+        "AC10 %s: the private configuration directory is removed when the step ends" % what,
+        "left=%s" % [d for d in used if os.path.exists(d)]
+    )
+t = stree(); rc, so, se = run(t, "release-publish", creds=REG); login_gone(t, "release-publish (success)")
+t = stree(); rc, so, se = run(t, "release-publish", creds=REG, env={"REG_CORRUPT": "docker.io"}); login_gone(t, "release-publish (a registry mismatch stops it)")
+t, rc, so, se = signed_released(); login_gone(t, "release-sign")
+# a failed mktemp stops the step before any login (an empty DOCKER_CONFIG would fall back to ~/.docker)
+for s_ in ("release-publish", "release-sign"):
+    t = stree() if s_ == "release-publish" else tree(); run(t, "release-signatures") if s_ == "release-sign" else None; fb = os.path.join(t, ".fakebin"); open(os.path.join(fb, "mktemp"), "w").write("#!/usr/bin/env bash\nexit 1\n"); os.chmod(os.path.join(fb, "mktemp"), 0o755)
+    rc, so, se = run(t, s_, creds=REG)
+    check(rc != 0 and not [l for l in log(t) if "auth login" in l or l.startswith("cosign login") or "push" in l or l.startswith("cosign sign")], "AC10 F2b %s: a failed mktemp stops the step before any login or push" % s_, "rc=%s %s" % (rc, first(se)))
+# the layout's CONTENT is the attested image before anything is logged in or pushed
+def layout_refused(t, what, word):
+    rc, so, se = run(t, "release-publish", creds=REG)
+    check(rc != 0 and word in se and not pushes(t) and not [l for l in log(t) if "auth login" in l], "AC7 B4 " + what + " is refused before any login or push", "rc=%s %s pushes=%s" % (rc, first(se), pushes(t)))
+def blobs_of(t, v): d = os.path.join(t, "images", v, "blobs/sha256"); return d, sorted(os.listdir(d))
+t = stree(); d, bl = blobs_of(t, "production"); open(os.path.join(d, bl[0]), "ab").write(b"x")
+layout_refused(t, "a layout blob whose bytes no longer hash to its name", "production")
+t = stree(); d, bl = blobs_of(t, "fips"); os.remove(os.path.join(d, bl[0])); layout_refused(t, "a layout with a blob missing", "fips")
+t = stree(); ix = os.path.join(t, "images/fips/index.json"); j = json.load(open(ix)); j["manifests"][0]["digest"] = "sha256:" + "d" * 64; json.dump(j, open(ix, "w"))
+layout_refused(t, "an index.json whose descriptor is not the attested digest (the sidecar still says it is)", "fips")
+t = stree(); ix = os.path.join(t, "images/production/index.json"); j = json.load(open(ix)); j["manifests"].append(dict(j["manifests"][0])); json.dump(j, open(ix, "w"))
+layout_refused(t, "an index.json with two descriptors", "production")
+t = stree(); d, bl = blobs_of(t, "production"); idx_hex = DIG["image-production"].split(":")[1]
+blob_id = [b for b in bl if b != idx_hex][0]; os.remove(os.path.join(d, blob_id)); open(os.path.join(d, blob_id), "wb").write(b"swapped")
+layout_refused(t, "a child blob replaced under its name", "production")
+t = stree(); os.remove(os.path.join(t, "images/fips/index.json")); rc, so, se = run(t, "release-publish", creds=REG)
+check(rc != 0 and "fips" in se and not pushes(t), "AC7 a layout directory without index.json is refused before any push", "rc=%s %s" % (rc, first(se)))
+# ---- AC8 (S2 design): Sign's bin/release-signatures.sh makes and KMS-signs everything; Release's bin/release-sign.sh holds no key, checks every signature and pushes ----------------
+# R1: only the Sign job reaches the release key. Sign: one `bash bin/with-aws-token.sh kms-sign ...` per signature (the fake records each call and signs with a throw-away key);
+# Release: bundle-check + openssl of every signature, then cosign login / attach / verify. The fakes model chain-verify.py bundle-check as "exactly one Rekor entry, and the digest is this file's".
+S = "release-signed"
+def kms_calls(t): return [l[len("with-aws-token "):] for l in log(t) if l.startswith("with-aws-token ")]
+def signs(t): return kms_calls(t)
+def sign_step(t, **kw): return run(t, "release-signatures", **kw)
+def opts(c):
+    w = c.split(" "); return {w[i]: w[i + 1] for i in range(len(w) - 1) if w[i].startswith("--")}
+def sha_file(pth): return hashlib.sha256(open(pth, "rb").read()).hexdigest()
+HOSTS = ("ghcr.io", "docker.io")
+def files_of(t):
+    out = []
+    for dp, dn, fn in os.walk(t):
+        out += [os.path.relpath(os.path.join(dp, f), t) for f in fn if f != "calls.log"]
+    return sorted(out)
+EVID = ("production.sbom.json", "fips.sbom.json", "fscache-modules.spdx.json", "fscache-modules-fips.spdx.json", "production.full.lock.json", "fips.full.lock.json")
+t = tree(); rc, so, se = sign_step(t); lg = log(t); kc = kms_calls(t)
+check(rc == 0, "I1 a good Sign run signs", se)
+check(lg and lg[0] == "chain-verify key-ref-check", "I1 the key-reference check (chain-verify.py key-ref-check) is the step's first call, before anything is made", str(lg[:1]))
+L = [l for l in lg if not l.startswith(("chain-verify", "with-aws-token"))]
+# ruling G (cache-ce's interface): the dependency list is the tag checkout's own file, the govulncheck stream is Check's product, the date is the admitted commit's committer date from git
+EV = "vendor-provenance evidence --out release-signed/release-evidence --provenance dependency-provenance.json --govulncheck check-results/ubuntu-24.04/govulncheck.json --date 1760000000"
+check(L and L[0] == EV, "G the evidence call is exactly `evidence --out release-signed/release-evidence --provenance dependency-provenance.json --govulncheck check-results/ubuntu-24.04/govulncheck.json --date EPOCH`", str(L[:1]))
+gl = open(os.path.join(t, "calls.log.git")).read().strip().split("\n") if os.path.exists(os.path.join(t, "calls.log.git")) else []
+check(gl == ["git log -1 --format=%ct " + "c" * 40], "G the date is `git log -1 --format=%ct $GITHUB_SHA` (the admitted tag commit's committer date) and git is used for nothing else", str(gl))
+AWSP = os.path.join(t, "rt") + "/aws-cli/aws"
+HEAD = "kms-sign --aws %s --key-ref %s --signing-config .github/policy/cosign-signing-config.json --public-key build/keys/release.rsa.pub " % (AWSP, KMS)
+dg = [c for c in kc if " --digest " in c]; ds = [c for c in kc if " --dsse-statement " in c]
+check(len(kc) == 23 and all(c.startswith(HEAD) for c in kc), "I1 23 signatures (8 image payloads and attestations, 11 files, 4 apks), each one call `bash bin/with-aws-token.sh kms-sign --aws $RUNNER_TEMP/aws-cli/aws --key-ref $RELEASE_KMS_KEY_REF --signing-config ... --public-key build/keys/release.rsa.pub ...`", "%d %s" % (len(kc), [c for c in kc if not c.startswith(HEAD)][:1]))
+check(len(dg) == 19 and len(ds) == 4 and all(set(opts(c)) == {"--aws", "--key-ref", "--signing-config", "--public-key", "--digest", "--out", "--bundle"} for c in dg) and all(set(opts(c)) == {"--aws", "--key-ref", "--signing-config", "--public-key", "--dsse-statement", "--bundle"} for c in ds),
+      "I1 nineteen calls sign a digest (--digest --out --bundle) and four sign an attestation statement (--dsse-statement --bundle)", "%d %d" % (len(dg), len(ds)))
+IMG = ["images/%s/%s" % (h, v) for h in HOSTS for v in ("production", "fips")]
+APKB = ["apks/%s/%s" % (a, n) for _r, a, _s in RUNNERS for _v, n in APKS]
+BUNDLES = sorted([x + ".bundle" for x in IMG] + [x + ".attestation.bundle" for x in IMG] + ["release-evidence/%s.bundle" % x for x in EVID] + ["release-evidence/release-policy.bundle", "release-evidence/vendor-evidence.json.bundle", "release-evidence/dependency-list.json.bundle", "checksums.txt.bundle", "release-metadata/release-files.sha256.bundle"] + [x + ".bundle" for x in APKB])
+check(sorted(opts(c)["--bundle"] for c in kc) == sorted(S + "/" + b for b in BUNDLES) and all(os.path.isfile(os.path.join(t, S, b)) for b in BUNDLES), "I1 the bundles are exactly those of release-signed/ (checksums, evidence, metadata list, image payloads and attestations of both registries, four apks), one signature each, all present", str(sorted(opts(c)["--bundle"] for c in kc))[:300])
+SRC = {"release-evidence/production.sbom.json.bundle": "images/production-sbom/sbom.json", "release-evidence/fips.sbom.json.bundle": "images/fips-sbom/sbom.json",
+       "release-evidence/fscache-modules.spdx.json.bundle": "apks/ubuntu-24.04/fscache-modules.spdx.json", "release-evidence/fscache-modules-fips.spdx.json.bundle": "apks/ubuntu-24.04/fscache-modules-fips.spdx.json",
+       "release-evidence/production.full.lock.json.bundle": "images/production.full.lock.json", "release-evidence/fips.full.lock.json.bundle": "images/fips.full.lock.json", "release-evidence/release-policy.bundle": "policy.json",
+       "release-evidence/vendor-evidence.json.bundle": S + "/release-evidence/vendor-evidence.json", "release-evidence/dependency-list.json.bundle": S + "/release-evidence/dependency-list.json",
+       "checksums.txt.bundle": S + "/checksums.txt", "release-metadata/release-files.sha256.bundle": S + "/release-metadata/release-files.sha256"}
+for x in IMG: SRC[x + ".bundle"] = S + "/" + x + ".payload"
+byb = {opts(c)["--bundle"]: opts(c) for c in kc}
+bad_d = [b for b, f in SRC.items() if byb.get(S + "/" + b, {}).get("--digest") != sha_file(os.path.join(t, f))]
+check(not bad_d and len(SRC) == 15, "I1 each file is signed over its own sha256 (the blobs Build handed over, the files made here, the image payloads)", str(bad_d))
+check(all(os.path.isfile(os.path.join(t, S, "release-evidence", f)) for f in ("vendor-evidence.json", "dependency-list.json")) and sha_file(os.path.join(t, S, "release-evidence/dependency-list.json")) == sha_file(os.path.join(t, "dependency-provenance.json")), "I1 release-signed/release-evidence/ holds vendor-evidence.json and dependency-list.json (the tag checkout's list)")
+pl = [json.load(open(os.path.join(t, S, x + ".payload"))) for x in IMG]
+check([(p["critical"]["identity"]["docker-reference"], p["critical"]["image"]["docker-manifest-digest"]) for p in pl] == [("%s/fosterstack/cache" % h, DIG["image-" + v]) for h in HOSTS for v in ("production", "fips")], "I1 each image payload names its registry repository and the attested digest of its variant")
+# the four apks: the signature over the sha256 of the control stream, which is the apk's digest in Build's digests.json
+ap = {a: opts(c) for c in dg for a in APKB if opts(c)["--bundle"] == S + "/" + a + ".bundle"}
+dj = json.load(open(os.path.join(t, "witness-build/digests.json")))
+good_apk = True
+for _r, a, short in RUNNERS:
+    for v, n in APKS:
+        o = ap.get("apks/%s/%s" % (a, n), {}); good_apk &= o.get("--out") == "%s/apks/%s/%s.kms.sig" % (S, a, n) and "sha256:" + o.get("--digest", "") == dj["apk-%s-%s" % (v, short)]
+        ctl = os.path.join(t, "ctl"); open(ctl, "w").write(apk_data(v, short))
+        good_apk &= subprocess.run(["openssl", "dgst", "-sha256", "-verify", os.path.join(t, "build/keys/release.rsa.pub"), "-signature", os.path.join(t, S, "apks", a, n + ".kms.sig"), ctl], capture_output=True).returncode == 0
+check(good_apk, "I1 each apk gets <apk>.kms.sig and <apk>.bundle: the signature is over the sha256 of its control stream (an apk digest of digests.json) and verifies under build/keys/release.rsa.pub")
+stm = [l.split("\t", 1) for l in open(os.path.join(t, "calls.log.stmts")).read().split("\n") if l] if os.path.exists(os.path.join(t, "calls.log.stmts")) else []
+mj_ = json.load(open(os.path.join(t, S, "release-metadata/release-manifest.json")))
+got_att = sorted((json.loads(b)["subject"][0]["name"], json.loads(b)["subject"][0]["digest"]["sha256"]) for _p, b in stm)
+check(len(stm) == 4 and got_att == sorted(("%s/fosterstack/cache" % h, DIG["image-" + v][len("sha256:"):]) for h in HOSTS for v in ("production", "fips")) and all(json.loads(b)["predicateType"] == "https://fosterstack.com/attestations/release-manifest/v1" and json.loads(b)["predicate"] == mj_ for _p, b in stm),
+      "I1 the four attested statements are the release manifest of release-metadata, type https://fosterstack.com/attestations/release-manifest/v1, on each digest of each registry", str(got_att)[:200])
+check(not [l for l in lg if l.startswith(("cosign", "crane", "gh ", "aws"))], "R1 Sign pushes nothing and calls no cosign, crane or gh: its only outputs are files in release-signed/")
+cs0 = os.path.join(t, S, "checksums.txt")
+# the date ruling (G): a file, a symlink, an empty file; a commit date that is not epoch seconds; each stops before the evidence step and any signature
+for label, mutate in (("is missing", lambda t: os.remove(os.path.join(t, GV))),
+                      ("is a symlink", lambda t: (os.remove(os.path.join(t, GV)), os.symlink("/etc/hosts", os.path.join(t, GV)))),
+                      ("is empty", lambda t: open(os.path.join(t, GV), "w").close()),
+                      ("(dependency-provenance.json) is missing", lambda t: os.remove(os.path.join(t, "dependency-provenance.json"))),
+                      ("(dependency-provenance.json) is empty", lambda t: open(os.path.join(t, "dependency-provenance.json"), "w").close()),
+                      ("(dependency-provenance.json) is a symlink", lambda t: (os.remove(os.path.join(t, "dependency-provenance.json")), os.symlink("/etc/hosts", os.path.join(t, "dependency-provenance.json"))))):
+    tg = tree(); mutate(tg); rc, so, se = sign_step(tg)
+    check(rc != 0 and not [l for l in log(tg) if l.startswith(("vendor-provenance", "with-aws-token"))], "G the file Sign hands the evidence step %s: nothing is produced or signed" % label, "rc=%s %s" % (rc, first(se)))
+for label, env in (("not a number", {"GIT_EPOCH": "yesterday"}), ("empty", {"GIT_EPOCH": ""}), ("negative", {"GIT_EPOCH": "-5"}), ("git failing", {"GIT_FAIL": "1"}), ("two lines", {"GIT_EPOCH": "1760000000\n1760000001"})):
+    tg = tree(); rc, so, se = sign_step(tg, env=env)
+    check(rc != 0 and not [l for l in log(tg) if l.startswith(("vendor-provenance", "with-aws-token"))], "G a commit date that is %s stops before the evidence step and any signature" % label, "rc=%s %s" % (rc, first(se)))
+# I1: the names Sign needs; an unset name exits 2 before anything is made
+for name in ("RELEASE_KMS_KEY_REF", "RUNNER_TEMP", "GITHUB_SHA", "GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_WORKFLOW_REF"):
+    tg = tree(); rc, so, se = sign_step(tg, env={name: None})
+    check(rc == 2 and name in se and not log(tg) and not os.path.exists(os.path.join(tg, S)), "I1 an unset %s exits 2, naming it, before anything is made or signed" % name, "rc=%s %s" % (rc, first(se)))
+tg = tree(); rc, so, se = sign_step(tg, env={"RELEASE_KMS_KEY_REF": None}, tag="v1.2.3-rc1")
+check(rc == 2 and "RELEASE_KMS_KEY_REF" in se and not log(tg) and not os.path.exists(os.path.join(tg, S)), "I1 an unset name together with an rc tag exits 2 (names are checked before the tag)", "rc=%s %s" % (rc, first(se)))
+tg = tree(); rc, so, se = sign_step(tg, env={"GITHUB_REF_NAME": None}); check(rc != 0 and not log(tg) and not kms_calls(tg), "I1 an unset GITHUB_REF_NAME stops the step before anything is signed", "rc=%s %s" % (rc, first(se)))
+def refused_ref(val, label):
+    t = tree(); before = files_of(t)
+    rc, so, se = sign_step(t, env={"RELEASE_KMS_KEY_REF": val})
+    check(rc == 2 and "RELEASE_KMS_KEY_REF" in se and not [l for l in log(t) if l.startswith(("with-aws-token", "vendor-provenance"))] and files_of(t) == before,
+          label, "rc=%s %s" % (rc, first(se)))
+refused_ref("", "P3 an EMPTY RELEASE_KMS_KEY_REF stops the step with exit 2 before anything is made or signed")
+refused_ref("awskms:///a --other", "P3 a reference with a space is refused (key-ref-check, exit 2) before anything is made or signed")
+refused_ref("awskms:///a\nb", "P3 a reference with a newline is refused before anything is made or signed")
+refused_ref("awskms:///a\tb", "P3 a reference with a tab is refused before anything is made or signed")
+refused_ref("awskms:///*", "P3 a reference that is only a glob character is refused before anything is made or signed")
+refused_ref("awskms:///", "P3 a reference with an empty key name is refused before anything is made or signed")
+refused_ref(
+    "awskms:///alias/",
+    "release-sign: a reference with an empty alias name (awskms:///alias/) is refused before anything is made or "
+    "signed"
+)
+refused_ref(
+    "awskms:///alias",
+    "release-sign: a reference that is the word alias with no alias name is refused before anything is made or signed"
+)
+refused_ref("awskms:///alias/other", "W2 another awskms alias is refused with exit 2 before anything is made or signed")
+refused_ref("arn:aws:kms:us-east-1:111122223333:key/abc", "P3 a key reference that is not awskms:/// is refused before any signature")
+for tag in ("v0.3.0-rc1", "v0.3.0-rc.1", "main", "v0.3", "v0.3.0-fips"):
+    t = tree(); rc, so, se = sign_step(t, tag=tag); check(rc == 1 and "tag" in se and not log(t) and not os.path.exists(os.path.join(t, S)), "AC14 release-signatures refuses the tag %r with exit 1 before anything is made (only vX.Y.Z reaches it)" % tag, "rc=%s %s" % (rc, first(se)))
+# G1: release-signatures.sh makes policy.json itself (a stage file's run lines cannot read GITHUB_REF_NAME): after the tag check and the key-reference check, before anything is made or signed
+POLICY = "chain-verify policy make --template .github/policy/release-policy.template.json --tag v0.3.0 --out policy.json"
+def tree_without_policy():
+    t = tree(); os.remove(os.path.join(t, "policy.json")); return t
+def policy_calls(t): return [l for l in log(t) if l.startswith("chain-verify policy")]
+t = tree_without_policy(); rc, so, se = sign_step(t); lg = log(t)
+first_made = next((i for i, l in enumerate(lg) if l.startswith(("vendor-provenance", "with-aws-token", "vex-forms", "release-metadata"))), len(lg))
+check(rc == 0 and os.path.isfile(os.path.join(t, "policy.json")) and policy_calls(t) == [POLICY],
+      "G1 the step makes ./policy.json itself, once, with `policy make --template .github/policy/release-policy.template.json --tag $GITHUB_REF_NAME --out policy.json`", "rc=%s %s %s" % (rc, policy_calls(t), first(se)))
+check(lg[:2] == ["chain-verify key-ref-check", POLICY] and lg.index(POLICY) < first_made,
+      "G1 the policy is made right after the key-reference check and before anything is made or signed", str(lg[:3]))
+t = tree(); open(os.path.join(t, "policy.json"), "w").write("stale\n"); rc, so, se = sign_step(t)
+pol = [opts(c) for c in kms_calls(t) if opts(c).get("--bundle") == S + "/release-evidence/release-policy.bundle"]
+check(rc == 0 and open(os.path.join(t, "policy.json")).read() == "{}" and len(pol) == 1 and pol[0]["--digest"] == hashlib.sha256(b"{}").hexdigest(),
+      "G1 release-policy.bundle is the signature of the policy.json the step made (a file left in the tree is replaced)", "rc=%s %s" % (rc, first(se)))
+t = tree_without_policy(); rc, so, se = sign_step(t, env={"POLICY_FAIL": "1"})
+check(rc != 0 and not [l for l in log(t) if l.startswith(("vendor-provenance", "with-aws-token", "vex-forms", "release-metadata"))] and not os.path.exists(os.path.join(t, S, "checksums.txt")),
+      "G1 a policy that cannot be made stops the step (exit non-zero) before anything is made or signed", "rc=%s %s" % (rc, first(se)))
+t = tree_without_policy(); rc, so, se = sign_step(t, env={"RELEASE_KMS_KEY_REF": "awskms:///alias/other"})
+check(rc == 2 and not policy_calls(t) and not os.path.exists(os.path.join(t, "policy.json")),
+      "G1 a refused key reference stops the step before the policy is made", "rc=%s %s" % (rc, first(se)))
+t = tree_without_policy(); rc, so, se = sign_step(t, tag="v0.3.0-rc1")
+check(rc == 1 and not policy_calls(t) and not os.path.exists(os.path.join(t, "policy.json")),
+      "G1 a refused tag stops the step before the policy is made", "rc=%s %s" % (rc, first(se)))
+t = tree_without_policy(); adm(t, "v0.3.1", "v0.3.0")      # Build's admission file is for the tag of the run
+rc, so, se = sign_step(t, tag="v0.3.1")
+check(rc == 0 and policy_calls(t) == [POLICY.replace("v0.3.0", "v0.3.1")], "G1 the policy is made for the tag of the run", "rc=%s %s" % (rc, policy_calls(t)))
+# a signature that fails stops the step at that call
+t = tree(); rc, so, se = sign_step(t, env={"KMSSIGN_FAIL_ON": "images/ghcr.io/production.bundle"}); check(rc != 0 and len(kms_calls(t)) == 1, "I1 a failing first signature (the KMS key refuses) stops the step at that one call", "rc=%s n=%d %s" % (rc, len(kms_calls(t)), first(se)))
+t = tree(); rc, so, se = sign_step(t, env={"KMSSIGN_FAIL_ON": "checksums.txt.bundle"}); kc2 = kms_calls(t)
+check(rc != 0 and kc2 and "checksums.txt.bundle" in kc2[-1] and not any("release-files" in c or "/apks/" in c for c in kc2), "I1 a failing signature of checksums.txt stops the step: the list and the apks are not signed after it", "rc=%s n=%d %s" % (rc, len(kc2), first(se)))
+t = tree(); rc, so, se = sign_step(t, env={"EVIDENCE_FAIL": "1"}); check(rc != 0 and not signs(t), "AC8 failing evidence stops everything before anything is signed")
+# an apk that is not one of the apk-* digests of digests.json is refused (exit 1), naming it
+for key in ("apk-standard-amd64", "apk-fips-arm64"):
+    t = tree(); d = json.load(open(os.path.join(t, "witness-build/digests.json"))); d[key] = "sha256:" + "0" * 64; json.dump(d, open(os.path.join(t, "witness-build/digests.json"), "w"))
+    rc, so, se = sign_step(t)
+    check(rc == 1 and "apk" in se and len(kms_calls(t)) < 23, "I1 an apk whose digest is not an apk-* value of digests.json (%s changed) is refused with exit 1 and not signed" % key, "rc=%s n=%d %s" % (rc, len(kms_calls(t)), first(se)))
+# the apks are chosen as release-apks.sh chooses them (fixed table: per runner and arch one standard fscache-[0-9]*-r0.apk and one fips fscache-fips-*-r0.apk): any other apk (Build also writes fscache-baselayout) is neither signed nor an error
+def apk_sigs_of(t): return [opts(c)["--bundle"] for c in kms_calls(t) if "/apks/" in opts(c).get("--bundle", "")]
+def add_baselayout(t):
+    for runner, archdir, short in RUNNERS: open(os.path.join(t, "apks", runner, archdir, "fscache-baselayout-0.3.0-r0.apk"), "w").write("apk\nsigner: assembly.rsa.pub\ndata: baselayout-%s\n" % short)
+t = tree(); add_baselayout(t); rc, so, se = sign_step(t); ab = apk_sigs_of(t)
+check(rc == 0 and len(kms_calls(t)) == 23 and sorted(ab) == sorted("%s/apks/%s/%s.bundle" % (S, a, n) for _r, a, _s in RUNNERS for _v, n in APKS) and not [f for f in files_of(t) if f.startswith(S + "/") and "baselayout" in f],
+      "I1 a fscache-baselayout apk beside the four apks (digests.json never names it) is neither signed nor an error: exit 0, 23 signatures, exactly the four apks' signatures", "rc=%s n=%d %s %s" % (rc, len(kms_calls(t)), ab, first(se)))
+for runner, archdir, short in RUNNERS:
+    for variant, name in APKS:
+        t = tree(); os.remove(os.path.join(t, "apks", runner, archdir, name)); rc, so, se = sign_step(t)
+        check(rc == 1 and "apk" in se, "I1 the %s %s apk missing is refused with exit 1 (all four must be present)" % (variant, short), "rc=%s %s" % (rc, first(se)))
+        check(not apk_sigs_of(t), "I1 the %s %s apk missing: no apk is signed" % (variant, short), str(apk_sigs_of(t)))
+t = tree(); shutil.copy(os.path.join(t, "apks/ubuntu-24.04/x86_64/fscache-0.3.0-r0.apk"), os.path.join(t, "apks/ubuntu-24.04/x86_64/fscache-9.9.9-r0.apk")); rc, so, se = sign_step(t)
+check(rc == 1 and "apk" in se and not apk_sigs_of(t), "I1 two standard apks in one directory (ambiguous) are refused with exit 1 and no apk is signed", "rc=%s %s %s" % (rc, apk_sigs_of(t), first(se)))
+t = tree(); shutil.copy(os.path.join(t, "apks/ubuntu-24.04-arm/aarch64/fscache-fips-0.3.0-r0.apk"), os.path.join(t, "apks/ubuntu-24.04-arm/aarch64/fscache-fips-9.9.9-r0.apk")); rc, so, se = sign_step(t)
+check(rc == 1 and "apk" in se and not apk_sigs_of(t), "I1 two fips apks in one directory (ambiguous) are refused with exit 1 and no apk is signed", "rc=%s %s %s" % (rc, apk_sigs_of(t), first(se)))
+# each apk must have the digest Build attested FOR ITS OWN key: another apk's attested digest is not enough
+t = tree(); d = json.load(open(os.path.join(t, "witness-build/digests.json"))); d["apk-standard-amd64"], d["apk-fips-amd64"] = d["apk-fips-amd64"], d["apk-standard-amd64"]; json.dump(d, open(os.path.join(t, "witness-build/digests.json"), "w")); rc, so, se = sign_step(t)
+check(rc == 1 and "apk" in se and not apk_sigs_of(t), "I1 an apk whose digest is another apk's attested digest (the digests of apk-standard-amd64 and apk-fips-amd64 swapped: both are still apk-* values) is refused with exit 1 and no apk is signed", "rc=%s %s %s" % (rc, apk_sigs_of(t), first(se)))
+# R-A (now made in Sign by release-signatures): the manifest's --reason is the first LINE of the release tag's message (the owner's words) and --published-at is the UTC time the step runs
+def mf_of(t):
+    pth = os.path.join(t, S, "release-metadata/release-manifest.json"); return json.load(open(pth)) if os.path.exists(pth) else {}
+def tagged(msg, label, want):
+    tg = tree(); rc, so, se = sign_step(tg, env={"TAG_REPO": tag_repo("annotated", msg)}); m = mf_of(tg)
+    check(rc == 0 and m.get("reason") == want, "RA %s: the manifest reason is %r" % (label, want), "rc=%s reason=%r %s" % (rc, m.get("reason"), first(se)))
+tagged("first line\n\nsecond paragraph\n", "a subject then a paragraph gives only the first line", "first line")
+tagged("line one\nline two\n\nbody\n", "a two-line subject gives only line one", "line one")
+tagged("only line", "a one-line message with no newline", "only line")
+tp1 = tree(); before = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0); rcp1, sop1, sep1 = sign_step(tp1); after = datetime.datetime.now(datetime.timezone.utc)
+pa = mf_of(tp1).get("published_at", ""); okfmt = bool(re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", pa))
+when = datetime.datetime.strptime(pa, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc) if okfmt else None
+check(rcp1 == 0 and okfmt, "RA published_at is exactly YYYY-MM-DDTHH:MM:SSZ", "rc=%s published_at=%r %s" % (rcp1, pa, first(sep1)))
+check(okfmt and before - datetime.timedelta(seconds=2) <= when <= after + datetime.timedelta(seconds=2), "RA published_at is the UTC time the step ran (within 2 seconds of the test's own clock)", "%r not between %s and %s" % (pa, before, after))
+for label, repo in (("an annotated tag with an empty message", tag_repo("annotated", "")), ("a lightweight tag", tag_repo("lightweight")), ("a tag that cannot be read (no such tag)", tag_repo("none")),
+                    ("a message whose first line is blank", tag_repo("annotated", "\nsecond line\n")), ("a message of blank lines only", tag_repo("annotated", "\n  \n\n"))):
+    tg = tree(); rc, so, se = sign_step(tg, env={"TAG_REPO": repo})
+    check(rc != 0 and se.startswith("release-signatures:") and se.strip().count("\n") == 0 and not os.path.exists(os.path.join(tg, S, "release-metadata/release-manifest.json")),
+          "RA %s: release-signatures fails with one plain 'release-signatures:' line on stderr and makes no manifest" % label, "rc=%s stderr=%r" % (rc, se[:200]))
+# REQ-CHAIN-007-AC21 (advisor reading Oct 16, Astra R3): checksums.txt has no other producer: Sign makes it from the four archives Build recorded, before its first signature
+ARC21 = sorted((("fscache_0.3.0_linux_amd64.tar.gz", b"archive-linux-amd64"), ("fscache_0.3.0_linux_arm64.tar.gz", b"archive-linux-arm64"),
+                ("fscache-fips_0.3.0_linux_amd64.tar.gz", b"archive-fips-linux-amd64"), ("fscache-fips_0.3.0_linux_arm64.tar.gz", b"archive-fips-linux-arm64")), key=lambda x: x[0].encode())
+check(os.path.exists(cs0) and open(cs0).read() == "".join("%s  %s\n" % (hashlib.sha256(c).hexdigest(), n) for n, c in ARC21),
+      "AC21 release-signatures makes release-signed/checksums.txt from the four archives (the test did not make it), in byte order, and signs that file")
+tp = tree(); victim = os.path.join(tp, "dist/fscache_0.3.0_linux_amd64.tar.gz"); vb = open(victim, "rb").read()
+os.symlink(victim, os.path.join(tp, "dist/checksums.txt.part")); rcp, sop, sep = sign_step(tp)
+check(rcp == 0 and open(victim, "rb").read() == vb and not os.path.islink(os.path.join(tp, S, "checksums.txt")),
+      "AC21 a symlink planted at dist/checksums.txt.part does not make Sign overwrite an archive "
+      "or sign a symlink", "rc=%s %s" % (rcp, first(sep)))
+for label, mutate in (("a missing archive", lambda t: os.remove(os.path.join(t, "dist/fscache_0.3.0_linux_arm64.tar.gz"))),
+                      ("an archive that is not the recorded bytes", lambda t: open(os.path.join(t, "dist/fscache_0.3.0_linux_amd64.tar.gz"), "wb").write(b"other")),
+                      ("an extra archive", lambda t: open(os.path.join(t, "dist/fscache_0.3.0_linux_riscv.tar.gz"), "wb").write(b"x"))):
+    tg = tree(); mutate(tg); rc, so, se = sign_step(tg)
+    check(rc != 0 and not os.path.exists(os.path.join(tg, S, "checksums.txt")) and not [l for l in log(tg) if l.startswith(("vendor-provenance", "with-aws-token"))],
+          "AC21 %s stops release-signatures before any signature and no checksums.txt is made" % label, "rc=%s %s" % (rc, first(se)))
+check(not re.search(r"tlog-upload=false|insecure-ignore-tlog|--no-tlog", "\n".join(lg)), "AC8 the transparency log is never turned off")
+check(not any("witness-" in c.split(" --digest ")[0] or "/witness" in opts(c).get("--bundle", "") for c in kc), "AC8 the Witness records are not signed again (they are extra evidence)")
+for variant, name in MODULE_SBOMS:
+    t = tree(); open(os.path.join(t, "apks/ubuntu-24.04", name), "w").write("not what Build recorded")
+    rc, so, se = sign_step(t)
+    check(rc != 0 and name in se and not kms_calls(t), "0707 a %s that differs from Build's item is refused by name before any signature" % name, "rc=%s %s" % (rc, first(se)))
+# AC13: the four metadata files and the signed list are made in Sign, before the first signature, from Build's verified digests only
+t = tree(); rc, so, se = sign_step(t); L = log(t)
+vf = [l for l in L if l.startswith("vex-forms")]
+check(rc == 0 and len(vf) == 1 and "--openvex .vex/fosterstack-cache.openvex.json" in vf[0] and "--images release-signed/release-metadata/vex-images.json" in vf[0] and "--version v0.3.0" in vf[0] and "--out-dir release-signed/release-metadata" in vf[0], "AC13 bin/vex-forms.py makes the CSAF and inspector-filters files from the one OpenVEX file and the image digests of release-metadata/vex-images.json", str(vf))
+rm_ = os.path.join(t, S, "release-metadata")
+check(sorted(os.listdir(rm_)) == sorted(["release-manifest.json", "fosterstack-cache.openvex.json", "fosterstack-cache-v0.3.0.csaf.json", "fosterstack-cache-v0.3.0.inspector-filters.json", "release-files.sha256", "release-files.sha256.bundle", "vex-images.json"]) if os.path.isdir(rm_) else False, "AC13 release-signed/release-metadata/ holds the four files, release-files.sha256 with its bundle and the vex input", str(os.listdir(rm_)))
+lf = os.path.join(rm_, "release-files.sha256")
+check(os.path.exists(lf) and [x.split("  ")[1] for x in open(lf).read().split("\n") if x] == ["release-manifest.json", "fosterstack-cache.openvex.json", "fosterstack-cache-v0.3.0.csaf.json", "fosterstack-cache-v0.3.0.inspector-filters.json"], "AC13 release-files.sha256 lists exactly the four files in order")
+mj = json.load(open(os.path.join(rm_, "release-manifest.json"))) if os.path.exists(os.path.join(rm_, "release-manifest.json")) else {}
+check([x.get("file") for x in mj.get("vex", [])] == ["fosterstack-cache.openvex.json", "fosterstack-cache-v0.3.0.inspector-filters.json", "fosterstack-cache-v0.3.0.csaf.json"] and all(x.get("sha256") == sha_file(os.path.join(rm_, x["file"])) for x in mj.get("vex", [])), "AC13 the VEX and CSAF files are generated BEFORE the manifest, and the manifest records their sha256", str(mj.get("vex")))
+vi = json.load(open(os.path.join(rm_, "vex-images.json"))) if os.path.exists(os.path.join(rm_, "vex-images.json")) else {}
+check(sorted(vi) == ["fips", "production"] and sorted(vi["production"]) == ["children", "index"] and sorted(vi["production"]["children"]) == ["linux/amd64", "linux/arm64"] and "debug" not in vi, "AC13 the vex-forms input is exactly {production: {index, children {linux/amd64, linux/arm64}}, fips: {...}}, no debug key", str(vi))
+t2 = tree(); os.remove(os.path.join(t2, "witness-build/items.json")); rc2, so2, se2 = sign_step(t2); check(rc2 != 0 and "items.json" in se2 and not signs(t2), "AC13 without Build's verified items Sign does not check the digests it puts in the VEX forms: it stops before anything is signed", "rc=%s %s" % (rc2, first(se2)))
+check(mj.get("requirements_baseline", {}).get("path") == "requirements/releases/v0.3.0.yaml" and mj.get("requirements_baseline", {}).get("sha256") == hashlib.sha256(b"baseline v0.3.0\n").hexdigest() and mj.get("test_evidence", {}).get("path") == "test-evidence/mappings.yaml", "AC19 the manifest records the requirements baseline of the tag and the test-evidence hash (REL-009-AC13 note)", str({k: mj.get(k) for k in ("requirements_baseline", "test_evidence")}))
+t2 = tree(); os.remove(os.path.join(t2, "requirements/releases/v0.3.0.yaml")); rc2, so2, se2 = sign_step(t2)
+check(rc2 != 0 and "v0.3.0.yaml" in se2 and not signs(t2), "AC19 a tag with no baseline file stops before anything is signed, naming it", "rc=%s %s" % (rc2, first(se2)))
+# AC19: a CI patch tag has no requirements/releases/<tag>.yaml of its own; the manifest records the baseline
+# admission chose, read from
+# Build's VERIFIED admission-baseline.json (bound to Build's record by release-verify), never one Sign picks itself
+t3 = tree(); os.remove(os.path.join(t3, "requirements/releases/v0.3.1.yaml")); adm(t3, "v0.3.1", "v0.3.0")
+rc3, so3, se3 = sign_step(t3, tag="v0.3.1")
+mj3 = json.load(open(os.path.join(t3, S, "release-metadata/release-manifest.json"))) if os.path.exists(os.path.join(t3, S, "release-metadata/release-manifest.json")) else {}
+check(rc3 == 0 and mj3.get("requirements_baseline", {}).get("version") == "v0.3.0" and mj3.get("requirements_baseline", {}).get("path") == "requirements/releases/v0.3.0.yaml"
+      and mj3.get("requirements_baseline", {}).get("sha256") == hashlib.sha256(b"baseline v0.3.0\n").hexdigest(), "AC19 a CI patch tag with no requirements/releases/<tag>.yaml produces a manifest that records admission's baseline", "rc=%s %s" % (rc3, first(se3)))
+for label, mk, word in (
+    ("a missing admission-baseline.json", lambda t: os.remove(os.path.join(t, "witness-build/admission-baseline.json")), "admission-baseline.json"),
+    ("a file for another tag (forged: the owner tag's baseline reused)", lambda t: adm(t, "v0.3.0", "v0.3.0"), "tag"),
+    ("a file for another commit", lambda t: adm(t, "v0.3.1", "v0.3.0", sha="d" * 40), "commit"),
+    ("a baseline version that is not vX.Y.Z", lambda t: adm(t, "v0.3.1", "../v0.3.0", baseline="requirements/releases/../v0.3.0.yaml"), "baseline"),
+    ("a baseline path that is not the version's file", lambda t: adm(t, "v0.3.1", "v0.3.0", baseline="requirements/releases/v0.2.0.yaml"), "baseline"),
+    ("a baseline newer than the tag", lambda t: adm(t, "v0.3.1", "v0.3.2"), "baseline"),
+    ("an extra key", lambda t: adm(t, "v0.3.1", "v0.3.0", evidence="x"), "admission-baseline.json"),
+    ("a symlink", lambda t: (os.remove(os.path.join(t, "witness-build/admission-baseline.json")), os.symlink("items.json", os.path.join(t, "witness-build/admission-baseline.json"))), "admission-baseline.json"),
+    ("a file that is not JSON", lambda t: open(os.path.join(t, "witness-build/admission-baseline.json"), "w").write("{nope"), "admission-baseline.json")):
+    t4 = tree(); os.remove(os.path.join(t4, "requirements/releases/v0.3.1.yaml")); adm(t4, "v0.3.1", "v0.3.0"); mk(t4)
+    rc4, so4, se4 = sign_step(t4, tag="v0.3.1")
+    check(rc4 != 0 and word in se4 and not signs(t4) and not os.path.exists(os.path.join(t4, S, "release-metadata/release-manifest.json")), "AC19 %s is refused before anything is signed, naming it" % label, "rc=%s %s" % (rc4, first(se4)))
+first_sig = next((i for i, l in enumerate(L) if l.startswith("with-aws-token")), 99)
+check(L.index(vf[0]) < first_sig if vf else False, "AC13 the metadata is made before the first signature")
+check(any(" --bundle release-signed/release-metadata/release-files.sha256.bundle" in c and c.split(" --digest ")[1].split(" ")[0] == sha_file(lf) for c in kms_calls(t)), "AC13 release-files.sha256 is signed with a bundle beside it in release-signed/release-metadata/", str([c for c in kms_calls(t) if "release-files" in c]))
+t = tree(); rc, so, se = sign_step(t, env={"VEXFORMS_FAIL": "1"}); check(rc != 0 and not signs(t), "AC13 failing VEX generation stops everything before anything is signed")
+t = tree(); open(os.path.join(t, "images/fips.manifests"), "w").write("amd64 sha256:" + "1" * 64 + "\n"); rc, so, se = sign_step(t); check(rc != 0 and "fips.manifests" in se and not signs(t), "AC13 an images/<variant>.manifests that is not complete stops before anything is signed")
+
+# ---- I2: bin/release-sign.sh, the Release step: no key; it checks Sign's signatures, then logs in and attaches --------------------------------------------------------------------
+BASE = tree(); sign_step(BASE)      # one Sign run, copied for each case: the case changes the copy
+def released_tree(tag="v0.3.0"):
+    t = tempfile.mkdtemp(); shutil.rmtree(t); shutil.copytree(BASE, t, symlinks=True)
+    for f in os.listdir(t):
+        if f.startswith("calls.log"): os.remove(os.path.join(t, f))
+    return t
+def put_bundle(t, rel, fn):
+    pth = os.path.join(t, S, rel); b = json.load(open(pth)); fn(b); json.dump(b, open(pth, "w"))
+def cosign_calls(t): return [l for l in log(t) if l.startswith("cosign")]
+VATT = "cosign verify-attestation --key build/keys/release.rsa.pub --type https://fosterstack.com/attestations/release-manifest/v1 "
+def fake_manifest(ref): return ('{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","size":2,"digest":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"},"layers":[],"annotations":{"ref":"%s"}}' % ref).encode()
+def pushed(t):
+    """what the fake crane kept of each layout push, in order: (the pushed ref, the layout's files by path)"""
+    pm = os.path.join(t, "calls.log.pushmap"); out = []
+    for l in (open(pm).read().split("\n") if os.path.exists(pm) else []):
+        if not l: continue
+        r_, tp = l.split("\t", 1); files = {}
+        with tarfile.open(tp) as tf:
+            for m in tf.getmembers():
+                if m.isfile(): files[os.path.normpath(m.name)] = tf.extractfile(m).read()
+        out.append((r_, files))
+    return out
+def subject_of(files):
+    """the subject digest of the one manifest a pushed layout lists (None when it cannot be read)"""
+    try: return json.loads(files["blobs/sha256/" + json.loads(files["index.json"])["manifests"][0]["digest"].split(":")[1]])["subject"]["digest"]
+    except Exception: return None
+def layout_problems(t, h, v, pr, files):
+    """what is wrong with the referrer layout pushed for HOST/VARIANT (empty: nothing)"""
+    bad = []; sha = lambda b: hashlib.sha256(b).hexdigest()
+    ref = "%s/fosterstack/cache@%s" % (h, DIG["image-" + v]); bb = open(os.path.join(t, S, "images", h, v + ".attestation.bundle"), "rb").read(); mt = json.loads(bb)["mediaType"]
+    for n, b in files.items():
+        if n.startswith("blobs/sha256/") and sha(b) != os.path.basename(n): bad.append("blob %s is not named by its sha256" % os.path.basename(n)[:12])
+    if "oci-layout" not in files: bad.append("no oci-layout")
+    try:
+        ms = json.loads(files["index.json"])["manifests"]
+        if len(ms) != 1: return bad + ["index.json lists %d manifests" % len(ms)]
+        mb = files["blobs/sha256/" + ms[0]["digest"].split(":")[1]]; m = json.loads(mb)
+        if ms[0]["digest"] != "sha256:" + sha(mb) or ms[0]["size"] != len(mb): bad.append("index.json digest or size of the manifest is wrong")
+        if pr != "%s/fosterstack/cache@%s" % (h, ms[0]["digest"]): bad.append("pushed to %s, not the referrer manifest's digest" % pr)
+        if m.get("mediaType") != "application/vnd.oci.image.manifest.v1+json": bad.append("manifest mediaType")
+        if m.get("artifactType") != mt: bad.append("artifactType")
+        c = m.get("config", {})
+        if (c.get("mediaType"), c.get("size"), c.get("digest")) != ("application/vnd.oci.empty.v1+json", 2, "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a") or files.get("blobs/sha256/44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a") != b"{}": bad.append("config is not the empty {}")
+        ls = m.get("layers", [])
+        if len(ls) != 1 or ls[0].get("mediaType") != mt or ls[0].get("digest") != "sha256:" + sha(bb) or ls[0].get("size") != len(bb): bad.append("the layer descriptor is not the bundle's")
+        if files.get("blobs/sha256/" + sha(bb)) != bb: bad.append("the layer blob is not byte-identical to the bundle")
+        sj = m.get("subject", {}); sb = fake_manifest(ref)
+        if sj.get("digest") != DIG["image-" + v]: bad.append("subject.digest %s" % sj.get("digest"))
+        if sj.get("mediaType") != "application/vnd.oci.image.manifest.v1+json": bad.append("subject.mediaType %s" % sj.get("mediaType"))
+        if sj.get("size") != len(sb): bad.append("subject.size %s, want %d" % (sj.get("size"), len(sb)))
+    except Exception as e: bad.append("layout unreadable: %r" % (e,))
+    return bad
+t = released_tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"FAKE_NEEDFILES": "1"}); lg = log(t); cc = cosign_calls(t)
+check(rc == 0, "AC8 I2 a good run (Sign's signatures are in release-signed/) passes", se)
+bc = [i for i, l in enumerate(lg) if l.startswith("chain-verify bundle-check")]; lo = [i for i, l in enumerate(lg) if l.startswith("cosign login")]
+check(len(bc) == 15 and len(lo) == 2 and bc[-1] < lo[0], "I2 all 15 signatures (11 blobs, 4 image payloads) are checked with bundle-check BEFORE any registry login", "checks=%d logins=%d last-check=%s first-login=%s" % (len(bc), len(lo), bc[-1:] , lo[:1]))
+check(len(bc) == 15 and all(" --bundle release-signed/" in lg[i] and re.search(r" --digest [0-9a-f]{64}( |$)", lg[i]) and "--public-key build/keys/release.rsa.pub" in lg[i] and "--signing-config .github/policy/cosign-signing-config.json" in lg[i] for i in bc), "I2 each bundle-check names the blob's bundle, its sha256, the public key build/keys/release.rsa.pub and the signing config", str([lg[i] for i in bc][:1]))
+want_logins = [("ghcr.io"), ("docker.io")]
+check([re.match(r"cosign login (\S+)", cosign_calls(t)[i]).group(1) for i in (0, 1)] == want_logins and not [c for c in cc if c.startswith("cosign login")][2:], "I2 cosign login to ghcr.io, then docker.io, first of all the cosign calls", str(cc[:2]))
+PM = pushed(t); pidx = [i for i, l in enumerate(lg) if l.startswith("crane push")]
+ok_calls = True; why = ""; lay_ok = len(PM) == 4 and len(pidx) == len(PM); lay_why = "%d pushes" % len(PM)
+for h in HOSTS:
+    for v in ("production", "fips"):
+        ref = "%s/fosterstack/cache@%s" % (h, DIG["image-" + v])
+        a = [i for i, c in enumerate(lg) if c.startswith("cosign attach signature ") and c.endswith(" " + ref)]
+        vr = [i for i, c in enumerate(lg) if c == "cosign verify --key build/keys/release.rsa.pub " + ref]
+        cm = [i for i, c in enumerate(lg) if c == "crane manifest " + ref]
+        pu_any = [(pidx[k], PM[k]) for k in range(min(len(pidx), len(PM))) if PM[k][0].startswith(h + "/fosterstack/cache@sha256:") and subject_of(PM[k][1]) == DIG["image-" + v]]
+        va = [i for i, c in enumerate(lg) if c == VATT + ref]
+        o = opts(lg[a[0]]) if a else {}
+        good = len(a) == 1 and len(vr) == 1 and len(cm) == 1 and len(pu_any) == 1 and len(va) == 1 and a[0] < vr[0] < cm[0] < pu_any[0][0] < va[0] and o.get("--payload") == "%s/images/%s/%s.payload" % (S, h, v) and "--signature" in o and "--rekor-response" in o
+        ok_calls &= good; why += "" if good else " %s:%s" % (h, v)
+        pb = layout_problems(t, h, v, pu_any[0][1][0], pu_any[0][1][1]) if len(pu_any) == 1 else ["no push for this image"]
+        lay_ok &= not pb; lay_why += "" if not pb else " %s:%s=%s" % (h, v, pb)
+check(ok_calls and len(cc) == 14 and not [c for c in cc if c.startswith("cosign attach attestation")], "I2 per host and variant: `cosign attach signature --payload P --signature S --rekor-response R REF@DIGEST`, then `cosign verify --key build/keys/release.rsa.pub REF@DIGEST`, then `crane manifest REF@DIGEST`, then `crane push LAYOUT HOST/fosterstack/cache@MANIFEST-DIGEST`, then the guide's `cosign verify-attestation --key build/keys/release.rsa.pub --type ... REF@DIGEST` (14 cosign calls in all, no `cosign attach attestation`)", "%s %d %s" % (why, len(cc), [c for c in lg if c.startswith("crane")][:3]))
+check(lay_ok, "I2 the layout pushed for each host and variant is a referrer: one manifest listed by index.json, blobs named by their sha256, artifactType and layer media type of the bundle, the layer byte-identical to release-signed/images/HOST/VARIANT.attestation.bundle, the empty {} config, subject = that variant's image digest, pushed by the referrer manifest's own digest", lay_why)
+check(all("verificationMaterial" in json.load(open(os.path.join(t, S, "images", h, v + ".attestation.bundle"))) for h in HOSTS for v in ("production", "fips")), "I2 Sign's attestation bundles in release-signed stay bundles (verificationMaterial still in them)")
+check(not [l for l in lg if re.match(r"(cosign (sign|sign-blob|attest|generate-key-pair)\b|with-aws-token|chain-verify kms-sign|aws)", l)], "R1 I2 Release never runs cosign sign, sign-blob or attest, kms-sign, with-aws-token or any aws command")
+check(len(pidx) == 4 and all(re.fullmatch(r"crane push \S+ (ghcr\.io|docker\.io)/fosterstack/cache@sha256:[0-9a-f]{64}", lg[i]) for i in pidx) and len(PM) == 4 and all("oci-layout" in f and "index.json" in f for _, f in PM), "R1 I2 every crane push of Release is a push of a layout DIRECTORY by a @sha256: digest ref of the public repository (4 in all: 2 variants on each of 2 hosts)", str([lg[i] for i in pidx][:2]))
+check(not [l for l in lg if "--insecure-ignore-" + "tlog" in l], "I2 no logged call passes the transparency-log bypass flag")
+rsrc = open(os.path.join(BIN, "release-sign.sh")).read()
+check(not re.search(r"attach\s+attestation", "\n".join(l for l in rsrc.split("\n") if not l.lstrip().startswith("#"))), "AC8 I2 release-sign.sh no longer calls cosign attach attestation")
+check(not re.search(r"(?<![A-Za-z])(RELEASE|AWS)_[A-Z]|\baws\b|kms-sign|with-aws-token|cosign (sign|attest)\b|sign-blob", "\n".join(l for l in rsrc.split("\n") if not l.lstrip().startswith("#"))), "R1 I2 release-sign.sh reads no RELEASE_* or AWS_* name and names no aws, kms-sign, cosign sign, sign-blob or attest call")
+check(all(os.path.isfile(os.path.join(t, "release-evidence", f)) for f in ["vendor-evidence.json", "vendor-evidence.json.bundle", "dependency-list.json", "dependency-list.json.bundle", "release-policy.bundle", "checksums.txt.bundle", "release-files.sha256.bundle"] + ["%s.bundle" % x for x in EVID]), "AC8 I2 the blobs and bundles are placed in release-evidence/")
+check(sorted(os.listdir(os.path.join(t, "release-metadata"))) == sorted(f for f in os.listdir(os.path.join(t, S, "release-metadata")) if not f.endswith(".bundle")) and open(os.path.join(t, "dist/checksums.txt"), "rb").read() == open(os.path.join(t, S, "checksums.txt"), "rb").read(), "AC8 I2 release-metadata/ holds the metadata files Sign made and dist/checksums.txt is Sign's checksums.txt")
+check(not [l for l in lg if l.startswith(("aws", "kms-sign"))] and not os.path.exists(os.path.join(t, "calls.log.leak")), "R1 I2 no aws command ran")
+# a bad signature stops the step before ANY registry login or push: no cosign call, no crane call
+def refused_before_login(t, why_, name, **kw):
+    rc, so, se = run(t, "release-sign", creds=REG, **kw)
+    check(rc == 1 and any(x in se for x in name.split("|")) and not [l for l in log(t) if l.startswith(("cosign", "crane"))], "I2 " + why_ + ": exit 1 naming the file, before any registry login or push", "rc=%s %s calls=%s" % (rc, first(se), [l for l in log(t) if l.startswith(("cosign", "crane"))][:2]))
+for bundle, blob in sorted(SRC.items()):
+    name = os.path.basename(bundle); bp = os.path.join(S, bundle)
+    t = released_tree(); put_bundle(t, bundle, lambda b: b["verificationMaterial"].update(tlogEntries=[])); refused_before_login(t, "a bundle with no Rekor entry (%s)" % name, name + "|" + os.path.basename(blob))
+    t = released_tree(); put_bundle(t, bundle, lambda b: b["verificationMaterial"].update(tlogEntries=b["verificationMaterial"]["tlogEntries"] * 2)); refused_before_login(t, "a bundle with two Rekor entries (%s)" % name, name + "|" + os.path.basename(blob))
+    t = released_tree(); open(os.path.join(t, blob), "ab").write(b"\n"); refused_before_login(t, "a file changed after Sign signed it (%s)" % os.path.basename(blob), name + "|" + os.path.basename(blob))
+    t = released_tree(); put_bundle(t, bundle, lambda b: b["messageSignature"].update(signature=base64.b64encode(b"x" * 256).decode())); refused_before_login(t, "a bundle whose signature does not verify under build/keys/release.rsa.pub (%s)" % name, name + "|" + os.path.basename(blob))
+    t = released_tree(); os.remove(os.path.join(t, bp)); refused_before_login(t, "a missing bundle (%s)" % name, name + "|" + os.path.basename(blob))
+t = released_tree(); shutil.rmtree(os.path.join(t, S)); rc, so, se = run(t, "release-sign", creds=REG); check(rc == 1 and S in se and not log(t), "I2 without release-signed/ the step stops with exit 1 before any call", "rc=%s %s" % (rc, first(se)))
+for miss in ("DOCKERHUB_TOKEN", "DOCKERHUB_USERNAME", "GH_TOKEN"):
+    t = released_tree(); rc, so, se = run(t, "release-sign", creds=[c for c in REG if c != miss]); check(rc == 2 and miss in se and not log(t), "I2 a missing %s is refused with exit 2, naming it, before any call" % miss, "rc=%s %s" % (rc, first(se)))
+def refs_of(h): return ["%s/fosterstack/cache@%s" % (h, DIG["image-" + v]) for v in ("production", "fips")]
+t = released_tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"FAKE_PUSH_FAIL_ON": "ghcr.io/"}); lg = log(t); gp = [i for i, l in enumerate(lg) if l.startswith("crane push") and " ghcr.io/" in l]
+check(rc != 0 and gp and any(r_ in se for r_ in refs_of("ghcr.io")) and not [i for i, l in enumerate(lg) if l.startswith("crane push") and " docker.io/" in l and i > gp[0]], "AC8 I2 a GHCR referrer push that fails stops the run non-zero, names the ref on stderr, and no docker.io push follows", "rc=%s %s" % (rc, first(se)))
+t = released_tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"FAKE_VERIFY_ATT_FAIL_ON": "ghcr.io/"}); lg = log(t)
+check(rc != 0 and [l for l in lg if l.startswith(VATT + "ghcr.io/")] and any(r_ in se for r_ in refs_of("ghcr.io")), "AC8 I2 a GHCR referrer that does not verify (the guide's cosign verify-attestation fails) stops the run non-zero, naming the ref on stderr", "rc=%s %s" % (rc, first(se)))
+for what, env, nva in (("push", {"FAKE_PUSH_FAIL_ON": "docker.io/"}, 2), ("verify-attestation", {"FAKE_VERIFY_ATT_FAIL_ON": "docker.io/"}, 4)):      # a failed push ends that ref's && chain: no check of it follows
+    t = released_tree(); rc, so, se = run(t, "release-sign", creds=REG, env=env); lg = log(t)
+    check(rc == 0 and all(any(l.startswith("::warning::") and r_ in l for l in so.split("\n")) for r_ in refs_of("docker.io")) and len([l for l in lg if l.startswith("crane push") and " ghcr.io/" in l]) == 2 and len([l for l in lg if l.startswith(VATT)]) == nva and len([l for l in lg if l.startswith("crane push") and " docker.io/" in l]) == 2, "AC8 I2 a Docker Hub referrer %s that fails is a loud ::warning:: naming each ref, never a silent skip, and the run continues with exit 0 (GHCR is authoritative)" % what, "rc=%s %s" % (rc, first(se)))
+for h in HOSTS:
+    t = released_tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"FAKE_MANIFEST_FAIL_ON": h + "/"}); lg = log(t)
+    check(rc != 0 and [l for l in lg if l.startswith("crane manifest " + h + "/")] and not [l for l in lg if l.startswith("crane push") and " " + h + "/" in l] and any(r_ in se for r_ in refs_of(h)), "AC8 I2 a crane manifest that fails on %s is fatal: non-zero exit, the ref named, and nothing is pushed there" % h, "rc=%s %s" % (rc, first(se)))
+t = released_tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_FAIL_ON": "verify"}); cv = cosign_calls(t)
+check(rc != 0 and len([c for c in cv if c.startswith("cosign verify")]) == 1 and not [c for c in cv if c.startswith("cosign attach attestation")], "I2 a cosign verify that fails stops the step: nothing is attached to an image whose signature does not verify", "rc=%s %s" % (rc, first(se)))
+t = released_tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_FAIL_ON": "attach signature"}); cv = cosign_calls(t)
+check(rc != 0 and len([c for c in cv if c.startswith("cosign attach signature")]) == 1 and not [c for c in cv if c.startswith(("cosign verify", "cosign attach attestation"))], "I2 a failing signature attach stops at the first one: no verify and no attestation follows", "rc=%s %s" % (rc, first(se)))
+t = released_tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_FAIL": "1"}); check(rc != 0 and len(cosign_calls(t)) == 1, "AC8 a failing cosign (it fails at login, the first call) stops at the first call")
+t = released_tree(); fb = os.path.join(t, ".fakebin"); open(os.path.join(fb, "aws"), "w").write('#!/usr/bin/env bash\necho "aws $*" >> "$LOG"\n'); os.chmod(os.path.join(fb, "aws"), 0o755)
+rc, so, se = run(t, "release-sign", creds=REG, env={"RELEASE_KMS_KEY_REF": KMS, "RELEASE_ROLE_ARN": "arn:aws:iam::1:role/x", "AWS_REGION": "us-east-1", "RUNNER_TEMP": os.path.join(t, "rt")})
+check(rc == 0 and not [l for l in log(t) if l.startswith(("aws", "with-aws-token", "chain-verify kms-sign"))], "R1 I2 with a key reference, a role and an aws CLI in reach the step still makes no aws call and no KMS signature", "rc=%s %s" % (rc, first(se)))
+t = released_tree(); rc, so, se = run(t, "release-sign", creds=REG); check(rc == 0 and os.path.exists(os.path.join(t, "release-evidence")), "AC8 the bundles and the evidence land in release-evidence/")
+# ---- AC7/AC8/AC10 (row 2): bin/release-sign-verify.sh checks every signature Sign made, FIRST: release-publish and release-sign both run it before any registry login, push or placing of a file ----
+def snap(t):
+    """every directory and file of the tree (the sha256 of each file, the target of each link), but not the fakes' call logs: what a run changed"""
+    out = {}
+    for dp, dn, fn in os.walk(t):
+        for d in dn: out[os.path.relpath(os.path.join(dp, d), t) + "/"] = ""
+        for f in fn:
+            if f.startswith("calls.log"): continue
+            pth = os.path.join(dp, f); out[os.path.relpath(pth, t)] = os.readlink(pth) if os.path.islink(pth) else sha_file(pth)
+    return out
+def registry_calls(t): return [l for l in log(t) if l.startswith(("crane", "cosign")) or "auth login" in l]
+def sign_mutations(bundle, blob):
+    """the ways a signature of Sign's is bad: the same four as the I2 cases above; each takes the tree"""
+    name = os.path.basename(bundle); bp = os.path.join(S, bundle)
+    return [("a bundle with no Rekor entry (%s)" % name, lambda t: put_bundle(t, bundle, lambda b: b["verificationMaterial"].update(tlogEntries=[]))),
+            ("a file changed after Sign signed it (%s)" % os.path.basename(blob), lambda t: open(os.path.join(t, blob), "ab").write(b"\n")),
+            ("a bundle whose signature does not verify under build/keys/release.rsa.pub (%s)" % name, lambda t: put_bundle(t, bundle, lambda b: b["messageSignature"].update(signature=base64.b64encode(b"x" * 256).decode()))),
+            ("a missing bundle (%s)" % name, lambda t: os.remove(os.path.join(t, bp)))], name + "|" + os.path.basename(blob)
+def refused_first(script, t, why_, name):
+    """the script exits 1 naming the file, calls no registry tool, and leaves the tree exactly as it was (nothing copied, placed or made)"""
+    before = snap(t); rc, so, se = run(t, script, creds=REG if script != "release-sign-verify" else None)
+    check(rc == 1 and any(x in se for x in name.split("|")) and not registry_calls(t) and snap(t) == before, "AC7 row 2 %s: %s: exit 1 naming the file, no crane or cosign call, nothing changed" % (script, why_),
+          "rc=%s %s calls=%s changed=%s" % (rc, first(se), registry_calls(t)[:2], sorted(set(snap(t).items()) ^ set(before.items()))[:2]))
+for bundle, blob in sorted(SRC.items()):
+    muts, name = sign_mutations(bundle, blob)
+    for why_, fn in muts:
+        t = stree(); fn(t); refused_first("release-publish", t, why_, name)
+    t = stree(); muts[0][1](t); refused_first("release-sign-verify", t, muts[0][0], name)      # the script alone: the bad bundle is refused with no credential
+    t = stree(); muts[0][1](t); refused_first("release-sign", t, muts[0][0], name)               # release-sign: refused before it places anything (a late bad bundle must not leave early blobs placed)
+    t = stree(); muts[3][1](t); refused_first("release-sign-verify", t, muts[3][0], name)
+for script in ("release-publish", "release-sign-verify", "release-sign"):
+    t = stree(); shutil.rmtree(os.path.join(t, S)); before = snap(t); rc, so, se = run(t, script, creds=REG if script != "release-sign-verify" else None)
+    check(rc == 1 and S in se and not registry_calls(t) and snap(t) == before, "AC7 row 2 %s without release-signed/: exit 1 naming it, no crane or cosign call" % script, "rc=%s %s" % (rc, first(se)))
+def resign(t, rel):
+    """Sign's own signer (the fake kms-sign) signs the payload again, so the bundle is true to the changed file and only what the payload SAYS is wrong"""
+    pth = os.path.join(t, rel); bp = pth[:-len(".payload")] + ".bundle"; sg = os.path.join(t, "re.sig"); os.remove(bp)
+    r = subprocess.run(["python3", "-I", "-B", "bin/chain-verify.py", "kms-sign", "--aws", "x", "--key-ref", "k", "--digest", sha_file(pth), "--signing-config", ".github/policy/cosign-signing-config.json", "--public-key", "build/keys/release.rsa.pub", "--out", sg, "--bundle", bp],
+                       cwd=t, env={**os.environ, "LOG": os.path.join(t, "calls.log.resign"), "KMSSIGN_PRIV": PRIV}, capture_output=True, text=True)
+    os.remove(sg); return r.returncode == 0
+def payload_edit(t, h, v, how):
+    rel = "%s/images/%s/%s.payload" % (S, h, v); p = json.load(open(os.path.join(t, rel)))
+    if how == "digest": p["critical"]["image"]["docker-manifest-digest"] = "sha256:" + "e" * 64
+    else: p["critical"]["identity"]["docker-reference"] = ("docker.io" if h == "ghcr.io" else "ghcr.io") + "/fosterstack/cache"
+    json.dump(p, open(os.path.join(t, rel), "w")); return resign(t, rel)
+t = stree(); rel = "%s/images/ghcr.io/production.payload" % S; p = json.load(open(os.path.join(t, rel))); json.dump(p, open(os.path.join(t, rel), "w"), indent=2)
+rc0, so0, se0 = (0, "", "") if resign(t, rel) else (1, "", "the test's own re-signing failed")
+rc, so, se = run(t, "release-publish", creds=REG) if rc0 == 0 else (rc0, so0, se0)
+check(rc == 0, "AC7 row 2 control: a payload Sign's signer signed again (same claims, other bytes) still publishes, so the payload cases below fail only for what the payload names", "rc=%s %s" % (rc, first(se)))
+for h in HOSTS:
+    for v in ("production", "fips"):
+        for how, what in (("digest", "an attested digest that is not the image's"), ("ref", "another registry's repository")):
+            for script in ("release-publish", "release-sign-verify", "release-sign"):
+                t = stree()
+                if not payload_edit(t, h, v, how): check(False, "AC7 row 2 %s: the %s/%s payload naming %s" % (script, h, v, what), "the test's own re-signing failed"); continue
+                refused_first(script, t, "the %s/%s payload (signed, bundle true) names %s" % (h, v, what), "images/%s/%s.payload" % (h, v))
+# a good Sign tree: release-publish checks all 15 first (11 blobs, 4 image payloads), then logs in and publishes as before
+t = stree(); rc, so, se = run(t, "release-publish", creds=REG); lg = log(t); P = pushes(t)
+bc = [i for i, l in enumerate(lg) if l.startswith("chain-verify bundle-check")]; cr = [i for i, l in enumerate(lg) if l.startswith("crane")]; lo = [i for i, l in enumerate(lg) if l.startswith("crane auth login")]
+check(rc == 0 and len(bc) == 15 and len(lo) == 2 and cr and bc[-1] < cr[0], "AC7 row 2 release-publish: all 15 bundle-checks come before the first crane call, login or push", "rc=%s checks=%d first-crane=%s last-check=%s %s" % (rc, len(bc), cr[:1], bc[-1:], first(se)))
+check(len(bc) == 15 and all(" --bundle release-signed/" in lg[i] and re.search(r" --digest [0-9a-f]{64}( |$)", lg[i]) and "--public-key build/keys/release.rsa.pub" in lg[i] and "--signing-config .github/policy/cosign-signing-config.json" in lg[i] for i in bc), "AC7 row 2 release-publish: each bundle-check names the blob's bundle, its sha256, the public key and the signing config", str([lg[i] for i in bc][:1]))
+check({(p[3].split("/")[0], p[3].split(":")[1]) for p in P} >= {(h, x) for h in HOSTS for x in ("0.3.0", "0.3.0-fips")} and not [l for l in lg if l.startswith("cosign")], "AC7 row 2 release-publish after the check publishes both variants to both registries as before and calls no cosign", str(sorted(P))[:200])
+# the script alone: a good tree passes with no credential, changes nothing, calls no cosign or crane, checks the same 15
+t = stree(); before = snap(t); rc, so, se = run(t, "release-sign-verify"); lg = log(t); bc = [l for l in lg if l.startswith("chain-verify bundle-check")]
+check(rc == 0 and len(bc) == 15 and not [l for l in lg if l and not l.startswith("chain-verify bundle-check")] and snap(t) == before, "AC8 row 2 release-sign-verify on a good tree: exit 0 with no credential, 15 bundle-checks, no other call, nothing copied or placed", "rc=%s calls=%d other=%s %s" % (rc, len(bc), [l for l in lg if l and not l.startswith("chain-verify bundle-check")][:2], first(se)))
+check(not [l for l in lg if l.startswith(("cosign", "crane", "gh ", "aws", "with-aws-token"))], "AC8 row 2 release-sign-verify calls no cosign, crane, gh or aws")
+# the order in the scripts' own text
+LAST[0] = 0
+RV = "bash bin/release-sign-verify.sh"
+pl = code_lines("release-publish.sh"); vi = next((i for i, l in enumerate(pl) if RV in l), None)
+check(vi is not None and all(vi < i for i, l in enumerate(pl) if re.search(r"crane (auth login|push)", l)), "AC7 row 2 release-publish.sh runs `%s` before its first crane login or push in its own text" % RV)
+sl = code_lines("release-sign.sh"); vi = next((i for i, l in enumerate(sl) if RV in l), None)
+check(vi is not None and all(vi < i for i, l in enumerate(sl) if re.search(r"(?<![\w-])(cp|mkdir|cosign login|cosign attach)\b", l)), "AC8 row 2 release-sign.sh runs `%s` before it copies, makes or places anything and before cosign login" % RV)
+check(not [l for l in sl if "bundle-check" in l or "check_signed" in l], "AC8 row 2 release-sign.sh holds no bundle check of its own any more: it calls bin/release-sign-verify.sh instead of checking inline")
+vp = os.path.join(BIN, "release-sign-verify.sh")
+vl = code_lines("release-sign-verify.sh") if os.path.exists(vp) else None
+check(vl is not None and not [l for l in vl if re.search(r"(?:^|[;&|(]|\bthen\b|\bdo\b)\s*(cp|mv|ln|install|crane|cosign|aws|gh)\s", l)] and not [l for l in vl if re.search(r'(?<![\w./-])python3(?![\w-])', l) and not re.search(r"python3 -I -B ", l)], "AC7 row 2 bin/release-sign-verify.sh exists, copies or moves nothing, names no crane, cosign, aws or gh, and every python3 line is `python3 -I -B`")
+check(vl is not None and not [l for l in vl if re.search(r"DOCKERHUB_|GH_TOKEN|GITHUB_TOKEN|printenv", l)], "AC7 row 2 bin/release-sign-verify.sh reads no registry credential")
+# ---- R2/R3: release-postverify.py --before-publish, called by release-apks.sh before anything is signed ----------------------------------------
+def bp_tree(cmds=None, listed=(IMG0,)):
+    """A tree for the pre-publish pass: the guide (provenance, SBOM and image commands), the committed key manifest, provenance/provenance.bundle.json."""
+    t = tree(); real_verifier(t); stage_before_publish(t)
+    guide_with(t, [PBF0, PJX0, SBOM0, IMG0] if cmds is None else cmds, listed)
+    return t
+def bp_run(t, args=("--before-publish",), env=None):
+    e = {"PATH": os.path.join(t, ".fakebin") + ":" + os.environ["PATH"], "HOME": t, "LOG": os.path.join(t, "calls.log"), "GITHUB_REPOSITORY": "fosterstack/cache", "GITHUB_REF_NAME": "v0.3.0"}
+    e.update(env or {})
+    r = subprocess.run(["python3", "-I", "-B", "bin/release-postverify.py", *args], cwd=t, env=e, capture_output=True, text=True)
+    return r.returncode, r.stdout, r.stderr
+def cos(t): return [l for l in log(t) if l.startswith(("cosign ", "gh ", "crane "))]
+def one_line(se): return len(se.strip().split("\n")) == 1 and se.startswith("release-postverify:")
+RA2 = open(os.path.join(BIN, "release-apks.sh")).read()
+CALL = "python3 -I -B bin/release-postverify.py --before-publish"
+check(CALL in RA2 and RA2.count("release-postverify.py") == 1, "R2 release-apks.sh runs `%s`" % CALL)
+RL = [l for l in RA2.split("\n") if not l.lstrip().startswith("#")]      # code lines only, no comments
+ci = next((i for i, l in enumerate(RL) if CALL in l), None)
+si = next((i for i, l in enumerate(RL) if "release-sign-apks.sh --build-dir" in l), None)
+di = next((i for i, l in enumerate(RL) if "apk-tool.py digest" in l), None)      # the first digest comparison is the pre-signing check
+check(ci is not None and si is not None and ci < si, "R2 release-apks.sh runs the pre-publish pass before the release-sign-apks.sh --build-dir line")
+check(ci is not None and si is not None and di is not None and di < ci < si, "R2 the pass comes after the attested-digest check and before the signing command")
+check(ci is not None and not [l for l in RL[:ci] if re.search(r"cosign|release-sign-apks|kms-sign", l)], "R2 no command line of release-apks.sh signs before the pre-publish pass")
+t = atree(); rc, so, se = run(t, "release-apks", creds=KEY); L = log(t)
+iv = next((i for i, l in enumerate(L) if l.startswith("cosign verify-blob-attestation")), None); isg = next((i for i, l in enumerate(L) if l.startswith("release-sign-apks")), None)
+check(rc == 0 and iv is not None and isg is not None and iv < isg, "R2 a good release-apks run verifies the provenance (cosign verify-blob-attestation) before release-sign-apks runs", "rc=%s iv=%s isg=%s %s" % (rc, iv, isg, first(se)))
+t = atree(); rc, so, se = run(t, "release-apks", creds=KEY, env={"COSIGN_FAIL_ON": "verify-blob-attestation"})
+check(rc != 0 and any(l.startswith("cosign verify-blob-attestation") for l in log(t)) and not [l for l in log(t) if l.startswith("release-sign-apks")] and not os.path.exists(os.path.join(t, "release-apks")),
+      "R2 a failing provenance check stops release-apks: non-zero exit, nothing signed, nothing in release-apks/", "rc=%s %s" % (rc, first(se)))
+t = tree(); stage_before_publish(t); os.remove(os.path.join(t, "provenance/provenance.bundle.json"))
+e_ = {"PATH": os.path.join(t, ".fakebin") + ":" + os.environ["PATH"], "HOME": t, "LOG": os.path.join(t, "calls.log"), "REG": os.path.join(t, "reg"), "GITHUB_REF_NAME": "v0.3.0", "GITHUB_REPOSITORY": "fosterstack/cache", "RELEASE_KMS_KEY_REF": KMS, "RUNNER_TEMP": os.path.join(t, "rt"), "RELEASE_ROLE_ARN": "arn:aws:iam::111122223333:role/release-signing", "RELEASE_TOKEN_FILE": os.path.join(t, "idtoken")}
+r_ = subprocess.run(["bash", os.path.join(t, "bin/release-apks.sh")], cwd=t, env=e_, capture_output=True, text=True)
+check(r_.returncode != 0 and "provenance.bundle.json" in r_.stderr and not [l for l in log(t) if l.startswith("release-sign-apks")], "R2 release-apks with no provenance/provenance.bundle.json stops, naming the file, nothing signed", "rc=%s %s" % (r_.returncode, first(r_.stderr)))
+# R3: the pass itself
+t = bp_tree(); rc, so, se = bp_run(t, env={"FAKE_NEEDFILES": "1"}); C = cos(t)
+cwds = open(os.path.join(t, "calls.log.cwd")).read().split() if os.path.exists(os.path.join(t, "calls.log.cwd")) else []
+check(rc == 0 and len(C) == 1 and C[0].startswith("cosign verify-blob-attestation") and "--bundle provenance.bundle.json" in C[0], "R3 --before-publish runs the provenance cosign command once and passes", "rc=%s calls=%s %s" % (rc, C, first(se)))
+check(rc == 0 and cwds and all(os.path.realpath(c) == os.path.realpath(os.path.join(t, "release-staged")) for c in cwds), "R3 the provenance commands run in release-staged/", "rc=%s cwds=%s %s" % (rc, cwds, first(se)))
+keyseen = open(os.path.join(t, "calls.log.keyseen")).read() if os.path.exists(os.path.join(t, "calls.log.keyseen")) else ""
+check(rc == 0 and keyseen == kpem("rel"), "R3 release.rsa.pub in release-staged/ is the manifest's public_key", "rc=%s %r" % (rc, keyseen[:40]))
+check(rc == 0 and not os.path.exists(os.path.join(t, "release-staged")) and not os.path.exists(os.path.join(t, "release-published/release.rsa.pub")), "R3 release-staged/ is removed when the pass ends (and release-published/ is not used)", "rc=%s %s" % (rc, first(se)))
+check(rc == 0 and C and all(c.startswith("cosign verify-blob-attestation") for c in C) and not [l for l in log(t) if l.startswith(("gh ", "crane ")) or "ghcr.io" in l or "docker.io" in l or "sbom" in l], "R3 no image command, no non-provenance file command and no registry call is run", "rc=%s calls=%s" % (rc, log(t)))
+t = bp_tree(); rc, so, se = bp_run(t, env={"COSIGN_FAIL": "1"})
+cwds = open(os.path.join(t, "calls.log.cwd")).read().split() if os.path.exists(os.path.join(t, "calls.log.cwd")) else []
+check(rc != 0 and cos(t) and cwds and all(os.path.basename(c) == "release-staged" for c in cwds) and ("release-postverify:" in se or "::error::" in se), "R3 a provenance command that fails (stub cosign exits 1) fails the run", "rc=%s %s" % (rc, first(se)))
+check(rc != 0 and cwds and not os.path.exists(os.path.join(t, "release-staged")), "R3 release-staged/ is removed when the pass fails too", "rc=%s %s" % (rc, first(se)))
+t = bp_tree(); os.remove(os.path.join(t, "provenance/provenance.bundle.json")); rc, so, se = bp_run(t)
+check(rc != 0 and "provenance/provenance.bundle.json" in se and not cos(t), "R3 a missing provenance/provenance.bundle.json fails the run, naming the file, nothing runs", "rc=%s %s" % (rc, first(se)))
+for a in (["--other"], ["--before-publish", "x"], ["--before-publish", "--before-publish"], ["x"], ["--before-publish=1"], ["-h"]):
+    t = bp_tree(); rc, so, se = bp_run(t, args=a)
+    check(rc == 1 and not cos(t) and one_line(se) and not os.path.exists(os.path.join(t, "release-staged")) and a[-1] in se, "R3 the argument list %r is refused: exit 1, one release-postverify: line, nothing runs" % (a,), "rc=%s %s" % (rc, se[:160]))
+t = bp_tree(cmds=[SBOM0, IMG0]); rc, so, se = bp_run(t)
+check(rc != 0 and not cos(t) and se.startswith("release-postverify:") and "provenance" in se and "release-published" not in se, "R3 a guide with no provenance command fails the run (no vacuous pass), nothing runs", "rc=%s %s" % (rc, first(se)))
+t = bp_tree(cmds=[PBF0, PJX0]); rc, so, se = bp_run(t)
+check(rc == 0 and len(cos(t)) == 1, "R3 a guide of provenance commands only passes", "rc=%s %s" % (rc, first(se)))
+t = bp_tree(cmds=[PJX0]); rc, so, se = bp_run(t)
+check(rc != 0 and not cos(t) and "earlier" in se and "release-published" not in se, "R3 a guide whose only provenance command is a jq with no earlier verify is refused by the same judge", "rc=%s %s" % (rc, first(se)))
+t = bp_tree(); os.remove(os.path.join(t, ".github/policy/release-key-manifest.sig")); rc, so, se = bp_run(t)
+check(rc != 0 and not cos(t) and "release-published" not in se and not os.path.exists(os.path.join(t, "release-staged")), "R3 a missing committed key manifest signature fails the run, nothing runs", "rc=%s %s" % (rc, first(se)))
+t = bp_tree(); open(os.path.join(t, ".github/policy/release-key-manifest.json"), "a").write(" ")
+rc, so, se = bp_run(t)
+check(rc != 0 and not cos(t) and "release-published" not in se, "R3 a committed key manifest that does not match its signature fails the run, nothing runs", "rc=%s %s" % (rc, first(se)))
+t = bp_tree(); open(os.path.join(t, "provenance/provenance.bundle.json"), "w").write(json.dumps({"verificationMaterial": {"certificate": {"rawBytes": "eA=="}}}))
+rc, so, se = bp_run(t)
+check(rc != 0 and not cos(t) and "release-published" not in se, "R3 a staged provenance bundle that carries a certificate is refused, nothing runs", "rc=%s %s" % (rc, first(se)))
+# R4: without the argument the pass is the post-publish pass, on release-published/, with every file command (provenance included) and the list's image commands
+t = tree(); real_verifier(t); seed_manifest(t); guide_with(t, [PBF0, PJX0], [IMG0.replace("<IMAGE_REF>", "<IMAGE_REF>")])
+open(os.path.join(t, "release-published/provenance.bundle.json"), "w").write(OKB)
+rc, so, se = run(t, "release-postverify", env={"GITHUB_REPOSITORY": "fosterstack/cache"}, creds=["GH_TOKEN"]); C = cos(t)
+check(rc == 0 and len(C) == 3 and sum("provenance.bundle.json" in c for c in C) == 1 and sum("<" not in c and "@sha256:" in c for c in C) == 2, "R4 without the argument the post-publish pass runs the provenance command once and the image command in both registries", "rc=%s calls=%s %s" % (rc, C, first(se)))
+check(rc == 0 and not os.path.exists(os.path.join(t, "release-staged")) and os.path.exists(os.path.join(t, "release-published/release.rsa.pub")), "R4 the post-publish pass places the key in release-published/ and makes no release-staged/", "rc=%s %s" % (rc, first(se)))
+# ---- AC9: release-assets.sh ----------------------------------------------------------------------------------------------------------------------
+def full_base():
+    t, rc_, so_, se_ = signed_released()
+    os.makedirs(os.path.join(t, "release-apks/x86_64")); os.makedirs(os.path.join(t, "release-apks/aarch64"))
+    for arch in ("x86_64", "aarch64"):
+        for name in ("fscache-0.3.0-r0.apk", "fscache-fips-0.3.0-r0.apk"):
+            open(os.path.join(t, "release-apks", arch, name), "w").write(arch + name); open(os.path.join(t, "release-apks", arch, name + ".bundle"), "w").write('{"verificationMaterial":{"tlogEntries":[{}]}}')
+    # the four Linux archives Build recorded (its digests.json holds sha256 of the item name as each archive's bytes)
+    arcs = (("fscache_0.3.0_linux_amd64.tar.gz", b"archive-linux-amd64"), ("fscache_0.3.0_linux_arm64.tar.gz", b"archive-linux-arm64"),
+            ("fscache-fips_0.3.0_linux_amd64.tar.gz", b"archive-fips-linux-amd64"), ("fscache-fips_0.3.0_linux_arm64.tar.gz", b"archive-fips-linux-arm64"))
+    for n, c in arcs: open(os.path.join(t, "dist", n), "wb").write(c)
+    os.makedirs(os.path.join(t, ".github/policy"), exist_ok=True)      # the committed manifest and its signature (REQ-CHAIN-008-AC2): bytes release-assets.sh must attach as they are
+    for n in ("release-key-manifest.json", "release-key-manifest.sig"): open(os.path.join(t, ".github/policy", n), "w").write("committed " + n + "\n")
+    # postverify is a stub that logs its run and fails when POSTVERIFY_FAIL is set, whichever file the script starts it by
+    open(os.path.join(t, "bin/release-postverify.sh"), "w").write('echo "postverify" >> "$LOG"\n[ -z "${POSTVERIFY_FAIL:-}" ] || { echo "postverify failed" >&2; exit 1; }\n')
+    # the .py stub also records how it was started (rule 3: python -I -B, no GH_TOKEN, release-published/ staged): calls.log.pv = "isolated bytecode token files"
+    open(os.path.join(t, "bin/release-postverify.py"), "w").write('import os, sys\nopen(os.environ["LOG"], "a").write("postverify\\n")\nrp = "release-published"\nopen(os.environ["LOG"] + ".pv", "w").write("%d %d %d %s" % (sys.flags.isolated, sys.flags.dont_write_bytecode, "GH_TOKEN" in os.environ, ",".join(sorted(os.listdir(rp))) if os.path.isdir(rp) else "NODIR"))\nsys.exit(1 if os.environ.get("POSTVERIFY_FAIL") else 0)\n')
+    return t
+FULLB = full_base()      # one Sign run and one Release signing step; each case works on its own copy
+def full_assets():
+    t = tempfile.mkdtemp(); shutil.rmtree(t); shutil.copytree(FULLB, t, symlinks=True)
+    for f in os.listdir(t):
+        if f.startswith("calls.log"): (shutil.rmtree if os.path.isdir(os.path.join(t, f)) else os.remove)(os.path.join(t, f))
+    return t
+def staged_assets(t, env=None, tag="v0.3.0"):
+    """the Release stage's order: release-postverify.sh runs release-stage.sh (no credential), then release-assets.sh runs with the token; a refusal of the stage is the result"""
+    rc, so, se = run(t, "release-stage", env=env, tag=tag)
+    if "TAG_OBJECT" not in (env or {}):      # the tag object release-assets reads: an owner's tag (no generated notes) unless a case names its own
+        open(os.path.join(t, "tagobj-owner"), "w").write("object 0123\ntype commit\ntag %s\ntagger Owner <o@example.com> 1 +0000\n\n%s\n" % (tag, tag)); env = dict(env or {}, TAG_OBJECT=os.path.join(t, "tagobj-owner"))
+    return (rc, so, se) if rc != 0 else run(t, "release-assets", creds=["GH_TOKEN"], env=env, tag=tag)
+t = full_assets(); rc, so, se = staged_assets(t); L = " ".join(log(t))
+check(rc == 0, "AC9 a good run attaches the assets", se)
+check(all(("release-upload/%s-%s.bundle" % (sh, nm)) in L for sh in ("amd64", "arm64") for nm in ("fscache-0.3.0-r0.apk", "fscache-fips-0.3.0-r0.apk")), "AC9 each apk is attached with its Rekor bundle beside it, under the same architecture name (Oct 29 rule 1)")
+tnb = full_assets(); os.remove(os.path.join(tnb, "release-apks/aarch64/fscache-fips-0.3.0-r0.apk.bundle")); rcnb, sonb, senb = staged_assets(tnb)
+check(rcnb != 0 and "bundle" in senb and not [l for l in log(tnb) if l.startswith("gh release")], "AC9 an apk with no Rekor bundle beside it stops the step before a release is created or anything is uploaded", "rc=%s %s" % (rcnb, first(senb)))
+for what in ("release upload v0.3.0", "release-upload/amd64-fscache-0.3.0-r0.apk", "release-upload/arm64-fscache-fips-0.3.0-r0.apk", "release-upload/production.sbom.json ", "release-upload/fips.sbom.json ", "release-upload/production.full.lock.json ", "release-upload/fips.full.lock.json ",
+             "release-upload/fscache_0.3.0_linux_amd64.tar.gz", "release-upload/checksums.txt ", "release-upload/checksums.txt.bundle", "release-upload/release-policy.bundle", "release-upload/policy.json", "release-upload/vendor-evidence.json", "release-upload/build-collection.json", "release-upload/rebuild-collection.json", "release-upload/ubuntu-24.04-scanners-collection.json", "release-upload/ubuntu-24.04-arm-scanners-collection.json", "release-upload/ubuntu-24.04-acceptance-collection.json", "release-upload/ubuntu-24.04-arm-acceptance-collection.json", "release-upload/ubuntu-24.04-runtime-collection.json", "release-upload/ubuntu-24.04-arm-runtime-collection.json", "release-upload/provenance.json", "release-upload/provenance.rekor.json", "release-upload/provenance.bundle.json"):
+    check(what in L + " ", "AC9 %s is attached to the release (the apks under their architecture, the sboms and locks under their variant: names that differ)" % what.strip())
+for variant, name in MODULE_SBOMS:
+    staged = os.path.join(t, "release-upload", name)
+    check(rc == 0 and os.path.exists(staged) and open(staged).read() == module_sbom(variant),
+          "0707 %s is attached to the release with the bytes Build recorded" % name)
+    tm = full_assets(); os.remove(os.path.join(tm, "apks/ubuntu-24.04", name))
+    rcm, som, sem = staged_assets(tm)
+    check(rcm != 0 and name in sem and not [l for l in log(tm) if l.startswith("gh ")],
+          "0707 without %s nothing is uploaded and no gh call is made, the file is named" % name,
+          "rc=%s %s" % (rcm, first(sem)))
+for pf in ("provenance.json", "provenance.rekor.json", "provenance.bundle.json"):     # Sign's provenance is part of every release: a run without one stops before the upload, naming it
+    tp = full_assets(); os.remove(os.path.join(tp, "provenance", pf)); rcp, sop, sep = staged_assets(tp)
+    check(rcp != 0 and pf in sep and not [l for l in log(tp) if l.startswith("gh release upload")], "AC9 without Sign's %s the release is not published: nothing is uploaded, the file is named" % pf, "rc=%s %s" % (rcp, first(sep)))
+# ---- REQ-CHAIN-008-AC2: the signed key manifest is a release asset, and a release without it is refused before anything is uploaded ------------------
+t = full_assets(); rc, so, se = staged_assets(t); L = " ".join(log(t))
+for n in ("release-key-manifest.json", "release-key-manifest.sig"):
+    up = os.path.join(t, "release-upload", n)
+    check(rc == 0 and ("release-upload/" + n) in L and os.path.exists(up) and open(up).read() == "committed " + n + "\n", "REQ-CHAIN-008-AC2 %s is uploaded with the committed bytes" % n, "rc=%s %s" % (rc, first(se)))
+for n in ("release-key-manifest.json", "release-key-manifest.sig"):
+    t = full_assets(); os.remove(os.path.join(t, ".github/policy", n)); rc, so, se = staged_assets(t)
+    check(rc != 0 and n in se and not [l for l in log(t) if l.startswith("gh release")], "REQ-CHAIN-008-AC2 without %s nothing is created or uploaded, the file is named" % n, "rc=%s %s" % (rc, first(se)))
+t2 = full_assets(); rc2, so2, se2 = staged_assets(t2)
+check(rc2 == 0 and [l for l in log(t2) if l.startswith("gh release create")] and all(" --draft" in l and " --verify-tag" in l for l in log(t2) if l.startswith("gh release create")), "AC9 a missing release is created as a draft, only with --verify-tag", se2)
+E2 = [l for l in log(t2) if l.startswith("gh release edit")]
+check(E2 == ["gh release edit v0.3.0 --draft=false"] and not [l for l in log(t2) if "--notes-from-tag" in l], "AC9 exactly one undraft, gh release edit TAG --draft=false, and no gh-generated notes", repr(E2))
+L2 = [l.split(" ")[2] for l in log(t2) if l.startswith("gh ")]
+check(L2 == ["list", "create", "upload", "download", "edit"] and [l for l in log(t2) if l.startswith("gh release list")] == ["gh release list --limit 1000 --json tagName,isDraft"], "AC9 the order is list, create, upload, download, edit (the edit is the last gh call, after the gate)", repr(L2))
+D2 = [i for i, l in enumerate(log(t2)) if l.startswith("gh release download")]
+check(bool(E2) and bool(D2) and log(t2).index(E2[0]) > D2[0], "AC9 the undraft comes after the download")
+# the draft stays whenever the list, the upload, the download or the gate fails: gh release edit is never called
+for what, env in (("the list", {"GH_LIST_FAIL": "1"}), ("the upload", {"GH_FAIL_ON": "release upload"}), ("the download", {"GH_FAIL_ON": "release download"}), ("the gate (a file the release lost)", {"GH_DROP": "release-files.sha256.bundle"}), ("the gate (a file the release altered)", {"GH_ALTER": "release-manifest.json"})):
+    tf = full_assets(); rcf, sof, sef = staged_assets(tf, env=env)
+    Lf = log(tf)
+    check(rcf != 0 and not [l for l in Lf if l.startswith("gh release edit")] and not [l for l in Lf if "--clobber" in l or l.startswith("gh release delete")], "AC9 a failed %s exits non-zero and gh release edit is never called" % what, "rc=%s %s" % (rcf, first(sef)))
+    if what == "the list": check(not [l for l in Lf if re.match(r"gh release (create|upload|download)", l)], "AC9 a failed release list creates and uploads nothing")
+# a created release carries the fixed evidence text, except for a generated patch tag: its notes are `git cat-file tag` read by `python3 bin/patch-decide.py tag-notes` (REQ-REL-009-AC8), given with --notes-file; `gh release edit` is gone
+FIXED = "Evidence: see docs/verify-release.md for the verification commands of this release."
+def notes_of(t): p = os.path.join(t, "calls.log.notes"); return open(p).read() if os.path.exists(p) else None
+check(notes_of(t2) == FIXED, "AC9 rule 3 a missing release (an owner's tag) is created with the fixed evidence text", repr(notes_of(t2)))
+GEN = ("object 0123\ntype commit\ntag v0.3.0\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n"
+       "Patch release v0.3.0\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n"
+       "-----BEGIN SSH SIGNATURE-----\nU1NIU0lH\n-----END SSH SIGNATURE-----\n")
+GEN_NOTES = "Patch release v0.3.0\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n"
+pdr = subprocess.run(["python3", os.path.join(BIN, "patch-decide.py"), "tag-notes"], input=GEN, capture_output=True, text=True)
+check(pdr.returncode == 0 and pdr.stdout.strip() == GEN_NOTES.strip(), "AC9 rule 3 (fixture) patch-decide tag-notes reads the generated tag's notes", "rc=%s %r" % (pdr.returncode, pdr.stdout[:80]))
+# a release that exists under the tag, published or a leftover draft, stops the step before anything is created, uploaded or edited (REQ-CHAIN-007-AC9); nothing is deleted
+for what, dr in (("published", "false"), ("a leftover draft", "true")):
+    t6 = full_assets()
+    rc6, so6, se6 = staged_assets(t6, env={"GH_LIST": '[{"tagName":"v0.2.9","isDraft":false},{"tagName":"v0.3.0","isDraft":%s}]' % dr})
+    L6 = log(t6)
+    check(rc6 == 1 and "release-assets:" in se6 and "v0.3.0" in se6 and not [l for l in L6 if re.match(r"gh release (create|upload|edit|delete|download)", l)] and notes_of(t6) is None,
+          "AC9 a release under the tag (%s) is refused, naming the tag: nothing is created, uploaded, edited or deleted" % what, "rc=%s %s" % (rc6, first(se6)))
+# a created release for a generated patch tag gets patch-decide's notes through --notes-file, the tag object read with git cat-file tag
+t3 = full_assets(); open(os.path.join(t3, "tagobj"), "w").write(GEN)
+rc3, so3, se3 = staged_assets(t3, env={"TAG_OBJECT": os.path.join(t3, "tagobj")})
+C3 = [l for l in log(t3) if l.startswith("gh release create")]
+check(rc3 == 0 and len(C3) == 1 and " --notes-file " in C3[0] and " --notes " not in C3[0] and " --verify-tag" in C3[0] and notes_of(t3) is not None and notes_of(t3).strip() == GEN_NOTES.strip() and "git cat-file tag v0.3.0" in log(t3) and len([l for l in log(t3) if l.startswith("gh release edit")]) == 1,
+      "AC9 rule 3 a created release for a generated patch tag carries patch-decide's notes through --notes-file", "rc=%s %r %s %s" % (rc3, notes_of(t3), C3, first(se3)))
+# another tagger's message, or an owner's tag: tag-notes exits 1, the fixed text stays
+for what, obj in (("another tagger's message", GEN.replace("fosterstack release <release@users.noreply.github.com>", "Someone Else <x@example.com>")), ("a tag with a generated heading and no signature block", GEN.split("-----BEGIN")[0])):
+    t3b = full_assets(); open(os.path.join(t3b, "tagobj"), "w").write(obj)
+    rc3b, so3b, se3b = staged_assets(t3b, env={"TAG_OBJECT": os.path.join(t3b, "tagobj")})
+    C3b = [l for l in log(t3b) if l.startswith("gh release create")]
+    check(rc3b == 0 and len(C3b) == 1 and " --notes-file " in C3b[0] and " --notes " not in C3b[0] and notes_of(t3b) == FIXED and len([l for l in log(t3b) if l.startswith("gh release edit")]) == 1,
+          "AC9 rule 3 a tag object with %s keeps the fixed text" % what, "rc=%s %r %s" % (rc3b, notes_of(t3b), first(se3b)))
+# a generated tag whose notes hold a refused form (a signature-shaped line, REQ-REL-009-AC14): tag-notes exits 2, the step fails, nothing is created or uploaded
+t3c = full_assets(); open(os.path.join(t3c, "tagobj"), "w").write(GEN.replace("### VEX", "-----BEGIN SIGNED MESSAGE-----\n### VEX"))
+rc3c, so3c, se3c = staged_assets(t3c, env={"TAG_OBJECT": os.path.join(t3c, "tagobj")})
+check(rc3c != 0 and not [l for l in log(t3c) if l.startswith("gh release create") or l.startswith("gh release upload") or l.startswith("gh release edit")] and notes_of(t3c) is None,
+      "AC9 rule 3 a generated tag whose notes patch-decide refuses fails the step: no release is created, nothing uploaded", "rc=%s %s" % (rc3c, first(se3c)))
+src3 = open(os.path.join(BIN, "release-assets.sh")).read(); src3s = open(os.path.join(BIN, "release-stage.sh")).read()
+check(len(re.findall(r"gh release edit", src3)) == 1 and "gh release edit \"$rel\" --draft=false" in src3 and "patch-decide" not in src3 and "git " not in src3 and "--notes-file release-notes.txt" in src3 and "python3 -I -B bin/patch-decide.py tag-notes" in src3s,
+      "AC9 rule 3 release-stage.sh reads the notes with python3 -I -B bin/patch-decide.py tag-notes; release-assets.sh runs no git and no patch-decide and holds exactly one gh release edit, the --draft=false")
+# only a definite 'release not found' creates; any other failure of the view stops before creation and upload
+for err in ("HTTP 401: Bad credentials", "HTTP 502: Bad Gateway", "dial tcp: connection refused"):
+    t4 = full_assets(); rc4, so4, se4 = staged_assets(t4, env={"GH_LIST_FAIL": err})
+    check(
+        rc4 != 0 and not [l for l in log(t4) if l.startswith("gh release create") or l.startswith("gh release upload")],
+        "AC9 a failed release list (%s) is not 'no release': nothing is created or uploaded" % err,
+        "rc=%s %s" % (rc4, first(se4))
+    )
+# A re-run of the job: release-sign signs again (new bundles, the run attempt in the
+# manifest), so its evidence never equals the attached one, and gh refuses the whole upload when any name is
+# attached. gh's refusal is the behaviour: no step deletes an attached asset, an operator does by hand
+# before a re-run (REQ-CHAIN-007-AC9).
+def pub_of(t): return os.path.join(t, "calls.log.published")
+def pub_bytes(t):
+    if not os.path.isdir(pub_of(t)): return {}      # nothing was published (the run was refused before the upload)
+    return {n: open(os.path.join(pub_of(t), n), "rb").read() for n in sorted(os.listdir(pub_of(t)))}
+tb = full_assets(); rcb1, sob, seb = staged_assets(tb); before = pub_bytes(tb)
+rcb, sob, seb = staged_assets(tb)
+check(rcb1 == 0 and rcb != 0 and "release-assets:" in seb and "v0.3.0" in seb,
+      "AC9 a second run on a release that holds the assets fails, naming the tag (the list shows it)",
+      "rc=%s/%s %s" % (rcb1, rcb, first(seb)))
+check(before and pub_bytes(tb) == before,
+      "AC9 a refused second run leaves every attached file as it was and copies nothing")
+tc = full_assets(); rcc1, soc, sec = staged_assets(tc)
+for n in sorted(pub_bytes(tc))[3:]: os.remove(os.path.join(pub_of(tc), n))
+three = pub_bytes(tc)
+mpath = os.path.join(tc, "release-metadata", "release-manifest.json")
+man1 = open(mpath, "rb").read()
+# the job ran again: it signs again, and its manifest carries the new run attempt
+shutil.rmtree(os.path.join(tc, "release-evidence")); os.remove(os.path.join(tc, "dist/checksums.txt"))     # a re-run is a new job on a fresh workspace: nothing of the first run is there
+rcs0, sos0, ses0 = run(tc, "release-signatures", env={"GITHUB_RUN_ATTEMPT": "2"})
+rcs, sos, ses = run(tc, "release-sign", creds=REG, env={"GITHUB_RUN_ATTEMPT": "2"})
+man2 = open(mpath, "rb").read()
+rcc, soc, sec = staged_assets(tc)
+check(rcc1 == 0 and rcs == 0 and man2 != man1 and b"attempts/2" in man2 and len(three) == 3
+      and rcc != 0 and "release-assets:" in sec and "v0.3.0" in sec,
+      "AC9 a re-signed re-run over a release that holds three of the files fails, naming the tag",
+      "rc=%s/%s/%s %s" % (rcc1, rcs, rcc, first(sec)))
+check(pub_bytes(tc) == three,
+      "AC9 that refused re-run attaches nothing of its new evidence: the release holds exactly its three files")
+src = open(os.path.join(tc, "bin", "release-assets.sh")).read()
+check("--clobber" not in src and not [l for t_ in (tb, tc) for l in log(t_) if "--clobber" in l],
+      "AC9 release-assets.sh never passes --clobber, in the source or in any run above")
+t = full_assets(); rc, so, se = staged_assets(t); L = " ".join(log(t))
+check(rc == 0 and "release-upload/release-files.sha256 " in L + " " and "release-upload/release-manifest.json" in L and "release-upload/release-files.sha256.bundle" in L, "AC13 the four metadata files, release-files.sha256 and its bundle are attached", "rc=%s %s" % (rc, first(se)))
+t = full_assets(); drop(t, "release-evidence/release-files.sha256.bundle", "AC13 (setup) release-sign leaves release-evidence/release-files.sha256.bundle for the gate case to remove"); rc, so, se = staged_assets(t)
+check(rc != 0 and "release-files.sha256.bundle" in se and not [l for l in log(t) if l.startswith("gh release upload")], "AC13 the coverage gate runs BEFORE the upload: a release without the signed list is refused, nothing is uploaded", "rc=%s %s" % (rc, first(se)))
+t = full_assets(); os.makedirs(os.path.join(t, "release-evidence"), exist_ok=True); open(os.path.join(t, "release-evidence/stray.json"), "w").write("{}"); rc, so, se = staged_assets(t)
+check(rc != 0 and "stray.json" in se and not [l for l in log(t) if l.startswith("gh release upload")], "AC13 an asset covered by nothing stops the release before the upload, naming it", "rc=%s %s" % (rc, first(se)))
+t = full_assets(); rc, so, se = staged_assets(t, env={"GH_DROP": "release-files.sha256.bundle"})
+check(rc != 0 and "release-files.sha256.bundle" in se, "AC13 the gate runs again AFTER publishing, on what the release stores: a missing asset fails the run", "rc=%s %s" % (rc, first(se)))
+t = full_assets(); rc, so, se = staged_assets(t, env={"GH_ALTER": "release-manifest.json"})
+check(rc != 0 and "release-manifest.json" in se, "AC13 the gate after publishing catches a stored file that differs from the staged one", "rc=%s %s" % (rc, first(se)))
+# REQ-CHAIN-004-AC20: release-assets.sh holds the release credentials, so it loads no tag grammar: it runs bin/release-gate.py (and nothing else of bin/), which works with bin/build-admit.py and the rest of bin/ absent
+t = full_assets(); rcs_, sos_, ses_ = run(t, "release-stage")
+for f_ in os.listdir(os.path.join(t, "bin")):
+    if f_.endswith(".py") and f_ != "release-gate.py": os.remove(os.path.join(t, "bin", f_))
+rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"])
+check(rcs_ == 0 and os.path.exists(os.path.join(t, "bin", "release-gate.py")) and not os.path.exists(os.path.join(t, "bin", "build-admit.py")) and rc == 0 and any(l.startswith("gh release upload") for l in log(t)),
+      "AC20 release-assets publishes with only bin/release-gate.py among the Python files of bin/ (no build-admit.py, no release-metadata.py, no chain_common.py)", "rc=%s/%s %s" % (rcs_, rc, first(se)))
+t = full_assets(); rcs_, sos_, ses_ = run(t, "release-stage")
+for f_ in os.listdir(os.path.join(t, "bin")):
+    if f_.endswith(".py") and f_ != "release-gate.py": os.remove(os.path.join(t, "bin", f_))
+open(os.path.join(t, "release-upload", "stray.json"), "w").write("{}")
+rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"])
+check(rc != 0 and "stray.json" in se and "release-gate: " in se,
+      "AC20 release-assets with only bin/release-gate.py still refuses a staged file the release does not store, naming it (the gate's verdict comes after the download)", "rc=%s %s" % (rc, first(se)))
+for s_ in ("release-assets", "release-stage"):
+    src = open(os.path.join(BIN, s_ + ".sh")).read()
+    check("bin/release-gate.py --dir" in src and "release-metadata.py gate" not in src, "AC20 bin/%s.sh runs the gate as bin/release-gate.py --dir ..., not as a subcommand of release-metadata.py" % s_)
+check("release-gate.py --dir release-published --same-as release-upload" in open(os.path.join(BIN, "release-assets.sh")).read(), "AC20 release-assets.sh's gate after publishing compares the release with release-upload/ (--same-as)")
+for tag in ("v0.3.0-rc1", "v0.3.0-rc.1", "main"):
+    t3 = tree(); rc3, so3, se3 = run(t3, "release-stage", tag=tag); check(rc3 != 0 and "tag" in se3 and not os.path.exists(os.path.join(t3, "release-upload")), "AC14 release-stage refuses the tag %r before it stages anything" % tag, "rc=%s %s" % (rc3, first(se3)))
+check(not [l for l in log(t) if re.search(r"release create(?!.*--verify-tag)|git (?!cat-file tag )", l)], "AC9 no release is created without --verify-tag and no tag is made (release-stage reads the tag object, cat-file tag only)")
+check(SENT["GH_TOKEN"] not in L + so + se, "AC9 the token is never on a command line or in output")
+# the archives are Build's bytes and the set is complete before anything is uploaded
+def refused_before_upload(t, what, word, **kw):
+    rc, so, se = staged_assets(t, **kw)
+    check(rc != 0 and word in se and not any(l.startswith("gh release") for l in log(t)), "AC9 B3 " + what + " is refused before any release is created or uploaded", "rc=%s %s calls=%s" % (rc, first(se), [l for l in log(t) if l.startswith("gh")][:2]))
+def resum(t):      # checksums.txt of whatever archives dist holds (a replaced archive is "covered" by a list that agrees with it)
+    ds = os.path.join(t, "dist"); open(os.path.join(ds, "checksums.txt"), "w").write("".join(
+        "%s  %s\n" % (hashlib.sha256(open(os.path.join(ds, n), "rb").read()).hexdigest(), n) for n in sorted(os.listdir(ds)) if n.endswith(".tar.gz")))
+t = full_assets(); open(os.path.join(t, "dist/fscache_0.3.0_linux_amd64.tar.gz"), "wb").write(b"replacement archive"); resum(t)
+refused_before_upload(t, "an archive whose bytes are not Build's (its checksums.txt agrees with the replacement)", "archive-linux-amd64")
+t = full_assets(); os.remove(os.path.join(t, "dist/fscache-fips_0.3.0_linux_arm64.tar.gz")); resum(t); refused_before_upload(t, "a missing -fips arm64 archive", "archive-fips-linux-arm64")
+t = full_assets(); open(os.path.join(t, "dist/fscache_0.3.0_linux_ppc64.tar.gz"), "wb").write(b"x"); resum(t); refused_before_upload(t, "a fifth archive Build did not record", "ppc64")
+t = full_assets(); shutil.rmtree(os.path.join(t, "release-apks/aarch64")); refused_before_upload(t, "no apk of the arm64 architecture", "aarch64")
+t = full_assets(); os.remove(os.path.join(t, "release-apks/aarch64/fscache-fips-0.3.0-r0.apk")); refused_before_upload(t, "no -fips apk of the arm64 architecture (one apk of four is missing)", "fips")
+t = full_assets(); os.remove(os.path.join(t, "release-apks/x86_64/fscache-0.3.0-r0.apk")); refused_before_upload(t, "no standard apk of the amd64 architecture (one apk of four is missing)", "x86_64")
+for r_, _, _ in RUNNERS:
+    for n in ("scanners", "acceptance", "runtime"):
+        t = full_assets(); os.remove(os.path.join(t, "witness-check/%s/witness-%s/%s-collection.json" % (r_, n, n))); refused_before_upload(t, "the Check record %s of %s missing (the six named records are attached)" % (n, r_), n)
+# exactly one <stem>.rekor.json beside each record, in the staging list, the upload list and the coverage gate
+RECS = ["witness-build/build", "witness-rebuild/rebuild"] + ["witness-check/%s/witness-%s/%s" % (r_, n, n) for r_, _, _ in RUNNERS for n in ("scanners", "acceptance", "runtime")]
+t = full_assets(); rc, so, se = staged_assets(t); L = " ".join(log(t)) + " "
+for r in RECS:
+    nm = (r.split("/")[1] + "-" if r.startswith("witness-check/") else "") + r.rsplit("/", 1)[1] + "-collection.rekor.json"      # Check's records are attached under their runner's name
+    check(
+        rc == 0 and ("release-upload/" + nm + " ") in L and os.path.exists(os.path.join(t, "release-upload", nm)),
+        "AC9 the entries file %s is staged and attached beside its record" % nm,
+        "rc=%s %s" % (rc, first(se))
+    )
+for r in RECS:
+    t = full_assets(); os.remove(os.path.join(t, r + "-collection.rekor.json")); refused_before_upload(t, "a record %s-collection.json with no entries file beside it" % r.rsplit("/", 1)[1], r.rsplit("/", 1)[1] + "-collection.rekor.json")
+t = full_assets(); open(os.path.join(t, "witness-build/other-collection.rekor.json"), "w").write("{}"); refused_before_upload(t, "an entries file with no record (other-collection.rekor.json)", "other-collection.rekor.json")
+t = full_assets(); open(os.path.join(t, "release-evidence/build-collection.rekor.json"), "w").write("{}"); refused_before_upload(t, "a second source for the release name build-collection.rekor.json", "build-collection.rekor.json")
+def gate_of(t, mutate):
+    rc0, so0, se0 = staged_assets(t)
+    try: mutate(os.path.join(t, "release-upload"))
+    except OSError: pass      # the run was refused before this file was staged
+    r = subprocess.run(["python3", "-I", "-B", "bin/release-gate.py", "--dir", "release-upload"], cwd=t, capture_output=True, text=True)
+    return r.returncode, r.stderr
+t = full_assets(); rcg, seg = gate_of(t, lambda d: os.remove(os.path.join(d, "ubuntu-24.04-scanners-collection.rekor.json")))
+check(
+    rcg != 0 and "ubuntu-24.04-scanners-collection.rekor.json" in seg,
+    "AC9 the coverage gate refuses a record whose entries file is gone, naming it",
+    "rc=%s %s" % (rcg, seg.strip()[:160])
+)
+t = full_assets(); rcg, seg = gate_of(t, lambda d: open(os.path.join(d, "stray-collection.rekor.json"), "w").write("{}"))
+check(
+    rcg != 0 and "stray-collection.rekor.json" in seg,
+    "AC9 the coverage gate refuses an entries file with no record, naming it",
+    "rc=%s %s" % (rcg, seg.strip()[:160])
+)
+t = full_assets(); rcg, seg = gate_of(t, lambda d: None)
+check(
+    rcg == 0,
+    "AC9 the coverage gate accepts the staged set with every entries file beside its record (control)",
+    "rc=%s %s" % (rcg, seg.strip()[:160])
+)
+t = full_assets(); shutil.rmtree(os.path.join(t, "release-apks/x86_64")); refused_before_upload(t, "no apk of the amd64 architecture", "x86_64")
+t = full_assets(); shutil.rmtree(os.path.join(t, "witness-check")); refused_before_upload(t, "no Check record to attach", "witness-check")
+# an explicit evidence inventory; a second file under a release name, or a name outside the inventory, stops
+# before anything is staged
+t5 = full_assets(); open(os.path.join(t5, "witness-build/policy.json"), "w").write("REPLACED POLICY"); refused_before_upload(t5, "an extra witness-build/policy.json (it would replace the signed policy)", "policy.json")
+t5 = full_assets(); open(os.path.join(t5, "witness-rebuild/verdict.json"), "w").write("{}")
+rc5, so5, se5 = staged_assets(t5)
+check(
+    rc5 == 0 and not os.path.exists(os.path.join(t5, "release-upload/verdict.json")),
+    "AC9 Rebuild's own verdict.json beside its record is allowed and is not attached (the inventory names what is "
+    "attached)",
+    "rc=%s %s" % (rc5, first(se5))
+)
+t5 = full_assets(); open(os.path.join(t5, "witness-rebuild/extra.json"), "w").write("{}"); refused_before_upload(t5, "a file of Rebuild's record directory outside the inventory", "extra.json")
+t5 = full_assets(); open(os.path.join(t5, "release-evidence/build-collection.json"), "w").write("{}"); refused_before_upload(t5, "a second source for the release name build-collection.json", "build-collection.json")
+t5 = full_assets(); open(os.path.join(t5, "witness-check/ubuntu-24.04/witness-scanners/stray.json"), "w").write("{}"); refused_before_upload(t5, "a stray file beside a Check record", "stray.json")
+t = tree(); rc, so, se = run(t, "release-assets"); check(rc == 2 and "GH_TOKEN" in se and not log(t), "AC9 a missing GH_TOKEN is refused with exit 2, naming it")
+t = full_assets(); rcs, sos, ses = run(t, "release-stage"); n0 = len(log(t)); rc, so, se = run(t, "release-assets")
+check(rcs == 0 and rc == 2 and "GH_TOKEN" in se and len(log(t)) == n0, "B-F22 a staged release without GH_TOKEN is refused by release-assets with exit 2, before any gh call", "rc=%s/%s %s" % (rcs, rc, first(se)))
+# B-F22: release-stage.sh holds no credential and makes no call to the release service; release-assets.sh stages nothing
+t = full_assets(); n0 = len(log(t)); rc, so, se = run(t, "release-stage", creds=list(SENT))
+check(rc == 0 and os.path.isdir(os.path.join(t, "release-upload")) and os.path.isdir(os.path.join(t, "release-published")) and [l for l in log(t)[n0:] if l and not l.startswith("git cat-file tag ")] == [], "B-F22 release-stage stages release-upload/ and release-published/ and makes no gh, registry or signing call", "rc=%s %s" % (rc, first(se)))
+check(sorted(os.listdir(os.path.join(t, "release-upload"))) == sorted(os.listdir(os.path.join(t, "release-published"))), "B-F22 release-published/ is a copy of release-upload/ for release-postverify")
+src = open(os.path.join(t, "bin", "release-stage.sh")).read()
+check("GH_TOKEN" not in src and not re.search(r"\bgh\b", re.sub(r"#[^\n]*", "", src)), "B-F22 release-stage.sh names no token and no gh call in its code")
+t = full_assets(); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"])
+check(rc == 1 and "nothing to attach" in se and not [l for l in log(t) if l.startswith("gh ")], "B-F22 release-assets stages nothing itself: with no release-upload/ it refuses, naming that, and makes no gh call", "rc=%s %s" % (rc, first(se)))
+t = full_assets(); rc, so, se = staged_assets(t)
+check(rc == 0 and [l.split(" ")[2] for l in log(t) if l.startswith("gh ")][:5] == ["list", "create", "upload", "download", "edit"], "B-F22 release-assets lists, creates (only when none exists), uploads, downloads the release back, then undrafts it", "rc=%s %s" % (rc, first(se)))
+t = full_assets(); rcs, sos, ses = run(t, "release-stage"); open(os.path.join(t, "release-upload", "stray.json"), "w").write("{}"); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"], env={"GH_DROP": "stray.json"})
+check(rcs == 0 and rc != 0 and "stray.json" in se, "B-F22 the gate after publishing compares the release with release-upload/ (--same-as): a file that did not reach the release fails the run", "rc=%s %s" % (rc, first(se)))
+# ---- REQ-CHAIN-006-AC7: the post-publish verification, release-postverify.sh -----------------------------------
+# it reads docs/verify-release.cannot-run.json ([{command, reason}], the one exact-text list Check also
+# reads), runs each
+# listed command with <IMAGE_REF> / <IMAGE_REF_FIPS> = ghcr.io/fosterstack/cache@ the image-production / image-fips digest of
+# witness-build/digests.json, <TAG> = $GITHUB_REF_NAME, the key flag is release.rsa.pub.
+# Every command is judged BEFORE any is run (a verify form only, a placeholder it cannot fill is refused): a refusal runs nothing. A command
+# that fails fails the script (exit non-zero, naming the command) after all have run. The step holds GH_TOKEN (read) and no registry credential.
+IDQ = "--key release.rsa.pub"      # every verify form carries exactly one key flag, whose value is the committed release key file
+PV1 = "cosign verify <IMAGE_REF> " + IDQ
+PV2 = "cosign verify <IMAGE_REF_FIPS> " + IDQ
+PV3 = "cosign verify-attestation --type https://slsa.dev/provenance/v1 " + IDQ + " <IMAGE_REF>"
+PV4 = "cosign verify-blob " + IDQ + " --type slsa-<TAG> --bundle b.json x.txt"
+def stub_verifier(t, extra_source):
+    """The verifier with extra_source appended"""
+    open(os.path.join(t, "bin/chain-verify.py"), "a").write("\n" + extra_source + "\n")
+def stage_operands(t, rows):
+    """release-postverify refuses before running anything when a file a verify command names as an operand (a --bundle value or a positional blob) is not in release-published/:
+    make each such file there (a few bytes: the fake cosign does not read it) unless the case put it there itself. release.rsa.pub is the script's own; brace, glob and path operands are the cases' own."""
+    import shlex
+    rp = os.path.join(t, "release-published")
+    if not os.path.isdir(rp): return
+    for c in rows or []:
+        try: words = shlex.split(c)
+        except ValueError: continue
+        for i, w in enumerate(words):
+            if w.startswith("--bundle="): w = w[len("--bundle="):]
+            elif not re.fullmatch(r"[\w][\w.-]*\.(json|txt|bundle|sig|pem)", w) and not (i and words[i - 1] == "--bundle"): continue
+            if w == "release.rsa.pub" or "/" in w or any(ch in w for ch in "{}*?[]") or os.path.lexists(os.path.join(rp, w)): continue
+            body = json.dumps({"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "verificationMaterial": {"publicKey": {"hint": "k"}}, "messageSignature": True}) if w.endswith(".json") else "staged\n"   # the script reads a .json operand as strict JSON (the same shape as OK below, which is not defined yet when pv first runs)
+            open(os.path.join(rp, w), "w").write(body)
+def pv(rows, env=None, raw=None, tag="v0.3.0", digs=None, creds=("GH_TOKEN",), seed=None):
+    t = tree(); os.makedirs(os.path.join(t, "docs"), exist_ok=True)
+    real_verifier(t); seed_manifest(t, **(seed or {}))
+    lp = os.path.join(t, "docs/verify-release.cannot-run.json")
+    if rows is None and raw is None: os.remove(lp)
+    if raw is not None: open(lp, "w").write(raw)
+    elif rows is not None: json.dump([{"command": c, "reason": "needs the image in a registry"} for c in rows], open(lp, "w"))
+    if rows is not None and raw is None: stage_operands(t, rows)
+    if digs is not None: json.dump(digs, open(os.path.join(t, "witness-build/digests.json"), "w"))
+    e = {"GITHUB_REPOSITORY": "fosterstack/cache"}; e.update(env or {})
+    rc, so, se = run(t, "release-postverify", env=e, creds=list(creds), tag=tag)
+    return t, rc, so, se
+def calls(t): return [l for l in log(t) if l.startswith(("cosign ", "gh "))]
+REGS = ["ghcr.io/fosterstack/cache", "docker.io/fosterstack/cache"]   # the two repositories are constants of the script (identical digests in both)
+def refs(key): return [r + "@" + DIG[key] for r in REGS]
+t, rc, so, se = pv([PV1, PV2, PV3, PV4]); C = calls(t)
+P, F = refs("image-production"), refs("image-fips")
+check(rc == 0, "AC7 post-publish: a good list of four commands passes in both registries", se)
+check(len(C) == 7, "AC7 post-publish: the three image commands run twice and the verify-blob (no image placeholder) once: seven runs, not eight", str(len(C)))
+kp = lambda t: "release.rsa.pub"   # the key flag the post-publish run passes: the release key placed in the working directory
+mk = lambda ref: "cosign verify %s --key %s" % (ref, kp(t))
+check(C[:1] == [mk(P[0])] and mk(P[1]) in C, "AC7 post-publish: <IMAGE_REF> is the repository@digest, once per registry (ghcr.io first, then docker.io), with the SAME digest", str(C[:2]))
+check(any(c.startswith("cosign verify " + F[0] + " ") for c in C) and any(c.startswith("cosign verify " + F[1] + " ") for c in C), "AC7 post-publish: <IMAGE_REF_FIPS> is substituted in both registries with the one -fips digest", str(C))
+check(all(("cosign verify-attestation --type https://slsa.dev/provenance/v1 --key %s %s" % (kp(t), r)) in C for r in P),
+        "AC7 post-publish: <IMAGE_REF> in a verify-attestation is substituted per registry, beside the key "
+                "file", str(C))
+check(len([c for c in C if c.startswith("cosign verify-blob")]) == 1 and
+        "--type slsa-v0.3.0 " in [c for c in C if c.startswith("cosign verify-blob")][0] and not re.search(r"<[A-Z_]+>",
+        "\n".join(C)),
+        "AC7 post-publish: a command with no image placeholder runs once; <TAG> is the release tag; no placeholder "
+                "is left in any command run", str(C))
+for tag in ("v0.3.0-rc1", "v0.3.0-rc.1"):
+    t, rc, so, se = pv([PV1], tag=tag); check(rc != 0 and not calls(t), "AC14 post-publish: the tag %r is refused, nothing runs (a release candidate publishes nothing to verify)" % tag, "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pv([]); check(rc == 0 and not calls(t), "AC7 post-publish: an empty list runs nothing and passes")
+t, rc, so, se = pv([PV1, PV3], env={"COSIGN_FAIL_ON": "verify-attestation"}); C = calls(t)
+t2, rc2, so2, se2 = pv([PV1, PV3], env={"COSIGN_FAIL_ON": "docker.io"})
+E2 = [l for l in se2.split("\n") if l.startswith("::error::")]
+check(rc2 != 0 and len(calls(t2)) == 4 and len(E2) == 2 and all("docker.io/fosterstack/cache" in l and
+        "ghcr.io" not in l for l in E2),
+        "AC7 post-publish: commands that fail only against docker.io fail the run, and each ::error:: line names "
+                "docker.io",
+        "rc=%s %s" % (rc2, se2[:300]))
+t2, rc2, so2, se2 = pv([PV1, PV3], env={"COSIGN_FAIL_ON": "ghcr.io"})
+check(rc2 != 0 and len(calls(t2)) == 4 and "ghcr.io/fosterstack/cache" in [l for l in se2.split("\n") if l.startswith("::error::")][0], "AC7 post-publish: a command that fails only against ghcr.io fails the run (the docker.io pass still runs), the ::error:: line names ghcr.io", "rc=%s %s" % (rc2, se2[:300]))
+t2, rc2, so2, se2 = pv([PV1, PV2, PV3], env={"COSIGN_FAIL_ON": "docker.io"})
+check(rc2 != 0 and len([l for l in se2.split("\n") if l.startswith("::error::")]) == 3,
+        "AC7 post-publish: every failed run (registry x command) gets its own ::error:: line: three commands on "
+                "docker.io = 3", se2[:300])
+check(rc != 0 and len(C) == 4 and "post-publish verification failed" in se and "verify-attestation" in se,
+        "AC7 post-publish: a failing command fails the script (exit non-zero), the others still run, and the "
+                "failure names the command",
+        "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pv([PV1, PV2], env={"COSIGN_FAIL": "1"}); check(rc != 0 and "post-publish verification failed" in se, "AC7 post-publish: a failing cosign verify fails the script")
+t, rc, so, se = pv(None); check(rc != 0 and "verify-release.cannot-run.json" in se and not calls(t), "AC7 post-publish: a missing list file fails the script, naming it, and runs nothing")
+for raw, what in (("[{\"command\": ", "unparsable JSON"), ("{\"command\": \"x\"}", "an object, not a list"), ("[\"cosign verify x\"]", "a row that is not {command, reason}"),
+                  ("[{\"command\": \"cosign verify <IMAGE_REF>\"}]", "a row with no reason"), ("[{\"command\": \"cosign verify <IMAGE_REF>\", \"reason\": \"\"}]", "a row with an empty reason")):
+    t, rc, so, se = pv(None, raw=raw); check(rc != 0 and "verify-release.cannot-run.json" in se and not calls(t), "AC7 post-publish: %s fails the script and runs nothing" % what, "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pv([PV1, PV1]); check(rc != 0 and "twice" in se and not calls(t), "AC7 post-publish: a command listed twice is refused and nothing runs")
+for bad_cmd, what in (("curl -sS https://example.com/x", "curl"), ("cosign sign <IMAGE_REF>", "cosign sign"), ("cosign verify <IMAGE_REF>; id", "a ; after a verify"), ("cosign verify <IMAGE_REF> | sh", "a pipe into sh"),
+                      ("cosign verify <IMAGE_REF> $(id)", "a command substitution"), ("cosign verify <IMAGE_REF> `id`", "a backquote"), ("cosign verify <IMAGE_REF> > /tmp/x", "a redirect"),
+                      ("rm -rf .", "rm"), ("gh release delete v0.3.0", "gh release delete"), ("gh api -X DELETE repos/x/y", "gh api"), ("jq -n 1", "jq alone"), ("cosign verify --key $COSIGN_KEY <IMAGE_REF>", "a $ outside single quotes"),
+                      ("cosign verify <IMAGE_REF>\nprintf LOCAL_MARKER", "a newline after a verify (bash runs it as a second command)"), ("cosign verify <IMAGE_REF>\rprintf LOCAL_MARKER", "a carriage return after a verify"),
+                      ("cosign verify <IMAGE_REF> --certificate-identity \\'x${HOME}y\\'", "a backslash-escaped quote before a $"),
+                      ("cosign verify <IMAGE_REF> # '\nprintf LOCAL_MARKER", "a comment holding a quote, then a newline and a second command"), ("cosign verify <IMAGE_REF> #\nprintf LOCAL_MARKER", "a comment, then a newline and a second command")):
+    t, rc, so, se = pv([PV1, bad_cmd, PV2]); check(rc != 0 and "not an allowed verify form" in se and not calls(t), "AC7 post-publish: %s is refused (not an allowed verify form) and NOTHING runs, not even the good commands before it" % what, "rc=%s calls=%s %s" % (rc, calls(t), first(se)))
+t, rc, so, se = pv([PV1, "cosign verify <IMAGE_REF> " + IDQ + " --type <DIGEST>"])
+check(rc != 0 and "<DIGEST>" in se and not calls(t), "AC7 post-publish: a command with a placeholder the step "
+        "cannot fill is refused, never run literally, and nothing runs")
+t, rc, so, se = pv([PV1 + " --type <TAGS>"])
+check(rc != 0 and "<TAGS>" in se and not calls(t), "AC7 post-publish: a misspelt placeholder is refused, never run "
+        "literally")
+digs = {"image-production": DIG["image-production"], "apk-amd64": "sha256:" + "c" * 64}
+t, rc, so, se = pv([PV2], digs=digs); check(rc != 0 and "image-fips" in se and not calls(t), "AC7 post-publish: <IMAGE_REF_FIPS> with no image-fips digest in the digest list is refused")
+t, rc, so, se = pv([PV1], digs={"image-production": "sha256:zz"}); check(rc != 0 and not calls(t), "AC7 post-publish: a malformed image digest is refused")
+fipsbad = {"image-production": DIG["image-production"], "image-fips": "sha256:" + "B" * 64}
+for dg, what in ((digs, "no image-fips digest"), (fipsbad, "an upper-case (not lower-case hex) -fips digest"), ({"image-fips": DIG["image-fips"]}, "no image-production digest"),
+                 ({"image-production": DIG["image-production"], "image-fips": "sha256:" + "b" * 63}, "a short -fips digest"), ({"image-production": "sha256:zz", "image-fips": DIG["image-fips"]}, "a malformed production digest"),
+                 ({"image-production": 5, "image-fips": DIG["image-fips"]}, "a non-string production digest")):
+    t, rc, so, se = pv([PV3], digs=dg); check(rc != 0 and "digest" in se and not calls(t), "AC7 post-publish: %s runs nothing even when no command uses it" % what, "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pv([PV4], digs=digs); check(rc != 0 and not calls(t), "AC7 post-publish: a bad digest list runs nothing, also for a command with no image placeholder")
+t, rc, so, se = pv([PV1, PV2], digs=dict(DIG, repository="evil.example/x", repositories=["evil.example/x"]))
+check(rc == 0 and len(calls(t)) == 4 and not [c for c in calls(t) if "evil" in c], "AC7 post-publish: a repository named in the digest list is ignored (the two repositories are constants)", str(calls(t)))
+t, rc, so, se = pv([PV1], env={"RELEASE_REPOSITORY": "evil.example/x", "REPOSITORY": "evil.example/x", "IMAGE_REPOSITORY": "evil.example/x", "CANDIDATE_REPOSITORY": "evil.example/x"})
+check(rc == 0 and len(calls(t)) == 2 and not [c for c in calls(t) if "evil" in c], "AC7 post-publish: no environment variable can name a repository", str(calls(t)))
+t, rc, so, se = pv(None, raw=json.dumps([{"command": PV1, "reason": "r", "repository": "evil.example/x"}])); check(rc != 0 and not calls(t), "AC7 post-publish: a list row with a repository key is refused (a third repository cannot be injected through the list)")
+for lit in ("evil.example/x/cache@" + DIG["image-production"], "docker.io/library/alpine@sha256:" + "d" * 64, "ghcr.io/fosterstack/cache@" + DIG["image-production"], "oci://evil.example/x/cache@" + DIG["image-production"], "quay.io/x/y:latest"):
+    t, rc, so, se = pv([PV1, "cosign verify " + lit + " " + IDQ])
+    check(rc != 0 and "image" in se and not calls(t),
+            "AC7 post-publish: a literal image reference (%s) in a listed command is refused and nothing runs: only "
+                    "the two constant repositories, through the placeholders" % lit[:28],
+            "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pv([PV4.replace("x.txt", "dir/x.txt")])
+check(rc != 0 and "dir/x.txt" in se and "plain file name" in se and not calls(t),
+      "AC7 post-publish: a file path with a slash is not an image reference and not a file of the flat "
+      "release-published/: refused, nothing runs",
+      "rc=%s calls=%s %s" % (rc, calls(t), first(se)))
+for tag in ("main", "v0.3", "0.3.0", "v0.3.0-RC1", ""):
+    t, rc, so, se = pv([PV1], tag=tag); check(rc != 0 and not calls(t), "AC7 post-publish: the tag %r is refused, nothing runs" % tag, "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pv([PV1], env={"GITHUB_REPOSITORY": ""})
+check(rc == 0 and len(calls(t)) == 2, "AC7 post-publish: no input names a signer or a repository: an empty "
+        "GITHUB_REPOSITORY changes nothing")
+t, rc, so, se = pv([PV1, PV3]); L = "\n".join(log(t))
+check(rc == 0 and not re.search(r"crane|docker login|auth login|\bpush\b", L) and SENT["GH_TOKEN"] not in L + so + se, "AC7 post-publish: no registry login or push, and the read token is never on a command line or in output")
+# the step holds no token, so the script passes a good list with no GH_TOKEN in its environment
+t, rc, so, se = pv([PV1], creds=())
+check(rc == 0 and len(calls(t)) == 2, "AC7 post-publish: with no GH_TOKEN in the environment a passing list exits 0 (the step holds no token; one command in each of the two registries)", "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
+# ---- REQ-CHAIN-007-AC20: the commands run from the downloaded assets;
+# a jq-only command only after a verify of the same file
+PBF = "cosign verify-blob-attestation --bundle provenance.bundle.json --type https://slsa.dev/provenance/v1 --check-claims=false " + IDQ
+PJ = "jq -e '.ok == true' provenance.bundle.json"
+def pva(rows, assets=None, nodir=False, cv=None, links=None, seed=None, **kw):
+    """pv with files in release-published/ (assets: name -> text), or the directory removed.
+    cv: "drop" removes bin/chain-verify.py from the tree. links: name -> target, made as symbolic links in release-published/."""
+    t = tree()
+    real_verifier(t)
+    if cv == "drop": os.remove(os.path.join(t, "bin/chain-verify.py"))
+    rp = os.path.join(t, "release-published")
+    if nodir: shutil.rmtree(rp)
+    else:
+        for n, c in (assets or {}).items(): open(os.path.join(rp, n), "w").write(c)
+        for n, target in (links or {}).items(): os.symlink(target, os.path.join(rp, n))
+    seed_manifest(t, **(seed or {}))
+    os.makedirs(os.path.join(t, "docs"), exist_ok=True)
+    json.dump([{"command": c, "reason": "needs a release file"} for c in rows], open(os.path.join(t, "docs/verify-release.cannot-run.json"), "w"))
+    if not kw.get("unstaged"): stage_operands(t, rows)      # unstaged=True: the case tests a file absent from release-published/
+    e = {"GITHUB_REPOSITORY": "fosterstack/cache"}; e.update(kw.get("env") or {})
+    rc, so, se = run(t, "release-postverify", env=e, creds=["GH_TOKEN"])
+    return t, rc, so, se
+# a bundle signed with a key (what release-postverify.py accepts); messageSignature is the field the jq filters below read, OKF lacks it
+OK = json.dumps({"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "verificationMaterial": {"publicKey": {"hint": "k"}}, "messageSignature": True})
+OKF = json.dumps({"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "verificationMaterial": {"publicKey": {"hint": "k"}}})
+PJX = "jq -e '.messageSignature' provenance.bundle.json"      # PJ's twin for the cases that run jq: PJ itself stays as it is, it is part of the judge's corpus below
+t, rc, so, se = pva([PBF], assets={"provenance.bundle.json": OK})
+cwds = open(os.path.join(t, "calls.log.cwd")).read().split() if os.path.exists(os.path.join(t, "calls.log.cwd")) else []
+check(rc == 0 and cwds and all(os.path.realpath(c) == os.path.realpath(os.path.join(t, "release-published")) for c in cwds), "AC20 post-publish: a listed command runs with release-published/ as its working directory", "rc=%s cwds=%s %s" % (rc, cwds, first(se)))
+t, rc, so, se = pva([PV1], nodir=True); check(rc != 0 and not calls(t) and "release-published" in se, "AC20 post-publish: a missing release-published/ fails the run before anything runs, naming it", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PBF, PV1], env={"FAKE_NEEDFILES": "1"}, unstaged=True); check(rc != 0 and not calls(t) and "provenance.bundle.json" in se and "does not hold" in se, "AC20 post-publish: a command naming a file absent from release-published/ refuses before running anything", "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
+t, rc, so, se = pva([PBF, PJX], assets={"provenance.bundle.json": OK}); check(rc == 0 and len(calls(t)) == 1, "AC20 post-publish: a jq-only command after a verify of the same file runs and passes (jq read the file)", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PBF, PJX], assets={"provenance.bundle.json": OKF}); check(rc != 0 and "post-publish verification failed" in se and PJX in se, "AC20 post-publish: the jq-only command really runs on the file: a false filter fails the run, naming it", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PJX], assets={"provenance.bundle.json": OK}); check(rc != 0 and not calls(t) and "earlier" in se, "AC20 post-publish: a jq-only command with no earlier verify is refused and nothing runs", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PJX, PBF], assets={"provenance.bundle.json": OK}); check(rc != 0 and not calls(t) and "earlier" in se, "AC20 post-publish: a jq-only command listed BEFORE its verify is refused and nothing runs", "rc=%s %s" % (rc, first(se)))
+# every verify form carries exactly one --key release.rsa.pub and no flag but --key, --bundle, --type and --check-claims
+PK = "cosign verify-blob --key release.rsa.pub --bundle provenance.bundle.json provenance.bundle.json"
+for label, row in (("no key flag", "cosign verify-blob --bundle provenance.bundle.json provenance.bundle.json"),
+                   ("another key file", "cosign verify-blob --key other.pub --bundle provenance.bundle.json provenance.bundle.json"),
+                   ("a second key flag", PK + " --key other.pub"),
+                   ("the offline flag", PK + " --insecure-ignore-tlog"),
+                   ("--rekor-url", PK + " --rekor-url https://example.org"),
+                   ("a certificate identity", PK + " --certificate-identity x")):
+    t, rc, so, se = pva([row], assets={"provenance.bundle.json": OK})
+    check(rc != 0 and not calls(t), "AC20 post-publish: %s in a verify form: refused, nothing runs" % label, "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PK + " --type https://slsa.dev/provenance/v1 --check-claims=true"], assets={"provenance.bundle.json": OK})
+check(rc == 0 and len(calls(t)) == 1, "AC20 rule 1 --key, --bundle, --type and --check-claims=true are the whole allowed set of a verify-blob", "rc=%s %s" % (rc, first(se)))
+OTHER = PBF.replace("provenance.bundle.json", "other.bundle.json")
+t, rc, so, se = pva([OTHER, PJX], assets={"provenance.bundle.json": OK, "other.bundle.json": OK}); check(rc != 0 and not calls(t) and "provenance.bundle.json" in se, "AC20 post-publish: a verify of a DIFFERENT file does not license the jq-only command: refused, nothing runs", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PBF, PJX], assets={"provenance.bundle.json": OK}, env={"COSIGN_FAIL_ON": "provenance.bundle.json"}); E = [l for l in se.split("\n") if l.startswith("::error::")]
+check(rc != 0 and len(E) == 2 and "did not pass" in se, "AC20 post-publish: when the earlier verify failed the jq-only command is not run and fails the run (two ::error:: lines)", "rc=%s %s" % (rc, se[:300]))
+for bad_cmd, what in (("jq -e '.messageSignature'", "no file operand (it would read stdin)"), ("jq -e --slurpfile o other.json '.messageSignature' provenance.bundle.json", "--slurpfile (reads another file)"),
+                      ("jq -e -f prog.jq provenance.bundle.json", "-f (loads a program from a file)"), ("jq -e -L /tmp '.messageSignature' provenance.bundle.json", "-L (a module directory)"),
+                      ("jq -e '.messageSignature' provenance.bundle.json other.json", "a second file that no earlier verify names"), ("jq -e '.messageSignature' ../provenance.bundle.json", "a file spelled differently from the verify's"),
+                      ("jq -n 1", "jq -n alone")):
+    t, rc, so, se = pva([PBF, bad_cmd], assets={"provenance.bundle.json": OK, "other.json": OK}); check(rc != 0 and not calls(t), "AC20 post-publish: a jq-only command with %s is refused and nothing runs" % what, "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PBF, "jq -c '.messageSignature' provenance.bundle.json | jq -e '. == true'"], assets={"provenance.bundle.json": OK}); check(rc == 0, "AC20 post-publish: a jq pipe whose first jq reads a verified file is accepted (the later jq reads the pipe)", "rc=%s %s" % (rc, first(se)))
+# the release key is the public key of the verified manifest (REQ-CHAIN-008-AC5), never a release asset: the commands that say `--key release.rsa.pub` find it in release-published/ (the working directory)
+PVK = "cosign verify --key release.rsa.pub <IMAGE_REF>"
+PVKB = "cosign verify-blob --key release.rsa.pub --bundle b.json x.txt"
+def keyseen(t):
+    p = os.path.join(t, "calls.log.keyseen"); return open(p).read() if os.path.exists(p) else ""
+def placed_key(t):
+    p = os.path.join(t, "release-published/release.rsa.pub"); return open(p).read() if os.path.lexists(p) else None
+t, rc, so, se = pv([PVK, PVKB])
+check(rc == 0 and len(calls(t)) == 3, "AC20 post-publish: `--key release.rsa.pub` commands run (two registries for the image form, once for the blob form)", "rc=%s %s calls=%s" % (rc, first(se), calls(t)))
+check(keyseen(t) == kpem("rel") * 3, "AC20 post-publish: every `--key release.rsa.pub` command finds the manifest's key in its working directory, byte for byte", repr(keyseen(t))[:120])
+t, rc, so, se = pva([PVK], assets={"release.rsa.pub": "a published asset\n"})
+check(rc != 0 and "release-published/release.rsa.pub" in se and not calls(t) and placed_key(t) == "a published asset\n", "AC20 post-publish: a release asset named release.rsa.pub is refused, never overwritten and never taken for the key, nothing runs", "rc=%s %s" % (rc, first(se)))
+# ---- REQ-CHAIN-008-AC1: the manifest check is the verifier's, not a copy in this script ----------------------------------------------------------
+pv_tree = ast.parse(open(os.path.join(BIN, "release-postverify.py")).read())
+pv_calls = {n.func.attr for n in ast.walk(pv_tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+pv_text = {n.value for n in ast.walk(pv_tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+check("check_manifest" in pv_calls, "REQ-CHAIN-008-AC1 release-postverify.py calls check_manifest of the verifier it loads")
+own = [w for w in ("valid_from", "valid_to", "revoked_at", "dgst") if any(w in c for c in pv_text)] + [c for c in pv_text if "openssl" in c.lower()]
+check("check_manifest" in pv_calls and not own, "REQ-CHAIN-008-AC1 release-postverify.py holds no manifest check of its own (no window field, no openssl, no signature code) and relies on the verifier's", str(own))
+check(open(os.path.join(BIN, "chain-verify.py")).read().count("def check_manifest(") == 1, "REQ-CHAIN-008-AC1 bin/chain-verify.py defines the one check_manifest")
+# the verifier is the only judge: a verifier that refuses stops the run, and the key it returns is the key that is placed
+t = tree(); real_verifier(t); stub_verifier(t, "def check_manifest(keys_dir):\n    refuse('manifest', 'stub verifier refuses')")
+seed_manifest(t); os.makedirs(os.path.join(t, "docs"), exist_ok=True); json.dump([{"command": PVK, "reason": "r"}], open(os.path.join(t, "docs/verify-release.cannot-run.json"), "w"))
+rc, so, se = run(t, "release-postverify", env={"GITHUB_REPOSITORY": "fosterstack/cache"}, creds=["GH_TOKEN"])
+check(rc != 0 and "stub verifier refuses" in se and not calls(t) and placed_key(t) is None, "REQ-CHAIN-008-AC1 a verifier that refuses the manifest stops the run: the good files on disk are not judged again by this script", "rc=%s %s" % (rc, first(se)))
+t = tree(); real_verifier(t); stub_verifier(t, "def check_manifest(keys_dir):\n    return {'key_id': 'k' * 64, 'public_key': 'KEY RETURNED BY THE VERIFIER\\n'}")
+seed_manifest(t); os.makedirs(os.path.join(t, "docs"), exist_ok=True); json.dump([{"command": PVK, "reason": "r"}], open(os.path.join(t, "docs/verify-release.cannot-run.json"), "w"))
+rc, so, se = run(t, "release-postverify", env={"GITHUB_REPOSITORY": "fosterstack/cache"}, creds=["GH_TOKEN"])
+check(rc == 0 and placed_key(t) == "KEY RETURNED BY THE VERIFIER\n", "REQ-CHAIN-008-AC5 release.rsa.pub holds the public key the verifier returned and nothing else", "rc=%s %s key=%r" % (rc, first(se), placed_key(t)))
+# ---- REQ-CHAIN-008-AC3 and AC5: a good manifest is checked against the committed root key and its key is the key of the commands ----------------------
+t, rc, so, se = pv([PVK])
+bk = open(os.path.join(t, "build/keys/release.rsa.pub")).read()
+check(rc == 0 and len(calls(t)) == 2, "REQ-CHAIN-008-AC3 a manifest signed by the committed root key, in its window, lets the listed commands run", "rc=%s %s" % (rc, first(se)))
+check(placed_key(t) == kpem("rel") and keyseen(t) == kpem("rel") * 2, "REQ-CHAIN-008-AC5 release.rsa.pub is exactly the manifest's public_key and the commands read that file", repr(placed_key(t))[:80])
+check(bk != kpem("rel") and placed_key(t) != bk and bk not in keyseen(t), "REQ-CHAIN-008-AC5 a different build/keys/release.rsa.pub in the tree is not used", "")
+t = tree(); real_verifier(t); seed_manifest(t); shutil.rmtree(os.path.join(t, "build/keys"))
+os.makedirs(os.path.join(t, "docs"), exist_ok=True); json.dump([{"command": PVK, "reason": "r"}], open(os.path.join(t, "docs/verify-release.cannot-run.json"), "w"))
+rc, so, se = run(t, "release-postverify", env={"GITHUB_REPOSITORY": "fosterstack/cache"}, creds=["GH_TOKEN"])
+check(rc == 0 and placed_key(t) == kpem("rel"), "REQ-CHAIN-008-AC3 with no build/keys/release.rsa.pub in the tree the run still passes: that file is not an input", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PVK], seed={"body": manifest(valid_to=at(30), revoked_at=at(30))})
+check(rc == 0 and placed_key(t) == kpem("rel"), "REQ-CHAIN-008-AC3 a valid_to and a revoked_at still in the future are accepted", "rc=%s %s" % (rc, first(se)))
+# ---- REQ-CHAIN-008-AC4: a manifest that does not pass stops the run before any listed command and leaves no key ----------------------------------------
+good_body = body_of(manifest())
+MUTANTS = (
+    ("the manifest missing", dict(drop=("release-key-manifest.json",)), ("missing",)),
+    ("the signature missing", dict(drop=("release-key-manifest.sig",)), ("signature", "missing")),
+    ("the committed root key missing", dict(no_root=True), ("root", "missing")),
+    ("a garbage signature", dict(sig="!!!not-base64!!!\n"), ("signature",)),
+    ("an empty signature (unsigned)", dict(sig=""), ("signature",)),
+    ("a manifest signed by another root key", dict(signer="otherroot"), ("signature",)),
+    ("a manifest altered after it was signed", dict(body=good_body.replace(b'"valid_from"', b'"valid_from" '), sig=sig_of("root", good_body)), ("signature",)),
+    ("a manifest that expired", dict(body=manifest(valid_to=at(-1))), ("expired",)),
+    ("a manifest not yet valid", dict(body=manifest(valid_from=at(1))), ("not yet valid",)),
+    ("a revoked key", dict(body=manifest(revoked_at=at(-1))), ("revoked",)),
+    ("an RSA root key", dict(signer="rsaroot", root_pub="rsaroot"), ("root key", "p-256")),
+    ("an Ed25519 root key", dict(signer="edroot", root_pub="edroot"), ("root key", "p-256")),
+    ("an unknown field", dict(body=manifest(note="x")), ("unknown field", "note")),
+    ("a key_id that is not the hash of the key", dict(body=manifest(key_id=hashlib.sha256(b"x").hexdigest())), ("key_id",)),
+    ("a manifest that is a symlink", dict(link="release-key-manifest.json"), ("manifest", "link")),
+    ("a signature that is a symlink", dict(link="release-key-manifest.sig"), ("signature", "link")),
+    ("a manifest that is a directory", dict(as_dir="release-key-manifest.json"), ("manifest", "regular file")),
+    ("a signature that is a directory", dict(as_dir="release-key-manifest.sig"), ("signature", "regular file")),
+)
+for label, seed, words in MUTANTS:
+    t, rc, so, se = pva([PVK, PVKB], seed=seed); low = se.lower()
+    why = [w for w in ("manifest",) + words if w not in low]
+    check(rc != 0 and not why and "Traceback" not in se and not calls(t) and placed_key(t) is None,
+          "REQ-CHAIN-008-AC4 %s: exit non-zero naming the manifest and the reason, no listed command runs, no release.rsa.pub is written" % label,
+          "rc=%s missing words=%s calls=%d key=%s: %s" % (rc, why, len(calls(t)), placed_key(t) is not None, first(se)))
+t, rc, so, se = pv([PV1, PV3]); check(rc == 0 and len(calls(t)) == 4, "AC20 post-publish: a good list of two image commands runs in both registries", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([]); check(rc == 0 and not calls(t), "AC20 post-publish: an empty list runs nothing and passes with the assets directory present")
+# the grammar is CLOSED, so none of these reads a file nothing verified
+for bad_cmd, what in (("jq -ef unverified.jq provenance.bundle.json", "combined short options (-ef loads a program file)"), ("jq -er '.messageSignature' provenance.bundle.json", "combined short options (-er)"),
+                      ("jq -L. '.messageSignature' provenance.bundle.json", "an attached module path (-L.)"), ("jq --run-tests unverified.jq provenance.bundle.json", "--run-tests"),
+                      ("jq -e '.messageSignature' -- -unverified.json provenance.bundle.json", "a -- before a dash-prefixed file"), ("jq --exit-status 'import \"other\" as $x {\"search\":\".\"}; $x::x[0].messageSignature' provenance.bundle.json", "an import inside the filter"),
+                      ("jq -e 'include \"other\"; .messageSignature' provenance.bundle.json", "an include inside the filter"), ("jq -e 'input_filename' provenance.bundle.json", "input_filename (not an allowed builtin)"),
+                      ("jq -e '$ENV.HOME' provenance.bundle.json", "$ENV"), ("jq -e 'env.HOME' provenance.bundle.json", "env"), ("jq -e '[inputs]' provenance.bundle.json", "inputs"),
+                      ("jq -e 'debug' provenance.bundle.json", "debug"), ("jq -e '\"\\(.messageSignature)\"' provenance.bundle.json", "a string interpolation"),
+                      ("jq -e '.messageSignature # c' provenance.bundle.json", "a comment"), ("jq -e '@sh \"x\"' provenance.bundle.json", "the @sh format"),
+                      ("jq -e '.messageSignature' provenance.*", "a glob in the file operand"), ("jq -e '.messageSignature' provenance.bundle.js{on,}", "a brace in the file operand"),
+                      ("jq -e '.messageSignature' $HOME/provenance.bundle.json", "a $ in the file operand"), ("jq -e '.messageSignature' ./provenance.bundle.json", "a ./ in the file operand"),
+                      ("jq -e '.messageSignature' sub/provenance.bundle.json", "a slash in the file operand"), ("jq -e '.messageSignature' <TAG>.bundle.json", "a placeholder in the file operand"),
+                      ("jq -e '.messageSignature' PH_TAG.bundle.json", "a name spelled like the placeholder form"), ("jq -e --arg ref '.messageSignature' provenance.bundle.json", "--arg with no value"),
+                      ("jq -e '.messageSignature' provenance.bundle.json | jq -ef x.jq", "a later pipe segment with a program file"),
+                      ("jq -e '.messageSignature' provenance.bundle.json > out.json", "a redirect"), ("jq -e '.messageSignature' provenance.bundle.json; id", "a ; after it")):
+    t, rc, so, se = pva(
+        [PBF, bad_cmd],
+        assets={"provenance.bundle.json": OK, "unverified.jq": ".ok", "other.json": OK, "-unverified.json": OK}
+    )
+    check(rc != 0 and not calls(t), "AC20 %s is refused and nothing runs" % what, "rc=%s %s" % (rc, first(se)))
+# a verify command's FLAG VALUES (an identity, an issuer, a type) never license a file; only a file flag's value and a positional do
+VID = "cosign verify-blob " + IDQ + " --certificate-identity provenance.bundle.json --bundle b.json x.txt"
+t, rc, so, se = pva([VID, PJX], assets={"provenance.bundle.json": OK, "b.json": OK, "x.txt": "x"}); check(rc != 0 and not calls(t), "AC20 rule 1 a verify with a --certificate-identity flag is refused (any other flag), so its value licenses no jq operand: nothing runs", "rc=%s %s" % (rc, first(se)))
+VT = "cosign verify-blob-attestation --type provenance.bundle.json --bundle b.json " + IDQ
+t, rc, so, se = pva([VT, PJX], assets={"provenance.bundle.json": OK, "b.json": OK})
+check(rc != 0 and not calls(t), "AC20 a verify's --type value does not license a file", "rc=%s %s" % (rc, first(se)))
+VP = "cosign verify-blob " + IDQ + " --bundle b.json provenance.bundle.json"
+t, rc, so, se = pva([VP, PJX], assets={"provenance.bundle.json": OK, "b.json": OK})
+check(
+    rc == 0,
+    "AC20 a verify's positional blob operand licenses the jq read of that file",
+    "rc=%s %s" % (rc, first(se))
+)
+VB = "cosign verify-blob " + IDQ + " --bundle=provenance.bundle.json x.txt"
+t, rc, so, se = pva([VB, PJX], assets={"provenance.bundle.json": OK, "x.txt": "x"}); check(rc == 0, "AC20 a --bundle=FILE value licenses the file", "rc=%s %s" % (rc, first(se)))
+VU = "cosign verify-blob " + IDQ + " --check-claims provenance.bundle.json x.txt"      # a bare --check-claims means true: accepted
+t, rc, so, se = pva([VU, PJX], assets={"provenance.bundle.json": OK, "x.txt": "x"}); check(rc == 0 and len(calls(t)) == 1, "AC20 rule 1 a bare --check-claims is accepted (it means true), and its two operands are files the jq read may name", "rc=%s %s" % (rc, first(se)))
+# the page's own two jq commands (docs/verify-release.md section 3) are in the grammar
+J1 = "jq -e --arg ref '<IMAGE_REF>' '.dsseEnvelope.payload | @base64d | fromjson | .predicateType == \"https://slsa.dev/provenance/v1\" and any(.subject[]; .name == \"image-production\" and (.digest.sha256 as $d | $ref | endswith(\"@sha256:\" + $d)))' provenance.bundle.json"
+# the judge corpus below keeps the OLD second jq (its digest must not move); the test of the page's commands reads the
+# REAL one
+J2OLD = ("jq -r '.dsseEnvelope.payload | @base64d | fromjson | .subject[] | "
+         ".name + \" sha256:\" + .digest.sha256' provenance.bundle.json")
+PAGE_LINES = [l_ for l_ in open(os.path.join(os.environ["REPO_ROOT"], "docs/verify-release.md")).read().split("\n")
+              if l_.startswith("jq -r") and "runDetails.byproducts" in l_]
+# the page's second jq, read from the page (a file-subject command is not on the cannot-run list), not retyped
+check(len(PAGE_LINES) == 1,
+      "AC20 the second jq is read from the page, and the page holds exactly one such line", "found %d" % len(PAGE_LINES))
+J2 = PAGE_LINES[0] if PAGE_LINES else ""
+SBOMD = "5b" * 32
+def prov_of(subjects, byproducts=None):
+    st = {"predicateType": "https://slsa.dev/provenance/v1", "subject": subjects}
+    if byproducts is not None: st["predicate"] = {"runDetails": {"byproducts": byproducts}}
+    return json.dumps({"verificationMaterial": {"publicKey": {"hint": "k"}}, "dsseEnvelope": {"payload": __import__("base64").b64encode(json.dumps(st).encode()).decode()}})
+PROV = prov_of([{"name": "image-production", "digest": {"sha256": DIG["image-production"].split(":")[1]}},
+                {"name": "image-fips", "digest": {"sha256": DIG["image-fips"].split(":")[1]}}],
+               [{"name": "sbom-production", "digest": {"sha256": SBOMD}}])
+t, rc, so, se = pva([PBF, J1, J2], assets={"provenance.bundle.json": PROV})
+check(rc == 0 and len(calls(t)) == 1 and ("sbom-production sha256:" + SBOMD) in so,
+      "AC20 the guide's two real jq commands are accepted and PASS on a provenance of the right shape, and "
+              "the second prints the SBOM line (the image commands' placeholder is filled per "
+              "registry)", "rc=%s %s" % (rc, se[:300]))
+FIPSONLY = json.dumps({"verificationMaterial": {"publicKey": {"hint": "k"}}, "dsseEnvelope": {"payload": __import__("base64").b64encode(json.dumps({"predicateType": "https://slsa.dev/provenance/v1", "subject": [{"name": "image-fips", "digest": {"sha256": DIG["image-production"].split(":")[1]}}]}).encode()).decode()}})
+t, rc, so, se = pva([PBF, J1], assets={"provenance.bundle.json": FIPSONLY})
+check(
+    rc != 0 and "post-publish verification failed" in se,
+    "AC20 the production digest check fails when the matching digest sits under another subject name",
+    "rc=%s %s" % (rc, se[:200])
+)
+# the shell never sees a jq-only command, and a placeholder is never a file name
+t, rc, so, se = pva([PBF, "jq -e --arg x {safe,--rawfile,hidden,other.json} '.messageSignature' provenance.bundle.json"], assets={"provenance.bundle.json": OK, "other.json": '{"unverified":true}'})
+check(rc != 0 and not calls(t) and se.strip(), "AC20 rule 1 an unquoted brace in a jq --arg value is refused (bash would expand it), nothing runs", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PBF, "jq -e --arg x '~' '.messageSignature' provenance.bundle.json"], assets={"provenance.bundle.json": OK}); check(rc == 0, "AC20 a tilde in an --arg value is text, not a home directory", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PBF.replace("provenance.bundle.json", "<TAG>.bundle.json"), "jq -e '.messageSignature' PH_TAG.bundle.json"], assets={"v0.3.0.bundle.json": OKF, "PH_TAG.bundle.json": OK})
+check(rc != 0 and not calls(t), "AC20 a verify of <TAG>.bundle.json does not license a jq read of a file literally named PH_TAG.bundle.json (refused, nothing runs)", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PBF.replace("provenance.bundle.json", "<TAG>.bundle.json"), "jq -e '.messageSignature' v0.3.0.bundle.json"], assets={"v0.3.0.bundle.json": OK}); check(rc != 0 and not calls(t), "AC20 a verify of <TAG>.bundle.json does not license the substituted name either (fail closed)", "rc=%s %s" % (rc, first(se)))
+# the names a verify command names are checked with the tag filled in: <TAG>.bundle.json is the
+# staged v0.3.0.bundle.json, and a marker nothing fills is a refusal that runs nothing
+PBT = PBF.replace("provenance.bundle.json", "<TAG>.bundle.json")
+t, rc, so, se = pva([PBT], assets={"v0.3.0.bundle.json": OK})
+check(rc == 0 and len(calls(t)) == 1 and "--bundle v0.3.0.bundle.json" in calls(t)[0],
+      "AC20 a verify of <TAG>.bundle.json is checked as the staged v0.3.0.bundle.json and runs with that name",
+      "rc=%s calls=%s %s" % (rc, calls(t), first(se)))
+t, rc, so, se = pva([PBT], assets={})
+check(rc != 0 and "v0.3.0.bundle.json" in se and not calls(t),
+      "AC20 a verify of <TAG>.bundle.json with no staged v0.3.0.bundle.json is refused naming the filled "
+      "name, nothing runs", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PBF.replace("provenance.bundle.json", "<NOSUCH>.bundle.json")],
+                    assets={"provenance.bundle.json": OK})
+check(rc != 0 and "<NOSUCH>" in se and not calls(t),
+      "AC20 an unfilled marker in a named file fails, nothing runs", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PBF, "jq -e --arg ref 'ghcr.io/x/y@sha256:" + "a" * 64 + "' '.messageSignature' provenance.bundle.json"], assets={"provenance.bundle.json": OK}); check(rc == 0, "AC20 a repository-looking --arg VALUE to jq is text and is not refused as a repository literal (jq opens no network)", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PBF, "jq -e 'any(.messageSignature[]; endswith(\"@sha256:abc\"))' provenance.bundle.json"], assets={"provenance.bundle.json": json.dumps({"verificationMaterial": {"publicKey": {"hint": "k"}}, "messageSignature": {"signature": "x@sha256:abc"}})}); check(rc == 0, "AC20 @sha256: inside a jq filter string is not a repository operand", "rc=%s %s" % (rc, first(se)))
+# ---- a bundle that carries a certificate is refused by the post-publish check, with the check chain-verify.py holds ----------------
+# The bundle files read are the --bundle operands of the listed verify commands, under release-published/. The refusal is chain-verify.py's own function, loaded
+# (never run as a program, never copied); a missing, altered or unloadable chain-verify.py refuses; a list that names no bundle reads nothing and needs nothing.
+def kbundle(identity):
+    """A bundle in the shape Sign checks: a DSSE envelope and a tlog entry that is the right shape (not a real Rekor proof), with the identity material given."""
+    vm = {"tlogEntries": [{"logIndex": "7", "kindVersion": {"kind": "dsse", "version": "0.0.1"}}]}; vm.update(identity)
+    return json.dumps({"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "verificationMaterial": vm,
+                       "dsseEnvelope": {"payloadType": "application/vnd.in-toto+json", "payload": "e30=", "signatures": [{"sig": "eA==", "keyid": ""}]}})
+KCERT = kbundle({"certificate": {"rawBytes": "eA=="}})
+KX509 = kbundle({"x509CertificateChain": {"certificates": [{"rawBytes": "eA=="}]}})
+KKEY = kbundle({"publicKey": {"hint": "awskms:///alias/fosterstack-release-signing"}})
+CERTMSG = "the bundle kms-sign wrote carries a certificate: no certificate belongs to this chain"
+for what, kb in (("a certificate", KCERT), ("an x509CertificateChain", KX509)):
+    t, rc, so, se = pva([PBF], assets={"provenance.bundle.json": kb})
+    check(
+        rc == 1 and not calls(t) and ("release-postverify: provenance.bundle.json: " + CERTMSG) in se,
+        "post-publish: a bundle named by --bundle that carries %s is refused (exit 1, chain-verify.py's text) "
+        "and NOTHING runs" % what,
+        "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se))
+    )
+t, rc, so, se = pva([PBF], assets={"provenance.bundle.json": KKEY})
+check(
+    rc == 0 and len(calls(t)) == 1 and "certificate" not in se,
+    "post-publish control: the same bundle with a publicKey and no certificate is not refused for a certificate, and "
+    "its command runs",
+    "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se))
+)
+t, rc, so, se = pva([PBF.replace("--bundle provenance.bundle.json", "--bundle=provenance.bundle.json")], assets={"provenance.bundle.json": KCERT})
+check(
+    rc == 1 and not calls(t) and CERTMSG in se,
+    "post-publish: the --bundle=FILE form is read too",
+    "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se))
+)
+t, rc, so, se = pva([PV1], assets={"provenance.bundle.json": KCERT})
+check(
+    rc == 0 and len(calls(t)) == 2,
+    "post-publish: a certificate bundle that no listed command names is not read (the check is not required of a "
+    "list that names none)",
+    "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se))
+)
+t, rc, so, se = pva([PV1], assets={}, cv="drop")
+check(
+    rc != 0 and not calls(t) and "bin/chain-verify.py cannot be loaded" in se,
+    "post-publish: with no bundle named, a missing bin/chain-verify.py still refuses the run (the manifest check is "
+    "loaded from it), and no listed command runs",
+    "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se))
+)
+t, rc, so, se = pva([PBF], assets={"provenance.bundle.json": "not json"})
+check(
+    rc == 1 and not calls(t) and "release-postverify: provenance.bundle.json" in se,
+    "post-publish: a named bundle that is not JSON is refused (exit 1), never skipped, and nothing runs",
+    "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se))
+)
+for esc, what in (("../escape.bundle.json", "a path that climbs out of release-published/"), ("/etc/hostname", "an absolute path")):
+    t, rc, so, se = pva([PBF.replace("provenance.bundle.json", esc)], assets={"provenance.bundle.json": KCERT})
+    check(rc == 1 and not calls(t) and esc in se, "post-publish: a --bundle operand that is %s is refused as not a plain file name, and nothing runs" % what, "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
+for odd, what in (("provenance.bundle.js?n", "a ? glob"), ("provenance.bundle.[j]son", "a [ ] glob"), ("provenance.bundle.*", "a * glob"), ("{provenance,x}.bundle.json", "a brace list"),
+                  ("~/provenance.bundle.json", "a tilde"), ("provenance.bundle.json\\", "a trailing backslash")):
+    t, rc, so, se = pva([PBF.replace("provenance.bundle.json", odd)], assets={"provenance.bundle.json": KCERT})
+    check(rc == 1 and not calls(t) and se.strip(), "post-publish: a --bundle operand that is not a plain name (%s) is refused before anything runs, even when its glob would match a present certificate bundle" % what, "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
+for cvmode, what in (("drop", "missing"),):
+    t, rc, so, se = pva([PBF], assets={"provenance.bundle.json": KKEY}, cv=cvmode)
+    check(
+        rc == 1 and not calls(t) and "chain-verify" in se,
+        "post-publish: a bundle is named and bin/chain-verify.py is %s: refused (exit 1), nothing runs, never "
+        "a skip" % what,
+        "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se))
+    )
+# a plain name that is a link out of release-published/ resolves outside it, and is refused
+outside = tempfile.mkdtemp(); open(os.path.join(outside, "x.json"), "w").write(KKEY)
+t, rc, so, se = pva([PBF], links={"provenance.bundle.json": os.path.join(outside, "x.json")})
+check(
+    rc == 1 and not calls(t) and "provenance.bundle.json: resolves outside release-published/" in se,
+    "post-publish: a plain bundle name that is a link out of release-published/ is refused",
+    "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se))
+)
+# the shape of a bundle signed with a key: an object with an object verificationMaterial, strict JSON, and only the keys such a bundle holds
+def kmod(change):
+    b = json.loads(KKEY); change(b); return json.dumps(b)
+def drop(b): del b["verificationMaterial"]
+def spelled(b): b["verification_material"] = b.pop("verificationMaterial")
+for what, text, want in (
+        ("a bundle whose key is spelled verification_material (no verificationMaterial)", kmod(spelled), "provenance.bundle.json: not a bundle"),
+        ("a bundle with no verificationMaterial", kmod(drop), "provenance.bundle.json: not a bundle"),
+        ("a bundle whose verificationMaterial is a list", kmod(lambda b: b.update(verificationMaterial=[1])), "provenance.bundle.json: not a bundle"),
+        ("a bundle whose verificationMaterial is a string", kmod(lambda b: b.update(verificationMaterial="x")), "provenance.bundle.json: not a bundle"),
+        ("a bundle with a repeated key (Python keeps the last, another reader the first)", '{"verificationMaterial": {"publicKey": {}, "publicKey": {"hint": "x"}}}', "provenance.bundle.json: cannot be read as strict JSON"),
+        ("a verificationMaterial key spelled x509_certificate_chain", kmod(lambda b: b["verificationMaterial"].update(x509_certificate_chain={})), "verificationMaterial.x509_certificate_chain is not allowed"),
+        ("an unknown verificationMaterial key (cert)", kmod(lambda b: b["verificationMaterial"].update(cert="x")), "verificationMaterial.cert is not allowed"),
+        ("an unknown top-level key (cert)", kmod(lambda b: b.update(cert="x")), "provenance.bundle.json: cert is not allowed at the top of a bundle")):
+    t, rc, so, se = pva([PBF], assets={"provenance.bundle.json": text})
+    check(
+        rc == 1 and not calls(t) and want in se,
+        "post-publish: %s is refused and nothing runs" % what,
+        "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se))
+    )
+t, rc, so, se = pva([PBF], assets={"provenance.bundle.json": kmod(lambda b: b.update(cert="x", verificationMaterial=json.loads(KCERT)["verificationMaterial"]))})
+check(
+    rc == 1 and not calls(t) and CERTMSG in se,
+    "post-publish: a certificate bundle with an unknown key too gets the certificate refusal first",
+    "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se))
+)
+KREAL = kmod(lambda b: b["verificationMaterial"].update(timestampVerificationData={"rfc3161Timestamps": []}))      # the key set of a real key-signed bundle (the image-publishers fixture)
+t, rc, so, se = pva([PBF], assets={"provenance.bundle.json": KREAL})
+check(
+    rc == 0 and len(calls(t)) == 1,
+    "post-publish control: a bundle with publicKey, tlogEntries and timestampVerificationData is accepted (the shape "
+    "check is not vacuous)",
+    "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se))
+)
+# the listed commands run WITHOUT a shell, and bundle discovery does not depend on the
+# unknown-flag rule of the licensing walk
+for flag in ("--offline", "--insecure-ignore-tlog", "--new-bundle-format"):
+    for form in (" cert.json", "=cert.json"):
+        t, rc, so, se = pva(["cosign verify-blob --key release.rsa.pub %s --bundle%s x.txt" % (flag, form)], assets={"cert.json": KCERT, "x.txt": "x"})
+        check(
+            rc == 1 and not calls(t) and "not an allowed verify form" in se,
+            "post-publish: a boolean flag (%s) before --bundle%s (the file named after it) is outside "
+            "the closed flag set: refused, nothing runs" % (flag, form),
+            "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se))
+        )
+t, rc, so, se = pva(["cosign verify-blob --key release.rsa.pub {--bundle,cert.json} x.txt"], assets={"cert.json": KCERT, "x.txt": "x"}, env={"FAKE_NEEDFILES": "1"})
+check(rc != 0 and not calls(t) and "{--bundle,cert.json}" in se, "rule 1 a brace that would build the --bundle flag is refused before anything runs, and the refusal names the command", "rc=%s %s" % (rc, calls(t)))
+t, rc, so, se = pva(["cosign verify-blob --key release.rsa.pub --bun\\\ndle cert.json x.txt"], assets={"cert.json": KCERT, "x.txt": "x"})
+lg = open(os.path.join(t, "calls.log")).read() if os.path.exists(os.path.join(t, "calls.log")) else ""
+check(
+    "--bundle" not in lg,
+    "post-publish: a backslash-newline inside the flag does not join into --bundle (no shell removes it): the "
+    "verifier never receives --bundle",
+    "rc=%s log=%r" % (rc, lg[:120])
+)
+t, rc, so, se = pva(["cosign verify-blob --key release.rsa.pub x.txt --bundle"], assets={"x.txt": "x"})
+check(
+    rc == 1 and not calls(t) and "--bundle" in se,
+    "post-publish: a trailing --bundle with no file name is refused and nothing runs",
+    "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se))
+)
+t, rc, so, se = pva(["cosign verify-blob --key release.rsa.pub x*.txt"], assets={"x1.txt": "x"}, env={"FAKE_NEEDFILES": "1"})
+check(rc != 0 and not calls(t) and "x*.txt" in se, "rule 1 an unquoted glob in an operand is refused before anything runs, and the refusal names the command", "rc=%s %s" % (rc, calls(t)))
+# an EMPTY list still requires the assets directory (nothing is skipped by listing nothing)
+t, rc, so, se = pva([], nodir=True); check(rc != 0 and "release-published" in se, "AC20 an empty list with no release-published/ fails (the directory is required whatever the list holds)", "rc=%s %s" % (rc, first(se)))
+# ---- Release rule 1: the ONE judge shared with Check, tried through release-postverify.py (a refusal exits non-zero, prints why, and NOTHING runs) --------
+# Each row is a one-command list after a good verify of provenance.bundle.json (so a jq segment may name it). ok = accepted and runs; otherwise refused.
+# Example: "cosign verify <IMAGE_REF> --key release.rsa.pub # c" is refused (a # outside quotes); the same # inside single quotes is not.
+def judged(cmd, files=None):
+    t, rc, so, se = pva([cmd], assets=dict({"provenance.bundle.json": OK, "x.txt": "x"}, **(files or {})))
+    return t, rc, se
+K = " --key release.rsa.pub"
+V = "cosign verify" + K + " <IMAGE_REF>"
+RULE1_REFUSED = [
+    ("a # outside quotes", V + " # x"), ("an escaped pipe", V + " \\| jq -e '.a'"), ("a quoted pipe operand", "cosign verify" + K + " '<IMAGE_REF>|x'"),
+    ("a quoted semicolon", "cosign verify" + K + " '<IMAGE_REF>;x'"), ("a quoted ampersand", "cosign verify" + K + " \"<IMAGE_REF>&x\""),
+    ("an escaped greater-than", V + " \\>x"), ("a $ outside quotes", V + " $HOME"), ("a backtick outside quotes", V + " `id`"),
+    ("a $ inside double quotes", "cosign verify" + K + " \"$X\""), ("a command substitution", V + " $(id)"),
+    ("a backslash before $", V + " \\$X"), ("a backslash at the end", V + " \\"), ("an unquoted brace", V + " {a,b}"),
+    ("an unquoted glob *", V + " x*"), ("an unquoted glob ?", V + " x?"), ("an unquoted bracket", V + " x[1]"), ("an unquoted tilde", V + " ~"),
+    ("a newline outside quotes", V + "\n" + V), ("an empty pipe segment", V + " | | jq -e '.a'"), ("a trailing pipe", V + " |"),
+    ("a redirection", V + " > out"), ("a subshell", "(" + V + ")"), ("a semicolon list", V + " ; " + V), ("a non-verify command", "ls -l"),
+    ("no key flag", "cosign verify <IMAGE_REF>"), ("two key flags", V + " --key release.rsa.pub"), ("another key file", "cosign verify --key other.pub <IMAGE_REF>"),
+    ("an unlisted flag", V + " --insecure-ignore-tlog"), ("--check-claims=false on verify", "cosign verify" + K + " --check-claims=false <IMAGE_REF>"),
+    ("a --bundle operand that climbs out (../x)", PBF.replace("provenance.bundle.json", "../x.json")),
+    ("a --bundle operand with a ? glob", PBF.replace("provenance.bundle.json", "p?.json")), ("a --bundle operand with a [ ] glob", PBF.replace("provenance.bundle.json", "p[1].json")),
+    ("a --bundle operand with a * glob", PBF.replace("provenance.bundle.json", "p*.json")), ("a --bundle operand with a brace list", PBF.replace("provenance.bundle.json", "{a,b}.json")),
+    ("a --bundle operand with a tilde", PBF.replace("provenance.bundle.json", "~/b.json")),
+    ("a literal ghcr.io image", "cosign verify" + K + " ghcr.io/fosterstack/cache@sha256:" + "a" * 64), ("a literal docker.io image", "cosign verify" + K + " docker.io/fosterstack/cache:x"),
+    ("a literal quay.io image", "cosign verify" + K + " quay.io/o/r"), ("an oci:// reference", "cosign verify" + K + " oci://x"),
+    ("a host:port image", "cosign verify" + K + " localhost:5000/r"), ("a digest reference", "cosign verify" + K + " a@sha256:" + "b" * 64),
+    ("the <RELEASE_KEY> placeholder", "cosign verify --key <RELEASE_KEY> <IMAGE_REF>"),
+]
+for what, cmd in RULE1_REFUSED:
+    t, rc, se = judged(cmd)
+    check(rc != 0 and not calls(t) and se.strip(), "REQ-CHAIN-007 rule 1 the shared judge refuses %s: non-zero, a message on stderr, nothing runs" % what, "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
+RULE1_OK = [
+    ("a verify with the placeholder", V), ("the fips placeholder", "cosign verify" + K + " <IMAGE_REF_FIPS>"), ("--check-claims=true", "cosign verify" + K + " --check-claims=true <IMAGE_REF>"), ("a bare --check-claims (means true in cosign)", "cosign verify" + K + " --check-claims <IMAGE_REF>"),
+    ("--check-claims=false on verify-blob-attestation", PBF), ("a # inside single quotes", "jq -e --arg x '#' '.messageSignature' provenance.bundle.json"), ("a pipe of verify and jq", V + " | jq -e '.a'"),
+    ("jq with --arg and a pipe inside its quoted filter", "jq -r --arg k v '.a | .b' provenance.bundle.json"), ("jq long flags", "jq --exit-status --raw-output --compact-output --sort-keys '.a' provenance.bundle.json"),
+    ("jq @base64d", "jq -r '.a | @base64d' provenance.bundle.json"), ("jq -S -c -e", "jq -S -c -e '.messageSignature' provenance.bundle.json"),
+]
+for what, cmd in RULE1_OK:
+    jq_only = cmd.startswith("jq")
+    t, rc, so, se = pva(([PBF] if jq_only else []) + [cmd], assets={"provenance.bundle.json": OK})
+    check(rc == 0 or "closed grammar" not in se and "refus" not in se.lower() and "not an allowed" not in se, "REQ-CHAIN-007 rule 1 the shared judge does not refuse %s" % what, "rc=%s %s" % (rc, first(se)))
+RULE1_JQ_REFUSED = [
+    ("an unlisted flag", "jq -e --rawfile f x.json '.a' provenance.bundle.json"), ("--from-file", "jq -e --from-file f.jq provenance.bundle.json"),
+    ("-n", "jq -n '.a' provenance.bundle.json"), ("string interpolation", "jq -e '\"\\(.a)\"' provenance.bundle.json"), ("a comment in the filter", "jq -e '.a # c\n' provenance.bundle.json"),
+    ("a placeholder in the filter", "jq -e '<IMAGE_REF>' provenance.bundle.json"), ("input", "jq -e 'input' provenance.bundle.json"), ("env", "jq -e 'env' provenance.bundle.json"),
+    ("import", "jq -e 'import \"a\" as a; .' provenance.bundle.json"), ("a non-ASCII letter", "jq -e '.ok \u00e9' provenance.bundle.json"), ("a file operand that is not a plain name", "jq -e '.a' ../x.json"),
+    ("a file operand with a slash", "jq -e '.a' d/x.json"), ("a file never named by a verify", "jq -e '.a' other.json"),
+]
+for what, cmd in RULE1_JQ_REFUSED:
+    t, rc, so, se = pva([PBF, cmd], assets={"provenance.bundle.json": OK, "other.json": "{}", "x.json": "{}"})
+    check(rc != 0 and not calls(t) and se.strip(), "REQ-CHAIN-007 rule 1 the shared jq grammar refuses %s: nothing runs" % what, "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
+# a jq segment that follows another command names no file (example: "cosign verify ... | jq -e '.a' provenance.bundle.json" is refused; "| jq -e '.a'" is not)
+t, rc, so, se = pva([PBF + " | jq -e '.a' provenance.bundle.json"], assets={"provenance.bundle.json": OK})
+check(rc != 0 and not calls(t), "REQ-CHAIN-007 rule 1 a jq segment after another command names no file: refused, nothing runs", "rc=%s %s" % (rc, first(se)))
+# a verify form and jq-only files only after the verify exited 0 (REQ-CHAIN-007-AC20)
+t, rc, so, se = pva([PBF, PJX], assets={"provenance.bundle.json": OK}, env={"COSIGN_FAIL": "1"})
+check(rc != 0 and "post-publish verification failed" in se, "REQ-CHAIN-007-AC20 a failing verify fails the run", "rc=%s %s" % (rc, first(se)))
+# <TAG> must fullmatch v0.3.0 or vX.Y.Z-rcN: no trailing newline, no -rc.N (example: "v0.3.0-rc2\n" and "v0.3.0-rc.2" are refused)
+# release-postverify takes ONLY vX.Y.Z: a release candidate publishes nothing to verify (example: "v0.3.0-rc1" is refused here; -rcN is accepted only by the Check-side guide-plan judge)
+for tg in ("v0.3.0\n", "v0.3.0-rc1", "v0.3.0-rc2", "v1.12.3-rc10", "v0.3.0-rc.2", "v0.3.0-rc", "v0.3", "v0.3.0-RC1"):
+    t, rc, so, se = pva([PV4], env={"GITHUB_REF_NAME": tg}); L_ = calls(t)
+    check(rc != 0 and not L_, "REQ-CHAIN-007 rule 1 release-postverify refuses the tag %r (only vX.Y.Z), nothing runs" % tg, "rc=%s %s" % (rc, first(se)))
+for tg in ("v0.3.0", "v1.2.3"):
+    t, rc, so, se = pva([PV4], env={"GITHUB_REF_NAME": tg})
+    check(rc == 0 and len(calls(t)) == 1, "REQ-CHAIN-007 rule 1 the tag %r fills <TAG>" % tg, "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PBF, "jq -e '.ok \u00e9' provenance.bundle.json"], assets={"provenance.bundle.json": OK})
+check(rc != 0 and not calls(t) and "Traceback" not in se and "closed grammar" in se,
+      "judge: a letter outside ASCII in a jq filter is a refusal, not a crash", first(se))
+# ---- release-stage.sh (run by release-postverify.sh, before release-assets.sh creates the release): the images' files are staged unconditionally, the evidence folders are named
+for v in ("production", "fips"):
+    for rel_ in ("images/%s.full.lock.json" % v, "images/%s-sbom/sbom.json" % v):
+        t = full_assets(); os.remove(os.path.join(t, rel_)); rc, so, se = staged_assets(t)
+        check(rc != 0 and rel_ in se and not [l for l in log(t) if l.startswith("gh release")],
+              "V030-AC9 without %s nothing is created or uploaded, the file is named" % rel_, "rc=%s %s" % (rc, first(se)))
+t = full_assets()
+os.makedirs(os.path.join(t, "witness-check/ubuntu-24.04/witness-extra"))
+for n in ("extra-collection.json", "extra-collection.rekor.json"): open(os.path.join(t, "witness-check/ubuntu-24.04/witness-extra", n), "w").write("{}")
+rc, so, se = staged_assets(t)
+check(not os.path.exists(os.path.join(t, "release-upload/extra-collection.json")) and not any("extra-collection" in l for l in log(t)),
+      "V030-AC9 an extra file pair under witness-check/ubuntu-24.04/witness-extra is not published", "rc=%s %s" % (rc, first(se)))
+t = full_assets(); rc, so, se = staged_assets(t)
+check(rc == 0 and all(os.path.exists(os.path.join(t, "release-upload", "%s-%s-collection%s" % (r_, n, x)))
+                      for r_, _, _ in RUNNERS for n in ("scanners", "acceptance", "runtime") for x in (".json", ".rekor.json")),
+      "V030-AC9 the six named evidence folders' records are all published, each under its runner's name", "rc=%s %s" % (rc, first(se)))
+# ---- 0710 (the proof that the base-layout apk is not released): the released SET only, read from release-apks.sh's
+# fixed table (its variants and
+# pattern()); nothing here names a key, a signer or a signing call, so a rewrite of how the apks are signed does not
+# touch these cases ----------------
+_ra = open(os.path.join(BIN, "release-apks.sh")).read()
+_variants = re.search(r'^variants="([^"]*)"$', _ra, re.M)
+_pattern = re.search(r"^pattern\(\) \{.*\}$", _ra, re.M)
+check(_variants is not None and _variants.group(1).split() == ["standard", "fips"], "0710 the released variants of the fixed table are exactly standard and fips")
+_names = ("fscache-0.3.0-r0.apk", "fscache-fips-0.3.0-r0.apk", "fscache-baselayout-0.3.0-r0.apk")
+_probe = subprocess.run(["bash", "-c", _pattern.group(0) + '\nfor v in standard fips; do p=$(pattern "$v"); for n in "$@"; do case $n in $p) echo "$v $n";; esac; done; done'
+                         , "probe"] + list(_names), capture_output=True, text=True) if _pattern else None
+check(_probe is not None and _probe.stdout.split("\n")[:-1] == ["standard fscache-0.3.0-r0.apk", "fips fscache-fips-0.3.0-r0.apk"],
+      "0710 the patterns of the fixed table match fscache's two variants and do not match fscache-baselayout", _probe.stdout if _probe else "no pattern() line")
+check("baselayout" not in _ra, "0710 release-apks.sh names no base-layout package: the apk is assembled into the images only, it is neither signed nor attached")
+# release-postverify.sh stages first, and does not go on when the stage refuses
+t = tree(); real_verifier(t); seed_manifest(t); rc, so, se = run(t, "release-postverify", env={"GITHUB_REPOSITORY": "fosterstack/cache", "STAGE_FAIL": "1"}, creds=["GH_TOKEN"])
+check(rc != 0 and "release-stage" in se and not calls(t) and os.path.exists(os.path.join(t, "calls.log.stage")), "B-F22 release-postverify runs release-stage.sh first and stops when it refuses: no cosign or gh call follows", "rc=%s %s" % (rc, first(se)))
+t = tree(); real_verifier(t); seed_manifest(t); rc, so, se = run(t, "release-postverify", env={"GITHUB_REPOSITORY": "fosterstack/cache", "REAL_STAGE": "1"}, creds=["GH_TOKEN"])
+check(rc != 0 and first(se).startswith("release-stage:") and not calls(t), "B-F22 release-postverify runs the real release-stage.sh: an empty tree stops at the stage's own refusal", "rc=%s %s" % (rc, first(se)))
+# ---- AC10: no script prints a credential, anywhere ---------------------------------------------------------------------------------------------
+for s, creds in (("release-verify", list(SENT)), ("release-apks", KEY), ("release-publish", REG),
+                 ("release-sign", REG), ("release-assets", ["GH_TOKEN"]), ("release-postverify", ["GH_TOKEN"])):
+    t = full_assets() if s == "release-assets" else vtree() if s == "release-verify" else atree() if s == "release-apks" else signed_released()[0] if s == "release-sign" else stree() if s == "release-publish" else tree()
+    if s == "release-sign": shutil.rmtree(os.path.join(t, "release-evidence")); os.remove(os.path.join(t, "dist/checksums.txt")); [os.remove(os.path.join(t, f)) for f in os.listdir(t) if f.startswith("calls.log")]
+    if s == "release-assets": run(t, "release-stage")      # the step before it, which staged release-upload/
+    if s == "release-postverify": real_verifier(t); seed_manifest(t)      # a post-publish run needs the manifest to get as far as its commands
+    rc, so, se = run(t, s, creds=creds)
+    blob = so + se + tree_text(t)
+    leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
+    check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
+# ---- REQ-CHAIN-006-AC7: bin/check-guide.sh fails when a command of its (one-command) fixture guide fails ------
+def guide_check(command):
+    t = tempfile.mkdtemp(); os.makedirs(os.path.join(t, "bin")); os.makedirs(os.path.join(t, "images"))
+    for name in ("check-guide.sh", "check-guide-plan.py", "guide_plan_judge.py"):
+        shutil.copy(os.path.join(BIN, name), os.path.join(t, "bin", name))
+    digest = "sha256:" + "a" * 64
+    json.dump({"image-production": digest, "image-fips": digest}, open(os.path.join(t, "digests.json"), "w"))
+    names = "- `<IMAGE_REF>`: the image\n- `<IMAGE_REF_FIPS>`: the fips image\n- `<TAG>`: the tag\n"
+    open(os.path.join(t, "guide.md"), "w").write("# Guide\n\n%s\n```sh\n%s\n```\n" % (names, command))
+    open(os.path.join(t, "guide.cannot-run.json"), "w").write("[]")
+    open(os.path.join(t, "data.json"), "w").write("{}")
+    args = ["--guide", "guide.md", "--digests", "digests.json", "--images", "images", "--out", "out"]
+    rc, so, se = run(t, "check-guide", env={"CANDIDATE_REPOSITORY": "registry.example/fosterstack/cache"}, args=args)
+    return t, rc, se
+t, rc, se = guide_check("jq -e .ok data.json")
+check(rc == 1 and "exited 1 against the candidate" in se,
+      "AC7 check-guide.sh fails when a runnable guide command exits non-zero",
+      "rc=%s %s" % (rc, first(se)))
+t, rc, se = guide_check("jq -e . data.json")
+check(rc == 0 and os.path.isfile(os.path.join(t, "out/guide-results.json")),
+      "AC7 check-guide.sh passes a passing guide command and writes guide-results.json",
+      "rc=%s %s" % (rc, first(se)))
+print("pass=%d fail=%d" % (passn, failn))
+sys.exit(1 if failn else 0)
+PY

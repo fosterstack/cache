@@ -1,0 +1,100 @@
+{
+ "_note": "The CLOSED list of the jobs that may hold id-token: write (their own permissions, or the workflow's when they set none). Signing with the release key needs the job's OIDC token (it is exchanged for the signing role's short-lived credentials), so bin/chain-sign-wiring-test.sh fails for any job holding it that is not listed, and for a listed job that no longer holds it (REQ-CHAIN-001-AC1). The list is data: review of a change to it is the control.",
+ "jobs": [
+  {
+   "workflow": "auditor.yml",
+   "job": "audit",
+   "reason": "mints a federated OIDC identity token for the auditor's model vendor (github-script getIDToken); signs nothing"
+  },
+  {
+   "workflow": "auditor.yml",
+   "job": "panel-probe",
+   "reason": "the scanner panel's probe: keyless federation to the panel's vendors, publishes nothing"
+  },
+  {
+   "workflow": "dependabot-reviewer.yml",
+   "job": "review",
+   "reason": "the Dependabot reviewer's OIDC federation to its model vendor; signs nothing"
+  },
+  {
+   "workflow": "main-candidate-rescan.yml",
+   "job": "panel-inspector",
+   "reason": "aws-actions/configure-aws-credentials: OIDC federation to the AWS Inspector role"
+  },
+  {
+   "workflow": "main-candidate-rescan.yml",
+   "job": "panel-google",
+   "reason": "google-github-actions/auth: OIDC federation to Google for the scanner panel"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "sign",
+   "reason": "Sign: the one provenance signer; it holds the identity token for the release key and builds nothing (REQ-CHAIN-001)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "sign-rebuild",
+   "reason": "Sign's second job: checks and signs the Rebuild records with the release key and receives no Rebuild apk or image (REQ-CHAIN-005-AC4)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "sign-check",
+   "reason": "Sign's third job: checks and signs the Check records of both chips with the release key (REQ-REL-011-AC1), and on a final tag makes every release signature the release job pushes (bin/release-signatures.sh); the release job holds no identity token"
+  },
+  {
+   "workflow": "scan.yml",
+   "job": "inspector",
+   "reason": "aws-actions/configure-aws-credentials: OIDC federation to the AWS Inspector role"
+  },
+  {
+   "workflow": "scorecard.yml",
+   "job": "analysis",
+   "reason": "OpenSSF Scorecard publishes its results with the job's OIDC token"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "persona-uat-rc",
+   "reason": "the job-level call of persona-uat.yml on a release candidate: the called file's job mints a federated identity token for the model provider in the persona-uat environment (REQ-UAT-001-AC1); it signs no provenance and publishes nothing"
+  },
+  {
+   "workflow": "persona-uat.yml",
+   "job": "persona-uat-rc",
+   "reason": "Persona UAT, release-candidate run, called by release.yml (REQ-UAT-001-AC1): a federated identity token for the model provider in the persona-uat environment; it signs no provenance and publishes nothing; contents read, no registry credential"
+  },
+  {
+   "workflow": "persona-uat.yml",
+   "job": "persona-uat-weekly",
+   "reason": "Persona UAT, weekly run (REQ-UAT-001): the same federation in the persona-uat environment; it signs no provenance and publishes nothing; contents read, no registry credential"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "sign-tag",
+   "reason": "makes the automatic patch release's tag object and signs it with the release KMS key through the job's federation role (environment sign); no push right (REQ-REL-009-AC5)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "live-test",
+   "reason": "the rule-12 live test on a release candidate (REQ-SCAN-012): the same federation into the dedicated live-test accounts only (environment live-test), after Check; signs and publishes nothing"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "live-test-release",
+   "reason": "the rule-12 live test right after a final release is published (REQ-SCAN-012): the same federation (environment live-test); signs and publishes nothing"
+  },
+  {
+   "workflow": "main-candidate-rescan.yml",
+   "job": "build",
+   "reason": "the call of release.yml in snapshot mode: id-token is the ceiling the caller grants (REQ-CHAIN-004-AC14); no called job holds it in that mode"
+  },
+  {
+   "workflow": "scan.yml",
+   "job": "build",
+   "reason": "the call of release.yml in snapshot mode: id-token is the ceiling the caller grants (REQ-CHAIN-004-AC14); no called job holds it in that mode"
+  },
+  {
+   "workflow": "evidence-letter.yml",
+   "job": "sign",
+   "reason": "the monthly evidence letter's one signing job: the KMS release key by federation, its Rekor entry recorded (REQ-REL-015-AC9)"
+  }
+ ]
+}

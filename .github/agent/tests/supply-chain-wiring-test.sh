@@ -1,30 +1,29 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC33
-# Where the supply-chain checks run (owner ratified Oct 5; advisor 0172, 0175; the owner removed the wait for new
-# versions on Nov 11 2026; REQ-REL-014, Nov 17 2026): the pin audit is the one job,
-# `daily-audit`, on the schedule and by dispatch (never on a push, pull_request, pull_request_target or workflow_run: the
-# pin-age pull-request scan was deleted), with no secrets (AC4);
-# the daily job may write issues and nothing else; no job holds actions: write; REQ-SUP-001 is
-# pipeline-only for automatic patches; CI runs the tests.
-# Read from the PARSED files: the real files must pass and every mutation (made through the parsed document) must be
-# rejected FOR THE REASON NAMED.
-#   .github/workflows/supply-chain.yml: job `daily-audit` (schedule, dispatch)
+# proves: REQ-SUP-001-AC41, REQ-SUP-001-AC33, REQ-SUP-001-AC36, REQ-REL-014-AC2
+# proves: REQ-REL-015-AC11
+# proves: REQ-SUP-001-AC38
+# Where the supply-chain checks run (owner ratified Oct 5, changed Nov 17 2026: no supply-chain check runs on a pull request): Dependabot carries no cooldown and one entry per
+# ecosystem root; supply-chain.yml has no pull_request trigger and two jobs, the daily audit (may write issues and nothing else) and the evidence letter's presence check (read-only),
+# both on schedule and dispatch only (REQ-REL-014-AC2); no job holds actions: write; REQ-SUP-001 is pipeline-only for automatic patches; CI runs the tests. Read from the PARSED files:
+# the real files must pass and every mutation (made through the parsed document) must be rejected FOR THE REASON NAMED.
+#   .github/workflows/supply-chain.yml: jobs `daily-audit` and `evidence-letter-present` (schedule, workflow_dispatch)
 set -euo pipefail
 export SC_ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 python3 - <<'PY'
-import copy, os, re, sys, yaml
+import copy, json, os, re, subprocess, sys, yaml
 
 CANON = {}   # job -> the exact normalised run text of its check step (filled below from the shipped workflow's ratified text)
 
 root = os.environ["SC_ROOT"]
 WF = os.path.join(root, ".github/workflows/supply-chain.yml")
 DB = os.path.join(root, ".github/dependabot.yml")
-CI = os.path.join(root, ".github/workflows/ci.yml")
 ADM = os.path.join(root, "bin/admission-tag-signer.py")
 PIN = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 ALLOWED_ACTIONS = ("actions/checkout",)
 
-CANONICAL_RUNS = {'daily-audit': 'python3 .github/agent/supply-chain/pin-audit.py'}
+CANONICAL_RUNS = {
+    'daily-audit': 'python3 .github/agent/supply-chain/pin-audit.py',
+}
 
 
 def load(p): return yaml.load(open(p), Loader=yaml.BaseLoader)
@@ -47,17 +46,29 @@ def dup_keys(text):
     walk(yaml.compose(text, Loader=yaml.BaseLoader), "")
     return out
 
+def fetches_pull_ref(run):
+    """True when a step runs git fetch with a refspec whose source is a pull ref (pull/N/head, refs/pull/*, + or not)."""
+    for line in str(run).splitlines():
+        words = re.split(r"[\s;&|()]+", line.replace("'", "").replace('"', ""))
+        if "git" in words and "fetch" in words[words.index("git"):]:
+            after = words[words.index("fetch", words.index("git")) + 1:]
+            if any(re.match(r"\+?(refs/)?pull/", w) for w in after):
+                return True
+    return False
+
+
 def judge_wf(d, real=False):
     bad = []
     on = d.get("on", {})
     if not isinstance(on, dict):
         return ["the workflow's triggers are not a mapping"]
-    if "pull_request_target" in on or "workflow_run" in on:
-        bad.append("a pull_request_target or workflow_run trigger (the audit runs on the schedule and by dispatch only)")
-    if "pull_request" in on:
-        bad.append("the pull_request trigger is back: the supply-chain audit is not a pull request check (REQ-REL-014)")
-    if "push" in on:
-        bad.append("a push trigger: the supply-chain audit runs on the schedule and by hand, never on a push or a pull request (REQ-REL-014)")
+    for ev in ("pull_request", "pull_request_target", "workflow_run", "push"):
+        if ev in on:
+            bad.append(f"a {ev} trigger: no job of this workflow runs on a pull request or a push (REQ-REL-014-AC2)")
+    if set(on) != {"schedule", "workflow_dispatch"}:
+        bad.append(f"the triggers are not exactly schedule and workflow_dispatch: {sorted(on)}")
+    if "merge_group" in on:
+        bad.append("a merge_group trigger: there is no merge queue")
     crons = [c.get("cron") for c in (on.get("schedule") or [])]
     if len(crons) != 1 or not re.fullmatch(r"\d{1,2} \d{1,2} \* \* \*", crons[0] or ""):
         bad.append("no single daily schedule")
@@ -68,14 +79,13 @@ def judge_wf(d, real=False):
     if top not in ({}, {"contents": "read"}, None) or (top is None):
         bad.append("the workflow has no top-level permissions block of {} or contents: read")
     jobs = d.get("jobs", {})
-    if sorted(jobs) != ["daily-audit"]:
-        bad.append(f"the jobs are not exactly daily-audit: {sorted(jobs)}")
+    if sorted(jobs) != ["daily-audit", "evidence-letter-present"]:
+        bad.append(f"the jobs are not exactly daily-audit and evidence-letter-present (no pin-age job): {sorted(jobs)}")
         return bad
     # daily-audit
     j = jobs["daily-audit"]
     if j.get("permissions") != {"contents": "read", "issues": "write"}:
-        bad.append(f"daily-audit's permissions are not exactly contents: read + issues: write "
-                   f"(found {j.get('permissions')})")
+        bad.append(f"daily-audit's permissions are not exactly contents: read + issues: write (found {j.get('permissions')})")
     if (j.get("concurrency") or {}).get("group") != "supply-chain-daily" or (j.get("concurrency") or {}).get("cancel-in-progress") != "false":
         bad.append("daily-audit has no concurrency group (two runs at once could double-file an issue)")
     if str(j.get("if", "")) != "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'":
@@ -84,9 +94,26 @@ def judge_wf(d, real=False):
         bad.append("daily-audit does not run on the schedule")
     if ".github/agent/supply-chain/pin-audit.py" not in "\n".join(str(s.get("run", "")) for s in j.get("steps", [])):
         bad.append("daily-audit must run .github/agent/supply-chain/pin-audit.py")
+    pull_fetches = [st for st in j.get("steps", []) if fetches_pull_ref(st.get("run", ""))]
+    if pull_fetches:
+        bad.append("daily-audit has a step that runs git fetch of refs/pull: the history is read from main only")
     for jn, jj in jobs.items():
         if re.search(r"rerun|observations-out|gh run ", "\n".join(str(s.get("run", "")) for s in jj.get("steps", []))):
             bad.append(f"{jn} re-runs a run or records tag observations: nothing waits for a re-run")
+    # evidence-letter-present: the daily presence check of the monthly evidence letter; reads releases, writes nothing
+    j = jobs["evidence-letter-present"]
+    if j.get("permissions") != {"contents": "read"}:
+        bad.append("evidence-letter-present's permissions are not exactly contents: read "
+                   f"(found {j.get('permissions')})")
+    if str(j.get("if", "")) != "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'":
+        bad.append("evidence-letter-present's condition is not exactly the schedule or dispatch allow list")
+    elp = j.get("steps", [])
+    elp_co = [st for st in elp if str(st.get("uses", "")).startswith("actions/checkout@")]
+    if len(elp_co) != 1 or str((elp_co[0].get("with") or {}).get("persist-credentials")).lower() != "false":
+        bad.append("evidence-letter-present must check out once, with persist-credentials false")
+    if [str(st.get("run", "")).strip() for st in elp if "run" in st] != [
+            "bash bin/install-scanner.sh cosign", "bash bin/evidence-letter-present.sh"]:
+        bad.append("evidence-letter-present's run steps are not exactly the cosign install and the presence script")
     # nothing may change WHERE the checker comes from or what runs it
     for key in ("env", "defaults"):
         if key in d:
@@ -105,13 +132,13 @@ def judge_wf(d, real=False):
         if name != "daily-audit" and "concurrency" in jj:
             bad.append(f"{name} has a concurrency block")
         if "env" in jj:
-            bad.append(f"{name} has a job-level env (PYTHONPATH and friends could redirect the audit)")
+            bad.append(f"{name} has a job-level env")
     # the check steps' commands are pinned EXACTLY: any other flag, an extra assignment, a duplicated argument, a changed order is a changed (rejected) workflow
     norm = lambda t: "\n".join(l.strip() for l in str(t).strip().split("\n") if l.strip() and not l.strip().startswith("#"))
     for jn, want in CANONICAL_RUNS.items():
         for st in jobs[jn].get("steps", []):
             r = str(st.get("run", ""))
-            if r and ("pin-age-check" in r or "pin-audit" in r) and norm(r) != norm(want):
+            if r and "pin-audit" in r and norm(r) != norm(want):
                 bad.append(f"{jn}: the check step's commands differ from the ratified text (any added flag, assignment or duplicated argument is a change)")
     if re.search(r"secrets\s*\[", text):
         bad.append("the workflow indexes secrets[...]: no secrets anywhere")
@@ -127,11 +154,12 @@ def judge_wf(d, real=False):
             for forbidden in ("shell", "working-directory"):
                 if forbidden in st:
                     bad.append(f"{name}: a step sets {forbidden}: it could replace what actually runs")
-            if "include-hidden-files" in (st.get("with") or {}):
-                bad.append(f"{name}: a step uploads hidden files")
-            extra_env = set(st.get("env") or {}) - {"GH_TOKEN", "GITHUB_REPOSITORY"}
+            may_set = {"GH_TOKEN", "GITHUB_REPOSITORY"}
+            extra_env = set(st.get("env") or {}) - may_set
             if extra_env:
-                bad.append(f"{name}: a step sets env {sorted(extra_env)}: only GH_TOKEN and GITHUB_REPOSITORY may be set (PYTHONPATH and friends redirect the trusted checker)")
+                allowed = ' and '.join(sorted(may_set))
+                bad.append(f"{name}: a step sets env {sorted(extra_env)}: only {allowed} may be set "
+                           "(PYTHONPATH and friends redirect the trusted checker)")
         for st in [x for x in jj.get("steps", []) if "run" in x]:
             run_text = str(st["run"])
             if re.search(r"GITHUB_ENV|GITHUB_PATH|BASH_ENV|ENV=", run_text):
@@ -150,40 +178,103 @@ def judge_wf(d, real=False):
                 bad.append(f"{name}: action {u.split('@')[0]} is not on the allowlist {ALLOWED_ACTIONS}")
             if u.startswith("actions/checkout") and str((s.get("with", {}) or {}).get("persist-credentials", "")).lower() != "false":
                 bad.append(f"{name}: checkout keeps the job's credentials (persist-credentials must be false)")
-        if (jj.get("permissions") or {}).get("actions") == "write":
-            bad.append(f"{name} has actions write: no job may")
+        if (jj.get("permissions") or {}).get("actions") is not None:
+            bad.append(f"{name} has an actions permission: none may")
         if name != "daily-audit" and "issues" in (jj.get("permissions") or {}):
             bad.append(f"{name} can write issues: only daily-audit may")
         if jj.get("environment") or "secrets" in str(jj.get("env", "")):
             bad.append(f"{name} has an environment or secrets: none are allowed")
     return bad
 
-def judge_db(d):
+GOMOD_DIRS = None   # the directories of the go.mod files git tracks ("." is the root); None when git cannot say
+try:
+    _ls = subprocess.run(["git", "-C", root, "ls-files", "--", "go.mod", "*/go.mod"], capture_output=True, text=True, check=True).stdout.split()
+    GOMOD_DIRS = {os.path.dirname(f) or "." for f in _ls}
+except Exception:
+    pass
+
+def judge_db(d, gomod_dirs=GOMOD_DIRS):
     bad = []
-    ups = d.get("updates", [])
-    seen = {}
-    for u in ups:
+    # entries are keyed by (ecosystem, directory): a second gomod entry must not hide the first; the govulncheck tool
+    # module (advisor Oct 12, ruling G) is judged apart from the product's gomod entries
+    seen, ups, gm, tool = set(), {}, {}, []
+    for u in d.get("updates", []):
         k = (u.get("package-ecosystem"), u.get("directory"))
-        seen[k] = seen.get(k, 0) + 1
-    for k, n in seen.items():
-        if n > 1:
-            bad.append(f"{k[0]} {k[1]} has {n} entries: one entry per ecosystem and directory")
-    by = {(u.get("package-ecosystem"), u.get("directory")): u for u in ups}
-    want = {"gomod": {"package-ecosystem": "gomod", "directory": "/", "schedule": {"interval": "weekly"}},
-            "docker": {"package-ecosystem": "docker", "directory": "/build/docker",
-                       "schedule": {"interval": "daily"}}}
-    # the product's CVE-fix targets: unchanged, except that gomod may group its updates
-    for eco, entry in want.items():
-        found = next((u for u in ups if u.get("package-ecosystem") == eco
-                      and (eco == "docker" or u.get("directory") == "/")), None)
-        compared = {k: v for k, v in found.items() if k != "groups"} if eco == "gomod" and found is not None else found
-        if found is not None and compared != entry:
-            bad.append(f"the {eco} entry is not unchanged")
-    for eco, directory in (("github-actions", "/"), ("gomod", "/"), ("gomod", "/tools/requirements"),
-                           ("docker", "/build/docker"), ("pip", "/.github/agent")):
-        # docker's directory change is judged as "not unchanged" above
-        if (eco, directory) not in by and not (eco == "docker" and any(k[0] == eco for k in by)):
-            bad.append(f"the {eco} entry is missing")
+        if k in seen:
+            bad.append(f"duplicate {k[0]} {k[1]} entry")
+        seen.add(k)
+        if k == ("gomod", "/tools/govulncheck"):
+            tool.append(u)
+        elif k[0] == "gomod":
+            gm.setdefault(k[1], u)
+        else:
+            ups.setdefault(k[0], u)
+    for u in d.get("updates", []):
+        if "cooldown" in u:
+            bad.append(f"the {u.get('package-ecosystem')} {u.get('directory')} entry has a cooldown key, which this repo does not use")
+    for eco in ("github-actions", "pip"):
+        # exactly weekly and no extra key (no day, time or timezone)
+        if (ups.get(eco) or {}).get("schedule") != {"interval": "weekly"}:
+            bad.append(f"the {eco} entry's schedule is not exactly interval: weekly")
+    # groups are judged below; the product's gomod entries stay unchanged apart from them
+    nog = lambda v: {a: b for a, b in v.items() if a != "groups"}
+    for gdir in ("/", "/tools/requirements"):  # both Go modules: the root and the nested tools/requirements module
+        if gdir not in gm:
+            bad.append(f"the gomod {gdir} entry is missing")
+            continue
+        if nog(gm[gdir]) != {"package-ecosystem": "gomod", "directory": gdir, "schedule": {"interval": "weekly"}}:
+            bad.append(f"the gomod {gdir} entry is not exactly weekly and nothing else")
+    # the pinned Go source scanner (advisor Oct 12, ruling G): tools/govulncheck is its own module, bumped through the reviewed path (a tool, not a product dependency)
+    if len(tool) != 1:
+        bad.append(f"the govulncheck tool entry (gomod, /tools/govulncheck) is missing or repeated ({len(tool)})")
+    elif tool[0] != {"package-ecosystem": "gomod", "directory": "/tools/govulncheck", "schedule": {"interval": "weekly"}}:
+        bad.append("the govulncheck tool entry is not exactly weekly and nothing else")
+    # rule 61 (advisor Oct 12): no Dockerfile exists, so Dependabot's docker ecosystem watches nothing and has no entry
+    if any(u.get("package-ecosystem") == "docker" for u in d.get("updates", [])):
+        bad.append("a docker entry is back: no Dockerfile exists (rule 61)")
+    # coverage: every tracked go.mod has a gomod entry and every gomod entry has a go.mod
+    # exact strings, no normalising: an entry spelled any other way ("/tools/requirements/", "tools/requirements", "./")
+    # has no go.mod and is red
+    if gomod_dirs is None:
+        bad.append("cannot list the tracked go.mod files (git ls-files failed)")
+    else:
+        want_dirs = {("/" if g == "." else "/" + g): g for g in gomod_dirs}
+        have = set(gm) | ({"/tools/govulncheck"} if tool else set())
+        for w in sorted(set(want_dirs) - have):
+            bad.append(f"go.mod at {want_dirs[w]} has no gomod entry")
+        for g in sorted(have - set(want_dirs), key=repr):
+            bad.append(f"gomod entry {g} has no go.mod")
+    # groups (audit ruling Oct 31, widened to the rule 12 shape, cache#817): every github-actions, gomod and pip entry
+    # has its minor-patch group with update-types exactly minor and patch (a major never joins a group, except
+    # codeql-action, which is major-only and stays FIRST because Dependabot gives a dependency to the first group that
+    # matches). The govulncheck tool entry stays exactly as ruling G wrote it (no group).
+    # No group sets applies-to anywhere.
+    ag = (ups.get("github-actions") or {}).get("groups") or {}
+    if list(ag) != ["codeql-action", "actions-minor-patch"]:
+        bad.append("the github-actions groups are not exactly codeql-action then actions-minor-patch, in that order")
+    if ag.get("codeql-action") != {"patterns": ["github/codeql-action*"], "update-types": ["major"]}:
+        bad.append("the codeql-action group is not exactly github/codeql-action* with update-types major (major only)")
+    if ag.get("actions-minor-patch") != {"patterns": ["*"], "update-types": ["minor", "patch"]}:
+        bad.append("the actions-minor-patch group is not exactly patterns * with update-types minor and patch")
+    for gdir, gu in gm.items():
+        gg = gu.get("groups") or {}
+        if list(gg) != ["gomod-minor-patch"]:
+            bad.append(f"the gomod {gdir} groups are not exactly gomod-minor-patch")
+        if gg.get("gomod-minor-patch") != {"patterns": ["*"], "update-types": ["minor", "patch"]}:
+            bad.append(f"the gomod {gdir} gomod-minor-patch group is not exactly patterns * with update-types minor and patch")
+    for u in d.get("updates", []):
+        for gname, g in ((u.get("groups") or {}).items()):
+            if isinstance(g, dict) and "applies-to" in g:
+                bad.append(f"the {u.get('package-ecosystem')} group {gname} sets applies-to (none may: it would change which updates the group takes)")
+    pg = (ups.get("pip") or {}).get("groups") or {}
+    if list(pg) != ["pydantic", "pip-minor-patch"]:
+        bad.append("the pip groups are not exactly pydantic then pip-minor-patch, in that order")
+    if pg.get("pydantic") != {"patterns": ["pydantic", "pydantic-core"]}:
+        bad.append("the pip pydantic group is not exactly pydantic and pydantic-core")
+    # exclude-patterns ["pip"]: pip itself is pinned exactly in pip-requirements.txt (the pip-pin test fails on any
+    # other pin), so a bump of pip must not join a group
+    if pg.get("pip-minor-patch") != {"exclude-patterns": ["pip"], "update-types": ["minor", "patch"]}:
+        bad.append("the pip-minor-patch group is not exactly update-types minor and patch with exclude-patterns pip (a major never joins a group; no patterns)")
     return bad
 
 def judge_rest():
@@ -193,10 +284,6 @@ def judge_rest():
     m = re.search(r"PIPELINE_ONLY = frozenset\(\[(.*?)\]\)", src, re.S)
     if not m or "REQ-SUP-001" not in m.group(1):
         bad.append("REQ-SUP-001 is not in PIPELINE_ONLY (left off, it is product by default and freezes automatic patches)")
-    ci = open(CI).read()
-    for t in ("pin-age-check-test.sh", "pin-audit-test.sh", "supply-chain-wiring-test.sh"):
-        if f"bash .github/agent/tests/{t}" not in ci:
-            bad.append(f"ci.yml does not run .github/agent/tests/{t}")
     return bad
 
 real_wf, real_db = None, None
@@ -207,6 +294,8 @@ except Exception as e:
 real_db = load(DB)
 
 passed = failed = 0
+def J_real_steps(): return ((real_wf or {}).get("jobs") or {}).get("daily-audit", {}).get("steps", [])
+
 def result(ok, msg):
     global passed, failed
     if ok: passed += 1; print("ok  ", msg)
@@ -220,11 +309,23 @@ dd = dup_keys(real_text.replace("\nconcurrency:\n", "\nconcurrency: {group: shar
 result(bool(dd), "caught: a duplicate top-level concurrency key (raw YAML; a parse would keep the last value)" + ("" if dd else "; saw nothing"))
 b = judge_wf(real_wf, True) if real_wf is not None else ["supply-chain.yml is missing"]
 result(not b, "the real supply-chain.yml satisfies the wiring" + ("" if not b else ": " + "; ".join(b)))
+pf = [st for st in J_real_steps() if fetches_pull_ref(st.get("run", ""))]
+result(not pf, "the real daily-audit job has no step that runs git fetch of refs/pull" + ("" if not pf else ": " + "; ".join(str(st.get("run", "")) for st in pf)))
 b = judge_db(real_db)
-result(not b, "the real dependabot.yml: one entry per ecosystem and directory, gomod and docker unchanged "
-       "(the gone-wait test judges the rest)" + ("" if not b else ": " + "; ".join(b)))
+result(not b, "the real dependabot.yml: no cooldown anywhere, every gomod entry weekly and nothing else, no docker entry; groups: every github-actions, gomod and pip entry has its minor-patch group (minor and patch only), codeql-action first and major-only, pydantic first on pip, no docker entry, no applies-to" + ("" if not b else ": " + "; ".join(b)))
 b = judge_rest()
-result(not b, "REQ-SUP-001 is pipeline-only and ci.yml runs the three tests" + ("" if not b else ": " + "; ".join(b)))
+result(not b, "REQ-SUP-001 is pipeline-only and the CI suite list runs the three tests" + ("" if not b else ": " + "; ".join(b)))
+
+# the ci.yml job go-exact-pins (REQ-SUP-001-AC38) runs exactly the ratified command, read from the parsed file
+CI = os.path.join(root, ".github/workflows/ci.yml")
+GO_EXACT_RUN = "python3 .github/agent/supply-chain/pin-audit.py --go-exact-only"
+def go_exact_runs(d): return [str(st.get("run", "")).strip() for st in (((d.get("jobs") or {}).get("go-exact-pins") or {}).get("steps") or [])]
+real_ci = load(CI)
+result(any(r == GO_EXACT_RUN for r in go_exact_runs(real_ci)), "AC38: the ci.yml job go-exact-pins runs " + GO_EXACT_RUN)
+mut_ci = copy.deepcopy(real_ci)
+for st in mut_ci["jobs"]["go-exact-pins"]["steps"]:
+    if "run" in st: st["run"] = st["run"].replace(" --go-exact-only", "")
+result(not any(r == GO_EXACT_RUN for r in go_exact_runs(mut_ci)), "caught: the go-exact-pins command loses --go-exact-only (reason: no step runs " + GO_EXACT_RUN + ")")
 
 def mut_wf(name, expect, fn):
     if real_wf is None:
@@ -255,24 +356,28 @@ def mut_db(name, expect, fn):
 
 def J(d, n): return d["jobs"][n]
 def eco(d, e): return next(u for u in d["updates"] if u["package-ecosystem"] == e)
+def gmod(d, p): return next(u for u in d["updates"] if u["package-ecosystem"] == "gomod" and u["directory"] == p)
 
-# --- the workflow (AC4) ---
+# --- the workflow (AC4, AC6) ---
+mut_wf("a pull_request trigger returns", "a pull_request trigger", lambda d: d["on"].update(pull_request={}))
+mut_wf("a pull_request trigger with a filter returns", "a pull_request trigger", lambda d: d["on"].update(pull_request={"paths": ["bin/**"]}))
 mut_wf("a push trigger appears", "a push trigger", lambda d: d["on"].update(push={"branches": ["main"]}))
-mut_wf("the pull_request trigger is back", "pull_request trigger is back", lambda d: d["on"].update(pull_request={}))
+mut_wf("a pin-age job returns", "the jobs are not exactly daily-audit and evidence-letter-present",
+       lambda d: d["jobs"].update({"pin-age": {"if": "github.event_name == 'pull_request'", "runs-on": "ubuntu-latest", "steps": []}}))
+mut_wf("a job-level env appears", "job-level env", lambda d: J(d, "daily-audit").update(env={"PYTHONPATH": "pr"}))
 mut_wf("a pull_request_target trigger", "pull_request_target", lambda d: d["on"].update(pull_request_target={}))
-mut_wf("a workflow_run trigger", "pull_request_target or workflow_run", lambda d: d["on"].update(workflow_run={"workflows": ["x"]}))
+mut_wf("a workflow_run trigger", "a workflow_run trigger", lambda d: d["on"].update(workflow_run={"workflows": ["x"]}))
 mut_wf("no schedule", "no single daily schedule", lambda d: d["on"].pop("schedule"))
+mut_wf("a daily step gains a condition", "a step has a condition", lambda d: [x.update({"if": "false"}) for x in J(d, "daily-audit")["steps"] if "pin-audit" in str(x.get("run", ""))])
+mut_wf("a workflow-level env appears", "top-level env", lambda d: d.update(env={"PYTHONPATH": "pr"}))
 mut_wf("a step is disabled with if: false", "a step has a condition", lambda d: J(d, "daily-audit")["steps"][-1].update({"if": "false"}))
 mut_wf("a step skips bots", "a step has a condition", lambda d: J(d, "daily-audit")["steps"][-1].update({"if": "github.actor != 'dependabot[bot]'"}))
 mut_wf("a step tolerates failure", "continue-on-error", lambda d: J(d, "daily-audit")["steps"][-1].update({"continue-on-error": "true"}))
 mut_wf("exit 0 is appended to the check step", "exits early", lambda d: [x.update(run=x["run"] + "\nexit 0") for x in J(d, "daily-audit")["steps"] if "run" in x][-1:])
 mut_wf("exit 0 is put first", "exits early", lambda d: [x.update(run="exit 0\n" + x["run"]) for x in J(d, "daily-audit")["steps"] if "run" in x][-1:])
 mut_wf("a failure is swallowed with || true", "exits early", lambda d: [x.update(run=x["run"] + " || true") for x in J(d, "daily-audit")["steps"] if "run" in x][-1:])
-mut_wf("a daily step gains a condition", "a step has a condition", lambda d: [x.update({"if": "false"}) for x in J(d, "daily-audit")["steps"] if "pin-audit" in str(x.get("run", ""))])
 mut_wf("a job container image appears", "job-level container", lambda d: J(d, "daily-audit").update(container={"image": "evil:latest"}))
 mut_wf("a job service appears", "job-level services", lambda d: J(d, "daily-audit").update(services={"x": {"image": "evil"}}))
-mut_wf("a workflow-level env appears", "top-level env", lambda d: d.update(env={"PYTHONPATH": "pr"}))
-mut_wf("a job-level env appears", "job-level env", lambda d: J(d, "daily-audit").update(env={"PYTHONPATH": "pr"}))
 mut_wf("a shell default appears", "job-level defaults", lambda d: J(d, "daily-audit").update(defaults={"run": {"shell": "python3 {0}"}}))
 mut_wf("fixtures are passed to the checker", "test-only flag", lambda d: [x.update(run=x["run"] + " --fixtures pr/fx.json") for x in J(d, "daily-audit")["steps"] if "run" in x][-1:])
 mut_wf("a step sets PYTHONPATH", "sets env", lambda d: [x.setdefault("env", {}).update(PYTHONPATH="pr") for x in J(d, "daily-audit")["steps"] if "run" in x][-1:])
@@ -288,16 +393,26 @@ mut_wf("an action off the allowlist", "is not on the allowlist", lambda d: J(d, 
 mut_wf("checkout keeps credentials", "persist-credentials", lambda d: next(s for s in J(d, "daily-audit")["steps"] if "checkout" in str(s.get("uses", "")))["with"].pop("persist-credentials"))
 mut_wf("daily-audit loses issues: write", "daily-audit's permissions are not exactly", lambda d: J(d, "daily-audit")["permissions"].pop("issues"))
 mut_wf("daily-audit gains contents: write", "daily-audit's permissions are not exactly", lambda d: J(d, "daily-audit")["permissions"].update(contents="write"))
-mut_wf("daily-audit gains actions: write", "daily-audit has actions write", lambda d: J(d,
-        "daily-audit")["permissions"].update(actions="write"))
-mut_wf("daily-audit reads actions again", "daily-audit's permissions are not exactly", lambda d: J(d,
-        "daily-audit")["permissions"].update(actions="read"))
+mut_wf("daily-audit gains actions: write", "daily-audit's permissions are not exactly", lambda d: J(d, "daily-audit")["permissions"].update(actions="write"))
 mut_wf("a top-level concurrency that cancels every event", "not the reviewed block", lambda d: d["concurrency"].update({"cancel-in-progress": "true"}))
 mut_wf("a top-level concurrency with a shared ref group", "not the reviewed block", lambda d: d.update(concurrency={"group": "${{ github.workflow }}-${{ github.ref }}", "cancel-in-progress": "${{ github.event_name == 'pull_request' }}"}))
 mut_wf("a top-level concurrency whose pull-request group is shared by re-runs", "not the reviewed block", lambda d: d["concurrency"].update(group=d["concurrency"]["group"].replace(" && github.run_attempt == '1'", "")))
 mut_wf("a top-level concurrency that borrows github.workflow", "not the reviewed block", lambda d: d["concurrency"].update(group=d["concurrency"]["group"].replace("'supply-chain-pr-{0}', ", "'{0}-pr-{1}', github.workflow, ").replace("'supply-chain-{0}-{1}', ", "'{0}-{1}-{2}', github.workflow, ")))
 mut_wf("a top-level concurrency dropped entirely", "not the reviewed block", lambda d: d.pop("concurrency"))
 mut_wf("a top-level concurrency on its own", "not the reviewed block", lambda d: d.update(concurrency={"group": "x", "cancel-in-progress": "false"}))
+mut_wf("a sixth job appears", "the jobs are not exactly",
+       lambda d: d["jobs"].update({"extra": {"runs-on": "ubuntu-latest"}}))
+mut_wf("evidence-letter-present gains id-token", "evidence-letter-present's permissions are not exactly",
+       lambda d: J(d, "evidence-letter-present")["permissions"].update({"id-token": "write"}))
+mut_wf("evidence-letter-present runs on any event but a pull request",
+       "evidence-letter-present's condition is not exactly",
+       lambda d: J(d, "evidence-letter-present").update({"if": "github.event_name != 'pull_request'"}))
+mut_wf("evidence-letter-present keeps the token in the checkout", "must check out once, with persist-credentials false",
+       lambda d: [x["with"].update({"persist-credentials": "true"})
+                  for x in J(d, "evidence-letter-present")["steps"] if "uses" in x])
+mut_wf("evidence-letter-present runs another script", "run steps are not exactly the cosign install",
+       lambda d: [x.update(run="bash bin/other.sh") for x in J(d, "evidence-letter-present")["steps"]
+                  if "evidence-letter-present" in str(x.get("run", ""))])
 mut_wf("daily-audit loses its concurrency group", "no concurrency group", lambda d: J(d, "daily-audit").pop("concurrency"))
 mut_wf("the daily audit records observations again", "re-runs a run or records tag observations",
         lambda d: [x.update(run=x["run"] + " --observations-out /tmp/x") for x in J(d, "daily-audit")["steps"]
@@ -305,28 +420,130 @@ mut_wf("the daily audit records observations again", "re-runs a run or records t
 mut_wf("the daily audit re-runs a run", "re-runs a run or records tag observations",
         lambda d: [x.update(run=x["run"] + "\ngh run rerun 1") for x in J(d, "daily-audit")["steps"]
         if "pin-audit" in str(x.get("run", ""))])
-mut_wf("an upload-artifact step appears", "is not on the allowlist", lambda d: J(d,
-        "daily-audit")["steps"].append({"uses": "actions/upload-artifact@" + "a" * 40, "with": {"name": "x"}}))
-mut_wf("a rerun job comes back", "the jobs are not exactly",
-        lambda d: d["jobs"].update({"rerun-pr": {"runs-on": "ubuntu-latest", "permissions": {"actions": "write"},
-        "steps": []}}))
+FETCH_REASON = "daily-audit has a step that runs git fetch of refs/pull"
+mut_wf("daily-audit gains a pull request fetch", FETCH_REASON,
+       lambda d: J(d, "daily-audit")["steps"].insert(1, {"run": "git fetch --no-tags origin '+refs/pull/*/head:refs/pull/*/head'"}))
+mut_wf("daily-audit gains a pull request fetch with a token", FETCH_REASON,
+       lambda d: J(d, "daily-audit")["steps"].insert(1, {"run": "git fetch --no-tags origin 'refs/pull/*/head:refs/pull/*/head'",
+                                                         "env": {"GH_TOKEN": "${{ github.token }}"}}))
+# the guard reads the refspec of a fetch, not the words refs/pull: a pull ref spelled without refs/ is caught, an ordinary fetch is not
+for spec in ("pull/1/head", "pull/1/head:pr-1", "'+pull/*/head:refs/remotes/pr/*'", "pull/1/merge", '"pull/${PR}/head"', "refs/pull/1/head"):
+    mut_wf("daily-audit fetches a pull ref spelled " + spec, FETCH_REASON,
+           lambda d, spec=spec: J(d, "daily-audit")["steps"].insert(1, {"run": "git fetch --no-tags origin " + spec}))
+mut_wf("daily-audit fetches a pull ref with git -C and a url", FETCH_REASON,
+       lambda d: J(d, "daily-audit")["steps"].insert(1, {"run": "git -C . fetch https://example.invalid/o/r.git pull/1/head"}))
+def ctl_wf(name, run):
+    d = copy.deepcopy(real_wf); J(d, "daily-audit")["steps"].insert(1, {"run": run})
+    found = judge_wf(d, False)
+    result(not any(FETCH_REASON in x for x in found), f"not caught as a pull ref fetch: {name}" + "".join(f"; saw {x}" for x in found if FETCH_REASON in x))
+ctl_wf("an ordinary fetch of main", "git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'")
+ctl_wf("a fetch of a branch named like a pull word", "git fetch --no-tags origin refs/heads/pulley:refs/remotes/origin/pulley")
+ctl_wf("a fetch of a tag", "git fetch --no-tags origin refs/tags/v1:refs/tags/v1")
+ctl_wf("a command that only prints pull/1/head", "echo pull/1/head")
 mut_wf("a job gets an environment", "has an environment or secrets", lambda d: J(d, "daily-audit").update(environment="release"))
-mut_wf("a third job appears", "the jobs are not exactly",
-        lambda d: d["jobs"].update(extra={"runs-on": "ubuntu-latest", "steps": []}))
+mut_wf("a second job appears", "the jobs are not exactly",
+       lambda d: d["jobs"].update(extra={"runs-on": "ubuntu-latest", "steps": []}))
+mut_wf("image-signatures returns", "the jobs are not exactly", lambda d: d["jobs"].update({"image-signatures": {"runs-on": "ubuntu-latest", "steps": []}}))
+mut_wf("a step gains a condition of its own", "a step has a condition", lambda d: J(d, "daily-audit")["steps"][0].update({"if": "github.event_name == 'pull_request'"}))
+mut_wf("a job holds an actions permission", "has an actions permission", lambda d: J(d, "daily-audit")["permissions"].update(actions="read"))
 mut_wf("top-level permissions widened", "no top-level permissions block", lambda d: d.update(permissions={"contents": "write"}))
-# --- dependabot ---
-mut_db("a second github-actions entry for the same directory", "one entry per ecosystem and directory",
-        lambda d: d["updates"].append(copy.deepcopy(eco(d, "github-actions"))))
-mut_db("gomod gains an ignore rule", "gomod entry is not unchanged", lambda d: eco(d, "gomod").update(ignore=[{"dependency-name": "x"}]))
-mut_db("gomod's schedule changes", "gomod entry is not unchanged", lambda d: eco(d, "gomod")["schedule"].update(interval="monthly"))
-mut_db("docker gains a group", "docker entry is not unchanged", lambda d: eco(d,
-        "docker").update(groups={"all": {"patterns": ["*"]}}))
-mut_db("docker's directory changes", "docker entry is not unchanged", lambda d: eco(d, "docker").update(directory="/"))
-mut_db("docker's schedule slows", "docker entry is not unchanged", lambda d: eco(d, "docker")["schedule"].update(interval="weekly"))
-mut_db("gomod is removed", "the gomod entry is missing", lambda d: d["updates"].remove(eco(d, "gomod")))
-mut_db("the tools/requirements gomod entry is removed", "the gomod entry is missing",
-        lambda d: d["updates"].remove(next(u for u in d["updates"] if u["directory"] == "/tools/requirements")))
-mut_db("pip is removed", "the pip entry is missing", lambda d: d["updates"].remove(eco(d, "pip")))
+# --- dependabot (AC1) ---
+mut_db("github-actions gains a cooldown", "has a cooldown", lambda d: eco(d, "github-actions").update(cooldown={"default-days": "7"}))
+mut_db("gomod gains an ignore rule", "the gomod / entry is not exactly weekly and nothing else", lambda d: eco(d, "gomod").update(ignore=[{"dependency-name": "x"}]))
+mut_db("gomod's schedule changes", "the gomod / entry is not exactly weekly and nothing else", lambda d: eco(d, "gomod")["schedule"].update(interval="monthly"))
+mut_db("a docker entry returns for /build/docker", "docker entry is back", lambda d: d["updates"].append({"package-ecosystem": "docker", "directory": "/build/docker", "schedule": {"interval": "daily"}}))
+mut_db("a docker entry returns for the root", "docker entry is back", lambda d: d["updates"].append({"package-ecosystem": "docker", "directory": "/", "schedule": {"interval": "weekly"}}))
+mut_db("gomod is removed", "the gomod / entry is missing", lambda d: d["updates"].remove(eco(d, "gomod")))
+TOOL = lambda d: next(u for u in d["updates"] if u.get("directory") == "/tools/govulncheck")
+mut_db("the govulncheck tool entry is removed", "govulncheck tool entry", lambda d: d["updates"].remove(TOOL(d)))
+mut_db("the govulncheck tool entry watches another directory", "govulncheck tool entry", lambda d: TOOL(d).update(directory="/tools/requirements"))
+mut_db("the govulncheck tool entry runs daily", "govulncheck tool entry", lambda d: TOOL(d)["schedule"].update(interval="daily"))
+mut_db("the govulncheck tool entry ignores a dependency", "govulncheck tool entry", lambda d: TOOL(d).update(ignore=[{"dependency-name": "golang.org/x/vuln"}]))
+mut_db("the govulncheck tool entry is repeated", "govulncheck tool entry", lambda d: d["updates"].append(copy.deepcopy(TOOL(d))))
+mut_db("gomod gets a cooldown", "has a cooldown", lambda d: eco(d, "gomod").update(cooldown={"default-days": "7"}))
+mut_db("github-actions loses its groups", "github-actions groups are not exactly codeql-action then actions-minor-patch", lambda d: eco(d, "github-actions").pop("groups"))
+mut_db("github-actions loses its actions-minor-patch group", "github-actions groups are not exactly codeql-action then actions-minor-patch", lambda d: eco(d, "github-actions")["groups"].pop("actions-minor-patch"))
+mut_db("the codeql-action group widens", "codeql-action group is not exactly",
+       lambda d: eco(d, "github-actions")["groups"]["codeql-action"].update(patterns=["github/*"]))
+mut_db("codeql-action loses major", "codeql-action group is not exactly",
+       lambda d: eco(d, "github-actions")["groups"]["codeql-action"].pop("update-types"))
+mut_db("codeql-action takes minor too", "codeql-action group is not exactly",
+       lambda d: eco(d, "github-actions")["groups"]["codeql-action"].update({"update-types": ["major", "minor"]}))
+mut_db("actions-minor-patch drops update-types", "actions-minor-patch group is not exactly",
+       lambda d: eco(d, "github-actions")["groups"]["actions-minor-patch"].pop("update-types"))
+mut_db("actions-minor-patch takes a major", "actions-minor-patch group is not exactly",
+       lambda d: eco(d, "github-actions")["groups"]["actions-minor-patch"].update({"update-types": ["major", "minor", "patch"]}))
+mut_db("actions-minor-patch takes patch only", "actions-minor-patch group is not exactly",
+       lambda d: eco(d, "github-actions")["groups"]["actions-minor-patch"].update({"update-types": ["patch"]}))
+mut_db("actions-minor-patch gets applies-to", "sets applies-to",
+       lambda d: eco(d, "github-actions")["groups"]["actions-minor-patch"].update({"applies-to": "security-updates"}))
+mut_db("codeql-action gets applies-to", "sets applies-to",
+       lambda d: eco(d, "github-actions")["groups"]["codeql-action"].update({"applies-to": "version-updates"}))
+d = copy.deepcopy(real_db)    # dict equality ignores key order, so this one is judged directly too
+try:
+    eco(d, "github-actions")["groups"] = dict(reversed(list(eco(d, "github-actions")["groups"].items())))
+    found = judge_db(d)
+    ok = any("github-actions groups are not exactly codeql-action then actions-minor-patch" in x for x in found)
+except Exception as e:
+    found, ok = [f"{type(e).__name__}: {e}"], False
+result(ok, "caught: actions-minor-patch comes before codeql-action (reason: 'github-actions groups are not exactly codeql-action then actions-minor-patch')" + ("" if ok else f"; saw {found}"))
+mut_db("gomod loses its groups", "the gomod / groups are not exactly gomod-minor-patch", lambda d: eco(d, "gomod").pop("groups"))
+mut_db("gomod-minor-patch drops update-types", "the gomod / gomod-minor-patch group is not exactly",
+       lambda d: eco(d, "gomod")["groups"]["gomod-minor-patch"].pop("update-types"))
+mut_db("gomod-minor-patch takes a major", "the gomod / gomod-minor-patch group is not exactly",
+       lambda d: eco(d, "gomod")["groups"]["gomod-minor-patch"].update({"update-types": ["major", "minor", "patch"]}))
+mut_db("gomod-minor-patch gets applies-to", "sets applies-to",
+       lambda d: eco(d, "gomod")["groups"]["gomod-minor-patch"].update({"applies-to": "version-updates"}))
+# the second Go module (rule 12): tools/requirements has its own gomod entry, judged apart from the root one
+mut_db("the tools/requirements entry is removed", "go.mod at tools/requirements has no gomod entry", lambda d: d["updates"].remove(gmod(d, "/tools/requirements")))
+mut_db("the tools/requirements entry is removed (named)", "the gomod /tools/requirements entry is missing", lambda d: d["updates"].remove(gmod(d, "/tools/requirements")))
+mut_db("the tools/requirements group is dropped", "the gomod /tools/requirements groups are not exactly gomod-minor-patch", lambda d: gmod(d, "/tools/requirements").pop("groups"))
+mut_db("the tools/requirements group takes a major", "the gomod /tools/requirements gomod-minor-patch group is not exactly",
+       lambda d: gmod(d, "/tools/requirements")["groups"]["gomod-minor-patch"].update({"update-types": ["major", "minor", "patch"]}))
+mut_db("the tools/requirements schedule changes", "the gomod /tools/requirements entry is not exactly weekly and nothing else", lambda d: gmod(d, "/tools/requirements")["schedule"].update(interval="daily"))
+mut_db("the tools/requirements group gets applies-to", "sets applies-to", lambda d: gmod(d, "/tools/requirements")["groups"]["gomod-minor-patch"].update({"applies-to": "version-updates"}))
+mut_db("the root gomod entry is duplicated", "duplicate gomod / entry", lambda d: d["updates"].append(copy.deepcopy(gmod(d, "/"))))
+mut_db("the root entry is broken while tools/requirements stays", "the gomod / entry is not exactly weekly and nothing else", lambda d: gmod(d, "/")["schedule"].update(interval="monthly"))
+mut_db("the root entry loses its group while tools/requirements stays", "the gomod / groups are not exactly gomod-minor-patch", lambda d: gmod(d, "/").pop("groups"))
+mut_db("the tools/requirements directory becomes /tools", "go.mod at tools/requirements has no gomod entry", lambda d: gmod(d, "/tools/requirements").update(directory="/tools"))
+mut_db("the tools/requirements directory becomes /tools (named)", "gomod entry /tools has no go.mod", lambda d: gmod(d, "/tools/requirements").update(directory="/tools"))
+# a THIRD gomod entry, copied from tools/requirements, under another spelling of a tracked directory
+def third_gomod(dirv, sched):
+    def fn(d):
+        e = copy.deepcopy(gmod(d, "/tools/requirements")); e["directory"] = dirv; e["schedule"]["interval"] = sched
+        d["updates"].append(e)
+    return fn
+mut_db("a third gomod entry /tools/requirements/ (trailing slash), monthly", "gomod entry /tools/requirements/ has no go.mod", third_gomod("/tools/requirements/", "monthly"))
+mut_db("a third gomod entry tools/requirements (no leading slash), monthly", "gomod entry tools/requirements has no go.mod", third_gomod("tools/requirements", "monthly"))
+mut_db("a third gomod entry ./ (the root spelled ./), monthly", "gomod entry ./ has no go.mod", third_gomod("./", "monthly"))
+mut_db("a gomod entry written with directories: instead of directory:", "gomod entry None has no go.mod", lambda d: d["updates"].append({k: v for k, v in gmod(d, "/").items() if k != "directory"} | {"directories": ["/"]}))
+# the coverage check alone, with a go.mod the file does not name (a third module)
+found = judge_db(real_db, (GOMOD_DIRS or set()) | {"tools/other"})
+result(any("go.mod at tools/other has no gomod entry" in x for x in found), "caught: a tracked go.mod with no gomod entry (reason: 'go.mod at tools/other has no gomod entry')" + ("" if found else "; saw nothing"))
+result(GOMOD_DIRS == {".", "tools/govulncheck", "tools/requirements"}, f"git tracks exactly three go.mod files: the root, tools/govulncheck and tools/requirements (saw {sorted(GOMOD_DIRS or [])})")
+mut_db("github-actions schedule goes monthly", "github-actions entry's schedule is not exactly interval: weekly", lambda d: eco(d, "github-actions")["schedule"].update(interval="monthly"))
+mut_db("pip schedule goes monthly", "pip entry's schedule is not exactly interval: weekly", lambda d: eco(d, "pip")["schedule"].update(interval="monthly"))
+mut_db("github-actions schedule gains day monday", "github-actions entry's schedule is not exactly interval: weekly", lambda d: eco(d, "github-actions")["schedule"].update(day="monday"))
+mut_db("pip-minor-patch drops update-types", "pip-minor-patch group is not exactly update-types minor and patch", lambda d: eco(d, "pip")["groups"]["pip-minor-patch"].pop("update-types"))
+mut_db("pip-minor-patch gets applies-to", "sets applies-to", lambda d: eco(d, "pip")["groups"]["pip-minor-patch"].update({"applies-to": "version-updates"}))
+mut_db("pydantic gets update-types", "pip pydantic group is not exactly", lambda d: eco(d, "pip")["groups"]["pydantic"].update({"update-types": ["minor", "patch"]}))
+mut_db("pip loses the pip-minor-patch group", "pip groups are not exactly pydantic then pip-minor-patch", lambda d: eco(d, "pip")["groups"].pop("pip-minor-patch"))
+# dict equality ignores key order, so this one is judged directly instead of through mut_db
+d = copy.deepcopy(real_db)
+eco(d, "pip")["groups"] = dict(reversed(list(eco(d, "pip")["groups"].items())))
+found = judge_db(d)
+ok = list(eco(d, "pip")["groups"]) == ["pip-minor-patch", "pydantic"] and any("pip groups are not exactly pydantic then pip-minor-patch" in x for x in found)
+result(ok, "caught: pip-minor-patch comes before pydantic (reason: 'pip groups are not exactly pydantic then pip-minor-patch')" + ("" if ok else f"; saw {found}"))
+mut_db("pip-minor-patch takes a major", "pip-minor-patch group is not exactly update-types minor and patch",
+       lambda d: eco(d, "pip")["groups"]["pip-minor-patch"].update({"update-types": ["major", "minor", "patch"]}))
+mut_db("pip-minor-patch gets patterns", "pip-minor-patch group is not exactly update-types minor and patch",
+       lambda d: eco(d, "pip")["groups"]["pip-minor-patch"].update(patterns=["*"]))
+mut_db("pip-minor-patch exclude-patterns changes", "pip-minor-patch group is not exactly update-types minor and patch",
+       lambda d: eco(d, "pip")["groups"]["pip-minor-patch"].update({"exclude-patterns": ["anthropic"]}))
+mut_db("pip-minor-patch loses its exclude-patterns", "pip-minor-patch group is not exactly update-types minor and patch",
+       lambda d: eco(d, "pip")["groups"]["pip-minor-patch"].pop("exclude-patterns"))
+mut_db("the pydantic group changes", "pip pydantic group is not exactly pydantic and pydantic-core",
+       lambda d: eco(d, "pip")["groups"]["pydantic"].update(patterns=["pydantic"]))
 
 print(f"supply-chain wiring: {passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)
