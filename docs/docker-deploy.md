@@ -150,7 +150,7 @@ the image is `FROM scratch`-class distroless — no shell, no `curl`/`wget`,
 no second binary inside the container to run a healthcheck command with.
 A container-internal `HEALTHCHECK: [...]` directive would have nothing
 valid to execute. Probe `/healthz` from *outside* the container instead —
-your orchestrator's own HTTP healthcheck (Kubernetes `livenessProbe` with
+your container platform's own HTTP healthcheck (Kubernetes `livenessProbe` with
 `httpGet`, an external monitoring check, or `curl -f
 http://localhost:8080/healthz` from the host/CI runner). This is a direct
 consequence of the zero-CVE-surface design — see
