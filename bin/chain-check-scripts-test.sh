@@ -295,6 +295,37 @@ GM='[{"vulnerability":{"id":"CVE-2099-0002","severity":"Negligible"},"artifact":
 FAKE_GRYPE_MATCHES="$GM" want_fail "AC4 a grype finding of NEGLIGIBLE severity that exits 0 also fails" "does not except" "${SCAN[@]}"
 FAKE_GRYPE_MATCHES='"not a list"' want_fail "AC4 a grype result whose matches is not a list is a scan that did not run" "matches" "${SCAN[@]}"
 FAKE_GRYPE_MATCHES='[]' want_ok "AC4 grype with no match left after the VEX passes" "${SCAN[@]}"
+# The owner's rule (a CVE with a VEX partner does not block; an `affected` statement is a partner only while no fix is available): grype's own --vex does not suppress
+# `affected`, so grype exits 2 and lists the match. After grype the script runs bin/inspector-gate.py's grype mode on grype's JSON: a result where every surviving match is covered
+# (affected and no fixed version, or not_affected/fixed) is clean, a match with a fix or with no statement still blocks.
+vexone() { # status [cve]: the published VEX is one unscoped statement for the cache image repository
+  printf '{"@context":"https://openvex.dev/ns/v0.2.0","@id":"https://fosterstack.com/vex/cache/openvex","author":"FosterStack LLC","version":1,"statements":[{"vulnerability":{"name":"%s"},"status":"%s","products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}]}]}\n' "${2:-CVE-2099-0050}" "$1" > "$fx/.vex/fosterstack-cache.openvex.json"
+}
+gmatch() { # id fix-versions-json
+  printf '{"vulnerability":{"id":"%s","severity":"Medium","fix":{"versions":%s,"state":"unknown"}},"artifact":{"name":"x","version":"1"}}' "$1" "$2"
+}
+M_NOFIX="[$(gmatch CVE-2099-0050 '[]')]"; M_FIX="[$(gmatch CVE-2099-0050 '["2"]')]"; M_MIX="[$(gmatch CVE-2099-0050 '[]'),$(gmatch CVE-2099-0051 '[]')]"
+mkfake grype 2 120; mkfake osv-scanner 0 80
+vexone affected
+FAKE_GRYPE_MATCHES="$M_NOFIX" want_ok "AC4 an affected statement covers a grype match with no fixed version (grype exit 2): the scan is clean" "${SCAN[@]}"
+if jq -e '[.scanners[] | select(.name == "grype") | .subjects[]] | length > 0 and all(.[]; .verdict == "pass")' "$fx/out/scan-results.json" > /dev/null 2>&1; then ok "AC4 every grype subject carries the verdict pass when its only match is covered by an affected statement with no fix"; else bad "AC4 grype subject verdicts with an affected-no-fix match: $(jq -c '[.scanners[] | select(.name == "grype") | .subjects[] | .verdict]' "$fx/out/scan-results.json" 2>&1 | head -c 200)"; fi
+FAKE_GRYPE_MATCHES="$M_FIX" want_fail "AC4 an affected statement does not cover a grype match that has a fixed version: the scan fails" "does not except" "${SCAN[@]}"
+FAKE_GRYPE_MATCHES="$M_MIX" want_fail "AC4 one match covered by an affected statement and one with no statement: the scan fails" "does not except" "${SCAN[@]}"
+vexone affected CVE-2099-0077
+FAKE_GRYPE_MATCHES="$M_NOFIX" want_fail "AC4 an affected statement for another CVE covers nothing: the scan fails" "does not except" "${SCAN[@]}"
+vexone under_investigation
+FAKE_GRYPE_MATCHES="$M_NOFIX" want_fail "AC4 an under_investigation statement is no partner: the scan fails" "does not except" "${SCAN[@]}"
+vexone not_affected
+FAKE_GRYPE_MATCHES="$M_FIX" want_ok "AC4 a not_affected statement covers a grype match whether or not a fix exists" "${SCAN[@]}"
+vexone fixed
+FAKE_GRYPE_MATCHES="$M_FIX" want_ok "AC4 a fixed statement covers a grype match that has a fix" "${SCAN[@]}"
+vexone affected
+mkfake grype 0 120
+FAKE_GRYPE_MATCHES="$M_NOFIX" want_ok "AC4 an affected statement covers the surviving match when grype itself exits 0 (UNKNOWN severity)" "${SCAN[@]}"
+FAKE_GRYPE_MATCHES="$M_FIX" want_fail "AC4 an affected statement does not cover a surviving match with a fix when grype exits 0" "does not except" "${SCAN[@]}"
+mkfake grype 1 120
+FAKE_GRYPE_MATCHES="$M_NOFIX" want_fail "AC4 grype exit 1 (a runtime error) is never made clean by an affected statement" "could not run" "${SCAN[@]}"
+cp "$root/test-evidence/vex-scope/busybox.openvex.json" "$fx/.vex/fosterstack-cache.openvex.json"; mkfake grype 0 120
 # "The VEX is the only exception" (register rows 18 and 38), as in cache#580 for the PR gate: grype runs with an EMPTY config file (no repo, home or XDG config), a GRYPE_* setting
 # other than GRYPE_DB_CACHE_DIR and GRYPE_DB_AUTO_UPDATE stops the pass, and everything grype left out (ignoredMatches) must come from a VEX rule (namespace vex and a vex-status
 # of not_affected or fixed). Real grype 0.118.0 behaviour of these shapes was probed for cache#580.

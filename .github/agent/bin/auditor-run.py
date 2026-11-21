@@ -10,7 +10,7 @@ Routing is DETERMINISTIC from scanner data before any model call:
   * a fix that exists in something we build (a Go module, or the base image digest we pin)
     -> a bump / base-rebuild PR (§3), each row carrying its action;
   * no upstream fix (Debian no-dsa / unfixed / TEMP-* / DLA) -> a POA&M: affected VEX +
-    time-boxed ignores + expiry (§2), at/above threshold (Critical / KEV / known-exploited)
+    expiry (§2), at/above threshold (Critical / KEV / known-exploited)
     -> an owner-decision issue as well.
 The model is consulted ONLY for false-positive suspicion (a finding unique to one scanner
 lineage) and for reachability where govulncheck applies. §4 holds only model refusals after
@@ -1984,7 +1984,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
             if not at and not env.get("kev_ok", True):
                 at = True; reason = "kev-unavailable (fail-closed)"
             row.update(section=2, not_pullable=hold, disposition="carried (fix not pullable)",
-                       action="POA&M: affected VEX + ignores + lift trigger, expiry %s" % this_exp2,
+                       action="POA&M: affected VEX + lift trigger, expiry %s" % this_exp2,
                        vex_id=this_scope_id, scope_purls=_purls, reason=case, fixed=comp_fixed,
                        ignore_files=["vex"],
                        threshold=("at_or_above" if at else "below"), expiry=this_exp2,
@@ -2044,7 +2044,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
             if not _at and not env.get("kev_ok", True):
                 _at = True; _reason = "kev-unavailable (fail-closed)"
             row.update(section=2, not_pullable=hold, disposition="carried (fix not pullable) — recheck deferred",
-                       action="POA&M: affected VEX + ignores retained, expiry %s; recheck deferred (%s)"
+                       action="POA&M: affected VEX retained, expiry %s; recheck deferred (%s)"
                        % (this_exp3, cause),
                        vex_id=this_scope_id, scope_purls=_purls, fixed=gf["fixed"],
                        reason="fix exists but not pullable; recheck could not confirm a lift (%s)" % cause,
@@ -2110,7 +2110,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
     vwrite(out, c, "affected", ts, action="no fix upstream; tracked; re-checked daily",
               evidence={"check": "reachable-no-fix", "source_file": "manifest", "detail": gf["nofix_reason"]},
               target_date=this_exp, vex_name=vn, subcomponents=subs)
-    action = "POA&M: affected VEX + ignores, expiry %s" % this_exp
+    action = "POA&M: affected VEX, expiry %s" % this_exp
     # name the ignore artifacts this acceptance actually writes so the row line is honest — a
     # §2 POA&M without ignore_files defaulted _row_line to "ignores: none".
     row.update(section=2, disposition="carried (POA&M)", action=action, vex_id=this_scope_id,
@@ -2408,10 +2408,10 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         scopes = sorted({it["scope"] for _r, it in group})
         title = policy.owner_issue_title(cve, pkg, reason_key)
         if kind == "risk_acceptance":
-            body = ("Accept risk for %s in %s? No pullable upstream fix; an affected VEX + %d-day "
-                    "ignores are carried in this run's suppression package (the artifact/PR). "
+            body = ("Accept risk for %s in %s? No pullable upstream fix; an affected VEX "
+                    "statement is carried in this run's suppression package (the artifact/PR). "
                     "Scope(s) (%d):\n- %s\n\nReply on this issue: `ACCEPT %s until YYYY-MM-DD` or "
-                    "`REJECT %s`." % (cve, pkg, policy.IGNORE_EXPIRY_DAYS, len(scopes),
+                    "`REJECT %s`." % (cve, pkg, len(scopes),
                                       "\n- ".join(scopes), cve, cve))
         else:
             body = ("Finding %s in %s could not be assessed after the primary/rephrase/fallback "

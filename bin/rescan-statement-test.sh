@@ -245,13 +245,14 @@ OSV_GHSA='{"results":[{"source":{"path":"go.mod","type":"lockfile"},"packages":[
 vexdoc "$D/v/by-ghsa.json" "[$(st GO-2024-0001 '[]' not_affected "[$PROD_GO]")]"
 vrun osv-scanner 1 "$OSV_GHSA" "$D/v/by-ghsa.json"
 expect "osv: the report's alias (GO-2024-0001) matches the statement's name through the Go module product" clean false 0 1
-# fixed suppresses too; affected / under_investigation do not
+# fixed suppresses too; affected suppresses a finding with no fix (an osv-scanner finding carries none); under_investigation does not
 vexdoc "$D/v/fixed.json" "[$(st CVE-2024-9999 '[]' fixed "[$PROD_REPO]")]"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/fixed.json"
 expect "osv: status fixed suppresses" clean false 0 1
-for stt in affected under_investigation; do
-  vexdoc "$D/v/$stt.json" "[$(st CVE-2024-9999 '[]' $stt "[$PROD_REPO]")]"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/$stt.json"
-  expect "osv: status $stt does NOT suppress" findings true 1 0
-done
+vexdoc "$D/v/affected.json" "[$(st CVE-2024-9999 '[]' affected "[$PROD_REPO]")]"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/affected.json"
+expect "osv: status affected suppresses a finding with no fix (the partner of a CVE with no fix)" clean false 0 1
+[ "$(jq -r '.vex_suppressed[0].vex.status' "$D/stmtv.json")" = affected ] && ok || bad "osv: the suppressed finding carries the affected statement's status"
+vexdoc "$D/v/under_investigation.json" "[$(st CVE-2024-9999 '[]' under_investigation "[$PROD_REPO]")]"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/under_investigation.json"
+expect "osv: status under_investigation does NOT suppress" findings true 1 0
 # another product, or another vulnerability, does not suppress ("never by CVE alone across products")
 vexdoc "$D/v/other-product.json" "[$(st CVE-2024-9999 '[]' not_affected '[{"@id":"pkg:oci/other?repository_url=ghcr.io/example/other"}]')]"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/other-product.json"
 expect "osv: a statement for ANOTHER product does not suppress" findings true 1 0
@@ -284,9 +285,9 @@ vrun osv-scanner 1 "$(osv_std go1.27.3)" "$D/v/sub-std.json"; expect "R1 osv: a 
 vrun osv-scanner 1 "$(osv_std 1.27.2)" "$D/v/sub-std.json"; expect "R1 osv: a stdlib finding at 1.27.2 (no go prefix) is covered by the stdlib@1.27.2 statement" clean false 0 1
 subs() { printf '{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache","subcomponents":[{"@id":"%s"}]}' "$1"; }
 vexdoc "$D/v/go-ret1.json" "[$(st CVE-2024-9999 '[]' not_affected "[$(subs pkg:golang/stdlib@go1.27.2)]"),$(st CVE-2024-9999 '[]' affected "[$(subs pkg:golang/stdlib@1.27.2)]")]"
-vrun osv-scanner 1 "$(osv_std go1.27.2)" "$D/v/go-ret1.json"; expect "R1 osv: a later affected stdlib@1.27.2 retracts an earlier not_affected stdlib@go1.27.2 (findings)" findings true 1 0
+vrun osv-scanner 1 "$(osv_std go1.27.2)" "$D/v/go-ret1.json"; expect "R1 osv: a later affected stdlib@1.27.2 retracts the earlier not_affected stdlib@go1.27.2, and as the winner covers a finding with no fix (clean)" clean false 0 1
 vexdoc "$D/v/go-ret2.json" "[$(st CVE-2024-9999 '[]' not_affected "[$(subs pkg:golang/stdlib@1.27.2)]"),$(st CVE-2024-9999 '[]' affected "[$(subs pkg:golang/stdlib@go1.27.2)]")]"
-vrun osv-scanner 1 "$(osv_std go1.27.2)" "$D/v/go-ret2.json"; expect "R1 osv: a later affected stdlib@go1.27.2 retracts an earlier not_affected stdlib@1.27.2 (findings)" findings true 1 0
+vrun osv-scanner 1 "$(osv_std go1.27.2)" "$D/v/go-ret2.json"; expect "R1 osv: a later affected stdlib@go1.27.2 retracts the earlier not_affected stdlib@1.27.2, and as the winner covers a finding with no fix (clean)" clean false 0 1
 vexdoc "$D/v/go-ret3.json" "[$(st CVE-2024-9999 '[]' affected "[$(subs pkg:golang/stdlib@go1.27.2)]"),$(st CVE-2024-9999 '[]' not_affected "[$(subs pkg:golang/stdlib@1.27.2)]")]"
 vrun osv-scanner 1 "$(osv_std go1.27.2)" "$D/v/go-ret3.json"; expect "R1 osv: a not_affected stdlib@1.27.2 after an affected stdlib@go1.27.2 still covers (clean)" clean false 0 1
 # R6: a golang subcomponent covers only a Go finding, and only a golang statement covers a Go finding
@@ -815,18 +816,19 @@ lw() { # name want-verdict want-has want-count want-suppressed status[@ts] statu
     arr="$arr$(st CVE-2024-9999 '[]' "$sts" "[$PROD_REPO]" | jq -c --arg ts "$ts" 'if $ts == "" then . else .timestamp = $ts end'),"; done
   vexdoc "$D/v/lw.json" "[${arr%,}]"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/lw.json"; expect "$desc" "$wv" "$wh" "$wc" "$ws"
 }
-lw "latest: not_affected then affected (document order): the finding counts again" findings true 1 0 not_affected affected
+# an affected winner covers only a finding with no fix: osv-scanner findings carry none, so the winner covers (the _vex_match cases at the end use a finding that has a fix)
+lw "latest: not_affected then affected (document order): the affected winner covers a finding with no fix" clean false 0 1 not_affected affected
 lw "latest: affected then not_affected (document order): suppressed" clean false 0 1 affected not_affected
 lw "latest: under_investigation after not_affected retracts too" findings true 1 0 not_affected under_investigation
 lw "latest: the timestamps beat the document order (affected earlier by time): suppressed" clean false 0 1 "not_affected@2026-02-01T00:00:00Z" "affected@2026-01-01T00:00:00Z"
-lw "latest: ...and the other way (affected later by time, earlier by position): counts" findings true 1 0 "affected@2026-02-01T00:00:00Z" "not_affected@2026-01-01T00:00:00Z"
-lw "latest: an unparseable timestamp falls back to document order for the pair" findings true 1 0 "not_affected@2026-01-01T00:00:00Z" "affected@garbage"
+lw "latest: ...and the other way (affected later by time, earlier by position): the affected winner covers a finding with no fix" clean false 0 1 "affected@2026-02-01T00:00:00Z" "not_affected@2026-01-01T00:00:00Z"
+lw "latest: an unparseable timestamp falls back to document order for the pair (affected last wins, covers no-fix)" clean false 0 1 "not_affected@2026-01-01T00:00:00Z" "affected@garbage"
 lw "latest: a missing timestamp on one side falls back to document order" clean false 0 1 "affected@2026-02-01T00:00:00Z" not_affected
-lw "latest: equal timestamps: the later in the document wins" findings true 1 0 "not_affected@2026-01-01T00:00:00Z" "affected@2026-01-01T00:00:00Z"
+lw "latest: equal timestamps: the later in the document wins (affected, covers no-fix)" clean false 0 1 "not_affected@2026-01-01T00:00:00Z" "affected@2026-01-01T00:00:00Z"
 vexdoc "$D/v/lw-prod.json" "[$(st CVE-2024-9999 '[]' not_affected "[$PROD_REPO]"),$(st CVE-2024-9999 '[]' affected "[$PROD_GO]")]"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/lw-prod.json"
 expect "latest: an affected statement on another product (the Go product) does not retract the image's not_affected" clean false 0 1
 vexdoc "$D/v/lw-alias.json" "[$(st CVE-2024-9999 '["GO-2024-0001"]' not_affected "[$PROD_REPO]"),$(st GO-2024-0001 '[]' affected "[$PROD_REPO]")]"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/lw-alias.json"
-expect "latest: a later affected statement under the alias retracts (same vulnerability)" findings true 1 0
+expect "latest: a later affected statement under the alias retracts the not_affected; its winner covers a finding with no fix" clean false 0 1
 
 # ---- evidence and completeness: a raw report that is claimed must be held; the child count is required; a child with no exit code failed
 raw_args=(--vex "$VEX0" --release v0.2.0 --variant production --digest "$AMD" --image-ref "$REPO@$AMD" --scanned-at 2026-09-14T00:00:00+00:00)
@@ -847,6 +849,54 @@ assert_stmt "grype: a child whose exit code is null is a failure, never clean" g
 # a product known only by identifiers.purl, or with a null @id beside it, is the same product as its @id (the readers agree on null)
 vexdoc "$D/v/null-id.json" "[$(st CVE-2024-9999 '[]' not_affected '[{"@id":null,"identifiers":{"purl":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}}]')]"
 vrun osv-scanner 1 "$OSV_FIND" "$D/v/null-id.json"; expect "a null @id is skipped: the identifiers.purl product suppresses" clean false 0 1
+
+# _vex_match with a finding that HAS a fix (no CLI path gives an osv-scanner finding one): an affected statement matches only a finding whose fixed_in is falsy;
+# not_affected and fixed match either way; the later affected still retracts the earlier not_affected, and its winner then covers only an unfixed finding.
+vm_out=$(python3 - "$SCRIPT" "$D" <<'PYV'
+import importlib.util, json, sys
+sp = importlib.util.spec_from_file_location("rs", sys.argv[1]); R = importlib.util.module_from_spec(sp); sp.loader.exec_module(R)
+D = sys.argv[2]
+REPO = "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+IMG = "ghcr.io/fosterstack/cache"
+def doc(*sts):
+    d = {"@context": "https://openvex.dev/ns/v0.2.0", "@id": "https://fosterstack.com/vex/cache/openvex", "author": "FosterStack LLC", "version": 1,
+         "statements": [dict({"vulnerability": {"name": "CVE-2024-9999"}, "status": st, "justification": "component_not_present", "products": [{"@id": prod}]}, **({"timestamp": ts} if ts else {})) for st, prod, ts in sts]}
+    p = D + "/vm.json"; json.dump(d, open(p, "w")); return R._vex_load(p)
+def finding(fixed, **kw):
+    return dict({"id": "CVE-2024-9999", "ids": ["CVE-2024-9999"], "package": "golang.org/x/net", "version": "0.1.0", "type": "golang", "fixed_in": fixed, "platform": "linux/amd64"}, **kw)
+def m(d, f, variant="production"):
+    try: return R._vex_match(d, f, variant, IMG)
+    except Exception as e: print("error", repr(e)); return "error"
+def row(name, ok): print(("ok: " if ok else "FAIL: ") + name)
+A = doc(("affected", REPO, None))
+row("affected matches a finding with fixed_in None", m(A, finding(None)) is not None and m(A, finding(None))["status"] == "affected")
+row("affected matches a finding with fixed_in []", m(A, finding([])) is not None)
+row("affected does not match a finding with fixed_in ['0.2.0']", m(A, finding(["0.2.0"])) is None)
+row("affected does not match a finding with fixed_in '0.2.0'", m(A, finding("0.2.0")) is None)
+row("not_affected matches a finding that has a fix", m(doc(("not_affected", REPO, None)), finding(["0.2.0"])) is not None)
+row("fixed matches a finding that has a fix", m(doc(("fixed", REPO, None)), finding(["0.2.0"])) is not None)
+row("under_investigation matches neither", m(doc(("under_investigation", REPO, None)), finding(None)) is None and m(doc(("under_investigation", REPO, None)), finding(["1"])) is None)
+row("affected: another product still matches nothing", m(doc(("affected", "pkg:oci/other?repository_url=ghcr.io/example/other", None)), finding(None)) is None)
+SC = REPO + "&variant=production&arch=amd64"
+row("affected, scoped: matches its own image's unfixed finding", m(doc(("affected", SC, None)), finding(None)) is not None)
+row("affected, scoped: not another arch's unfixed finding", m(doc(("affected", SC, None)), finding(None, platform="linux/arm64")) is None)
+row("affected on the Go product matches an unfixed finding", m(doc(("affected", "pkg:golang/github.com/fosterstack/cache", None)), finding(None)) is not None)
+row("affected on the Go product does not match a fixed finding", m(doc(("affected", "pkg:golang/github.com/fosterstack/cache", None)), finding(["0.2.0"])) is None)
+NA = ("not_affected", REPO, None); AF = ("affected", REPO, None)
+row("later affected retracts the earlier not_affected: a fixed finding is not matched", m(doc(NA, AF), finding(["0.2.0"])) is None)
+row("later affected is the winner and matches an unfixed finding", m(doc(NA, AF), finding(None)) is not None)
+row("later not_affected beats the earlier affected: a fixed finding is matched", m(doc(AF, NA), finding(["0.2.0"])) is not None)
+row("the timestamps decide: the later affected (by time) does not match a fixed finding", m(doc(("affected", REPO, "2026-02-01T00:00:00Z"), ("not_affected", REPO, "2026-01-01T00:00:00Z")), finding(["0.2.0"])) is None)
+row("an alias: a later affected under the alias retracts; a fixed finding is not matched", (lambda d: m(d, finding(["0.2.0"], ids=["CVE-2024-9999", "GO-2024-0001"])))(
+    (lambda p: R._vex_load(p))((lambda p: (json.dump({"@context": "https://openvex.dev/ns/v0.2.0", "@id": "https://fosterstack.com/vex/cache/openvex", "author": "FosterStack LLC", "version": 1, "statements": [
+        {"vulnerability": {"name": "CVE-2024-9999", "aliases": ["GO-2024-0001"]}, "status": "not_affected", "justification": "component_not_present", "products": [{"@id": REPO}]},
+        {"vulnerability": {"name": "GO-2024-0001"}, "status": "affected", "justification": "component_not_present", "products": [{"@id": REPO}]}]}, open(p, "w")), p)[1])(D + "/vm2.json"))) is None)
+print("vm-cases-run")
+PYV
+) && vm_rc=0 || vm_rc=$?
+echo "$vm_out" | grep -v '^ok:' || true
+pass=$((pass + $(grep -c '^ok:' <<<"$vm_out" || true))); fail=$((fail + $(grep -c '^FAIL:' <<<"$vm_out" || true)))
+if [ "$vm_rc" -eq 0 ] && [ "$(grep -c '^\(ok\|FAIL\):' <<<"$vm_out")" = 17 ] && grep -qx vm-cases-run <<<"$vm_out"; then ok; else bad "the _vex_match section ran $(grep -c '^\(ok\|FAIL\):' <<<"$vm_out") cases, want 17, or exited non-zero (rc $vm_rc)"; fi
 
 echo "rescan-statement: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

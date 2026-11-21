@@ -6,10 +6,10 @@
 #
 #   * the package count is the SBOM's components that carry a package URL (row 53: zero packages =
 #     the scanner did not run, which is red — never a clean pass);
-#   * every vulnerability blocks at ANY severity, except one covered by the
-#     published OpenVEX document (.vex/) with status not_affected or fixed
-#     — Inspector has no VEX input, so the document is applied here, the
-#     one exception grype also honours via --vex.
+#   * every vulnerability blocks at ANY severity, except one with a VEX partner in the
+#     published OpenVEX document (.vex/): a statement with status not_affected or fixed, or
+#     affected while the scanner reports no fixed version. Inspector has no VEX input, so
+#     the document is applied here, and for grype's leg by the `grype` mode below.
 #
 # A VEX statement covers a finding when its vulnerability name (or an alias)
 # is the finding's id AND one of the statement's products is this repo's
@@ -30,6 +30,9 @@
 # input). The summary line always carries the counts.
 #
 # Usage: inspector-gate.py <label> <sbom.json> <findings.json> <openvex.json>
+#        inspector-gate.py grype <label> <grype.json> <openvex.json>
+#   The grype mode: exit 0 when grype's JSON has matches and every one has a VEX partner (grype's own --vex
+#   leaves the `affected` ones in), 1 when one has none, 2 when the input cannot be read.
 # Pure python3 + json, no network — exercised by bin/inspector-gate-test.sh.
 import json
 import re
@@ -42,6 +45,7 @@ OUR_PRODUCTS = re.compile(
     r"|oci/cache-candidates\?repository_url=ghcr\.io/fosterstack/cache-candidates"
     r"|golang/github\.com/fosterstack/cache)(@|$|&|\?)")
 SUPPRESSING = {"not_affected", "fixed"}
+PARTNERS = SUPPRESSING | {"affected"}   # affected is a partner only while no fix is reported
 
 
 def is_package_url(purl):   # pkg:deb/debian/glibc@2.36 is one; "not-a-purl", "pkg:" and "pkg:/" are not: a type, a slash, then a name
@@ -216,11 +220,11 @@ def superseded(statements):
 
 def vex_index(doc):
     """vulnerability id → list of (subcomponent (name, ver) set, product scope); an empty set
-    means the statement covers every package of our product."""
+    means the statement covers every package of our product. `affected` statements are kept apart, under ("affected", id)."""
     idx = {}
     dead = superseded(doc.get("statements") or [])
     for si, st in enumerate(doc.get("statements") or []):
-        if not isinstance(st, dict) or st.get("status") not in SUPPRESSING:
+        if not isinstance(st, dict) or st.get("status") not in PARTNERS:
             continue
         v = st.get("vulnerability") or {}
         ids = {v.get("name")} | set(v.get("aliases") or [])
@@ -240,17 +244,18 @@ def vex_index(doc):
                 subs.setdefault((name, stdlib_version(typ, name, ver)), set()).add(typ)
             for i in ids:
                 if i:
-                    idx.setdefault(i, []).append((subs, scope))
+                    idx.setdefault(i if st["status"] != "affected" else ("affected", i), []).append((subs, scope))
     return idx
 
 
-def covered(idx, vid, pkg, image=None, typ=None):
+def covered(idx, vid, pkg, image=None, typ=None, fixed=None):
     """image = the scanned image's identity (image_identity(label)); None means the caller has already filtered the statements to
     this image (the panel's tally does, per image), so the scope is not applied a second time.
-    typ = the finding's purl type: when it or a subcomponent's is golang, a subcomponent of another type never covers it. None: the finding has no type."""
+    typ = the finding's purl type: when it or a subcomponent's is golang, a subcomponent of another type never covers it. None: the finding has no type.
+    fixed = the fixed version the scanner reports, if any: an `affected` statement does not cover a finding that has a fix."""
     if typ is not None:
         pkg = (pkg[0], stdlib_version(typ, *pkg))
-    for subs, scope in idx.get(vid, []):
+    for subs, scope in idx.get(vid, []) + ([] if fixed else idx.get(("affected", vid), [])):
         if image is not None and not in_scope(scope, image):
             continue
         if not subs or any(types_cover(typ, subs[s]) and same_pkg(pkg, s) for s in subs):
@@ -258,7 +263,36 @@ def covered(idx, vid, pkg, image=None, typ=None):
     return False
 
 
+def grype_main(label, grype_p, vex_p):
+    try:
+        matches = load(grype_p)["matches"]
+        idx = vex_index(load(vex_p))
+        if not isinstance(matches, list):
+            raise ValueError("matches is not a list")
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        print(f"::error::grype {label}: could not read its output ({e}) — did not run, not a clean pass")
+        return 2
+    image = image_identity(label)
+    blocking = []
+    for m in matches:
+        vuln, art = m.get("vulnerability") or {}, m.get("artifact") or {}
+        ids = [vuln.get("id")] + [r.get("id") for r in m.get("relatedVulnerabilities") or []]
+        pkg = ((art.get("name") or "?").lower(), art.get("version") or "")
+        typ = package_type(art.get("purl") or "", pkg[0])
+        fixed = (vuln.get("fix") or {}).get("versions")
+        if not any(covered(idx, i, pkg, image, typ, fixed) for i in ids if i):
+            blocking.append(f"{vuln.get('id') or '?'} {pkg[0]}@{pkg[1]}")
+    print(f"grype {label}: {len(matches)} match(es), {len(matches) - len(blocking)} covered by the published VEX")
+    if not matches:
+        print(f"::error::grype {label}: no match to cover")
+    for r in blocking:
+        print(f"::error::grype {label}: {r}")
+    return 1 if blocking or not matches else 0
+
+
 def main(argv):
+    if len(argv) == 5 and argv[1] == "grype":
+        return grype_main(*argv[2:])
     if len(argv) != 5:
         print("usage: inspector-gate.py <label> <sbom.json> <findings.json> <openvex.json>", file=sys.stderr)
         return 2
@@ -291,6 +325,7 @@ def main(argv):
     for v in findings.get("vulnerabilities") or []:
         vid = v.get("id") or "?"
         sev = ",".join(sorted({(r.get("severity") or "unknown") for r in v.get("ratings") or []})) or "unknown"
+        props = {p.get("name"): p.get("value") for p in v.get("properties") or [] if isinstance(p, dict)}
         for a in v.get("affects") or [{"ref": ""}]:
             c = by_ref.get(a.get("ref"), {})
             purl = c.get("purl") or ""
@@ -298,7 +333,8 @@ def main(argv):
             if not pkg[0]:
                 pkg = ((c.get("name") or "?").lower(), c.get("version") or "")
             row = f"{vid} {pkg[0]}@{pkg[1]} ({sev})"
-            is_covered = covered(idx, vid, pkg, image, package_type(purl, pkg[0]))
+            fixed = props.get(f"amazon:inspector:sbom_scanner:fixed_version:{a.get('ref')}")
+            is_covered = covered(idx, vid, pkg, image, package_type(purl, pkg[0]), fixed)
             (suppressed if is_covered else blocking).append(row)
     print(f"inspector {label}: {n_pkg} packages, {len(blocking)} finding(s), "
           f"{len(suppressed)} covered by the published VEX")

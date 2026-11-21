@@ -672,6 +672,38 @@ class Dispose(Base):
         self.assertNotIn("owner_issue_intent", row)
         self.assertNotIn("owner-decision", row["action"])
 
+    # the owner's rule: a CVE with no fix ships with an affected VEX statement, and nothing else is carried (no ignore file, no day count): the POA&M rows say so
+    DATE = r"\d{4}-\d{2}-\d{2}"
+
+    def test_poam_action_says_affected_vex_and_never_ignores(self):
+        c = "CVE-2099-81"; f = F(c, self.PURL, "libz")
+        env = self.env(logpath=self._log("CVE-OTHER", self.PURL))
+        with mock.patch.object(R.cli, "ask_model", return_value={"category": "false_positive"}):
+            row, _ = R._dispose(c, [f], [c], env, [])
+        self.assertEqual((row["section"], row["disposition"]), (2, "carried (POA&M)"))
+        self.assertRegex(row["action"], r"^POA&M: affected VEX, expiry " + self.DATE + "$")
+        self.assertNotIn("ignores", row["action"])
+        self.assertNotIn("ignores", row["action"].lower())
+
+    def test_not_pullable_poam_action_says_affected_vex_lift_trigger_expiry(self):
+        _c, _env, row = self._not_pullable(kev_ok=True)
+        self.assertEqual((row["section"], row["not_pullable"]), (2, "upstream-held"))
+        self.assertRegex(row["action"], r"^POA&M: affected VEX.*lift trigger, expiry " + self.DATE)
+        self.assertNotIn("ignores", row["action"].lower())
+        _c, _env, row = self._not_pullable(kev_ok=False)
+        self.assertRegex(row["action"], r"^POA&M: affected VEX.*lift trigger, expiry " + self.DATE + r".*; owner-decision issue pending$")
+        self.assertNotIn("ignores", row["action"].lower())
+
+    def test_deferred_recheck_poam_action_says_affected_vex_retained_never_ignores(self):
+        c = "CVE-2099-82"; f = F(c, self.PURL, "libz", fixed="1.1"); key = (c, scope([self.PURL]))
+        base = dict(carried_not_pullable={key}, carried_expiry={key: "2026-12-01"},
+                    carried_lift_trigger={key: {"carrier": "nodejs", "min_version": "20.2", "component": "libz",
+                        "component_min_version": "3.0.13"}})
+        row, _ = R._dispose(c, [f], [c], self.env(kev_ok=True, **base), [])
+        self.assertEqual(row["disposition"], "carried (fix not pullable) — recheck deferred")
+        self.assertRegex(row["action"], r"^POA&M: affected VEX.*retained, expiry 2026-12-01; recheck deferred \(")
+        self.assertNotIn("ignores", row["action"].lower())
+
     def test_carried_not_pullable_expired_reopens_section3(self):
         c = "CVE-2099-14"; f = F(c, self.PURL, "libz", fixed="1.1"); key = (c, scope([self.PURL]))
         env = self.env(carried_not_pullable={key}, carried_expiry={key: "2026-09-01"})

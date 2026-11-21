@@ -23,7 +23,7 @@ have_ver="$("$grype" version 2>/dev/null | sed -n 's/^Version:[[:space:]]*//p' |
 "$grype" db update >/dev/null 2>&1 || true
 w="$(mktemp -d)"; trap 'rm -rf "$w"' EXIT
 # grype-scan.sh reads only the published .vex/fosterstack-cache.openvex.json, with no override (a security boundary): it runs from a temp tree whose .vex file is the fixture.
-mkdir -p "$w/tree/bin" "$w/tree/.vex"; cp "$here/grype-scan.sh" "$w/tree/bin/"; cp "$vex" "$w/tree/.vex/fosterstack-cache.openvex.json"; gs="$w/tree/bin/grype-scan.sh"
+mkdir -p "$w/tree/bin" "$w/tree/.vex"; cp "$here/grype-scan.sh" "$here/inspector-gate.py" "$w/tree/bin/"; cp "$vex" "$w/tree/.vex/fosterstack-cache.openvex.json"; gs="$w/tree/bin/grype-scan.sh"
 # the scanner is not set by the environment: gsc SCANNER prints the path of a wrapper running unmodified grype-scan.sh
 # with a directory first on PATH whose executable named grype runs SCANNER
 gsc() {
@@ -149,6 +149,62 @@ out="$(REAL_GRYPE="$grype" bash "$(gsc "$w/grype-unknown")" "sbom:$w/g-unc.json"
 out="$(REAL_GRYPE="$grype" bash "$(gsc "$w/grype-unknown")" "sbom:$w/g-cov.json" unknown-covered 2>&1)"; rc=$?
 [ "$rc" -eq 0 ] && grep -q "unknown-covered: [1-9][0-9]* packages, 0 finding" <<<"$out" \
   && ok "grype: the same finding covered by the VEX (busybox 1.37.0) passes, exit 0" || bad "grype: VEX-covered UNKNOWN case (rc $rc)" "$out"
+
+# (b2) The owner's rule: a CVE with a VEX partner does not block; an `affected` statement is a partner only while no fix is available. grype's own --vex does not
+# suppress `affected` (grype exits 2 and lists the match), so grype-scan.sh runs bin/inspector-gate.py's grype mode on grype's JSON: every surviving match covered
+# (affected and no fixed version, or not_affected/fixed) is clean; a match with a fix, or with no statement, still blocks. Fake grype: the exit code and both outputs.
+gsc_vex() { # fake-grype openvex-file -> a wrapper running grype-scan.sh, from its own tree whose published .vex is that file, with the fake first on PATH
+  local n="${1##*/}-${2##*/}" t d f; t="$w/vtree-$n"; d="$w/vpath-$n"; f="$t/bin/scan.sh"
+  mkdir -p "$t/bin" "$t/.vex" "$d"; cp "$here/grype-scan.sh" "$here/inspector-gate.py" "$t/bin/"; cp "$2" "$t/.vex/fosterstack-cache.openvex.json"
+  printf '#!/bin/bash\nexec %q "$@"\n' "$1" > "$d/grype"; chmod +x "$d/grype"
+  printf '#!/bin/bash\nPATH=%q:$PATH exec bash %q "$@"\n' "$d" "$t/bin/grype-scan.sh" > "$f"
+  echo "$f"
+}
+fake_grype_rc() { # name exit cdx-text json-text
+  cat > "$w/$1" <<SH
+#!/usr/bin/env bash
+cdx=""; js=""; for a in "\$@"; do case "\$a" in cyclonedx-json=*) cdx="\${a#cyclonedx-json=}";; json=*) js="\${a#json=}";; esac; done
+printf '%s' '$3' > "\$cdx"
+[ -n "\$js" ] && printf '%s' '$4' > "\$js"
+exit $2
+SH
+  chmod +x "$w/$1"
+}
+vexst() { # file status [cve]: one unscoped statement for our image repository
+  printf '{"statements":[{"vulnerability":{"name":"%s"},"status":"%s","products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}]}]}' "${3:-CVE-2099-0050}" "$2" > "$1"
+}
+vexst "$w/v-affected.json" affected; vexst "$w/v-notaff.json" not_affected; vexst "$w/v-fixed.json" fixed; vexst "$w/v-ui.json" under_investigation
+vexst "$w/v-affected-other.json" affected CVE-2099-0077
+mt() { # id fix-versions-json -> one grype match
+  printf '{"vulnerability":{"id":"%s","severity":"Medium","fix":{"versions":%s,"state":"unknown"}},"relatedVulnerabilities":[],"artifact":{"name":"busybox","version":"1.36.0","type":"apk","purl":"pkg:generic/busybox@1.36.0"}}' "$1" "$2"
+}
+cdxv() { printf '{"components":[{"name":"busybox","version":"1.36.0","purl":"pkg:generic/busybox@1.36.0"}],"vulnerabilities":[%s]}' "$1"; }
+VULN50='{"id":"CVE-2099-0050","affects":[{"ref":"x"}]}'
+fake_grype_rc grype-aff-nofix 2 "$(cdxv "$VULN50")" "{\"matches\":[$(mt CVE-2099-0050 '[]')],\"ignoredMatches\":[]}"
+fake_grype_rc grype-aff-nofix0 0 "$(cdxv "$VULN50")" "{\"matches\":[$(mt CVE-2099-0050 '[]')],\"ignoredMatches\":[]}"
+fake_grype_rc grype-aff-nofix1 1 "$(cdxv "$VULN50")" "{\"matches\":[$(mt CVE-2099-0050 '[]')],\"ignoredMatches\":[]}"
+fake_grype_rc grype-aff-fix 2 "$(cdxv "$VULN50")" "{\"matches\":[$(mt CVE-2099-0050 '["1.36.1"]')],\"ignoredMatches\":[]}"
+fake_grype_rc grype-aff-mixed 2 "$(cdxv "$VULN50,{\"id\":\"CVE-2099-0051\",\"affects\":[{\"ref\":\"x\"}]}")" "{\"matches\":[$(mt CVE-2099-0050 '[]'),$(mt CVE-2099-0051 '[]')],\"ignoredMatches\":[]}"
+out="$(bash "$(gsc_vex "$w/grype-aff-nofix" "$w/v-affected.json")" "sbom:$w/g-unc.json" aff-nofix 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && grep -q "covered by the published VEX" <<<"$out" && ok "grype: an affected statement for a finding with no fix covers it (grype exit 2, every match covered), exit 0" \
+  || bad "grype: affected statement, no fix, grype exit 2 (rc $rc)" "$out"
+out="$(bash "$(gsc_vex "$w/grype-aff-nofix0" "$w/v-affected.json")" "sbom:$w/g-unc.json" aff-nofix0 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && ok "grype: an affected statement covers the surviving match when grype itself exits 0, exit 0" || bad "grype: affected statement, no fix, grype exit 0 (rc $rc)" "$out"
+out="$(bash "$(gsc_vex "$w/grype-aff-nofix1" "$w/v-affected.json")" "sbom:$w/g-unc.json" aff-nofix1 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok "grype: grype exit 1 (a runtime error) is never made clean by a statement, exit $rc" || bad "grype: grype exit 1 with a covered match (rc $rc)" "$out"
+out="$(bash "$(gsc_vex "$w/grype-aff-fix" "$w/v-affected.json")" "sbom:$w/g-unc.json" aff-fix 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok "grype: an affected statement does not cover a match that has a fixed version: blocks, exit $rc" \
+  || bad "grype: affected statement with a fix (rc $rc)" "$out"
+out="$(bash "$(gsc_vex "$w/grype-aff-nofix" "$w/v-affected-other.json")" "sbom:$w/g-unc.json" aff-other 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok "grype: a statement for another CVE does not cover the match: blocks, exit $rc" || bad "grype: statement for another CVE (rc $rc)" "$out"
+out="$(bash "$(gsc_vex "$w/grype-aff-nofix" "$w/v-ui.json")" "sbom:$w/g-unc.json" aff-ui 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok "grype: an under_investigation statement is no partner: blocks, exit $rc" || bad "grype: under_investigation (rc $rc)" "$out"
+out="$(bash "$(gsc_vex "$w/grype-aff-mixed" "$w/v-affected.json")" "sbom:$w/g-unc.json" aff-mixed 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok "grype: one covered and one uncovered match: blocks, exit $rc" || bad "grype: mixed matches (rc $rc)" "$out"
+out="$(bash "$(gsc_vex "$w/grype-aff-fix" "$w/v-notaff.json")" "sbom:$w/g-unc.json" na-fix 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && ok "grype: a not_affected statement covers a match whether or not a fix exists, exit 0" || bad "grype: not_affected with a fix (rc $rc)" "$out"
+out="$(bash "$(gsc_vex "$w/grype-aff-fix" "$w/v-fixed.json")" "sbom:$w/g-unc.json" fixed-fix 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && ok "grype: a fixed statement covers a match that has a fix, exit 0" || bad "grype: fixed statement with a fix (rc $rc)" "$out"
 
 # (d) fail closed: a CycloneDX file whose findings cannot be read is exit 2, never a pass.
 out="$(bash "$(gsc "$w/grype-badvulns")" "sbom:$w/g-unc.json" badvulns 2>&1)"; rc=$?

@@ -257,7 +257,7 @@ def _image_repo(image_ref):
 
 
 def _vex_match(doc, finding, variant, image_repo):
-    """the first statement that removes this finding, or None: status not_affected or fixed, the vulnerability name or an alias equal to one of the finding's
+    """the first statement that removes this finding, or None: status not_affected or fixed (or affected while the finding has no fix), the vulnerability name or an alias equal to one of the finding's
     ids, a product that is EXACTLY this image's repository (cache or cache-candidates, never the other) scoped to nothing or to this variant and platform, or the
     repository-wide Go product (only when the image is one of our two repositories), and (when the product names subcomponents) the finding's package
     name@version among them, namespace and case preserved (_same_package). The document was validated first."""
@@ -270,7 +270,7 @@ def _vex_match(doc, finding, variant, image_repo):
         raise ValueError("a package name that is not a string")
     dead = _gate.superseded(doc["statements"])
     for si, st in enumerate(doc["statements"]):
-        if st["status"] not in _gate.SUPPRESSING:
+        if st["status"] not in _gate.PARTNERS or (st["status"] == "affected" and finding.get("fixed_in")):
             continue
         v = st["vulnerability"]
         if not ({v["name"]} | set(v.get("aliases", []))) & ids:

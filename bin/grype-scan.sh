@@ -38,6 +38,11 @@ cdx="$tmp/result.cdx.json"; js="$tmp/result.json"; cfg="$tmp/empty.yaml"; : > "$
 
 grype "$target" -c "$cfg" --fail-on negligible --vex "$vex" -o table \
   -o "cyclonedx-json=${cdx}" -o "json=${js}"; rc=$?
+# grype's --vex does not drop an `affected` statement's matches: findings that all have a VEX partner (affected while no fix is reported) are clean.
+partnered=0
+if [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]; then
+  python3 "$here/inspector-gate.py" grype "$label" "$js" "$vex" > /dev/null 2>&1 && { partnered=1; rc=0; }
+fi
 # EXPECT_IMAGE_ID (optional): the config digest of the image the caller built the scanned tar from
 # (bin/layout-archive.sh). A tar's image ID is its config
 # digest, so grype's report must name it: the image scanned is then the one we ship, not another tar in its place.
@@ -83,7 +88,7 @@ if [ "$rc" -eq 0 ]; then
     echo "::error::grype ${label}: its JSON output has no readable matches list; nothing is judged behind a result that cannot be read" >&2
     exit 2
   fi
-  if [ "$f" -gt 0 ] || [ "$m" -gt 0 ]; then
+  if [ "$partnered" -eq 0 ] && { [ "$f" -gt 0 ] || [ "$m" -gt 0 ]; }; then
     echo "::error::grype ${label}: ${f} finding(s) in the CycloneDX output and ${m} in the matches list, of any severity, UNKNOWN included, that the VEX document does not except" >&2
     exit 1
   fi
