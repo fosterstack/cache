@@ -588,6 +588,11 @@ JUDGED = json.loads(r'''{
     "run": "./bin/install-scanner.sh grype"
    },
    {
+    "name": "install the pinned cosign and crane (the suite that runs the real binaries)",
+    "if": "${{ matrix.suite == 'release-referrer-verify-test.sh' }}",
+    "run": "./bin/install-scanner.sh cosign\n./bin/install-scanner.sh crane"
+   },
+   {
     "name": "<judged elsewhere>",
     "env": {
      "SUITE": "${{ matrix.suite }}"
