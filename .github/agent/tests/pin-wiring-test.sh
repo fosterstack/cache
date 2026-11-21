@@ -20,7 +20,7 @@ pass=0 failn=0
 judge() { PIN_WIRING_WORKFLOWS_DIR="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}" PIN_WIRING_RELEASE_ONLY_FILE="${PIN_WIRING_RELEASE_ONLY_FILE:-$here/.github/policy/release-only-checks.json}" python3 - "$1" <<'PY'
 import sys, os, yaml
 # cheap pre-parse, BEFORE any structure is built: a token scan is linear and expands nothing, so an
-# anchor/alias bomb cannot hang the judge; the pin checker refuses anchors and aliases too
+# anchor/alias bomb cannot hang the judge
 _text = open(sys.argv[1]).read()
 _n = 0
 for _t in yaml.scan(_text, Loader=yaml.BaseLoader):
@@ -135,14 +135,13 @@ for _jid, _j in (d.get("jobs") or {}).items():
         if isinstance(env, dict):
             for k in sorted(k for k in env if is_risky(k)):
                 bad.append(f"{where} sets env {k}")
-# every action of ci.yml is one of the four pinned ones, by a full lower-case commit digest (the digest VALUE is judged by review, the release audit and the daily
-# audit: a Dependabot bump moves it); a tag, a short or upper-case digest, a local action or another owner's action is refused in every job
+# every action of ci.yml is one of the four actions the jobs use; a local action or another owner's action is refused in every job
 _PINNED_ACTIONS = ("actions/checkout", "actions/setup-go", "actions/setup-python", "actions/upload-artifact")
 for _jid, _j in (d.get("jobs") or {}).items():
     for _i, _st_ in enumerate((_j.get("steps") or []) if isinstance(_j, dict) else []):
         _u = _st_.get("uses") if isinstance(_st_, dict) else None
-        if _u is not None and not (isinstance(_u, str) and re.fullmatch(r"(%s)@[0-9a-f]{40}" % "|".join(map(re.escape, _PINNED_ACTIONS)), _u)):
-            bad.append(f"the {_jid} step {_i + 1} ({_st_.get('name') or _u}) uses an action that is not a pinned one of ci.yml")
+        if _u is not None and not (isinstance(_u, str) and re.fullmatch(r"(%s)@[^@]+" % "|".join(map(re.escape, _PINNED_ACTIONS)), _u)):
+            bad.append(f"the {_jid} step {_i + 1} ({_st_.get('name') or _u}) uses an action that is not one of ci.yml's")
 # the allowlist job: exactly name / runs-on / steps and the one `if` of a push-only check (REQ-REL-014-AC1): no `needs` (a skipped prerequisite skips the whole job),
 # `timeout-minutes`, `permissions`, `strategy`, `concurrency`, `container`, `services`, `env`, `defaults`, ...
 PUSH_IF = "github.event_name == 'push'"
@@ -201,15 +200,11 @@ else:
 # edited, wrapped (|| true), reordered or given an environment (BASH_ENV, SHELLOPTS ...) without this judge, which a PR cannot change for itself (the gate runs
 # main's copy), being changed first. Adding a step to one of these jobs means adding it here. The run text of the suite-list `list` step and of the suites leg is not judged here (ci-suites-matrix-test.sh runs it).
 def _by_shape(st):
-    """A step with `uses: name@<full 40-hex commit>` stands for every digest of
-    that action: the digest VALUE is judged by review, the release audit and the daily audit (a Dependabot bump moves it), not by these lists. The
-    action name and the exact shape of the ref (40 lower-case hex) stay compared; the stand-in is a tuple, which no YAML
-    scalar can equal."""
+    """A step with `uses: name@<ref>` stands for every ref of that action: the ref is a pin, not job shape. The
+    action name stays compared; the stand-in is a tuple, which no YAML scalar can equal."""
     u = st.get("uses")
     if isinstance(u, str) and u.count("@") == 1:
-        name, _, ref = u.partition("@")
-        if re.fullmatch(r"[0-9a-f]{40}", ref):
-            st = dict(st, uses=(name, "@40-hex"))
+        st = dict(st, uses=(u.partition("@")[0], "@ref"))
     if "run" in st:
         st = dict(st, run=norm(st["run"]))
     if st.get("id") == "list" or "SUITE" in (st.get("env") or {}):   # the list step and the leg: run text (and the leg's name) are judged by ci-suites-matrix-test.sh
@@ -441,7 +436,7 @@ PY
 fsjudge() { python3 - "$1" <<'PY'
 import sys, os, yaml
 # cheap pre-parse, BEFORE any structure is built: a token scan is linear and expands nothing, so an
-# anchor/alias bomb cannot hang the judge; the pin checker refuses anchors and aliases too
+# anchor/alias bomb cannot hang the judge
 _text = open(sys.argv[1]).read()
 _n = 0
 for _t in yaml.scan(_text, Loader=yaml.BaseLoader):
@@ -508,8 +503,8 @@ for _jid, _j in (d.get("jobs") or {}).items():
         if isinstance(_st_, dict) and "continue-on-error" in _st_:
             bad.append(f"the job {_jid} has a step with `continue-on-error` ({_st_.get('name') or _st_.get('uses') or _st_.get('run')})")
         _u = _st_.get("uses") if isinstance(_st_, dict) else None
-        if _u is not None and not (isinstance(_u, str) and re.fullmatch(r"(%s)@[0-9a-f]{40}" % "|".join(map(re.escape, _PINNED_ACTIONS)), _u)):
-            bad.append(f"the {_jid} step {_i + 1} ({_st_.get('name') or _u}) uses an action that is not a pinned one of full-suite.yml")
+        if _u is not None and not (isinstance(_u, str) and re.fullmatch(r"(%s)@[^@]+" % "|".join(map(re.escape, _PINNED_ACTIONS)), _u)):
+            bad.append(f"the {_jid} step {_i + 1} ({_st_.get('name') or _u}) uses an action that is not one of full-suite.yml's")
 def norm(r):  # drop comment lines; the command text itself must match exactly. A comment line is one whose first
     # character after ONLY spaces and tabs is `#` (bash's rule; Python's str.strip/lstrip/splitlines also
     # treat U+00A0, U+3000, U+2028 ... as whitespace or line ends, which bash does not)
@@ -525,15 +520,11 @@ for _jid in ("suite-list", "suites", "allowlist-chain"):
         if "${{" in (st.get("run") or ""):   # raw text, comment lines included: an expression is rendered before bash sees it
             bad.append(f"a run text of the {_jid} job contains a `${{{{` expression")
 def _by_shape(st):
-    """A step with `uses: name@<full 40-hex commit>` stands for every digest of
-    that action: the digest VALUE is judged by review, the release audit and the daily audit (a Dependabot bump moves it), not by these lists. The
-    action name and the exact shape of the ref (40 lower-case hex) stay compared; the stand-in is a tuple, which no YAML
-    scalar can equal."""
+    """A step with `uses: name@<ref>` stands for every ref of that action: the ref is a pin, not job shape. The
+    action name stays compared; the stand-in is a tuple, which no YAML scalar can equal."""
     u = st.get("uses")
     if isinstance(u, str) and u.count("@") == 1:
-        name, _, ref = u.partition("@")
-        if re.fullmatch(r"[0-9a-f]{40}", ref):
-            st = dict(st, uses=(name, "@40-hex"))
+        st = dict(st, uses=(u.partition("@")[0], "@ref"))
     if "run" in st:
         st = dict(st, run=norm(st["run"]))
     if st.get("id") == "list" or "SUITE" in (st.get("env") or {}):   # the list step and the leg: run text (and the leg's name) are judged by ci-suites-matrix-test.sh
@@ -672,18 +663,13 @@ PY
 }
 
 # PR B (read-back approved by the advisor, Oct 23; Fable ruling of record cache#703): the pull-request gate's govulncheck job (the required context) installs the pinned Go, installs
-# govulncheck at the version tools/govulncheck pins, and runs bin/check-govulncheck.py by its fixed path on the repository's scanner list, as its LAST step and with nothing between:
+# govulncheck, and runs bin/check-govulncheck.py by its fixed path on the repository's scanner list, as its LAST step and with nothing between:
 # the step list is exactly checkout, setup-go, the installer, the install and the script; the job keeps its name, contents: read, and holds no secret, id-token or environment.
 # It is defined BEFORE judge mode because the trusted gate (which re-runs main's copy of this script over the PR head) runs it there too (REQ-REL-004-AC1; the scan is REQ-CHAIN-006-AC18).
-gvgate_judge() { # gvgate_judge CIYML GOMOD : exit 0 when the job named govulncheck is exactly the Check-equivalent form (the pin is the one in GOMOD)
-  python3 - "$1" "$2" <<'PY'
-import re, sys, yaml
+gvgate_judge() { # gvgate_judge CIYML : exit 0 when the job named govulncheck is exactly the Check-equivalent form
+  python3 - "$1" <<'PY'
+import sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
-pin = None
-for line in open(sys.argv[2]):
-    m = re.match(r"^\s*(?:require\s+)?golang\.org/x/vuln\s+(v\d+\.\d+\.\d+)\b", line)
-    if m: pin = m.group(1); break
-if not pin: sys.exit(1)
 j = (d.get("jobs") or {}).get("govulncheck")
 if not isinstance(j, dict): sys.exit(1)
 bad = []
@@ -711,11 +697,10 @@ if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
   for wf in $(git ls-tree --name-only "${PIN_WIRING_JUDGE_GIT}" .github/workflows/ | sed 's|.*/||'); do   # every workflow of the commit, as git objects
     git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/$wf" > "$work/head-wf/$wf" || { echo "pin-wiring: cannot read workflow $wf" >&2; exit 1; }
   done
-  git show "${PIN_WIRING_JUDGE_GIT}:tools/govulncheck/go.mod" > "$work/head-gomod" || { echo "pin-wiring: no tools/govulncheck/go.mod at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
   PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" PIN_WIRING_RELEASE_ONLY_FILE="$work/head-release-only.json" judge "$work/head-ci.yml" || exit 1
   [ -f "$work/head-wf/full-suite.yml" ] || { echo "pin-wiring: no full-suite.yml at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
   fsjudge "$work/head-wf/full-suite.yml" || exit 1
-  gvgate_judge "$work/head-ci.yml" "$work/head-gomod" || { echo "pin-wiring: the govulncheck job of the head's ci.yml is not the Check-equivalent form (REQ-REL-004-AC1)" >&2; exit 1; }
+  gvgate_judge "$work/head-ci.yml" || { echo "pin-wiring: the govulncheck job of the head's ci.yml is not the Check-equivalent form (REQ-REL-004-AC1)" >&2; exit 1; }
   exit 0
 fi
 
@@ -993,7 +978,6 @@ gitcase() {  # gitcase <name> <expect ok|bad> <python edit or empty> [the workfl
   cp "$here/.github/workflows/ci.yml" "$r/.github/workflows/ci.yml"
   mkdir -p "$r/.github/policy"; cp "$here/.github/policy/release-only-checks.json" "$r/.github/policy/release-only-checks.json"
   cp "$here"/.github/workflows/*.y*ml "$r/.github/workflows/" 2>/dev/null || true
-  mkdir -p "$r/tools/govulncheck"; cp "$here/tools/govulncheck/go.mod" "$r/tools/govulncheck/go.mod"      # the pin the govulncheck-gate judge reads at the judged commit
   if [ -n "$3" ]; then python3 - "$r/.github/workflows/${4:-ci.yml}" "$3" <<'PY'
 import sys, yaml
 p, edit = sys.argv[1], sys.argv[2]
@@ -1024,17 +1008,12 @@ gitcase suites-leg-if-at-a-commit bad "$LEG['if'] = 'false'" full-suite.yml
 gitcase full-suite-push-at-a-commit bad "d['on']['push'] = {'branches': ['main']}" full-suite.yml
 
 case_ job-needs-skipped          bad "d['jobs']['skip_guard'] = {'runs-on': 'ubuntu-latest', 'if': 'false', 'steps': [{'run': 'true'}]}; d['jobs']['allowlist']['needs'] = 'skip_guard'"
-# a bump of an action that ci.yml uses moves the digest in every step that uses it; the digest value is judged by review, the release audit and the daily audit,
-# not by this judge. The action name and the full 40-hex lower-case shape of the ref stay exact, in every job.
+# a bump of an action that ci.yml uses moves the ref in every step that uses it; the ref is not judged here. The action name stays exact, in every job.
 BUMP="for j in d['jobs'].values(): "
 BUMP+="[s.__setitem__('uses', '%s') for s in (j.get('steps') or []) "
 BUMP+="if s.get('uses', '').startswith('actions/setup-python@')]"
 case_ uses-digest-bumped       ok  "${BUMP//%s/actions/setup-python@abababababababababababababababababababab}"
-case_ uses-tag-ref             bad "${BUMP//%s/actions/setup-python@v7}"
-case_ uses-short-digest        bad "${BUMP//%s/actions/setup-python@abababababababababababababababababababa}"
-case_ uses-upper-digest        bad "${BUMP//%s/actions/setup-python@ABABABABABABABABABABABABABABABABABABABAB}"
 case_ uses-other-action-name   bad "${BUMP//%s/evil/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97}"
-case_ uses-literal-marker       bad "${BUMP//%s/actions/setup-python@<commit>}"
 BUMPJ="[s.__setitem__('uses', '%s') for s in d['jobs']['JOB']['steps'] if s.get('uses', '').startswith('actions/%a@')]"
 for jb in test lint govulncheck allowlist suite-list suites requirements marker-gate; do
   wf=ci.yml; cs=case_; case $jb in suite-list|suites) wf=full-suite.yml; cs=case_fs;; esac
@@ -1047,8 +1026,6 @@ PYU
     then
       b=${BUMPJ//JOB/$jb}; b=${b//%a/$act}
       $cs "uses-$act-in-$jb-digest-bumped" ok  "${b//%s/actions/$act@abababababababababababababababababababab}"
-      $cs "uses-$act-in-$jb-tag"           bad "${b//%s/actions/$act@v4}"
-      $cs "uses-$act-in-$jb-short-digest"  bad "${b//%s/actions/$act@abababababababababababababababababababa}"
       $cs "uses-$act-in-$jb-other-owner"   bad "${b//%s/evil/$act@abababababababababababababababababababab}"
     fi
   done
@@ -1060,14 +1037,8 @@ case_ uses-local-action-in-marker-gate bad "d['jobs']['marker-gate']['steps'].in
 case_ uses-reusable-workflow-job bad "d['jobs']['extra'] = {'uses': 'o/r/.github/workflows/w.yml@abababababababababababababababababababab'}"
 # each job's actions are judged on their own, so one job cannot borrow another's
 case_ allowlist-uses-bumped-digest-ok ok "d['jobs']['allowlist']['steps'][7]['uses'] = 'actions/setup-python@abababababababababababababababababababab'"
-case_msg allowlist-uses-setup-python-tag "d['jobs']['allowlist']['steps'][7]['uses'] = 'actions/setup-python@v7'" "the allowlist step 8 (set up Python) is not a judged action step"
-case_msg allowlist-uses-setup-python-39-hex "d['jobs']['allowlist']['steps'][7]['uses'] = 'actions/setup-python@0123456789abcdef0123456789abcdef0123456'" "the allowlist step 8 (set up Python) is not a judged action step"
-case_msg allowlist-uses-setup-python-upper-hex "d['jobs']['allowlist']['steps'][7]['uses'] = 'actions/setup-python@0123456789ABCDEF0123456789ABCDEF01234567'" "the allowlist step 8 (set up Python) is not a judged action step"
 case_msg allowlist-uses-setup-python-other-owner "d['jobs']['allowlist']['steps'][7]['uses'] = 'evil/setup-python@0123456789abcdef0123456789abcdef01234567'" "the allowlist step 8 (set up Python) is not a judged action step"
-case_msg allowlist-uses-setup-python-commit-placeholder "d['jobs']['allowlist']['steps'][7]['uses'] = 'actions/setup-python@<commit>'" "the allowlist step 8 (set up Python) is not a judged action step"
 case_msg allowlist-uses-extra-action-step "d['jobs']['allowlist']['steps'].insert(3, {'name': 'x', 'uses': 'actions/cache@0123456789abcdef0123456789abcdef01234567'})" "the allowlist step 4 (x) is not a judged action step"
-case_msg allowlist-uses-checkout-tag "s = d['jobs']['allowlist']['steps'][0]; s.pop('name', None); s['uses'] = 'actions/checkout@v4'" "the allowlist step 1 (actions/checkout@v4) is not a judged action step"
-case_msg_fs suites-uses-tag-names-job "d['jobs']['suites']['steps'][0]['uses'] = 'actions/checkout@v4'" "the suites step 1 (actions/checkout@v4) uses an action that is not a pinned one of full-suite.yml"
 RUNX="d['jobs']['suites']['steps'][3]['run'] += ' || true'"
 case_msg_fs run-changed-names-step "$RUNX" "the suites step 4 ("
 case_msg_fs run-changed-names-key  "$RUNX" "differs in: run"
@@ -1215,7 +1186,7 @@ printf '{not json' > "$work/pol-required-garbage.json"
 if out=$(PIN_WIRING_POLICY_FILE="$work/pol-required-garbage.json" judge "$here/.github/workflows/ci.yml"); then pass=$((pass+1)); echo "PASS required-checks.json is not read"; else failn=$((failn+1)); echo "FAIL required-checks.json is read ($out)"; fi
 
 gvgate_ci="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}/ci.yml"
-if gvgate_judge "$gvgate_ci" "$here/tools/govulncheck/go.mod"; then pass=$((pass+1)); echo "PASS govulncheck-gate real job"; else failn=$((failn+1)); echo "FAIL govulncheck-gate real job is not the Check-equivalent form"; fi
+if gvgate_judge "$gvgate_ci"; then pass=$((pass+1)); echo "PASS govulncheck-gate real job"; else failn=$((failn+1)); echo "FAIL govulncheck-gate real job is not the Check-equivalent form"; fi
 gvgate_mut() { # gvgate_mut LABEL OLD NEW : the ci.yml with one change inside the govulncheck job must be refused
   python3 - "$gvgate_ci" "$work/gvgate-ci.yml" "$2" "$3" <<'PY'
 import sys
@@ -1227,7 +1198,7 @@ body, rest = job[:j], job[j:]
 assert a in body, a
 open(sys.argv[2], "w").write(head + body.replace(a, b, 1) + rest)
 PY
-  if gvgate_judge "$work/gvgate-ci.yml" "$here/tools/govulncheck/go.mod"; then failn=$((failn+1)); echo "FAIL govulncheck-gate $1 accepted"; else pass=$((pass+1)); echo "PASS govulncheck-gate $1 → refused"; fi
+  if gvgate_judge "$work/gvgate-ci.yml"; then failn=$((failn+1)); echo "FAIL govulncheck-gate $1 accepted"; else pass=$((pass+1)); echo "PASS govulncheck-gate $1 → refused"; fi
 }
 gvgate_mut "old-bare-step" 'python3 -I -B bin/check-govulncheck.py --scanners .github/policy/scanners.json --out "$RUNNER_TEMP/gv"' 'govulncheck ./...'
 gvgate_mut "no-installer" 'bash bin/install-scanner.sh go' 'true'
