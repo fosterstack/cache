@@ -133,7 +133,7 @@ ALLOWED_MENTIONS = {
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
 # 232 allow patterns: main's (with ^bin/dependabot-reviewer-version\.sh$ and ^bin/policy-merge-harness\.py$, without the tag observer's), plus the chain's forms that main's lines do not already match
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 245, 6
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 247, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -832,6 +832,7 @@ passfam "feature/x" "baselayout: recipe, template, member list, copied files and
 passfam "feature/x" "evidence letter: script, fetch, publish, verify, present, tests and signatory text" "bin/evidence-letter.py" "bin/evidence-letter-fetch.sh" "bin/evidence-letter-publish.sh" "bin/evidence-letter-verify.sh" "bin/evidence-letter-present.sh" "bin/evidence-letter-test.sh" "bin/evidence-letter-job-test.sh" "docs/evidence-letter-signatory.txt"
 passfam "feature/x" "check: stage scripts, phases, helpers and the customer-word check" "bin/check-stage.sh" "bin/check-phase-arm64.sh" "bin/check-guide-plan.py" "bin/check-govulncheck.py" "bin/check-customer-words.py" "bin/check-customer-words-test.sh" "bin/check-no-outbound.py"
 passfam "feature/x" "release: the Witness-step scripts and the Release suites" "bin/release-verify.sh" "bin/release-postverify.py" "bin/chain-install-crane-test.sh" "bin/chain-release-shape.py"
+passfam "feature/x" "release: the referrer-verify suite and the sign verifier" "bin/release-referrer-verify-test.sh" "bin/release-sign-verify.sh"
 # main's .github/policy/*.txt line already admitted the word list, so no near-miss can be refused there
 runeach pass "feature/x" "check: the customer-word allow list" ".github/policy/customer-words-allow.txt"
 # the existing .github/policy/[A-Za-z0-9._-]+.json line admits the cosign signing config; it has no line of its own
