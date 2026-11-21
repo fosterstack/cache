@@ -93,12 +93,12 @@ case_ full-path-go-by-tag     bad "s=[x for x in $J['mutation']['steps'] if 'go 
 case_ guards-swapped           bad "a, b = $J['mutation']['if'], $J['check']['if']; $J['mutation']['if'], $J['check']['if'] = b, a"
 
 # ---------------------------------------------------------------------------------------------------------------------
-# PR 2 of 4: ci.yml absorbs hygiene.yml, requirements.yml and dependency-review.yml (REQ-REL-008-AC2). Every moved job
+# PR 2 of 4: ci.yml absorbs hygiene.yml and requirements.yml (REQ-REL-008-AC2). Every moved job
 # keeps its exact check name, top-level placement, job permissions, environment, needs and condition; ci.yml's
-# top-level permissions stay read-only and its one concurrency block is the reviewed one (judge_conc); every job but the six pull-request checks carries the ratified `if` that keeps it off pull requests, and dependency-review
-# runs on push to main (REQ-REL-014); every required check in .github/policy/required-checks.json is still produced by a
-# top-level job of a workflow on its scope's event. dependabot-auto-merge.yml does NOT move: its events
-# (pull_request only) differ from ci.yml's (advisor, 0051 check 3).
+# top-level permissions stay read-only and its one concurrency block is the reviewed one (judge_conc); every job but the six pull-request checks carries the ratified `if` that keeps it off pull requests; every required
+# check in .github/policy/required-checks.json is still produced by a top-level job of a workflow on its scope's
+# event. dependabot-auto-merge.yml does NOT move: its events (pull_request only) differ from ci.yml's
+# (advisor, 0051 check 3).
 judge_ci() { python3 - "$1" "$root" <<'PY'
 import glob, json, os, re, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
@@ -110,7 +110,6 @@ ANY = object()
 MOVED = {   # job id -> (name, permissions, environment, needs, if) exactly as in the original file
     "allowlist": ("allowlist", None, None, None, ANY),
     "requirements": ("requirements", None, None, None, ANY),
-    "dependency-review": (None, ANY, None, None, ANY),
 }
 jobs = d.get("jobs") or {}
 for jid, (name, perms, env, needs, cond) in MOVED.items():
@@ -178,8 +177,6 @@ PY
 case_ci real                     ok  ""
 case_ci allowlist-renamed        bad "d['jobs']['allowlist']['name'] = 'file allowlist'"
 case_ci requirements-dropped     bad "d['jobs'].pop('requirements')"
-case_ci review-on-pull-request   bad "d['jobs']['dependency-review'].pop('if', None)"
-case_ci review-pr-only-as-before bad "d['jobs']['dependency-review']['if'] = \"\${{ github.event_name == 'pull_request' }}\""
 case_ci allowlist-on-pull-request bad "d['jobs']['allowlist'].pop('if', None)"
 case_ci requirements-on-pull-request bad "d['jobs']['requirements'].pop('if', None)"
 case_ci top-level-widened        bad "d['permissions']['contents'] = 'write'"

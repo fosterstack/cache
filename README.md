@@ -51,8 +51,8 @@ Shipped:
   metrics at `/metrics`, liveness at `/healthz`.
 - `CGO_ENABLED=0` static binary — builds and runs today (see below).
 - CI on every push/PR: tests (race-enabled), `go vet`, golangci-lint
-  (staticcheck + a repo-wide `crypto/md5`/`crypto/sha1` import ban), gosec,
-  govulncheck, CodeQL, dependency review on PRs, OpenSSF Scorecard, and a
+  (staticcheck + a repo-wide `crypto/md5`/`crypto/sha1` import ban),
+  govulncheck, CodeQL, OpenSSF Scorecard, and a
   public-repo file allowlist.
 - Release pipeline: signed, provenance-attested container images
   (production, `-debug`, `-fips`) on GHCR, plus bare binaries and a signed

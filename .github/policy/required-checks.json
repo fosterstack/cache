@@ -26,11 +26,6 @@
       "scope": "push"
     },
     {
-      "context": "gosec",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
       "context": "govulncheck",
       "integration_id": 15368,
       "scope": "push"
@@ -42,11 +37,6 @@
     },
     {
       "context": "allowlist",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "dependency-review",
       "integration_id": 15368,
       "scope": "push"
     },
