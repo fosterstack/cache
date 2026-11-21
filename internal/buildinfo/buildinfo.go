@@ -2,12 +2,9 @@
 // commit it was built from, and whether it links Go's FIPS 140-3 validated
 // cryptographic module.
 //
-// Everything here is read from the runtime rather than injected at link
-// time. The release build passes -X main.version, but no such variable has
-// ever existed, so the linker silently discarded it — a value that looks
-// configured and is always empty is worse than no value at all.
-// debug.ReadBuildInfo needs no build-time cooperation and cannot drift out
-// of sync with the tag that produced the binary.
+// Everything is read from the runtime (debug.ReadBuildInfo), not injected
+// with -X at link time: a link-time value for a variable that does not exist
+// is silently dropped and reads as always empty.
 package buildinfo
 
 import (
@@ -36,11 +33,8 @@ type Info struct {
 	FIPSModule string
 }
 
-// readBuildInfo is a testability seam over debug.ReadBuildInfo. Under
-// `go test` the runtime always returns ok=true with a populated Main, so
-// the not-ok and empty-version paths below are unreachable without
-// overriding this variable. Production behavior is unchanged: nothing
-// outside the package's own tests reassigns it.
+// readBuildInfo is a seam for tests: under `go test` debug.ReadBuildInfo
+// always succeeds with a populated Main, so the failure paths need it replaced.
 var readBuildInfo = debug.ReadBuildInfo
 
 // Read returns the running binary's build information.
@@ -66,22 +60,17 @@ func Read() Info {
 	return info
 }
 
-// FIPSNote renders the FIPS posture for the startup log and the status
-// page. The compliance buyer's entire reason for choosing the -fips build
-// is this property, and until now it was unobservable at runtime: the
-// startup line announced addr, data_dir, max_bytes and auth, and said
-// nothing about the one thing they paid attention for. This is the line an
-// assessor screenshots.
-// The note distinguishes runtime MODE from build-time MODULE selection
-// (REQ-FIPS-002): GODEBUG=fips140=on forces the mode in any build, so
-// mode alone must never claim the certificate. Only the validated
-// module version does. The Go toolchain records the module setting as
-// "v1.0.0" optionally suffixed with a build hash ("v1.0.0-c2097c7c"),
-// so the certificate is claimed on the version prefix, not exact bytes.
+// validatedModule reports whether the binary links the validated module. The
+// toolchain records it as "v1.0.0", optionally with a build hash
+// ("v1.0.0-c2097c7c"), so the version prefix is what counts.
 func (i Info) validatedModule() bool {
 	return i.FIPSModule == "v1.0.0" || strings.HasPrefix(i.FIPSModule, "v1.0.0-")
 }
 
+// FIPSNote renders the FIPS posture for the startup log and the status page.
+// It keeps runtime MODE and build-time MODULE apart (REQ-FIPS-002):
+// GODEBUG=fips140=on forces the mode in any build, so only the validated
+// module version may claim the certificate.
 func (i Info) FIPSNote() string {
 	switch {
 	case i.FIPS140 && i.validatedModule():

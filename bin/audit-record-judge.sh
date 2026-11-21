@@ -4,10 +4,11 @@
 #   audit-record-judge.sh HEAD_SHA BASE_REF       env: GH_TOKEN (read-only), GITHUB_REPOSITORY
 # It reads the record branch audit/<HEAD_SHA> and its commit through the API (only when the base is main and the head is 40 lower-case hex, so nothing odd is ever put in
 # a request path) and hands both answers, as data, to bin/audit-record.py. Exit 0: a base that is not main, or a good record. Exit 1: a missing or invalid record, with the reason.
+# A head with no passing record still passes when it is a Dependabot pull request with Dependabot's commits (bin/audit-record.py bot_authored).
 # Exit 3: a GitHub API error (it says so; it is not a record defect and still fails closed). The writer treats only exit 1 as "no passing record" and never writes over a record it could not read.
 # A head with no passing record is then put to bin/audit-record.py bump (that file's module docstring has the
-# contract), which reads the head's commits from this checkout. --release mode never reaches it. The writer's
-# prepare script also calls this judge without --release for a release commit, and that call does reach it.
+# contract), which reads the head's commits from this checkout. --release mode never reaches it. The
+# writer's prepare step also calls this judge without --release for a release commit, and that call does reach it.
 set -uo pipefail
 # mode --release TAG TAG_OBJECT_FILE: gate 7, the tagged commit and the owner's approval line
 head=${1:-}; base=${2:-}; mode=${3:-}; rtag=${4:-}; rfile=${5:-}
@@ -16,10 +17,11 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 args=()
 patch=""
+repo=
 # a patch tag needs no record: nothing is read. It matches v1.2.3 and v0.9.10;
-# it refuses v1.2.0, v1.2.3-rc1, v01.2.3 and v1.2
+# it refuses v1.2.0, v1.2.3-rc1, v01.2.3, v1.2 and a tag with a newline in it (bash matches the whole string, grep a line)
 patch_tag='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.[1-9][0-9]*$'
-if [ "$mode" = --release ] && printf '%s' "$rtag" | grep -Eq "$patch_tag"; then patch=1; fi
+if [ "$mode" = --release ] && [[ "$rtag" =~ $patch_tag ]]; then patch=1; fi
 if [ "$base" = main ] && [ -z "$patch" ] && [[ "$head" =~ ^[0-9a-f]{40}$ ]]; then
   repo=${GITHUB_REPOSITORY:-}
   [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "audit-record: GITHUB_REPOSITORY is not owner/name" >&2; exit 1; }
@@ -28,7 +30,8 @@ if [ "$base" = main ] && [ -z "$patch" ] && [[ "$head" =~ ^[0-9a-f]{40}$ ]]; the
     if gh api "$2" > "$tmp/$1.json" 2> "$tmp/err"; then return 0; fi
     rm -f "$tmp/$1.json"
     if grep -q -E 'HTTP 404|Not Found' "$tmp/err"; then return 3; fi
-    echo "audit-record: could not read the record (GitHub API error on $2): $(tail -c 200 "$tmp/err" | tr '\n' ' ')" >&2
+    why=$(tail -c 200 "$tmp/err" | tr '\n' ' ')
+    echo "audit-record: could not read the record (GitHub API error on $2): $why" >&2
     return 4
   }
   read_api ref "repos/${repo}/git/ref/heads/audit/${head}"; rc=$?
@@ -45,18 +48,25 @@ if [ "$base" = main ] && [ -z "$patch" ] && [[ "$head" =~ ^[0-9a-f]{40}$ ]]; the
 fi
 if [ "$mode" = --release ]; then
   [ "$base" = main ] || { echo "audit-record: a release is judged against main" >&2; exit 1; }
-  cd "$here" && exec python3 -I bin/audit-record.py release --tag "$rtag" --tag-object "$rfile" \
+  cd "$here" && python3 -I bin/audit-record.py release --tag "$rtag" --tag-object "$rfile" \
     --tagged-sha "$head" --base-root . "${args[@]+"${args[@]}"}"
+  exit $?
 fi
 cd "$here" || exit 1
-said=$(python3 -I bin/audit-record.py verify --head "$head" --base-ref "$base" --base-root . \
-  "${args[@]+"${args[@]}"}"); rc=$?
-# repo is set only above, for a base of main and a head of 40 lower-case hex
+verify() { python3 -I bin/audit-record.py verify --head "$head" --base-ref "$base" --base-root . "${args[@]+"${args[@]}"}" "$@"; }
+said=$(verify); rc=$?
+# repo is assigned only above, for a base of main and a head of 40 lower-case hex
 if [ "$rc" = 1 ] && [ -n "$repo" ]; then
   bump=$(python3 -I bin/audit-record.py bump --head "$head" --repo "$repo" --base-root .); b=$?
   if [ "$b" = 3 ]; then exit 3; fi
-  # a line: the head is a Dependabot pull request's, and its verdict is the one printed
-  if [ -n "$bump" ]; then said=$bump; [ "$b" = 0 ] && rc=0; fi
+  compare_url="repos/$repo/compare/main...$head?per_page=100"
+  # a line: the head is a Dependabot pull request's, and its verdict is the one printed; else a Dependabot pull request
+  # whose every commit is Dependabot's or the audit writer's passes (bot_authored)
+  if [ -n "$bump" ]; then said=$bump; [ "$b" = 0 ] && rc=0
+  elif gh api "$compare_url" > "$tmp/compare.json" 2> /dev/null \
+    && gh api "repos/$repo/commits/$head/pulls" > "$tmp/pulls.json" 2> /dev/null; then
+    said=$(verify --compare-json "$tmp/compare.json" --pulls-json "$tmp/pulls.json"); rc=$?
+  fi
 fi
 printf '%s\n' "$said"
 exit "$rc"

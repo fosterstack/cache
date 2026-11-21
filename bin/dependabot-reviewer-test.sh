@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # proves: REQ-DEP-001-AC2, REQ-DEP-001-AC3, REQ-DEP-001-AC4, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC7
 # proves: REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-001-AC10, REQ-DEP-001-AC11, REQ-DEP-001-AC12
-# proves: REQ-DEP-001-AC13, REQ-DEP-001-AC14, REQ-DEP-003-AC1, REQ-DEP-003-AC2, REQ-DEP-003-AC3
+# proves: REQ-DEP-001-AC13, REQ-DEP-001-AC14, REQ-DEP-003-AC1, REQ-DEP-003-AC2, REQ-DEP-003-AC3, REQ-DEP-003-AC4
 # proves: REQ-DEP-004-AC1
 # Offline suite for bin/dependabot-reviewer.py (register row 75). Pure functions only:
 # `gather` and `read` need gh / the model and are never called here; release_notes is
@@ -702,6 +702,11 @@ d = r.decide([clean("A")] + [{"reader": "B", "findings": None, "error": None}])
 check("decide: a reader with no findings and no error -> error", d["decision"] == "error", d)
 check("decide: no readers -> error", r.decide([])["decision"] == "error")
 
+# rc-5a astra R9: the bundle marks an update MAJOR or FLAGGED and the program sends both to the readers, so the prompt asks for findings for both
+_pt = open(os.path.join(os.path.dirname(os.environ["REVIEWER_PY"]), "..", ".github", "policy", "dependabot-reviewer-prompt.txt")).read()
+check("prompt: the task asks for findings for each update, of any kind (main: every Dependabot pull request is read)",
+      "for each update, of any kind" in _pt and "for each MAJOR update" not in _pt)
+
 print("----")
 print("dependabot-reviewer: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
@@ -710,7 +715,7 @@ py_rc=$?
 
 # ============================================================================ the act step
 # The committed "gather, read twice, decide, act" step, run as written under GitHub's default
-# `bash -e`, with: a recording `gh` (per-scenario failures), a stub token endpoint (`curl`), the
+# `bash -e`, with: a recording `gh` (per-scenario failures), a stub token endpoint (`curl`), and
 # a fake SDK module that returns each reader's canned answer. Asserts WHAT is called, in WHAT order, and whether a check
 # goes up — the round-1 paths (malformed answer, failed diff, re-hold with auto-merge armed,
 # partial failures, -e aborting the loop).
@@ -896,7 +901,7 @@ act() {
      RUN_URL=https://example.invalid/run ANTHROPIC_IDENTITY_TOKEN_FILE="$W/token" \
      ACTIONS_ID_TOKEN_REQUEST_TOKEN=t ACTIONS_ID_TOKEN_REQUEST_URL="https://example.invalid/oidc?x=1" \
      AUDITOR_MODEL_PRIMARY=ma AUDITOR_MODEL_FALLBACK="${MB:-mb}" ANSWER_ma="$A" ANSWER_mb="$B" \
-     GH_TOKEN=job CHECKS_TOKEN=chk MERGE_TOKEN=mrg DISPATCH_TOKEN="${DT-ops}" \
+     GH_TOKEN=job CHECKS_TOKEN=chk MERGE_TOKEN=mrg \
      bash --noprofile --norc -e -o pipefail "$w/act.sh") > "$w/act.out" 2>&1
   echo $? > "$w/act.rc"
 }
@@ -1089,19 +1094,12 @@ grep -q "reader A" "$w/run/work/pr-99/issue.md" && grep -q "reader B" "$w/run/wo
   && { echo "ok: act: the issue carries both readers' findings, attributed, with release notes"; pass=$((pass+1)); } \
   || { echo "FAIL: act: issue content"; sed 's/^/    /' "$w/run/work/pr-99/issue.md"; fail=$((fail+1)); }
 
-# --- row 76: a completed hold dispatches the fixer (best effort)
-A="$CLEAN" B="$BREAKS" act; expect "hold -> issue, failure check, THEN the fixer dispatch with issue and PR (row 76)" \
-  "+api repos/fosterstack/ops/dispatches -f event_type=fix-held-bump -f client_payload\[issue\]=5 -f client_payload\[pr\]=99 -f client_payload\[repo\]=o/r" \
-  "ORDER:$CHK>ops/dispatches" ERRORED=0
-A="$CLEAN" B="$BREAKS" FAIL="dispatch" act; expect "the dispatch fails -> the hold still stands: issue, failure check, not unfinished" "+issue create" "+$CHK" ERRORED=0
-grep -q "fixer dispatch (fix-held-bump, issue #5): the dispatch call failed" "$w/act.out" \
-  && { echo "ok: act: a failed dispatch is a warning naming the issue"; pass=$((pass+1)); } || { echo "FAIL: act: dispatch warning"; fail=$((fail+1)); }
-A="$CLEAN" B="$BREAKS" DT="" act; expect "no ops token (App not on ops) -> no dispatch call, hold stands" "-ops/dispatches" "+$CHK" ERRORED=0
-A="$CLEAN" B="$CLEAN" act; expect "a merge never dispatches the fixer" "-ops/dispatches"
-out=$(bash "$here/dispatch-fixer.sh" fix-something 5 2>&1); rc=$?
-[ "$rc" = 1 ] && grep -q "unknown event type" <<<"$out" && { echo "ok: dispatch-fixer: unknown event type refused"; pass=$((pass+1)); } || { echo "FAIL: unknown event"; fail=$((fail+1)); }
-out=$(DISPATCH_TOKEN=t bash "$here/dispatch-fixer.sh" fix-held-bump "" 2>&1); rc=$?
-[ "$rc" = 1 ] && grep -q "no issue number" <<<"$out" && { echo "ok: dispatch-fixer: no issue number refused"; pass=$((pass+1)); } || { echo "FAIL: no issue"; fail=$((fail+1)); }
+# --- rules 4 and 5 (owner, Oct 26): no LLM inside a workflow fixes code; a hold opens its issue and stops
+if grep -rqE "repository_dispatch|/dispatches|dispatch-fixer|DISPATCH_TOKEN|repositories: ops" \
+     "$repo/.github/workflows/dependabot-reviewer.yml" "$repo/.github/workflows/ci.yml" || [ -e "$here/dispatch-fixer.sh" ]; then
+  echo "FAIL: a fixer dispatch or an ops token is back in the reviewer or ci workflow"; fail=$((fail+1))
+else echo "ok: no repository_dispatch and no ops token in dependabot-reviewer.yml or ci.yml"; pass=$((pass+1)); fi
+A="$CLEAN" B="$BREAKS" act; expect "a hold opens its issue, publishes the failure check and calls nothing in ops" "+issue create" "+$CHK" "-ops" ERRORED=0
 
 # --- round 2
 A="$CLEAN" B="$CLEAN" ARMED=true FAIL="check" act; expect "armed but the success check fails -> counted unfinished, auto-merge turned back off (round-2)" \
@@ -1346,7 +1344,7 @@ export DIFF_SAME
 cand() { # expected-candidates (* = any) expected-rc (nz = any failure); env PRIOR99 PRIOR91 LOOKUP99 FORCE
   local W="$w/cand"; rm -rf "$W"; mkdir -p "$W"; : > "$w/gh.log"
   (cd "${CANDDIR:-$repo}" &&
-    env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" PRS_JSON="${PRSFILE:-$w/prs.json}" GITHUB_REPOSITORY=o/r \
+    env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" PRS_JSON="${PRSFILE:-${PRSF:-$w/prs.json}}" GITHUB_REPOSITORY=o/r \
     RUNNER_TEMP="$W" \
      GITHUB_OUTPUT="$W/output" APP_TOKEN=a APP_SLUG=fosterstack-automation MERGE_TOKEN=m RUN_URL=https://example.invalid/run \
      ONLY_PR="${ONLY:-}" FORCE="${FORCE:-false}" \
@@ -1727,7 +1725,7 @@ PRSFILE="$w/prs-patch.json" PARENT=p1 PRIORP1=success cand "" 0 \
   "a patch head that only merges main into a passed head (same diff) is not a candidate"
 carried "the success is published on the new head, naming the head it is carried from, after both diffs were read" \
   sha90 p1
-grep -q "output\[summary\]=Not read again: this head's diff against main is byte for byte the diff of p1," "$w/gh.log" \
+grep -q "output\[summary\]=Not reviewed again: this head's diff against main is byte for byte the diff of p1," "$w/gh.log" \
   && { echo "ok: candidates: the carried check says which head it is carried from"; pass=$((pass+1)); } || {
     echo "FAIL: candidates: carried summary"; fail=$((fail+1)); }
 ONLY=99 PARENT=p1 PRIORP1=success cand "" 0 \
@@ -1975,6 +1973,36 @@ PY
 )
 if [ "$same_filters" = ok ]; then echo "ok: the three verdict readers have one jq filter"; pass=$((pass+1))
 else echo "FAIL: the three verdict readers have one jq filter ($same_filters)"; fail=$((fail+1)); fi
+
+# the pinned tool module (tools/govulncheck: go.mod and go.sum, with the version also written in ci.yml) is held out of auto-merge and handled as a normal lane PR (a lane reviews it with both Codex seats and merges it): a bump there is never a candidate, never armed, and an
+# earlier arm is turned off (advisor Oct 12); a path that only looks like it is not held
+mkheld() { # mkheld NUMBER FILES-JSON : a major PR (the body of #99) that changes those files
+  jq -n --slurpfile a "$FIX/pr-99.json" --arg n "$1" --argjson f "$2" '($a[0] + {number: ($n|tonumber), headRefOid: ("sha" + $n), files: $f})'
+}
+HELD='[{"path":"tools/govulncheck/go.mod"},{"path":"tools/govulncheck/go.sum"}]'
+jq -n --argjson h "$(mkheld 77 "$HELD")" '[$h]' > "$w/prs-held.json"
+jq -n --argjson h "$(mkheld 77 '[{"path":"go.mod"},{"path":"tools/govulncheck/go.sum"}]')" '[$h]' > "$w/prs-mixed.json"
+jq -n --argjson h "$(mkheld 77 '[{"path":"tools/govulncheck-evil/go.mod"}]')" '[$h]' > "$w/prs-lookalike.json"
+PRSF="$w/prs-held.json" cand "" 0 "a major whose files are tools/govulncheck/go.mod and go.sum is not a candidate (held out of auto-merge: a normal lane PR)"
+grep -q "api repos/o/r/commits/sha77" "$w/gh.log" && { echo "FAIL: held: the held PR's checks were looked up (it was handled as a reviewable major)"; fail=$((fail+1)); } || { echo "ok: held: no verdict lookup, no review for the held PR"; pass=$((pass+1)); }
+PRSF="$w/prs-mixed.json" cand "" 0 "a PR with one file under tools/govulncheck/ among others is held too"
+ARMED77=true PRSF="$w/prs-held.json" cand "" 0 "a held PR that is armed is disarmed and still not a candidate"
+grep -q "pr merge --disable-auto 77" "$w/gh.log" && { echo "ok: held: the armed held PR was disarmed"; pass=$((pass+1)); } || { echo "FAIL: held: the armed held PR was not disarmed"; fail=$((fail+1)); }
+ARMED77=false PRSF="$w/prs-held.json" cand "" 0 "a held PR that is not armed is left alone"
+grep -q "disable-auto" "$w/gh.log" && { echo "FAIL: held: a needless disarm"; fail=$((fail+1)); } || { echo "ok: held: no needless disarm"; pass=$((pass+1)); }
+ARMED77=true DISARMFAIL=1 PRSF="$w/prs-held.json" cand "" 1 "a held PR that is armed and cannot be disarmed fails the step (nothing is left armed silently)"
+PRSF="$w/prs-lookalike.json" cand "77 none," 0 "tools/govulncheck-evil/ is not the held directory: an ordinary major"
+# a PR whose file list is at the 100 the API returns cannot be judged (a held path could be beyond it): held too; 99 files can be judged
+files_n() { jq -c -n --argjson n "$1" '[range($n) | {path: ("docs/f\(.).md")}]'; }
+jq -n --argjson h "$(mkheld 77 "$(files_n 99)")" '[$h]' > "$w/prs-f99.json"
+jq -n --argjson h "$(mkheld 77 "$(files_n 100)")" '[$h]' > "$w/prs-f100.json"
+jq -n --argjson h "$(mkheld 77 "$(files_n 150)")" '[$h]' > "$w/prs-f150.json"
+PRSF="$w/prs-f99.json" cand "77 none," 0 "99 files, none under tools/govulncheck/: judged as an ordinary major (the boundary below the cap)"
+PRSF="$w/prs-f100.json" cand "" 0 "100 files (the API's cap: the list may be cut): not judged, held out of auto-merge, not a candidate"
+PRSF="$w/prs-f150.json" cand "" 0 "more than 100 files: held out too"
+ARMED77=true PRSF="$w/prs-f100.json" cand "" 0 "a 100-file PR that is armed is disarmed"
+grep -q "pr merge --disable-auto 77" "$w/gh.log" && { echo "ok: held: the armed 100-file PR was disarmed"; pass=$((pass+1)); } || { echo "FAIL: held: the armed 100-file PR was not disarmed"; fail=$((fail+1)); }
+ARMED77=true DISARMFAIL=1 PRSF="$w/prs-f100.json" cand "" 1 "a 100-file PR that is armed and cannot be disarmed fails the step"
 
 # ============================================================================ streak step
 streak() { # history rc-expect want-issue name

@@ -12,6 +12,7 @@ package storesample
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -48,7 +49,8 @@ type Deps struct {
 	OpenProbe func(path string) (ProbeFile, error)
 	Remove    func(path string) error
 	Now       func() time.Time
-	// Sweep removes leftover probe files at start (a probe whose cleanup failed, then a clean restart); the default removes root-level .tmp-probe-* files.
+	// Sweep removes leftover probe files at start (a probe whose cleanup failed,
+	// then a clean restart); the default removes root-level .tmp-probe-* files.
 	Sweep func(dir string)
 }
 
@@ -71,7 +73,7 @@ type Sampler struct {
 	have  bool
 	stale bool
 	busy  bool     // a probe goroutine is running (possibly past its limit)
-	rf    *refresh // the refresh in flight or last started; each refresh has its OWN state, so a stale goroutine can only touch its own
+	rf    *refresh // the refresh in flight or last started; each has its OWN state
 	last  *bool    // last published writable state, for change logging
 	seq   uint64   // number of the latest publication (guarded by mu)
 
@@ -88,7 +90,8 @@ func New(dir string, d Deps, o Options) *Sampler {
 	}
 	if d.OpenProbe == nil {
 		d.OpenProbe = func(path string) (ProbeFile, error) {
-			return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- path is the sampler's own probe name inside the data directory
+			// #nosec G304 -- path is the sampler's own probe name inside the data directory
+			return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		}
 	}
 	if d.Remove == nil {
@@ -148,12 +151,13 @@ func (s *Sampler) Get() Sample {
 	return s.cur
 }
 
-// refresh is the state of ONE measurement. Both of its goroutines capture it, so a goroutine that outlives its refresh can never publish into, or close
-// the channel of, a newer one.
+// refresh is the state of ONE measurement. Both of its goroutines capture it, so
+// a goroutine that outlives its refresh can never publish into, or close the
+// channel of, a newer one.
 type refresh struct {
 	done      chan struct{} // closed once, when the refresh has published
 	closeOnce sync.Once
-	published bool // guarded by Sampler.mu: the refresh's sample is published (by the measuring goroutine or by the limit)
+	published bool // guarded by Sampler.mu: published by the measuring goroutine or by the limit
 }
 
 func (r *refresh) close() { r.closeOnce.Do(func() { close(r.done) }) }
@@ -187,7 +191,8 @@ func (s *Sampler) refreshIfNeeded() <-chan struct{} {
 	finished := make(chan struct{})
 	go func() {
 		r := result{probeErr: s.probe()}
-		r.avail, r.statErr = s.d.Statfs(s.dir) // statfs is inside the measuring goroutine too: a hung statfs cannot hang a reader
+		// statfs runs here too, so a hung statfs cannot hang a reader
+		r.avail, r.statErr = s.d.Statfs(s.dir)
 		first := s.finish(rf, r, false)
 		if s.afterFinish != nil {
 			s.afterFinish() // test seam: the gap between releasing the slot and closing the channels
@@ -214,11 +219,15 @@ func (s *Sampler) refreshIfNeeded() <-chan struct{} {
 	return rf.done
 }
 
-// finish claims the refresh and publishes its sample in ONE critical section, so no ordering window exists. The first finisher publishes its result:
-// the measuring goroutine normally, or the limit when the probe is still running ("not writable"). The measuring goroutine ALWAYS releases the slot here;
-// when it finishes after the limit has fired, its answer is published as "not writable" with its own free bytes: a probe that took longer than the
-// limit never reads writable, however it ends. A finisher of an older refresh finds that refresh already published and does nothing. It reports whether
-// it was the first finisher of rf (the one that closes rf.done).
+// finish claims the refresh and publishes its sample in ONE critical section, so
+// no ordering window exists. The first finisher publishes: the measuring
+// goroutine normally, or the limit when the probe is still running ("not
+// writable"). The measuring goroutine ALWAYS releases the slot here; when it
+// finishes after the limit has fired, its answer is published as "not writable"
+// with its own free bytes, so a probe that took longer than the limit never
+// reads writable. A finisher of an older refresh finds it already published and
+// does nothing. It reports whether it was the first finisher of rf (the one
+// that closes rf.done).
 func (s *Sampler) finish(rf *refresh, r result, limit bool) (first bool) {
 	s.mu.Lock()
 	first = !rf.published
@@ -247,8 +256,9 @@ func (s *Sampler) finish(rf *refresh, r result, limit bool) (first bool) {
 	if prev != nil && *prev == w || prev == nil && w {
 		return first
 	}
-	// the line is written under its own lock and only if no later transition has been logged yet, so the lines come out in the order of the states and
-	// the last line never contradicts the gauge
+	// The line is written under its own lock and only if no later transition
+	// has been logged, so the lines follow the order of the states and the last
+	// line never contradicts the gauge.
 	s.logMu.Lock()
 	defer s.logMu.Unlock()
 	if mySeq < s.logged {
@@ -262,16 +272,13 @@ func (s *Sampler) finish(rf *refresh, r result, limit bool) (first bool) {
 	if w {
 		s.o.Log.Info("store_writable: the data directory is writable again", "dir", s.dir, "free_bytes", smp.FreeBytes)
 	} else {
-		s.o.Log.Error("store_writable: the data directory is not writable", "dir", s.dir, "free_bytes", smp.FreeBytes, "error", err)
+		s.o.Log.Error("store_writable: the data directory is not writable",
+			"dir", s.dir, "free_bytes", smp.FreeBytes, "error", err)
 	}
 	return first
 }
 
-type limitErr struct{}
-
-func (limitErr) Error() string { return "the writability probe took longer than its limit" }
-
-var errProbeLimit error = limitErr{}
+var errProbeLimit = errors.New("the writability probe took longer than its limit")
 
 // probe creates, writes one byte to, syncs, closes and removes a file in the
 // data directory. The sync is deliberate: without it a full disk can accept
@@ -302,7 +309,8 @@ func (s *Sampler) probe() error {
 	return first
 }
 
-// sweepProbeFiles removes the regular files named .tmp-probe-* directly in dir: leftovers of a probe whose own cleanup failed. It touches nothing else.
+// sweepProbeFiles removes the regular files named .tmp-probe-* directly in dir:
+// leftovers of a probe whose own cleanup failed. It touches nothing else.
 func sweepProbeFiles(dir string) {
 	ents, err := os.ReadDir(dir)
 	if err != nil {

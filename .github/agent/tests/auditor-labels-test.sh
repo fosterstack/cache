@@ -40,7 +40,8 @@ sys.path.insert(0, bindir)
 spec = importlib.util.spec_from_file_location("ap", bindir + "/auditor-panel.py"); ap = importlib.util.module_from_spec(spec); spec.loader.exec_module(ap)
 d, repo = tempfile.mkdtemp(), tempfile.mkdtemp()
 subprocess.run(["git", "-C", repo, "init", "-q"])
-json.dump({}, open(d + "/state.json", "w"))
+os.makedirs(repo + "/.github/policy"); json.dump({"entries": []}, open(repo + "/.github/policy/scanner-profiles.json", "w"))      # checked-in policy: an absent profiles file is a stop (cache#707)
+json.dump({"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"}, open(d + "/state.json", "w"))      # the shape the judge writes; the delivery validates it before any call (cache#707)
 json.dump({"vex": [], "profiles": [], "issue": "tracking body", "owner": ["decide x"]}, open(d + "/day.json", "w"))
 calls = []
 labels = {"daily-rescan", "security", "owner-decision"} if mode == "exists" else set()     # the repository's labels, as a STATE
@@ -63,6 +64,8 @@ def run(cmd, **kw):
             return types.SimpleNamespace(returncode=0, stderr="", stdout=("c" * 40 + "\n") if "--jq" in cmd else json.dumps({"object": {"sha": "c" * 40}}))
     if cmd[:3] == ["gh", "pr", "view"]:
         return types.SimpleNamespace(returncode=0, stderr="", stdout=("b" * 40 + "\n") if "--jq" in cmd else json.dumps({"headRefOid": "b" * 40, "autoMergeRequest": None}))
+    if cmd[:3] == ["gh", "issue", "list"] and "--jq" not in cmd:       # the owner-issue lookup reads a JSON array of {number, title}; the daily-rescan lookup (--jq) finds none
+        return types.SimpleNamespace(returncode=0, stdout="[]", stderr="")
     return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 os.environ["AUDITOR_ALLOW_REAL_GH"] = "1"
 os.environ["GITHUB_REPOSITORY"] = "o/r"; os.environ["GITHUB_SHA"] = "a" * 40

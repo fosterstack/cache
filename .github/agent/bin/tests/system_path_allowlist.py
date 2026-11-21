@@ -30,7 +30,7 @@ PINS = {
                  '"Breaks: tzdata-legacy (= 2023c-8)\\nfile: /var/lib/dpkg/status.d/tzdata.md5sums\\n" % P.EVIDENCE_MARK)',
                  'self.assertIsNone(P.vote(false(ev="file: /var/lib/dpkg/status.d/tzdata.md5sums"), b, finding()))',
                  'gb = "h\\n%s\\ngo build info /usr/bin/cache: dep golang.org/x/sys v0.47.0 h1:abc\\n" % P.EVIDENCE_MARK',
-                 'named = b(["package database: no record names libssl3", "file: /usr/lib/libssl3.so"])'],
+                 '"file: /usr/lib/libssl3.so"])'],
         'container-image-internal paths inside evidence text (package-database and go-build-info lines) that the panel voter parses; no filesystem access'),
     '.github/agent/bin/tests/test_panel_io.py': (
         [        'self.assertIn("/usr/share/zoneinfo/tzdata.zi", facts["paths"])',

@@ -1,0 +1,42 @@
+fo_bare_curl	curl archive/vi	["curl"]	caught	by a path	operand rule, bare: curl archive/vi (a deny-class path operand) is refused
+fo_fixed_curl	/usr/bin/curl archive/vi	["curl"]	caught	by a path	operand rule, fixed path: /usr/bin/curl archive/vi is refused exactly like the bare form
+ff_def	/usr/bin/curl() { echo x; }\n/usr/bin/curl	["curl"]	caught	function	a function named by a path (/usr/bin/curl() {...}) could replace the fixed program: refused
+ff_sub	( /usr/bin/curl() { :; }; /usr/bin/curl u )	["curl","rm"]	caught	function	path-named function definition, position ff_sub: refused
+ff_else	if false; then :; else /usr/bin/curl() { :; }; fi\n/usr/bin/curl u	["curl","rm"]	caught	function	path-named function definition, position ff_else: refused
+ff_cs	x=$( /usr/bin/curl() { :; }; /usr/bin/curl u )	["curl","rm"]	caught	function	path-named function definition, position ff_cs: refused
+ff_case	case a in a) /usr/bin/curl() { :; };; esac\n/usr/bin/curl u	["curl","rm"]	caught	function	path-named function definition, position ff_case: refused
+ff_until	until /usr/bin/curl() { :; }; do :; done	["curl","rm"]	caught	function	path-named function definition, position ff_until: refused
+ff_bang	! /usr/bin/curl() { :; }	["curl","rm"]	caught	function	path-named function definition, position ff_bang: refused
+ff_paren	(/usr/bin/curl() { :; })	["curl","rm"]	caught	function	path-named function definition, position ff_paren: refused
+ff_nl	/usr/bin/curl()\n{ :; }	["curl","rm"]	caught	function	path-named function definition, position ff_nl: refused
+ff_fn2	function /usr/bin/curl () { :; }	["curl","rm"]	caught	function	path-named function definition, position ff_fn2: refused
+ff_if	if /usr/bin/curl() { :; }; then :; fi	["curl","rm"]	caught	function	path-named function definition, position ff_if: refused
+ff_while	while /bin/rm() { :; }; do :; done	["curl","rm"]	caught	function	path-named function definition, position ff_while: refused
+ff_arith	x=1; /usr/bin/curl() ( : )	["curl","rm"]	caught	function	path-named function definition, position ff_arith: refused
+ff_elif	if false; then :; elif /usr/bin/curl() { :; }; then :; fi	["curl"]	caught	function	path-named function definition after elif: refused
+ff_bt	x=`/usr/bin/curl() { :; }; /usr/bin/curl u`	["curl"]	caught	function	path-named function definition in backticks: refused
+aq_1	$'/usr/bin/cur\\l' x	["curl"]	caught	ANSI-C	fixed-path command word written with $'...' (a different program after bash decodes it): refused
+aq_2	$'/usr/bin/curl' x	["curl"]	caught	ANSI-C	fixed-path command word written with $'...': refused even when the decoding agrees
+aq_3	$"/usr/bin/curl" x	["curl"]	caught	ANSI-C	fixed-path command word written with $"...": refused
+ff_select	/usr/bin/curl() select x in a; do echo H; break; done	["curl"]	caught	function	path-named function with a select body: refused
+ff_fn_select	function /usr/bin/curl select x in a; do :; done	["curl"]	caught	function	function /usr/bin/curl followed by a select body: refused
+ff_multiq	x='\n# '; /usr/bin/curl() { echo H; }\n/usr/bin/curl u	["curl"]	caught	function	path-named function hidden behind a line that starts with # inside a quote spanning lines: refused
+ff_ansiq	echo $'\\''' # x'; /usr/bin/curl() { echo H; }\n/usr/bin/curl u	["curl"]	caught	function	path-named function hidden after an ANSI-C escaped quote: refused
+ff_comment_def	# /usr/bin/curl() { :; }	["curl"]	caught	function	a path-named definition inside a comment is refused too (fail-closed: the check does not strip comments)
+fc_1	/usr/bin/curl() # x\n{ echo H; }\n/usr/bin/curl u	["curl"]	caught	function	path-named function with a comment between () and the body: refused
+fc_2	/usr/bin/curl()\t#\n{ echo H; }	["curl"]	caught	function	path-named function with a tab and an empty comment between () and the body: refused
+fc_3	/usr/bin/curl() # x\nif true; then echo H; fi	["curl"]	caught	function	path-named function with a comment before an if body: refused
+fc_4	/usr/bin/curl()\n\n# one\n  # two\n\n{ echo H; }	["curl"]	caught	function	path-named function with blank lines and several comment lines before the body: refused
+fc_5	function /usr/bin/curl # x\n{ echo H; }	["curl"]	caught	function	function /usr/bin/curl with a comment before the body: refused
+fc_hd	cat >/dev/null <<E; /usr/bin/curl()\nx\nE\n{ echo H; }\n/usr/bin/curl u	["curl"]	caught	function	path-named function whose body follows a pending here-document: refused (seat A round 4)
+fc_eol	/usr/bin/curl()	["curl"]	caught	function	a path word followed by () at the end of the line is a definition whatever comes next: refused
+fc_word	echo see /usr/bin/curl() here	["curl"]	ok	-	a path word with () followed by an ordinary word is no definition bash accepts
+al_1	shopt -s expand_aliases\nalias x=$'\\x2fusr\\x2fbin\\x2fcurl'\nx() { echo H; }\n/usr/bin/curl u	["curl"]	caught	alias	a path-named function defined through an alias written with escapes: refused
+al_33	> /dev/null /usr/bin/curl() { :; }	["curl"]	caught	function	a path-named function definition behind a spaced redirection: refused (the function check has no prefix gate)
+qf_1	"/usr/bin/curl"() { :; }\n/usr/bin/curl -s https://example.invalid	["curl"]	caught	function	a double-quoted path-named function definition: refused
+qf_2	\\/usr/bin/curl() { :; }\n/usr/bin/curl u	["curl"]	caught	function	a backslashed path-named function definition: refused
+qf_3	/usr/bin/"curl"() { :; }	["curl"]	caught	function	a quote-split path-named function definition: refused
+qf_5	'/usr/bin/curl'() { :; }	["curl"]	caught	function	a single-quoted path-named function definition: refused
+qf_6	function "/usr/bin/curl" { :; }	["curl"]	caught	function	function keyword with a quoted path name: refused
+qf_4	f() { /usr/bin/curl -s "$1"; }\necho "usage: /usr/bin/curl url"	["curl"]	ok	-	control: a call and a string mentioning the path, no definition, is accepted
+fc_ok	/usr/bin/curl() { :; } # trailing words	["curl"]	caught	function	the plain definition stays refused

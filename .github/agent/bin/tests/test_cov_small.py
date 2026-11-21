@@ -3,7 +3,7 @@
 Every test asserts an effect (return value, file written, exit message, stdout, or the exact argv a
 fake gh / adjudicator received). No network; every write goes to a temp dir.
 """
-import importlib.util, io, json, os, runpy, subprocess, sys, tempfile, unittest
+import importlib.util, io, json, os, runpy, subprocess, sys, tempfile, types, unittest
 from unittest import mock
 
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -134,6 +134,8 @@ for line in sys.stdin:
     fid = req["finding_id"]
     if fid == "ERR":
         ans = {"error": "client error: boom"}
+    elif fid == "ERRTOK":
+        ans = {"error": "client error: bad reply", "token_usage": 42}
     elif fid.startswith("NOT-"):
         ans = {"same_defect": False}
     else:
@@ -377,6 +379,20 @@ class Policy(unittest.TestCase):
         self.assertEqual(policy.threshold_reason("high", False, True), "known-exploited")
         self.assertEqual(policy.threshold_reason(None, False, False), "below")
 
+    def test_a_finding_id_is_one_plain_token_of_at_most_200_characters(self):
+        for fid in ("CVE-2024-1234", "GHSA-xxxx-yyyy-zzzz", "GO-2020-0015", "A" * 200):
+            self.assertTrue(policy.FINDING_ID.fullmatch(fid), fid)
+        for fid in ("", "-CVE-1", "CVE 1", "CVE-1\n", "CVE-1/../x", "A" * 201):
+            self.assertFalse(policy.FINDING_ID.fullmatch(fid), repr(fid))
+
+    def test_the_iteration_cap_is_gone_the_token_budget_is_the_stop(self):
+        self.assertFalse(hasattr(policy, "MAX_ITERATIONS"))
+        self.assertGreater(policy.TOKEN_BUDGET, 0)
+
+    def test_the_scripts_that_only_the_removed_cases_ran_are_gone(self):
+        for name in ("auditor-loop-guard.py", "auditor-release-authz.py"):
+            self.assertFalse(os.path.exists(os.path.join(BIN, name)), name)
+
 
 class Recheck(Tmp):
     def test_not_pullable_keeps_vex(self):
@@ -509,6 +525,18 @@ class CliAdjudicator(WithAdjudicator):
             {"finding_id": "CVE-5", "attempt": "primary", "model": "primary"}])
 
 
+    def test_client_error_answer_carries_the_tokens_the_bad_reply_cost(self):
+        with self.assertRaises(RuntimeError) as cm:
+            cli.ask_model(self.adj, "ERRTOK")
+        self.assertEqual(str(cm.exception), "client error: bad reply")
+        self.assertEqual(cm.exception.token_usage, 42)
+
+    def test_client_error_answer_without_usage_carries_an_integer(self):
+        with self.assertRaises(RuntimeError) as cm:
+            cli.ask_model(self.adj, "ERR")
+        self.assertIsInstance(cm.exception.token_usage, int)
+
+
 class CliGh(Tmp):
     def test_nonzero_exit_raises_with_stderr(self):
         api = self.wj("api.py", "import sys\nsys.stderr.write('  rate limited \\n')\nsys.exit(3)\n")
@@ -624,6 +652,216 @@ class VexValidate(unittest.TestCase):
         d2 = self.good(); del d2["statements"][0]["vulnerability"]
         with self.assertRaisesRegex(ValueError, "missing vulnerability/status"):
             vex.validate(d2)
+
+
+class PanelOwnerIssue(Tmp):
+    """Bot public text round 2: the panel's standing owner issue says what it is in plain words, and an issue the panel
+    opened under the old title is still found (a fake gh answers `gh issue list`; every argv is asserted)."""
+    NEW = "auditor: needs a decision: scanner panel"
+    OLD = "auditor: owner-decision: scanner panel"         # what #836 opened; found, never created again
+    FINDING = "auditor: owner-decision: CVE-2099-1 \u2014 zlib \u2014 critical-severity"    # a per-finding issue carries the same label (policy.py)
+    SHA40, OID40 = "c" * 40, "d" * 40
+
+    def setUp(self):
+        super().setUp()
+        self.P = load("auditor-panel")
+        self.repo = os.path.join(self.d, "repo"); self.out = os.path.join(self.d, "out"); os.makedirs(self.out)
+        for rel, obj in ((self.P.VEX, {"@id": "https://x/vex", "version": 3, "timestamp": "t", "statements": []}),
+                         (self.P.PROFILES, {"entries": []})):
+            os.makedirs(os.path.dirname(os.path.join(self.repo, rel)), exist_ok=True)
+            json.dump(obj, open(os.path.join(self.repo, rel), "w"))
+        st = {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"}
+        day = {"issue": "", "vex": [], "profiles": [], "owner": ["a standing question for the panel"], "misses": [], "log": []}
+        json.dump(st, open(os.path.join(self.out, "state.json"), "w")); json.dump(day, open(os.path.join(self.out, "day.json"), "w"))
+        ss = os.path.join(self.d, "state-source"); open(ss, "w").write("")
+        self.args = types.SimpleNamespace(out=self.out, repo=self.repo, dry_run=False, today="2026-10-03", state_source=ss)
+        p = mock.patch.dict(os.environ, {"GITHUB_SHA": self.SHA40, "GITHUB_REPOSITORY": "o/r", "AUDITOR_ALLOW_REAL_GH": "1",
+                                         "GH_TOKEN": "app"}); p.start(); self.addCleanup(p.stop)
+
+    def deliver(self, lists):
+        """lists: {title: (rc, [issue rows])}; returns (argvs, raised exception or None)"""
+        calls = []
+
+        def run(cmd, **kw):
+            calls.append(list(cmd))
+            if cmd[:3] == ["gh", "issue", "list"] and "--search" in cmd:
+                item = lists.get(cmd[cmd.index("--search") + 1], (0, []))
+                if isinstance(item, str):                              # a raw stdout, exit 0
+                    return types.SimpleNamespace(returncode=0, stdout=item, stderr="")
+                rc, rows = item
+                return types.SimpleNamespace(returncode=rc, stdout=json.dumps(rows) if rc == 0 else "", stderr="boom" if rc else "")
+            out = ""
+            if cmd[:2] == ["gh", "api"] and "check-runs" in cmd[2]:
+                out = "success"
+            elif cmd[:3] == ["gh", "pr", "view"] and "headRefOid" in cmd:
+                out = self.OID40                                          # the PR's head is the commit the delivery made
+            elif cmd[:3] == ["gh", "api", "graphql"]:                      # the signed commit, made through the API
+                out = json.dumps({"data": {"createCommitOnBranch": {"commit": {"oid": self.OID40,
+                                                                                "signature": {"isValid": True, "state": "VALID"}}}}})
+            elif cmd[:2] == ["gh", "api"] and "/git/ref/heads/" in cmd[2]:
+                out = json.dumps({"object": {"sha": self.SHA40}})
+            elif cmd[:2] == ["gh", "api"] and cmd[2] == "--method":
+                out = "{}"
+            return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
+        err = None
+        self.rc = None
+        with mock.patch("sys.stdout", new=io.StringIO()):
+            try:
+                self.rc = self.P.cmd_deliver(self.args, run=run)
+            except RuntimeError as e:
+                err = e
+        return calls, err
+
+    @staticmethod
+    def owner_lists(calls):
+        return [c for c in calls if c[:3] == ["gh", "issue", "list"] and "owner-decision" in c]
+
+    def test_the_standing_owner_issue_has_a_plain_title_and_the_old_one_is_kept_only_to_find_issues(self):
+        self.assertEqual(self.P.OWNER_TITLE, self.NEW)
+        self.assertEqual(self.P.OLD_OWNER_TITLE, self.OLD)
+        root = os.path.abspath(os.path.join(BIN, "..", "..", ".."))
+        c = subprocess.run([sys.executable, "-I", "bin/check-customer-words.py"], cwd=root, stdin=subprocess.DEVNULL,
+                           env={**os.environ, "PR_TITLE": self.NEW, "PR_BODY": self.NEW}, capture_output=True, text=True)
+        self.assertEqual((c.returncode, c.stdout), (0, ""), c.stderr)
+
+    def test_no_open_issue_creates_one_with_the_new_title_after_searching_new_then_old(self):
+        calls, err = self.deliver({})
+        self.assertIsNone(err)
+        wanted = lambda t: ["gh", "issue", "list", "--state", "open", "--label", "owner-decision", "--search", t,
+                            "--limit", "100", "--json", "number,title"]
+        self.assertEqual(self.owner_lists(calls), [wanted(self.NEW), wanted(self.OLD)])
+        creates = [c for c in calls if c[:3] == ["gh", "issue", "create"]]
+        self.assertEqual(len(creates), 1)
+        self.assertEqual(creates[0][creates[0].index("--title") + 1], self.NEW)
+        self.assertIn("owner-decision", creates[0][creates[0].index("--label") + 1])
+        self.assertFalse([c for c in calls if c[:3] == ["gh", "issue", "comment"]])
+        self.assertFalse([c for c in calls if "--jq" in c and c[:3] == ["gh", "issue", "list"]])      # never the first row by position
+
+    def test_an_open_issue_under_the_old_title_is_commented_and_nothing_is_created(self):
+        calls, err = self.deliver({self.OLD: (0, [{"number": 31, "title": self.OLD}])})
+        self.assertIsNone(err)
+        com = [c for c in calls if c[:3] == ["gh", "issue", "comment"]]
+        self.assertEqual([c[3] for c in com], ["31"])
+        self.assertFalse([c for c in calls if c[:3] == ["gh", "issue", "create"]])
+
+    def test_an_open_issue_under_the_new_title_is_commented_and_the_old_title_is_not_searched(self):
+        calls, err = self.deliver({self.NEW: (0, [{"number": 32, "title": self.NEW}])})
+        self.assertIsNone(err)
+        self.assertEqual([c[c.index("--search") + 1] for c in self.owner_lists(calls)], [self.NEW])
+        self.assertEqual([c[3] for c in calls if c[:3] == ["gh", "issue", "comment"]], ["32"])
+        self.assertFalse([c for c in calls if c[:3] == ["gh", "issue", "create"]])
+
+    def test_the_panel_never_comments_a_per_finding_owner_decision_issue(self):
+        rows = [{"number": 9, "title": self.FINDING}, {"number": 10, "title": self.NEW + " (copy)"}]
+        calls, err = self.deliver({self.NEW: (0, rows), self.OLD: (0, rows)})
+        self.assertIsNone(err)
+        self.assertFalse([c for c in calls if c[:3] == ["gh", "issue", "comment"]])
+        creates = [c for c in calls if c[:3] == ["gh", "issue", "create"]]
+        self.assertEqual([c[c.index("--title") + 1] for c in creates], [self.NEW])
+
+    def test_a_failed_issue_list_for_either_title_stops_the_delivery_before_any_comment_or_create(self):
+        for failing in (self.NEW, self.OLD):
+            calls, err = self.deliver({failing: (1, [])})
+            self.assertIsInstance(err, RuntimeError, failing)           # a failing gh stops the delivery, as _sh does for every call
+            self.assertRegex(str(err), r"issue.{0,6}list", failing)      # ... and the error names the failed command, not just any RuntimeError
+            self.assertIn("boom", str(err), failing)
+            last = [c for c in calls if c[:2] == ["gh", "issue"]][-1]    # the failing list is the last issue call made: nothing followed it
+            self.assertEqual((last[:3], last[last.index("--search") + 1]), (["gh", "issue", "list"], failing))
+            self.assertEqual(calls[-1], last, failing)
+            self.assertFalse([c for c in calls if c[:3] in (["gh", "issue", "create"], ["gh", "issue", "comment"])], failing)
+
+
+    def assert_stops(self, lists, why):
+        calls, err = self.deliver(lists)
+        self.assertIsInstance(err, RuntimeError, why)                    # the same path as a failed list: _sh's RuntimeError stops the delivery
+        self.assertRegex(str(err), r"issue.{0,6}list", why)              # ... and names the issue list
+        self.assertFalse([c for c in calls if c[:3] in (["gh", "issue", "create"], ["gh", "issue", "comment"])], why)
+        last = [c for c in calls if c[:2] == ["gh", "issue"]][-1]        # nothing was asked of gh after the unreadable list
+        self.assertEqual(calls[-1], last, why)
+
+    def test_an_unreadable_issue_list_reply_for_either_title_stops_delivery_before_any_create(self):
+        # F1: empty stdout, {} and "" (exit 0) for one title and [] for the other used to create an issue and report success
+        for reply in ("", "{}", '""'):
+            for bad, good in ((self.NEW, self.OLD), (self.OLD, self.NEW)):
+                self.assert_stops({bad: reply, good: (0, [])}, (reply, bad))
+
+    def test_a_list_reply_that_is_not_an_array_of_number_and_title_objects_fails_closed(self):
+        for reply in ("null", "5", "true", '"x"', '{"number": 3, "title": "t"}', "[1]", '["a"]', "[null]", "[[]]",
+                      '[{"title": "%s"}]' % self.NEW, '[{"number": 3}]', '[{"number": 3, "title": "ok"}, 7]'):
+            for bad, good in ((self.NEW, self.OLD), (self.OLD, self.NEW)):
+                self.assert_stops({bad: reply, good: (0, [])}, (reply, bad))
+
+    BAD_NUMBERS = (None, False, True, "", "7", 0, -3, 1.5, [], {})          # none of these is an issue number: a positive integer, a bool is not one
+
+    def test_an_issue_list_row_whose_number_is_not_a_positive_integer_stops_delivery_before_any_create(self):
+        # seat A (cache#837 r2): the validator only checked that "number" exists, so a matching row with number "" went on to a create
+        # and null, false and objects to a comment on an invalid issue identifier
+        for number in self.BAD_NUMBERS:
+            for bad, good in ((self.NEW, self.OLD), (self.OLD, self.NEW)):
+                for rows in ([{"number": number, "title": bad}], [{"number": number, "title": "auditor: another issue"}]):
+                    self.assert_stops({bad: json.dumps(rows), good: (0, [])}, (number, bad, rows[0]["title"]))
+
+    def test_an_issue_list_row_with_a_positive_integer_number_still_works(self):
+        calls, err = self.deliver({self.NEW: (0, [{"number": 42, "title": self.NEW}]), self.OLD: (0, [])})      # the control: commented
+        self.assertIsNone(err)
+        self.assertEqual([c[3] for c in calls if c[:3] == ["gh", "issue", "comment"]], ["42"])
+        self.assertFalse([c for c in calls if c[:3] == ["gh", "issue", "create"]])
+        other = [{"number": 8, "title": "auditor: another issue"}]                                          # a non-matching row: ignored, created
+        calls, err = self.deliver({self.NEW: (0, other), self.OLD: (0, other)})
+        self.assertIsNone(err)
+        self.assertFalse([c for c in calls if c[:3] == ["gh", "issue", "comment"]])
+        creates = [c for c in calls if c[:3] == ["gh", "issue", "create"]]
+        self.assertEqual([c[c.index("--title") + 1] for c in creates], [self.NEW])
+
+    def test_plan_mode_with_no_answer_makes_no_create_and_does_not_fail(self):
+        self.args.dry_run = True                                          # real delivery off: _sh returns "" and runs nothing
+        calls, err = self.deliver({})
+        self.assertIsNone(err); self.assertEqual(self.rc, 0)
+        self.assertFalse([c for c in calls if c[:2] == ["gh", "issue"]])
+        with mock.patch.dict(os.environ, {"AUDITOR_ALLOW_REAL_GH": "0"}):
+            self.args.dry_run = False
+            calls, err = self.deliver({})
+        self.assertIsNone(err); self.assertEqual(self.rc, 0)
+        self.assertFalse([c for c in calls if c[:2] == ["gh", "issue"]])
+
+    def test_every_owner_issue_search_asks_for_at_least_100_issues(self):
+        calls, err = self.deliver({})
+        self.assertIsNone(err)
+        lists = self.owner_lists(calls)
+        self.assertEqual([c[c.index("--search") + 1] for c in lists], [self.NEW, self.OLD])
+        for c in lists:
+            self.assertIn("--limit", c, c)
+            self.assertGreaterEqual(int(c[c.index("--limit") + 1]), 100, c)      # bin/rescan-statement.py:89-92: read every page, never the default 30
+
+
+class OldBotWordsAreGone(unittest.TestCase):
+    """Bot public text round 2: the three old phrases exist nowhere under .github/ and bin/ except where the code must
+    still recognise an issue opened under the old title (one constant each), and the two test files that name them on purpose."""
+    HERE = os.path.dirname(os.path.abspath(__file__))
+    ROOT = os.path.abspath(os.path.join(HERE, "..", "..", "..", ".."))
+    EXEMPT = {".github/agent/bin/tests/test_cov_run.py", ".github/agent/bin/tests/test_cov_small.py"}
+    ONE_CONSTANT = {"held as a harness lane task": ".github/agent/bin/auditor-run.py",
+                    "owner-decision: scanner panel": ".github/agent/bin/auditor-panel.py"}
+    GONE = ("audit-lane reviewer",)
+
+    def hits(self, phrase):
+        out = subprocess.run(["git", "grep", "-n", "-F", "--no-color", phrase, "--", ".github", "bin"], cwd=self.ROOT,
+                             capture_output=True, text=True).stdout.splitlines()
+        return [l for l in out if l.split(":", 1)[0] not in self.EXEMPT]
+
+    def test_the_old_phrases_are_gone_or_kept_once_as_a_named_constant(self):
+        for phrase, home in self.ONE_CONSTANT.items():
+            hits = self.hits(phrase)
+            self.assertEqual([l.split(":", 1)[0] for l in hits], [home] if hits else [], phrase)
+            self.assertLessEqual(len(hits), 1, phrase)
+        for phrase in self.GONE:
+            self.assertEqual(self.hits(phrase), [], phrase)
+
+    def test_the_old_constant_is_a_named_one_that_only_finds_old_issues(self):
+        for phrase, home in self.ONE_CONSTANT.items():
+            line = [l for l in self.hits(phrase)]
+            self.assertEqual(len(line), 1, phrase)
+            self.assertRegex(line[0], r"OLD_[A-Z_]+", phrase)         # a named constant, not a stray literal
 
 
 if __name__ == "__main__":

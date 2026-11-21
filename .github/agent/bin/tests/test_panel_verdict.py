@@ -14,7 +14,7 @@ from auditorlib import parsers as P  # noqa: E402
 
 def good():
     """A valid full-matrix verdict: every scanner ran everywhere, two reported findings and one unique."""
-    pm = P._panel_module()
+    pm = P.panel_module()
     images = {}
     for im in sorted(P.panel_images()):
         ran = sorted(s for s in P.PANEL_SCANNERS if P.panel_expected(s, im))
@@ -32,7 +32,7 @@ def good():
           f("production-amd64", "CVE-2099-0002", "zlib", "1.3", ["inspector"])]
     d = {"images": images, "not_counted": [], "scanner_failures": [], "findings": fs,
          "unique": [x for x in fs if x["unique"]],
-         "vex_covered": [{"image": "production-amd64", "scanner": "inspector", "id": "CVE-2099-0009", "package": "busybox", "version": "1.36"}],
+         "vex_covered": [{"image": "production-amd64", "scanner": "inspector", "id": "CVE-2099-0009", "package": "busybox", "version": "1.36", "severity": None, "fixed_version": None, "aliases": []}],
          "issue": pm.render_issue([x for x in fs if x["status"] == "report"]), "exit": 1}
     return d
 
@@ -137,7 +137,7 @@ class Validator(unittest.TestCase):
         second["of"] = len(d["images"]["production-arm64"]["ran"])
         second["details"]["grype"]["purl"] = "pkg:deb/debian/openssl@3.0.1?arch=arm64&distro=debian-12"
         d["findings"].append(second)
-        d["issue"] = P._panel_module().render_issue([x for x in d["findings"] if x["status"] == "report"])
+        d["issue"] = P.panel_module().render_issue([x for x in d["findings"] if x["status"] == "report"])
         path = tempfile.mkstemp(suffix=".json")[1]; self.addCleanup(os.unlink, path)
         with open(path, "w") as fh:
             json.dump(d, fh)
@@ -171,8 +171,14 @@ class Loader(unittest.TestCase):
     def test_a_valid_file_loads_and_parse_panel_returns_a_scanners_findings(self):
         path = self.write(json.dumps(good()))
         self.assertEqual(P.load_panel_verdict(path)["exit"], 1)
-        self.assertEqual([f["finding_id"] for f in P.parse_panel(path, "inspector")], ["CVE-2099-0001", "CVE-2099-0002"])
+        insp = P.parse_panel(path, "inspector")
+        self.assertEqual([f["finding_id"] for f in insp if not f["extra"].get("carried")], ["CVE-2099-0001", "CVE-2099-0002"])
+        # the tally's vex_covered entry for Inspector rides along flagged carried (rc-5b fix 5), with a generic package URL and the image it was hidden on
+        carried = [f for f in insp if f["extra"].get("carried")]
+        self.assertEqual([(f["finding_id"], f["package"], f["purl"], f["extra"]["images"]) for f in carried],
+                         [("CVE-2099-0009", "busybox", "pkg:generic/busybox@1.36", ["production-amd64"])])
         self.assertEqual([f["finding_id"] for f in P.parse_panel(path, "google")], [])
+        self.assertFalse([f for f in P.parse_panel(path, "grype") if f["extra"].get("carried")])      # a scanner the VEX is not filtered for carries nothing
 
     def test_parse_panel_carries_a_scanners_own_severity_fix_aliases_and_exploitation(self):
         d = good()
@@ -182,7 +188,7 @@ class Loader(unittest.TestCase):
         second["details"] = {"grype": {"severity": "critical", "fixed_version": "9.9", "aliases": ["GHSA-dddd-eeee-ffff"],
                                        "purl": d["findings"][0]["details"]["grype"]["purl"]}, "inspector": {}}       # the same package URL on both images: one record
         d["findings"].append(second)
-        d["issue"] = P._panel_module().render_issue([x for x in d["findings"] if x["status"] == "report"])
+        d["issue"] = P.panel_module().render_issue([x for x in d["findings"] if x["status"] == "report"])
         path = self.write(json.dumps(d))
         g = P.parse_panel(path, "grype")[0]
         self.assertEqual((g["severity"], g["fixed_version"], g["extra"].get("known_exploited")), ("critical", "3.0.2", True))
@@ -192,6 +198,22 @@ class Loader(unittest.TestCase):
         self.assertEqual((i["severity"], i["fixed_version"], i["aliases"]), ("critical", None, ["CVE-2099-0001"]))
         low = copy.deepcopy(d); low["findings"][0]["details"]["grype"]["severity"] = "low"; low["findings"][2]["details"]["grype"]["severity"] = "negligible"
         self.assertEqual(P.parse_panel(self.write(json.dumps(low)), "grype")[0]["severity"], "low")      # a lower one later never lowers it
+
+    def test_req13_ac7_covered_keeps_scanner_data(self):        # REQ-AUD-13 AC7: severity, fixed version and aliases ride along on a hidden sighting
+        d = good()
+        d["vex_covered"][0].update(severity="high", fixed_version="1.36.1", aliases=["GHSA-aaaa-bbbb-cccc"])
+        d["vex_covered"].append({"image": "production-amd64", "scanner": "inspector", "id": "CVE-2099-0010", "package": "zlib", "version": "1.3",
+                                 "severity": None, "fixed_version": None, "aliases": []})       # the scanner gave it neither: null, never guessed
+        P.validate_panel_verdict(d)
+        insp = {f["finding_id"]: f for f in P.parse_panel(self.write(json.dumps(d)), "inspector") if f["extra"].get("carried")}
+        rich, bare = insp["CVE-2099-0009"], insp["CVE-2099-0010"]
+        self.assertEqual((rich["severity"], rich["fixed_version"]), ("high", "1.36.1"))
+        self.assertIn("GHSA-aaaa-bbbb-cccc", rich["aliases"])
+        self.assertEqual((bare["severity"], bare["fixed_version"]), (None, None))
+        for bad in ({"severity": "urgent"}, {"fixed_version": ""}, {"fixed_version": 3}, {"aliases": "GHSA-aaaa-bbbb-cccc"}, {"aliases": [7]}):
+            worse = copy.deepcopy(d); worse["vex_covered"][0].update(bad)
+            with self.assertRaises(P.ParseError, msg=repr(bad)):
+                P.validate_panel_verdict(worse)
 
     def test_a_repeated_key_at_any_depth_is_refused(self):
         with self.assertRaisesRegex(P.ParseError, "appears twice"):

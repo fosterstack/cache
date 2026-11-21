@@ -122,8 +122,10 @@ open(os.path.join(fake, "gh"), "w").write('''#!/usr/bin/env bash
 echo "gh $*" >> "$CALLS"
 case "$2" in
   repos/o/r/git/ref/heads/audit/*) f="$FAKE/ref"; ;;
+  repos/o/r/commits/*/pulls) f="$FAKE/pulls"; ;;
   repos/o/r/commits/*/pulls*) echo "[]"; exit 0 ;;
   repos/o/r/commits/*) f="$FAKE/commit"; ;;
+  repos/o/r/compare/main...*) f="$FAKE/compare"; ;;
   *) echo "UNEXPECTED $*" >> "$CALLS"; exit 9 ;;
 esac
 if [ -f "$f.err" ]; then cat "$f.err" >&2; exit 1; fi
@@ -134,8 +136,12 @@ root = os.path.join(d, "repo"); os.makedirs(root + "/bin"); os.makedirs(root + "
 for src, dst in ((sys.argv[1], root + "/bin/audit-record.py"), (JUDGE_SH, root + "/bin/audit-record-judge.sh")):
     open(dst, "w").write(open(src).read()); os.chmod(dst, 0o755)
 open(root + "/.github/policy/audit-writers.json", "w").write(json.dumps(WRITERS))
-def wrap(head=HEAD, base_ref="main", ref=REF, commit=COMMIT, ref_err=None, commit_err=None, repo="o/r"):
+def wrap(head=HEAD, base_ref="main", ref=REF, commit=COMMIT, ref_err=None, commit_err=None, repo="o/r", compare=None, pulls=None):
     fk = tempfile.mkdtemp(dir=d)
+    if pulls is not None: open(os.path.join(fk, "pulls.json"), "w").write(json.dumps(pulls))
+    else: open(os.path.join(fk, "pulls.err"), "w").write("gh: Not Found (HTTP 404)")
+    if compare is not None: open(os.path.join(fk, "compare.json"), "w").write(json.dumps(compare))
+    else: open(os.path.join(fk, "compare.err"), "w").write("gh: Not Found (HTTP 404)")
     for name, obj, err in (("ref", ref, ref_err), ("commit", commit, commit_err)):
         if err is not None: open(os.path.join(fk, name + ".err"), "w").write(err)
         elif obj is not None: open(os.path.join(fk, name + ".json"), "w").write(json.dumps(obj))
@@ -157,6 +163,70 @@ r, calls = wrap(ref={"ref": "refs/heads/audit/" + HEAD, "object": {"sha": "not-a
 check("wrapper: a ref whose object is not a sha exits 1 without a commit request",
       r.returncode == 1 and "commits/not-a-sha" not in calls, (r.returncode, r.stdout, calls))
 r, calls = wrap(repo="o/r; x"); check("wrapper: a repository that is not owner/name exits 1 and calls nothing", r.returncode == 1 and calls == "", (r.returncode, r.stderr, calls))
+
+# a head needs no record only when it is Dependabot's: every pull request listed for it is Dependabot's, and every commit is verified and committed by an audit writer or GitHub's web-flow
+DEP = {"login": "dependabot[bot]", "id": 49699333, "type": "Bot"}
+GH = {"login": "web-flow", "id": 19864447, "type": "User"}
+PERSON = {"login": "someone", "id": 5, "type": "User"}
+def bump_commit(author=DEP, committer=GH, verified=True):
+    return {"author": author, "committer": committer, "commit": {"verification": {"verified": verified, "reason": "valid" if verified else "unsigned"}}}
+def cmp_of(*commits): return {"total_commits": len(commits), "commits": list(commits)}
+def dep_pulls(*users): return [{"number": 9, "user": u} for u in (users or (DEP,))]
+check("Dependabot's verified commit, committed by GitHub, on a Dependabot pull request needs no record", A.bot_authored(cmp_of(bump_commit()), dep_pulls(), WRITERS))
+check("the audit writer's App commits among Dependabot's do not stop a Dependabot pull request", A.bot_authored(cmp_of(bump_commit(), bump_commit(author=BOT, committer=BOT)), dep_pulls(), WRITERS))
+check("two Dependabot pull requests for the head are exempt", A.bot_authored(cmp_of(bump_commit()), dep_pulls(DEP, DEP), WRITERS))
+check("a pull request by the audit writer App with only App commits is NOT exempt", not A.bot_authored(cmp_of(bump_commit(author=BOT, committer=BOT)), dep_pulls(BOT), WRITERS))
+check("an App pull request with Dependabot-shaped commits is NOT exempt", not A.bot_authored(cmp_of(bump_commit()), dep_pulls(BOT), WRITERS))
+for name, pulls in (
+    ("a person's pull request", dep_pulls(PERSON)),
+    ("another bot's pull request", dep_pulls({"login": "renovate[bot]", "id": 29139614, "type": "Bot"})),
+    ("Dependabot's login with another id", dep_pulls(dict(DEP, id=1))),
+    ("Dependabot's login and id with type User", dep_pulls(dict(DEP, type="User"))),
+    ("an empty pull request list", []),
+    ("a pull request answer that is not a list", {"number": 9, "user": DEP}),
+    ("no answer", None),
+    ("an entry that is not an object", ["x"]),
+    ("an entry without a user", [{"number": 9}]),
+    ("an entry whose user is null", [{"number": 9, "user": None}]),
+    ("two pull requests where one is a person's", dep_pulls(DEP, PERSON)),
+    ("two pull requests where one is a malformed entry", dep_pulls(DEP) + [5]),
+):
+    check("a record is still needed for " + name, not A.bot_authored(cmp_of(bump_commit()), pulls, WRITERS))
+for name, cmp_ in (
+    ("one commit by a person among Dependabot's", cmp_of(bump_commit(), bump_commit(author=PERSON))),
+    ("Dependabot's name with another id", cmp_of(bump_commit(author=dict(DEP, id=1)))),
+    ("a commit committed by a person (signed with their own key)", cmp_of(bump_commit(committer=PERSON))),
+    ("a commit whose author claims to be Dependabot but whose committer is a person", cmp_of(bump_commit(author=DEP, committer=PERSON))),
+    ("a commit committed by web-flow whose author is a person", cmp_of(bump_commit(author=PERSON, committer=GH))),
+    ("a person's commit committed by the audit writer", cmp_of(bump_commit(author=PERSON, committer=BOT))),
+    ("a committer with web-flow's name and another id", cmp_of(bump_commit(committer=dict(GH, id=5)))),
+    ("an unverified commit", cmp_of(bump_commit(verified=False))),
+    ("an author GitHub cannot name", cmp_of(bump_commit(author=None))),
+    ("no commits past main", cmp_of()),
+    ("a list cut short of its total", {"total_commits": 2, "commits": [bump_commit()]}),
+    ("a malformed answer", []),
+):
+    check("a record is still needed for " + name, not A.bot_authored(cmp_, dep_pulls(), WRITERS))
+check("a malformed writers policy exempts nothing", not A.bot_authored(cmp_of(bump_commit()), dep_pulls(), {}))
+r, calls = wrap(ref=None, compare=cmp_of(bump_commit()), pulls=dep_pulls()); check("wrapper: no record, a Dependabot pull request and only Dependabot's commits, exits 0", r.returncode == 0 and "no record needed" in r.stdout and "commits/%s/pulls" % HEAD in calls, (r.returncode, r.stdout, r.stderr, calls))
+r, calls = wrap(ref=None, compare=cmp_of(bump_commit()), pulls=dep_pulls(PERSON)); check("wrapper: the same commits on a pull request that is not Dependabot's exit 1", r.returncode == 1 and "no passed-audit record" in r.stdout, (r.returncode, r.stdout, r.stderr))
+r, calls = wrap(ref=None, compare=cmp_of(bump_commit(author=BOT, committer=BOT)), pulls=dep_pulls(BOT)); check("wrapper: an App pull request with only App commits exits 1", r.returncode == 1 and "no passed-audit record" in r.stdout, (r.returncode, r.stdout, r.stderr))
+r, calls = wrap(ref=None, compare=cmp_of(bump_commit())); check("wrapper: a pulls fetch error (404) exits 1", r.returncode == 1 and "no passed-audit record" in r.stdout, (r.returncode, r.stdout, r.stderr))
+r, calls = wrap(ref=None, compare=cmp_of(bump_commit())); check("wrapper: a pulls fetch error still asks for the pulls", "commits/%s/pulls" % HEAD in calls, calls)
+r, calls = wrap(ref=None, pulls=dep_pulls()); check("wrapper: a Dependabot pull request but a compare fetch error exits 1", r.returncode == 1 and "no passed-audit record" in r.stdout, (r.returncode, r.stdout, r.stderr))
+r, calls = wrap(ref=None, compare=cmp_of(bump_commit(), bump_commit(author=PERSON)), pulls=dep_pulls()); check("wrapper: no record, a Dependabot pull request and a person's commit among them exits 1", r.returncode == 1 and "no passed-audit record" in r.stdout, (r.returncode, r.stdout, r.stderr))
+r, calls = wrap(ref=None); check("wrapper: no record and nothing else can be read exits 1", r.returncode == 1 and "no passed-audit record" in r.stdout, (r.returncode, r.stdout, r.stderr))
+r, calls = wrap(compare=cmp_of(bump_commit()), pulls=dep_pulls()); check("wrapper: a good record never asks for the commits or the pull requests", r.returncode == 0 and "compare" not in calls and "/pulls" not in calls, (r.returncode, calls))
+# the command line: the exemption needs both files
+def cli_ex(compare=None, pulls=None):
+    extra = []
+    if compare is not None: extra += ["--compare-json", w("compare.json", compare)]
+    if pulls is not None: extra += ["--pulls-json", w("pulls.json", pulls)]
+    return cli(*extra, ref=None, commit=None)
+r = cli_ex(cmp_of(bump_commit()), dep_pulls()); check("cli: both files, both passing, exits 0", r.returncode == 0 and "no record needed" in r.stdout, (r.returncode, r.stdout, r.stderr))
+r = cli_ex(cmp_of(bump_commit())); check("cli: --compare-json alone exempts nothing (exit 1)", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
+r = cli_ex(pulls=dep_pulls()); check("cli: --pulls-json alone exempts nothing (exit 1)", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
+r = cli_ex(cmp_of(bump_commit()), dep_pulls(PERSON)); check("cli: a person's pull request exits 1", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
 
 # the writer's own checks: the pull request must be open, into main, with exactly this head, before anything is written
 PR = {"number": 7, "state": "open", "merged": False, "head": {"sha": HEAD}, "base": {"ref": "main"}}
@@ -308,12 +378,21 @@ def tagobj(msg_lines, sig=SIG):
     return "object %s\ntype commit\ntag v0.3.0\ntagger Owner <o@x> 1 +0000\n\n%s\n%s" % (HEAD, "\n".join(msg_lines),
         sig)
 APPROVED = tagobj(["Release v0.3.0", "Audit-approved: " + REC])
-def rel(tag="v0.3.0", obj=APPROVED, sha=HEAD, ref=REF, commit=COMMIT, policy=WRITERS):
-    return A.verify_release(tag, obj, sha, ref, commit, policy)
+TODAY = "2026-11-14"
+def rel(tag="v0.3.0", obj=APPROVED, sha=HEAD, ref=REF, commit=COMMIT, policy=WRITERS, items={"accepted_items": []},
+        today=TODAY):
+    return A.verify_release(tag, obj, sha, ref, commit, policy, items, today)
 ok, why = rel()
 check("release: an owner-signed v0.3.0 whose message approves the record of the tagged commit -> passes",
     ok and why == "", (ok, why))
 ok, why = rel(tag="v0.3.0-rc.1"); check("release: a release candidate tag is held to the same rule", ok, (ok, why))
+ok, why = rel(tag="v0.3.0-rc1"); check("release: the chain's release candidate form -rcN is held to the same rule", ok, (ok, why))
+ok, why = rel(tag="v0.3.0-rc1", obj=tagobj(["Release v0.3.0-rc1"]))
+check("release refused: a -rcN tag without the approval line", not ok and bool(why), (ok, why))
+ok, why = rel(tag="v0.3.0-rc1", ref=None, commit=None)
+check("release refused: a -rcN tag without a record", not ok and bool(why), (ok, why))
+check("release: a -rcN tag is not a patch tag (v0.3.1-rc1 and v0.3.1-rc.1 need the record too)",
+    not A.is_patch_tag("v0.3.1-rc1") and not A.is_patch_tag("v0.3.1-rc.1"), None)
 ok, why = rel(obj=tagobj(["-----BEGIN EXAMPLE SIGNATURE-----", "Release v0.3.0", "-----END EXAMPLE SIGNATURE-----",
     "Audit-approved: " + REC]))
 check("release: an example block before the approval line is message text, not the signature: still passes", ok, (ok,
@@ -344,10 +423,37 @@ for name, kw in (
     ("a record by someone else", dict(commit=mut(COMMIT, ["author", "login"], "someone"))),
     ("a record whose commit is not the approved one", dict(obj=tagobj(["Audit-approved: " + "e" * 40]))),
     ("a missing policy", dict(policy=None)),
-    ("a tag that is not a release version", dict(tag="v0.3")), ("a tag with a suffix that is not rc.N",
-        dict(tag="v0.3.0-beta")), ("an empty tag", dict(tag="")),
+    ("a tag that is not a release version", dict(tag="v0.3")), ("a tag with a suffix that is not rc.N or rcN",
+        dict(tag="v0.3.0-beta")), ("an empty tag", dict(tag="")), ("-rc with no number", dict(tag="v0.3.0-rc")),
+    ("-rc. with no number", dict(tag="v0.3.0-rc.")), ("-rc1 twice", dict(tag="v0.3.0-rc1-rc1")),
+    ("a newline after the tag", dict(tag="v0.3.0-rc1\n")),
 ):
     ok, why = rel(**kw); check("release refused: " + name, (not ok) and bool(why), (ok, why))
+# REQ-AUD-17 AC5, the judge itself: an item is read the way the auditor reads it (threshold, then expiry as text)
+def listed(threshold, expiry="2099-01-01"):
+    entry = {"cve": "CVE-2099-1", "threshold": threshold}
+    if expiry is not None: entry["expiry"] = expiry
+    return {"accepted_items": [entry]}
+for name, items, tags, passes in (
+    ("an open item (at_or_above)", listed("at_or_above"), ("v0.3.0", "v0.3.1"), False),
+    ("an open item with no expiry", listed("at_or_above", None), ("v0.3.0", "v0.3.1"), False),
+    ("a closed item (below, future expiry)", listed("below"), ("v0.3.0", "v0.3.1"), True),
+    ("a below item with no expiry", listed("below", None), ("v0.3.0", "v0.3.1"), True),
+    ("an expired item (expiry 2000-01-01)", listed("below", "2000-01-01"), ("v0.3.0", "v0.3.1"), False),
+    ("an item that expires today", listed("below", TODAY), ("v0.3.0", "v0.3.1"), False),
+    ("an item that expires tomorrow", listed("below", "2026-11-15"), ("v0.3.0", "v0.3.1"), True),
+    ("an expired open item", listed("at_or_above", "2000-01-01"), ("v0.3.0", "v0.3.1"), False),
+):
+    for tag in tags:
+        ok, why = rel(tag=tag, items=items)
+        check("release item: %s with %s -> %s" % (name, tag, "passes" if passes else "refused"),
+            ok == passes and (passes or bool(why)), (ok, why))
+for name, items in (("not an object", []), ("null", None), ("accepted_items null", {"accepted_items": None}),
+    ("accepted_items an object", {"accepted_items": {}}), ("a non-object item", {"accepted_items": [1]}),
+    ("an expiry that is not a string", {"accepted_items": [{"threshold": "below", "expiry": 5}]})):
+    ok, why = rel(tag="v0.3.1", items=items)
+    check("release item refused: malformed items (%s) names the file" % name, not ok and "accepted-items.json" in why,
+        (ok, why))
 # the command line and the wrapper in release mode
 open(os.path.join(d, "tagobj.txt"), "w").write(APPROVED)
 def relcli(tag="v0.3.0", obj="tagobj.txt", ref=REF, commit=COMMIT, sha=HEAD):
@@ -363,6 +469,84 @@ check("cli release: an unreadable tag object exits 1", r.returncode == 1, (r.ret
 r = relcli(tag="v0.3.1", ref=None, commit=None, obj="missing.txt")
 check("cli release: a patch tag exits 0 without reading anything", r.returncode == 0, (r.returncode, r.stdout,
     r.stderr))
+# REQ-AUD-17 AC5: an open owner-decision item (threshold at_or_above) in the base checkout holds the tag
+def owner_run(script, items, tag="v0.3.0", raw=None):
+    b = tempfile.mkdtemp(dir=d); os.makedirs(b + "/.github/policy"); os.makedirs(b + "/.auditor")
+    open(b + "/.github/policy/audit-writers.json", "w").write(json.dumps(WRITERS))
+    if raw is not None: open(b + "/.auditor/accepted-items.json", "w").write(raw)
+    elif items is not None: open(b + "/.auditor/accepted-items.json", "w").write(json.dumps({"accepted_items": items}))
+    cmd = [sys.executable, "-I", script, "release", "--tag", tag, "--tag-object", os.path.join(d, "tagobj.txt"),
+        "--tagged-sha", HEAD, "--base-root", b, "--ref-json", w("ref.json", REF), "--commit-json", w("commit.json", COMMIT)]
+    return subprocess.run(cmd, capture_output=True, text=True)
+def item(threshold, expiry="2099-01-01"):
+    return {"cve": "CVE-2099-1", "severity": "Critical", "package": "p", "threshold": threshold, "owner_issue": 1,
+        "expiry": expiry}
+def owner_items_case(script, tag="v0.3.0"):
+    held = owner_run(script, [item("at_or_above")], tag)
+    return (held.returncode == 1 and held.stdout.strip() != "", owner_run(script, [item("below")], tag).returncode == 0,
+        owner_run(script, [], tag).returncode == 0, owner_run(script, None, tag).returncode == 0)
+results = owner_items_case(sys.argv[1])
+check("cli release: an open owner-decision item refuses the tag, a closed or absent record accepts it",
+    all(results), "refused-open, accepted-closed, accepted-empty, accepted-absent: %s" % (results,))
+# a judge that always succeeds must fail the case above
+always_ok = os.path.join(d, "always-ok.py"); open(always_ok, "w").write("raise SystemExit(0)\n")
+check("cli release: the owner-decision case fails when the judge is replaced by success",
+    not all(owner_items_case(always_ok)), "the always-succeeding judge passed the case")
+# the open-item check holds every tag, a patch tag too
+r = owner_run(sys.argv[1], [item("at_or_above")], "v0.3.1")
+check("cli release: an open owner-decision item refuses a patch tag too",
+    r.returncode == 1 and r.stdout.strip() != "", (r.returncode, r.stdout, r.stderr))
+for name, items in (("a below item", [item("below")]), ("an empty list", []), ("no file", None)):
+    r = owner_run(sys.argv[1], items, "v0.3.1")
+    check("cli release: a patch tag with %s in the record exits 0" % name, r.returncode == 0, (r.returncode, r.stdout, r.stderr))
+check("cli release: the owner-decision case for a patch tag fails when the judge is replaced by success",
+    not all(owner_items_case(always_ok, "v0.3.1")), "the always-succeeding judge passed the case")
+# an expired item reopens the hold, whatever its threshold; a future expiry keeps a below item closed
+for name, items, code in (("an expired below item", [item("below", "2000-01-01")], 1),
+    ("an expired open item", [item("at_or_above", "2000-01-01")], 1), ("a below item with a future expiry", [item("below")], 0)):
+    for tag in ("v0.3.0", "v0.3.1"):
+        r = owner_run(sys.argv[1], items, tag)
+        check("cli release: %s with %s exits %d" % (name, tag, code), r.returncode == code
+            and (code == 0 or "accepted-items.json" in r.stdout), (r.returncode, r.stdout, r.stderr))
+# a malformed record is a named refusal, not a traceback
+for name, raw, tags in (("a list instead of an object", "[]", ("v0.3.0", "v0.3.1")),
+    ("null instead of an object", "null", ("v0.3.0",)),
+    ("accepted_items null", '{"accepted_items": null}', ("v0.3.0",)),
+    ("accepted_items an object", '{"accepted_items": {}}', ("v0.3.0",)),
+    ("an item that is a number", '{"accepted_items": [1]}', ("v0.3.0",)),
+    ("an item that is a string", '{"accepted_items": ["x"]}', ("v0.3.0",)),
+    ("an item that is null", '{"accepted_items": [null]}', ("v0.3.0",)),
+    ("an expiry that is not a string", '{"accepted_items": [{"threshold": "below", "expiry": 5}]}', ("v0.3.0", "v0.3.1")),
+    ("unparseable json", "{broken", ("v0.3.0", "v0.3.1"))):
+    for tag in tags:
+        r = owner_run(sys.argv[1], None, tag, raw)
+        check("cli release: a malformed accepted-items file (%s) with %s exits 1 and names the file, no traceback" % (name, tag),
+            r.returncode == 1 and "accepted-items.json" in r.stdout + r.stderr and "Traceback" not in r.stdout + r.stderr,
+            (r.returncode, r.stdout, r.stderr))
+# an expiry that is a string but not a YYYY-MM-DD date is malformed too: the gate fails closed on doubt
+for expiry in ("soon", "", "2026-13-01", "2026-W01-1"):
+    for tag in ("v0.3.0", "v0.3.1"):
+        r = owner_run(sys.argv[1], [item("below", expiry)], tag)
+        check("cli release: an accepted-items expiry %r with %s exits 1, says the expiry is not a date and names the file" % (expiry, tag),
+            r.returncode == 1 and "expiry is not a date" in r.stdout + r.stderr and "accepted-items.json" in r.stdout + r.stderr
+            and "Traceback" not in r.stdout + r.stderr, (r.returncode, r.stdout, r.stderr))
+# a judge that treats a decode error as an absent file must fail the unparseable-file case
+decode_as_absent = os.path.join(d, "decode-as-absent.py")
+open(decode_as_absent, "w").write("""import json
+_load, _loads = json.load, json.loads
+def tolerant(read):
+    def wrapped(*args, **kw):
+        try: return read(*args, **kw)
+        except ValueError: return {"accepted_items": []}
+    return wrapped
+json.load, json.loads = tolerant(_load), tolerant(_loads)
+""" + open(sys.argv[1]).read())
+def broken_refused(script):
+    r = owner_run(script, None, "v0.3.0", "{broken")
+    return r.returncode == 1 and "accepted-items.json" in r.stdout + r.stderr
+check("cli release: the unparseable-file case passes for the real judge", broken_refused(sys.argv[1]), "not refused")
+check("cli release: the unparseable-file case fails when a decode error is treated as an absent file",
+    not broken_refused(decode_as_absent), "the decode-as-absent judge still refused")
 def wrap_rel(tag="v0.3.0", ref=REF, commit=COMMIT, ref_err=None, obj_text=APPROVED):
     fk = tempfile.mkdtemp(dir=d)
     for name, o, err in (("ref", ref, ref_err), ("commit", commit, None)):
@@ -398,6 +582,12 @@ check("wrapper --release: a tag without the approval line exits 1", r.returncode
     r.stderr))
 r, c = wrap_rel(tag="v0.3.2", ref=None)
 check("wrapper --release: a patch tag exits 0 and calls nothing", r.returncode == 0 and c == "", (r.returncode, c))
+r, c = wrap_rel(tag="v0.3.0-rc1")
+check("wrapper --release: a -rcN tag reads the record (not a patch tag) and passes on a good approval",
+    r.returncode == 0 and c.count("gh api") == 2, (r.returncode, r.stdout, r.stderr, c))
+r, c = wrap_rel(tag="v0.3.0\nv0.3.2", ref=None)
+check("wrapper --release: a tag with a second line that looks like a patch tag is not a patch tag (exits 1)",
+    r.returncode == 1, (r.returncode, r.stdout, r.stderr, c))
 
 # the writer's release mode: the commit to be tagged must be on main (the whole release is the commit main holds),
 # the same dispatcher rule
@@ -465,52 +655,65 @@ r, c, f = run_rel("bin/audit-record-request.sh", ["release", HEAD], status="dive
 check("request release: a commit not on main -> nothing requested, exit 1",
     r.returncode == 1 and "workflow run" not in c, (r.returncode, r.stderr, c))
 
-# the admission step: after the tag's signature and the on-main check, main's copies only,
-# the job's own read token, nothing swallowed
-def adm_problems(w):
-    steps = w["jobs"]["admit"]["steps"]
-    names = [x.get("name", "") for x in steps]
-    idx = [i for i, n in enumerate(names) if n.startswith("a passed whole-release audit")]
-    if len(idx) != 1: return ["the whole-release audit step is not there exactly once"]
-    i = idx[0]; bad = []
-    if not any("verify the annotated tag signature" in n for n in names[:i]):
-        bad.append("it must come after the tag signature check")
-    if not any(n == "the tagged commit must be on main" for n in names[:i]):
-        bad.append("it must come after the on-main check")
-    st = steps[i]
-    if st.get("env") != {"GH_TOKEN": "${{ github.token }}"} or set(st) - {"name", "env",
-        "run"}: bad.append("env or keys")
-    run = re.sub(r" \\\n\s*", " ", st.get("run", ""))     # a line wrapped with a backslash reads as one line
-    for need in ("set -euo pipefail", "git show origin/main:bin/audit-record.py",
-        "git show origin/main:bin/audit-record-judge.sh", "git show origin/main:.github/policy/audit-writers.json",
-                 'bash /tmp/audit-root/bin/audit-record-judge.sh "${GITHUB_SHA}" main '
-                 '--release "${GITHUB_REF_NAME}" /tmp/tag-object'):
-        if need not in run: bad.append("lacks: " + need)
-    if re.search(r"\|\|\s*(true|:)|continue-on-error",
-        run) or "${{" in run: bad.append("swallows a failure or interpolates an expression")
+# the admission check (gate 7): bin/build-admit.py's audit-approval check is the reviewed one. It comes after the tag signature and the
+# on-main check and before the required checks, reads main's copies only (never the tagged commit's), runs the judge in release mode on the
+# tagged sha, the tag and the tag object the signature check wrote, and swallows nothing.
+import ast
+def adm_problems(src):
+    tree = ast.parse(src); fns = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}; bad = []
+    admit = fns.get("admit"); fn = fns.get("check_audit_approval")
+    if admit is None or fn is None: return ["admit or check_audit_approval is missing"]
+    order = [x for x in sorted(((c.lineno, c.func.id) for c in ast.walk(admit) if isinstance(c, ast.Call)
+        and isinstance(c.func, ast.Name) and c.func.id.startswith("check_")))]
+    names = [x[1] for x in order]
+    if names.count("check_audit_approval") != 1: return ["the check is not called exactly once"]
+    i = names.index("check_audit_approval")
+    for before in ("check_tag_signature", "check_ancestor_of_main"):
+        if before not in names[:i]: bad.append("it must come after " + before)
+    if "check_required_checks" not in names[i + 1:]: bad.append("it must come before check_required_checks")
+    seg = ast.get_source_segment(src, fn)
+    for need in ('"origin/main:" + path', '"--release"', "ctx.tag_object", "ctx.sha", "ctx.tag", "BASH",
+        'raise Refusal("audit-approval"', "rc != 0"):
+        if need not in seg: bad.append("lacks: " + need)
+    if "ctx.sha + " in seg or "git_show(ctx" in seg: bad.append("reads the tagged commit's own copy")
+    if any(isinstance(n, (ast.Try, ast.ExceptHandler)) for n in ast.walk(fn)): bad.append("catches an error")
+    assigns = [n for n in ast.walk(fn) if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "rc"
+        for t in n.targets)]
+    if assigns or any(isinstance(n, ast.Return) for n in ast.walk(fn)): bad.append("rc is assigned or the check returns early")
+    consts = [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "AUDIT_FILES"
+        for t in n.targets)]
+    if not consts or ast.literal_eval(consts[0].value) != ("bin/audit-record-judge.sh", "bin/audit-record.py",
+        ".github/policy/audit-writers.json"): bad.append("AUDIT_FILES is not the judge, its helper and the writers policy")
+    items = [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "AUDIT_ITEMS"
+        for t in n.targets)]
+    if not items or ast.literal_eval(items[0].value) != ".auditor/accepted-items.json": bad.append("AUDIT_ITEMS is not the accepted-items file")
+    if "AUDIT_ITEMS" not in seg: bad.append("check_audit_approval does not use AUDIT_ITEMS")
+    if not any(isinstance(n, ast.Name) and n.id == "AUDIT_FILES" for n in ast.walk(fn)): bad.append("the three required files are not read")
     return bad
-root_repo = os.path.dirname(os.path.dirname(os.path.abspath(sys.argv[1])))
-adm = yaml.load(open(root_repo + "/.github/workflows/stage-admission.yml"), Loader=yaml.BaseLoader)
-check("stage-admission.yml: the whole-release audit step is the reviewed one", adm_problems(adm) == [],
-    adm_problems(adm))
-def adm_mut(fn):
-    m = copy.deepcopy(adm); fn(m["jobs"]["admit"]["steps"]); return m
-for name, fn, frag in (
-    ("the step removed", lambda st: st.pop([i for i, x in enumerate(st) if x.get("name",
-        "").startswith("a passed whole-release audit")][0]), "exactly once"),
-    ("a swallowed failure", lambda st: [x.update({"run": x["run"] + "\n|| true"}) for x in st if x.get("name",
-        "").startswith("a passed whole-release audit")], "swallows"),
-    ("a continue-on-error", lambda st: [x.update({"continue-on-error": "true"}) for x in st if x.get("name",
-        "").startswith("a passed whole-release audit")], "env or keys"),
-    ("the tagged commit's own judge",
-        lambda st: [x.update({"run": x["run"].replace("git show origin/main:bin/audit-record.py",
-        "cp bin/audit-record.py")}) for x in st if x.get("name", "").startswith("a passed whole-release audit")],
-        "lacks"),
-    ("a non-release mode", lambda st: [x.update({"run": x["run"].replace(" --release ",
-        " --verify ")}) for x in st if x.get("name", "").startswith("a passed whole-release audit")], "lacks"),
+admit_src = open(os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), "build-admit.py")).read()
+check("build-admit.py: the audit-approval check is the reviewed one", adm_problems(admit_src) == [], adm_problems(admit_src))
+for name, old, new, frag in (
+    ("the check not called", "        check_audit_approval(ctx)\n", "", "exactly once"),
+    ("the check moved after the required checks", "        check_audit_approval(ctx)\n        check_required_checks(ctx)",
+        "        check_required_checks(ctx)\n        check_audit_approval(ctx)", "before check_required_checks"),
+    ("the check before the on-main check", "        check_ancestor_of_main(ctx)\n        check_audit_approval(ctx)",
+        "        check_audit_approval(ctx)\n        check_ancestor_of_main(ctx)", "after check_ancestor_of_main"),
+    ("the tagged commit's own judge", '    for path in AUDIT_FILES:\n        data = git_show("origin/main:" + path)\n',
+        '    for path in AUDIT_FILES:\n        data = git_show(ctx.sha + ":" + path)\n', "lacks"),
+    ("a non-release mode", '"--release"', '"--verify"', "lacks"),
+    ("a swallowed result", "    why = one_line(text(out) or text(err), 300)\n",
+        "    why = one_line(text(out) or text(err), 300)\n    rc = 0\n", "rc is assigned"),
+    ("an early return", "    judge = os.path.join(root, AUDIT_FILES[0])\n",
+        "    return\n    judge = os.path.join(root, AUDIT_FILES[0])\n", "early"),
+    ("the items file a required one", 'AUDIT_FILES = ("bin/audit-record-judge.sh", "bin/audit-record.py", ".github/policy/audit-writers.json")',
+        'AUDIT_FILES = ("bin/audit-record-judge.sh", "bin/audit-record.py", ".github/policy/audit-writers.json", ".auditor/accepted-items.json")',
+        "AUDIT_FILES is not"),
+    ("a caught error", "    rc, out, err = run([BASH, judge,",
+        "    try:\n        pass\n    except Exception:\n        pass\n    rc, out, err = run([BASH, judge,", "catches"),
 ):
-    probs = adm_problems(adm_mut(fn))
-    check("stage-admission.yml: a copy with %s is refused" % name, any(frag in x for x in probs), probs)
+    if admit_src.count(old) != 1: check("build-admit.py: a copy with %s is refused" % name, False, "anchor not found"); continue
+    probs = adm_problems(admit_src.replace(old, new)); check("build-admit.py: a copy with %s is refused" % name,
+        any(frag in x for x in probs), probs)
 
 # A PULL REQUEST DEPENDABOT OPENED (owner RATIFIED Nov 11 2026): the Dependabot reviewer is its review. With no passing
 # record its head passes on the reviewer's success and nothing else; no verdict is no pass, on a patch as on a major.
@@ -585,7 +788,7 @@ REVIEWER_PY = os.path.join(os.path.dirname(JUDGE_SH), "dependabot-reviewer.py")
 VERSION_FILES = ("bin/dependabot-reviewer.py", ".github/policy/dependabot-reviewer-prompt.txt",
       ".github/workflows/dependabot-reviewer.yml", ".github/policy/required-checks.json")
 VERSION_SCRIPT = "bin/dependabot-reviewer-version.sh"   # the code author's: copied into the fixtures where it exists
-CHECKED_IN = [open(os.path.join(root_repo, f), "rb").read() for f in VERSION_FILES]
+CHECKED_IN = [open(os.path.join(ROOT, f), "rb").read() for f in VERSION_FILES]
 def sum_lines(files):   # what `sha256sum` prints over the files, in this order
     return "".join("%s  %s\n" % (hashlib.sha256(text).hexdigest(), f) for f, text in files)
 # REQ-DEP-001-AC14, computed here: the sha256 of the output of sha256sum over the four files under `top`
@@ -593,8 +796,8 @@ def version_in(top):
     return hashlib.sha256(
           sum_lines((f, open(os.path.join(top, f), "rb").read()) for f in VERSION_FILES).encode()).hexdigest()
 def install_version_script(top):
-    if os.path.exists(os.path.join(root_repo, VERSION_SCRIPT)): open(os.path.join(top, VERSION_SCRIPT),
-          "w").write(open(os.path.join(root_repo, VERSION_SCRIPT)).read())
+    if os.path.exists(os.path.join(ROOT, VERSION_SCRIPT)): open(os.path.join(top, VERSION_SCRIPT),
+          "w").write(open(os.path.join(ROOT, VERSION_SCRIPT)).read())
 VER = hashlib.sha256(sum_lines(zip(VERSION_FILES, CHECKED_IN)).encode()).hexdigest()
 PYVER = hashlib.sha256(CHECKED_IN[0]).hexdigest()
 # the versions before this definition: the three files joined, and their sha256sum lines
@@ -775,6 +978,7 @@ case "$2" in
     f="$FAKE/checks-$sha"; none='{"total_count": 0, "check_runs": []}' ;;
   repos/o/r/commits/*) f="$FAKE/commit"; none="" ;;
   repos/o/r/pulls/*) f="$FAKE/pr"; none="" ;;
+  repos/o/r/compare/main...*) f="$FAKE/compare"; none="" ;;   # no compare answer: the record rule stands
   *) echo "UNEXPECTED $*" >> "$CALLS"; exit 9 ;;
 esac
 if [ -f "$f.err" ]; then cat "$f.err" >&2; exit 1; fi
@@ -1003,7 +1207,11 @@ for name, pulls in (("a human pull request shares the head with Dependabot's", [
                     ("no pull request has the head", [])):
     r, c = gate(D, pulls=pulls, verdicts={D: [run(1)]})
     check("gate: %s: the record rule stands (exit 1, no record, no verdict asked for)" % name,
-          stands(r, c) and c.count("gh api") == 2, said(r, c))
+          stands(r, c) and c.count("gh api") == 3 and "/compare/main..." in c, said(r, c))
+r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1, "failure")]}, files={"compare": cmp_of(bump_commit())})
+check("gate: a Dependabot pull request the reviewer failed stays failed although its commits are Dependabot's (the "
+      "reviewer's verdict is final; the commits are not asked for)",
+      r.returncode == 1 and "/compare/" not in c, said(r, c))
 r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1, "failure")]},
       files={"ref": mut(REF, ["ref"], "refs/heads/audit/" + D), "commit": mut(COMMIT, ["parents"], [{"sha": D}])})
 check("gate: a passed-audit record on the exact head also passes the gate, and nothing more is asked",
@@ -1053,6 +1261,20 @@ if wrote: os.remove(G + "/audit-record")
 check("prepare: the same pull request opened by anyone else is recorded as before (proceed)",
       r.returncode == 0 and r.stdout.strip().splitlines()[-1] == "proceed" and wrote, said(r, c))
 
+# a sha with a trailing newline is not 40 lower-case hex (a `$` match would let it through)
+NL = HEAD + "\n"
+ok, why = judge(ref=mut(REF, ["ref"], "refs/heads/audit/" + NL), commit=mut(COMMIT, ["parents"], [{"sha": NL}]), head=NL)
+check("verify_record: a head sha with a trailing newline is refused", not ok, (ok, why))
+ok, why = judge(ref=mut(REF, ["object", "sha"], REC + "\n"), commit=mut(COMMIT, ["sha"], REC + "\n"))
+check("verify_record: a record sha with a trailing newline is refused", not ok, (ok, why))
+ok, why = plan_rel(head=NL); check("plan release: a head sha with a trailing newline is refused", not ok, (ok, why))
+ok, why = plan(pr=mut(PR, ["head", "sha"], NL), head=NL)
+check("plan: a head sha with a trailing newline is refused", not ok, (ok, why))
+# the items file never copied: every use of AUDIT_ITEMS inside check_audit_approval removed
+fn_src = ast.get_source_segment(admit_src, [n for n in ast.walk(ast.parse(admit_src)) if isinstance(n, ast.FunctionDef)
+    and n.name == "check_audit_approval"][0])
+probs = adm_problems(admit_src.replace(fn_src, fn_src.replace("AUDIT_ITEMS", "()")))
+check("build-admit.py: a copy with the items file never copied is refused", any("does not use AUDIT_ITEMS" in x for x in probs), probs)
 print("audit-record: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
