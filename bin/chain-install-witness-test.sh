@@ -172,9 +172,8 @@ case "$1" in
   version) echo "go version ${GV_GOVER:-go1.27.2} linux/amd64"; exit 0 ;;
   build) [ -z "${GV_BUILD_RC:-}" ] || { echo "build failed" >&2; exit "$GV_BUILD_RC"; }
          while [ $# -gt 0 ]; do [ "$1" = -o ] && o=$2; shift; done
-         # one write for the three lines (cat, not printf, which writes each line alone): the installer's `-version | grep -qx` under pipefail
-         # fails when grep has left before the last line is written
-         printf '#!/usr/bin/env bash\n[ "$1" = -version ] && cat <<EOT\nGo: go1.27.2\nScanner: govulncheck@%s\nDB: https://vuln.go.dev\nEOT\n' "${GV_REPORTS:-$GV_PIN}" > "$o"; chmod +x "$o" ;;
+         # the stub writes -version line by line, like the real govulncheck binary
+         printf '#!/usr/bin/env bash\nif [ "$1" = -version ]; then\n  echo "Go: go1.27.2"\n  sleep 0.1\n  echo "Scanner: govulncheck@%s"\n  sleep 0.1\n  echo "DB: https://vuln.go.dev"\nfi\n' "${GV_REPORTS:-$GV_PIN}" > "$o"; chmod +x "$o" ;;
 esac
 EOF
 chmod +x "$gv/dest/fscache-go/bin/go"
