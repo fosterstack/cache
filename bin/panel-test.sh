@@ -205,9 +205,42 @@ def lw_images(statuses, name):
               if s_ == "inspector" or img.endswith("amd64")})
     return len({c["image"] for c in P.tally(r, P.load_vex(f), dirs_of(r))["vex_covered"]})
 check("latest wins: not_affected alone covers every image", lw_images([("not_affected", None)], "lw0.json") == 4)
-check("latest wins: a later affected retracts the earlier not_affected on every image", lw_images([("not_affected", None), ("affected", None)], "lw1.json") == 0)
+check("latest wins: a later affected retracts the earlier not_affected, and as the winner covers findings that have no fixed version (every image)", lw_images([("not_affected", None), ("affected", None)], "lw1.json") == 4)
 check("latest wins: affected then not_affected covers", lw_images([("affected", None), ("not_affected", None)], "lw2.json") == 4)
 check("latest wins: the timestamps decide when both parse", lw_images([("not_affected", "2026-02-01T00:00:00Z"), ("affected", "2026-01-01T00:00:00Z")], "lw3.json") == 4)
+
+# --- the owner's rule: an affected statement is the partner of a CVE with no fix; once the scanner records a fixed version it covers nothing (not_affected and fixed cover either way)
+def fx_covered(statuses, fixed, scanner="inspector"):
+    """vex_covered / findings ids for production-amd64 where `scanner` reports CVE-2099-0009 on tzdata 2026c with the given fixed version (None = none)."""
+    f = os.path.join(tempfile.mkdtemp(), "fx.json")
+    sts = []
+    for status, ts in statuses:
+        st_ = {"vulnerability": {"name": "CVE-2099-0009"}, "status": status, "products": [{"@id": R, "subcomponents": [{"@id": "pkg:generic/tzdata@2026c"}]}]}
+        if ts: st_["timestamp"] = ts
+        sts.append(st_)
+    json.dump({"@context": "x", "statements": sts}, open(f, "w"))
+    r = tree()
+    d = os.path.join(r, scanner, "production-amd64")
+    comps = [{"bom-ref": "c%d" % i, "name": n, "version": v, "purl": "pkg:generic/%s@%s" % (n, v)} for i, (n, v) in enumerate(BASE)]
+    if scanner == "inspector":
+        vuln = {"id": "CVE-2099-0009", "affects": [{"ref": "c0"}]}
+        if fixed: vuln["properties"] = [{"name": "amazon:inspector:sbom_scanner:fixed_version:c0", "value": fixed}]
+        W(d, "scan.json", {"sbom": {"bomFormat": "CycloneDX", "components": comps, "vulnerabilities": [vuln]}})
+    else:
+        pi = {"affectedPackage": "tzdata", "affectedVersion": {"fullName": "2026c"}}
+        if fixed: pi.update(fixedVersion={"fullName": fixed}, fixAvailable=True)
+        W(d, "vulns.json", [{"noteName": "projects/goog-vulnz/notes/CVE-2099-0009", "vulnerability": {"shortDescription": "CVE-2099-0009", "packageIssue": [pi]}}])
+    v = P.tally(r, P.load_vex(f), dirs_of(r))
+    return sorted(c["id"] for c in v["vex_covered"] if c["scanner"] == scanner), sorted(x["id"] for x in v["findings"] if scanner in x["seen_by"])
+AFF, NOT, FIX = [("affected", None)], [("not_affected", None)], [("fixed", None)]
+for sc in ("inspector", "google"):
+    check("%s: an affected statement covers a finding that has no fixed version" % sc, fx_covered(AFF, None, sc) == (["CVE-2099-0009"], []), fx_covered(AFF, None, sc))
+    check("%s: an affected statement does NOT cover a finding that has a fixed version (it stays a finding)" % sc, fx_covered(AFF, "2026d", sc) == ([], ["CVE-2099-0009"]), fx_covered(AFF, "2026d", sc))
+    check("%s: not_affected covers a finding that has a fixed version" % sc, fx_covered(NOT, "2026d", sc) == (["CVE-2099-0009"], []), fx_covered(NOT, "2026d", sc))
+    check("%s: fixed covers a finding that has a fixed version" % sc, fx_covered(FIX, "2026d", sc) == (["CVE-2099-0009"], []), fx_covered(FIX, "2026d", sc))
+    check("%s: a later affected retracts the not_affected: a finding with a fixed version stays" % sc, fx_covered(NOT + AFF, "2026d", sc) == ([], ["CVE-2099-0009"]), fx_covered(NOT + AFF, "2026d", sc))
+    check("%s: a later affected is the winner and covers a finding with no fixed version" % sc, fx_covered(NOT + AFF, None, sc) == (["CVE-2099-0009"], []), fx_covered(NOT + AFF, None, sc))
+    check("%s: under_investigation covers nothing, fixed version or not" % sc, fx_covered([("under_investigation", None)], None, sc) == ([], ["CVE-2099-0009"]), fx_covered([("under_investigation", None)], None, sc))
 
 # --- post-merge rulings on cache#563 (P-1, P-2): a product known only by identifiers.purl is read like the gate's vex_index reads it, and the
 # product's REPOSITORY must be this image's (cache), as rescan-statement.py::_vex_match requires

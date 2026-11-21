@@ -75,7 +75,112 @@ check "unvexed finding blocks"              1 "error::inspector t: CVE-2099-0001
 check "VEX at another version does not suppress" 1 "busybox@1.36.1"             t "$w/otherver-sbom.json" "$w/otherver.json" "$vex"
 check "product-level VEX statement covers"  0 "1 covered"                       t "$w/sbom.json" "$w/prodlevel.json" "$vex"
 check "another product's VEX does not suppress" 1 "1 finding"                   t "$w/sbom.json" "$w/novex.json" "$w/foreign-vex.json"
-check "status affected does not suppress"   1 "1 finding"                       t "$w/sbom.json" "$w/novex.json" "$w/affected-vex.json"
+# the owner's rule: a CVE with a VEX partner does not block. An affected statement is a partner only while no fix is available (ScanSbom carries the fix as a
+# vulnerability property amazon:inspector:sbom_scanner:fixed_version:<ref>); not_affected and fixed cover either way.
+check "status affected covers a finding with no fixed version" 0 "1 covered by the published VEX" t "$w/sbom.json" "$w/novex.json" "$w/affected-vex.json"
+fx() { # ref value file: a finding on c3 with a fixed-version property for <ref>
+  printf '{"sbom":{"bomFormat":"CycloneDX","specVersion":"1.5","vulnerabilities":[{"id":"CVE-2099-0001","ratings":[{"severity":"low"}],"affects":[{"ref":"c3"}],"properties":[{"name":"amazon:inspector:sbom_scanner:fixed_version:%s","value":"%s"}]}]}}' "$1" "$2" > "$w/$3"
+}
+fx c3 "2025c-0+deb12u1" fixed-prop.json
+fx c3 "" emptyfix-prop.json
+fx c1 "9.9" otherref-prop.json
+check "status affected does not cover a finding that has a fixed version" 1 "1 finding" t "$w/sbom.json" "$w/fixed-prop.json" "$w/affected-vex.json"
+check "status affected + fixed version: the finding is named as an error" 1 "error::inspector t: CVE-2099-0001 debian/tzdata" t "$w/sbom.json" "$w/fixed-prop.json" "$w/affected-vex.json"
+check "status affected covers a finding whose fixed-version value is empty" 0 "1 covered" t "$w/sbom.json" "$w/emptyfix-prop.json" "$w/affected-vex.json"
+check "a fixed-version property for another ref does not count against this finding" 0 "1 covered" t "$w/sbom.json" "$w/otherref-prop.json" "$w/affected-vex.json"
+sed 's/"affected"/"not_affected"/' "$w/affected-vex.json" > "$w/na-vex.json"
+sed 's/"affected"/"fixed"/' "$w/affected-vex.json" > "$w/fixed-vex.json"
+check "not_affected covers a finding that has a fixed version" 0 "1 covered" t "$w/sbom.json" "$w/fixed-prop.json" "$w/na-vex.json"
+check "fixed covers a finding that has a fixed version" 0 "1 covered" t "$w/sbom.json" "$w/fixed-prop.json" "$w/fixed-vex.json"
+sed 's/"affected"/"under_investigation"/' "$w/affected-vex.json" > "$w/ui-vex.json"
+check "under_investigation is no partner" 1 "1 finding" t "$w/sbom.json" "$w/novex.json" "$w/ui-vex.json"
+printf '{"statements":[{"vulnerability":{"name":"CVE-2025-60876"},"status":"affected","products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache&variant=production&arch=amd64","subcomponents":[{"@id":"pkg:generic/busybox@1.37.0"}]}]}]}' > "$w/aff-prod-amd64.json"
+check "affected statement scoped to its own image covers an unfixed finding" 0 "1 covered" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/aff-prod-amd64.json"
+check "affected statement scoped to another arch does not cover" 1 "1 finding" cand-production-arm64 "$w/sbom.json" "$w/vexed.json" "$w/aff-prod-amd64.json"
+printf '{"sbom":{"bomFormat":"CycloneDX","vulnerabilities":[{"id":"CVE-2025-60876","ratings":[{"severity":"medium"}],"affects":[{"ref":"c1"}],"properties":[{"name":"amazon:inspector:sbom_scanner:fixed_version:c1","value":"1.37.1"}]}]}}' > "$w/bb-fixed.json"
+check "affected statement scoped to its own image does not cover a fixed finding" 1 "1 finding" cand-production-amd64 "$w/sbom.json" "$w/bb-fixed.json" "$w/aff-prod-amd64.json"
+# a later affected retracts an earlier not_affected; the affected winner covers only an unfixed finding
+cat > "$w/retract-vex.json" <<'EOT'
+{"statements":[
+ {"vulnerability":{"name":"CVE-2099-0001"},"status":"not_affected","products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}]},
+ {"vulnerability":{"name":"CVE-2099-0001"},"status":"affected","products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}]}]}
+EOT
+check "a later affected retracts the not_affected: a fixed finding blocks" 1 "1 finding" t "$w/sbom.json" "$w/fixed-prop.json" "$w/retract-vex.json"
+check "a later affected winner covers an unfixed finding" 0 "1 covered" t "$w/sbom.json" "$w/novex.json" "$w/retract-vex.json"
+
+# The module interface: vex_index indexes affected statements; covered(.., fixed=) says whether a fix exists.
+GOUT="$(python3 - "$sut" <<'PYA'
+import importlib.util, sys
+sp = importlib.util.spec_from_file_location("g", sys.argv[1]); G = importlib.util.module_from_spec(sp); sp.loader.exec_module(G)
+OCI = "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+PKG = ("busybox", "1.37.0")
+def d(status):
+    return {"statements": [{"vulnerability": {"name": "CVE-9999-1"}, "status": status, "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]}]}
+def row(name, ok): print(("ok: " if ok else "FAIL: ") + name)
+def cov(status, **kw):
+    try: return G.covered(G.vex_index(d(status)), "CVE-9999-1", PKG, None, **kw)
+    except Exception as e: print("error", e); return None
+row("affected: indexed, covers with fixed omitted", cov("affected") is True)
+row("affected: covers with fixed=None", cov("affected", fixed=None) is True)
+row("affected: covers with fixed=''", cov("affected", fixed="") is True)
+row("affected: covers with fixed=[]", cov("affected", fixed=[]) is True)
+row("affected: does not cover with fixed='1.37.1'", cov("affected", fixed="1.37.1") is False)
+row("affected: does not cover with fixed=['1.37.1']", cov("affected", fixed=["1.37.1"]) is False)
+row("not_affected: covers with a fix", cov("not_affected", fixed="1.37.1") is True)
+row("fixed: covers with a fix", cov("fixed", fixed=["1.37.1"]) is True)
+row("under_investigation: covers neither", cov("under_investigation") is False and cov("under_investigation", fixed="1") is False)
+row("affected: the scope still applies (another image)", G.covered(G.vex_index(d("affected")), "CVE-9999-1", PKG, G.image_identity("cand-fips-arm64"), fixed=None) is True)
+sc = d("affected"); sc["statements"][0]["products"][0]["@id"] = OCI + "&variant=production&arch=amd64"
+row("affected: a scoped statement does not cover another image", G.covered(G.vex_index(sc), "CVE-9999-1", PKG, G.image_identity("cand-fips-arm64"), fixed=None) is False)
+row("affected: an alias id is matched", G.covered(G.vex_index({"statements": [{"vulnerability": {"name": "GHSA-x", "aliases": ["CVE-9999-1"]}, "status": "affected", "products": [{"@id": OCI}]}]}), "CVE-9999-1", PKG, None, fixed=None) is True)
+print("module-cases-run")
+PYA
+)"; g_rc=$?
+echo "$GOUT" | sed 's/^/  /'
+[ "$g_rc" = 0 ] && [ "$(grep -c '^\(ok\|FAIL\):' <<<"$GOUT")" = 12 ] && grep -qx 'module-cases-run' <<<"$GOUT" || { echo "FAIL: the module section ran $(grep -c '^\(ok\|FAIL\):' <<<"$GOUT") cases, want 12, or exited non-zero"; fail=$((fail+1)); }
+pass=$((pass + $(grep -c '^ok:' <<<"$GOUT"))); fail=$((fail + $(grep -c '^FAIL:' <<<"$GOUT")))
+
+# The grype mode: inspector-gate.py grype <label> <grype.json> <openvex.json>. Exit 0 only with at least one match and every match covered.
+gm() { # name want_rc regex label grype vex
+  local name="$1" want="$2" re="$3"; shift 3
+  check "$name" "$want" "$re" grype "$@"
+}
+gmatch() { # id name version fix-versions-json [related-id]
+  local rel=""; [ -n "${5:-}" ] && rel="{\"id\":\"$5\"}"
+  printf '{"vulnerability":{"id":"%s","fix":{"versions":%s,"state":"unknown"}},"relatedVulnerabilities":[%s],"artifact":{"name":"%s","version":"%s","type":"deb","purl":"pkg:deb/debian/%s@%s"}}' "$1" "$4" "$rel" "$2" "$3" "$2" "$3"
+}
+gfile() { local n="$1"; shift; printf '{"matches":[%s]}' "$(IFS=,; echo "$*")" > "$w/g-$n.json"; }
+gfile nofix "$(gmatch CVE-2099-0001 tzdata 2025b '[]')"
+gfile fix "$(gmatch CVE-2099-0001 tzdata 2025b '["2025c"]')"
+gfile two "$(gmatch CVE-2099-0001 tzdata 2025b '[]')" "$(gmatch CVE-2099-0003 tzdata 2025b '[]')"
+gfile alias "$(gmatch GHSA-aaaa-bbbb-cccc tzdata 2025b '[]' CVE-2099-0001)"
+gfile none
+gfile fixalias "$(gmatch GHSA-aaaa-bbbb-cccc tzdata 2025b '["2025c"]' CVE-2099-0001)"
+sed 's/"@id":"pkg:oci\/cache?repository_url=ghcr.io\/fosterstack\/cache"/"@id":"pkg:oci\/cache?repository_url=ghcr.io\/fosterstack\/cache\&variant=production\&arch=amd64"/' "$w/affected-vex.json" > "$w/aff-scoped.json"
+echo '{"statements":[]}' > "$w/empty-vex.json"
+gm "grype: affected, no fix: covered, exit 0, counted" 0 "^grype cand-production-amd64: 1 match\(es\), 1 covered by the published VEX" cand-production-amd64 "$w/g-nofix.json" "$w/affected-vex.json"
+gm "grype: affected but a fix exists: blocks" 1 "::error::grype cand-production-amd64: CVE-2099-0001 tzdata@2025b" cand-production-amd64 "$w/g-fix.json" "$w/affected-vex.json"
+gm "grype: not_affected covers a match that has a fix" 0 "1 match\(es\), 1 covered" cand-production-amd64 "$w/g-fix.json" "$w/na-vex.json"
+gm "grype: fixed covers a match that has a fix" 0 "1 match\(es\), 1 covered" cand-production-amd64 "$w/g-fix.json" "$w/fixed-vex.json"
+gm "grype: no statement for the CVE blocks" 1 "::error::grype cand-production-amd64: CVE-2099-0001" cand-production-amd64 "$w/g-nofix.json" "$w/foreign-vex.json"
+gm "grype: an empty statement list blocks" 1 "::error::grype" cand-production-amd64 "$w/g-nofix.json" "$w/empty-vex.json"
+gm "grype: under_investigation is no partner" 1 "::error::grype" cand-production-amd64 "$w/g-nofix.json" "$w/ui-vex.json"
+gm "grype: one covered and one uncovered match: blocks, names the uncovered" 1 "::error::grype cand-production-amd64: CVE-2099-0003 tzdata@2025b" cand-production-amd64 "$w/g-two.json" "$w/affected-vex.json"
+gm "grype: the mixed result counts 2 matches, 1 covered" 1 "grype cand-production-amd64: 2 match\(es\), 1 covered" cand-production-amd64 "$w/g-two.json" "$w/affected-vex.json"
+gm "grype: a related (alias) id is covered by a statement for the CVE" 0 "1 covered" cand-production-amd64 "$w/g-alias.json" "$w/affected-vex.json"
+gm "grype: a related id with a fix is not covered by affected" 1 "::error::grype" cand-production-amd64 "$w/g-fixalias.json" "$w/affected-vex.json"
+gm "grype: zero matches is not clean" 1 "::error::grype cand-production-amd64" cand-production-amd64 "$w/g-none.json" "$w/affected-vex.json"
+gm "grype: a scoped statement covers its own image" 0 "1 covered" cand-production-amd64 "$w/g-nofix.json" "$w/aff-scoped.json"
+gm "grype: a scoped statement does not cover another image" 1 "::error::grype cand-fips-arm64" cand-fips-arm64 "$w/g-nofix.json" "$w/aff-scoped.json"
+gm "grype: an empty label (Go-module archive): an unscoped statement covers" 0 "grype : 1 match\(es\), 1 covered" "" "$w/g-nofix.json" "$w/affected-vex.json"
+gm "grype: an empty label: a scoped statement does not cover" 1 "::error::grype" "" "$w/g-nofix.json" "$w/aff-scoped.json"
+echo '{"matches":' > "$w/g-bad.json"
+echo '{"matches":{}}' > "$w/g-notlist.json"
+gm "grype: unparseable grype JSON is exit 2" 2 "." cand-production-amd64 "$w/g-bad.json" "$w/affected-vex.json"
+gm "grype: matches that is not a list is exit 2" 2 "." cand-production-amd64 "$w/g-notlist.json" "$w/affected-vex.json"
+gm "grype: a missing grype file is exit 2" 2 "." cand-production-amd64 "$w/g-missing.json" "$w/affected-vex.json"
+gm "grype: a missing VEX file is exit 2" 2 "." cand-production-amd64 "$w/g-nofix.json" "$w/vex-missing.json"
+gm "grype: unparseable VEX is exit 2" 2 "." cand-production-amd64 "$w/g-nofix.json" "$w/g-bad.json"
 check "different Go module path does not suppress" 1 "golang-jwt/jwt/v4"        t "$w/sbom.json" "$w/gomod.json" "$w/gomod-vex.json"
 # The envelope: a finding under "sbom" must block (round-1 blocker: a
 # top-level read saw zero findings); an unwrapped document is also read;
@@ -208,7 +313,7 @@ def lw(*specs, subs=("pkg:generic/busybox@1.37.0",), prods=None):
         s_ = {"vulnerability": {"name": "CVE-9999-1"}, "status": status, "products": [{"@id": p_, "subcomponents": [{"@id": x} for x in subs]} for p_ in (prods or [OCI])]}
         if ts is not None: s_["timestamp"] = ts
         sts.append(s_)
-    return G.covered(G.vex_index({"statements": sts}), "CVE-9999-1", PKG, None)
+    return G.covered(G.vex_index({"statements": sts}), "CVE-9999-1", PKG, None, fixed="9.9")
 T1, T2 = "2026-01-01T00:00:00Z", "2026-02-01T00:00:00+00:00"
 row("latest: not_affected then affected (document order): retracted", lw(("not_affected", None), ("affected", None)) is False)
 row("latest: affected then not_affected (document order): covers", lw(("affected", None), ("not_affected", None)) is True)
@@ -220,20 +325,20 @@ row("latest: a missing timestamp on one side falls back to document order for th
 row("latest: equal timestamps: the later in the document wins", lw(("not_affected", T1), ("affected", T1)) is False)
 row("latest: a different subcomponent set is another pair and is not retracted", G.covered(G.vex_index({"statements": [
     {"vulnerability": {"name": "CVE-9999-1"}, "status": "not_affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]},
-    {"vulnerability": {"name": "CVE-9999-1"}, "status": "affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/zlib@1.2"}]}]}]}), "CVE-9999-1", PKG, None) is True)
+    {"vulnerability": {"name": "CVE-9999-1"}, "status": "affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/zlib@1.2"}]}]}]}), "CVE-9999-1", PKG, None, fixed="9.9") is True)
 row("latest: a different product is another pair and is not retracted", lw(("not_affected", None), prods=[OCI]) is True and G.covered(G.vex_index({"statements": [
     {"vulnerability": {"name": "CVE-9999-1"}, "status": "not_affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]},
-    {"vulnerability": {"name": "CVE-9999-1"}, "status": "affected", "products": [{"@id": OCI + "&variant=fips", "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]}]}), "CVE-9999-1", PKG, None) is True)
+    {"vulnerability": {"name": "CVE-9999-1"}, "status": "affected", "products": [{"@id": OCI + "&variant=fips", "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]}]}), "CVE-9999-1", PKG, None, fixed="9.9") is True)
 row("latest: an alias is the same vulnerability (the later affected statement names the alias)", G.covered(G.vex_index({"statements": [
     {"vulnerability": {"name": "CVE-9999-1", "aliases": ["GHSA-x"]}, "status": "not_affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]},
-    {"vulnerability": {"name": "GHSA-x"}, "status": "affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]}]}), "CVE-9999-1", PKG, None) is False)
+    {"vulnerability": {"name": "GHSA-x"}, "status": "affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]}]}), "CVE-9999-1", PKG, None, fixed="9.9") is False)
 # round 1 (cache#671): the pair is compared by what the readers match on, not by spelling; aliases are one vulnerability across the whole document; the order is one total order per pair
 def two(first, second, f_prods=None, s_prods=None, f_subs=("pkg:generic/busybox@1.37.0",), s_subs=("pkg:generic/busybox@1.37.0",), f_name="CVE-9999-1", s_name="CVE-9999-1", pkg=PKG):
     def stmt(status, name, prods, subs, extra=None):
         v = {"name": name}
         if extra: v["aliases"] = extra
         return {"vulnerability": v, "status": status, "products": [{"@id": q, "subcomponents": [{"@id": x} for x in subs]} for q in prods]}
-    return G.covered(G.vex_index({"statements": [stmt(first, f_name, f_prods or [OCI], f_subs), stmt(second, s_name, s_prods or [OCI], s_subs)]}), "CVE-9999-1", pkg, None)
+    return G.covered(G.vex_index({"statements": [stmt(first, f_name, f_prods or [OCI], f_subs), stmt(second, s_name, s_prods or [OCI], s_subs)]}), "CVE-9999-1", pkg, None, fixed="9.9")
 SC = OCI + "&variant=production&arch=amd64"
 SC2 = OCI.replace("?repository_url=ghcr.io/fosterstack/cache", "?repository_url=ghcr.io/fosterstack/cache") + "&arch=amd64&variant=production"
 row("latest: the same scope with its qualifiers in another order is the same product (retracted)", two("not_affected", "affected", [SC], [SC2]) is False)
@@ -253,9 +358,9 @@ AL = {"statements": [
     {"vulnerability": {"name": "CVE-9999-1", "aliases": ["GHSA-X"]}, "status": "affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]},
     {"vulnerability": {"name": "CVE-9999-1"}, "status": "not_affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]},
     {"vulnerability": {"name": "GHSA-X"}, "status": "affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]}]}
-row("latest: an alias declared by one statement links the others (CVE, alias affected, CVE not_affected, alias affected): retracted", G.covered(G.vex_index(AL), "CVE-9999-1", PKG, None) is False)
+row("latest: an alias declared by one statement links the others (CVE, alias affected, CVE not_affected, alias affected): retracted", G.covered(G.vex_index(AL), "CVE-9999-1", PKG, None, fixed="9.9") is False)
 def three(*specs):
-    return G.covered(G.vex_index({"statements": [dict({"vulnerability": {"name": "CVE-9999-1"}, "status": st_, "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]}, **({"timestamp": ts} if ts else {})) for st_, ts in specs]}), "CVE-9999-1", PKG, None)
+    return G.covered(G.vex_index({"statements": [dict({"vulnerability": {"name": "CVE-9999-1"}, "status": st_, "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]}, **({"timestamp": ts} if ts else {})) for st_, ts in specs]}), "CVE-9999-1", PKG, None, fixed="9.9")
 row("latest: three not_affected with timestamps [Feb, none, Jan] are not all superseded (one total order)", three(("not_affected", T2), ("not_affected", None), ("not_affected", T1)) is True)
 row("latest: a group with one missing timestamp is ordered by position: [not_affected Feb, affected none] retracts", three(("not_affected", T2), ("affected", None)) is False)
 row("latest: a group where every statement has a time is ordered by time: [affected Feb, not_affected Jan, not_affected Jan2]", three(("affected", T2), ("not_affected", T1), ("not_affected", "2026-01-15T00:00:00Z")) is False)
@@ -263,7 +368,7 @@ TWO = {"statements": [
     {"vulnerability": {"name": "CVE-9999-1"}, "status": "not_affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}, {"@id": GO, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]},
     {"vulnerability": {"name": "CVE-9999-1"}, "status": "affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]}]}
 IX = G.vex_index(TWO)
-row("latest: retracting one product of a two-product statement leaves its sibling covered (the image is retracted, the Go product stays)", G.covered(IX, "CVE-9999-1", PKG, None) is True and G.superseded(TWO["statements"]) == {(0, 0)})
+row("latest: retracting one product of a two-product statement leaves its sibling covered (the image is retracted, the Go product stays)", G.covered(IX, "CVE-9999-1", PKG, None, fixed="9.9") is True and G.superseded(TWO["statements"]) == {(0, 0)})
 print("index-cases-run")
 PYI
 )"; idx_rc=$?

@@ -251,7 +251,14 @@ for s in "${scanners[@]}"; do
     fi
     [[ "$packages" =~ ^[0-9]+$ ]] || packages=0
     echo "check-scan: $s $name ($digest): $packages packages, exit $rc"
-    sv=pass vexn=0
+    sv=pass vexn=0 partnered=0
+    if [ "$s" = grype ] && { [ "$rc" = 0 ] || [ "$rc" = 1 ]; }; then
+      # grype's --vex does not drop an `affected` statement's matches: findings that all have a VEX partner (affected while no fix is reported) are clean
+      img=""; [ -z "$plat" ] || img="cand-${name%%/*}-${plat#linux/}"
+      if gout=$(python3 bin/inspector-gate.py grype "$img" "$tmp/out.json" "$VEX"); then
+        partnered=1 rc=0 vexn=$(sed -n 's/^.*, \([0-9]*\) covered by.*$/\1/p' <<< "$gout")
+      fi
+    fi
     if [ "$s" = grype ] && [ "$rc" = 0 ]; then
       # The owner's rule (register rows 18 and 38): every severity blocks, and the published VEX is the only exception. --fail-on negligible does not fire
       # on a finding of UNKNOWN severity, so the result is judged here: a match that survived --vex fails whatever its severity, and a result with no
@@ -259,7 +266,7 @@ for s in "${scanners[@]}"; do
       um=$(jq -e 'if (.matches | type) == "array" then (.matches | length) else error("matches is not a list") end' "$tmp/out.json" 2> /dev/null) || um=unreadable
       if [[ ! "$um" =~ ^[0-9]+$ ]]; then
         echo "check-scan: grype's result for $name has no readable matches list: nothing is judged behind a result that cannot be read" >&2; rc=2
-      elif [ "$um" -gt 0 ]; then
+      elif [ "$um" -gt 0 ] && [ "$partnered" = 0 ]; then
         echo "check-scan: grype reported $um finding(s) in $name ($digest) of any severity, UNKNOWN included, that the VEX document does not except" >&2; rc=1
       else
         # Everything grype left out must have been left out by the VEX: absent or null is none, otherwise a list whose entries each carry a non-empty list of rule objects, every one

@@ -1160,6 +1160,18 @@ comments="$(grep -c 'issue comment .*CVE-2099-9001' "$shim" 2>/dev/null)"; comme
 { eq "$creates" "1" && [ "$comments" -ge 1 ] 2>/dev/null; } \
   && ok || no "one issue create + a comment across two runs" "creates=$creates comments=$comments"
 
+begin "vexp-1-poam-text-says-affected-vex-not-ignores" "the owner's rule (a no-fix CVE ships with its affected VEX): a §2 no-fix POA&M row's action reads 'POA&M: affected VEX, expiry <date>' and the owner-decision issue body says an affected VEX statement is carried in this run's suppression package; neither says 'ignores' or a day count"
+o="$WORK/vexp1"; shim="$WORK/vexp1.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
+env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$FX/run/manifest-ownerissue.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1
+body="$(grep 'issue create .*CVE-2099-9001' "$shim" 2>/dev/null)"
+newact="$(grep -rhoE 'POA&M: affected VEX, expiry [0-9]{4}-[0-9]{2}-[0-9]{2}' "$o" 2>/dev/null | wc -l | tr -d ' ')"
+oldact="$(grep -rhE 'POA&M: affected VEX \+' "$o" 2>/dev/null | wc -l | tr -d ' ')"
+igact="$(grep -rhoE 'POA&M: affected VEX[^"]*' "$o" 2>/dev/null | sed 's/ — .*//' | grep -ci 'ignores')"
+newbody="$(grep -cE "an affected VEX statement is carried in this run.{1,5}s suppression package" <<<"$body")"   # the shim logs the body shell-quoted: the apostrophe of run's is written '"'"'
+igbody="$(grep -ci 'ignores' <<<"$body")"; daybody="$(grep -cE '[0-9]+-day' <<<"$body")"
+{ [ "$newact" -ge 1 ] 2>/dev/null && eq "$oldact" "0" && eq "$igact" "0" && eq "$newbody" "1" && eq "$igbody" "0" && eq "$daybody" "0"; } \
+  && ok || no "action 'POA&M: affected VEX, expiry <date>' (no 'ignores'); body 'an affected VEX statement is carried in this run's suppression package' (no 'ignores', no N-day)" "new_action_rows=$newact old_action_rows=$oldact ignores_action_rows=$igact new_body=$newbody ignores_in_body=$igbody day_in_body=$daybody"
+
 begin "dadj-1-adjudicator-unavailable-one-issue-incomplete" "when the adjudicator is UNAVAILABLE (every call errors), the run is AUDIT INCOMPLETE naming the cause, exactly ONE aggregate owner issue 'adjudicator unavailable — N findings unassessed' is opened (never one per finding), and the header names the (masked) cause (R-live fixes 1+3)"
 o="$WORK/dadj1"; shim="$WORK/dadj1.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$WORK/pm-partial/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$F/adjudicator/fail-on-call.py" --out "$o" >/dev/null 2>&1
