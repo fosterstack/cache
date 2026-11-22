@@ -868,15 +868,15 @@ Release admission and the patch release's ready step shall require the checks of
 
 ### REQ-REL-016 — Pull requests run six checks; the rest run on push to main
 
-On a pull request into main or a release branch only these checks shall run: test, lint, govulncheck, analyze (go), fips140-only and scan (with the jobs scan needs). Every other check shall run on push to main, on a schedule or in the release chain, so release admission reads each of them on the exact tagged commit. dependency-review runs on push to main and judges the versions the push moved (the commit before the push to the commit after it). The pin-age scan of pull requests is deleted; the daily pin audit is the supply-chain check.
+On a pull request into main or a release branch only these checks shall run: test, lint, govulncheck, analyze (go), fips140-only and scan (with the jobs scan needs). Every other check shall run on push to main, on a schedule or in the release chain, so release admission reads each of them on the exact tagged commit. The gosec and dependency-review jobs are deleted. The pin-age scan of pull requests is deleted; the daily pin audit is the supply-chain check.
 
 *Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/ci.yml; .github/workflows/scan.yml; .github/workflows/codeql.yml; .github/workflows/acceptance.yml; .github/workflows/supply-chain.yml; .github/policy/required-checks.json*
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-REL-016-AC1 | Given the workflows under .github/workflows on main; when the jobs that run on the pull_request event are listed; then they are test, lint, govulncheck, analyze (go), fips140-only and scan, the jobs scan needs (build, assemble, the scanner list and the scanners), and the jobs of agent-review-gate.yml and dependabot-auto-merge.yml, which are no pull-request checks of the ruleset; no other job runs on pull_request, except the two chain-v030 checks of REQ-REL-014-AC1 (marker-gate and customer-words-edited) | ci-workflow |  | approved | 1 item(s) |
-| REQ-REL-016-AC2 | Given a push to main that moves a dependency version; when dependency-review runs on that push; then it judges the versions between the commit before the push and the commit after it | ci-workflow |  | approved | 1 item(s) |
-| REQ-REL-016-AC3 | Given a tag whose commit has a red or missing run of a check that required-checks.json or release-only-checks.json scopes to push (pin-age and dependency-review included); when release admission runs; then it refuses the tag | ci-workflow |  | approved | 1 item(s) |
+| REQ-REL-016-AC2 | Given the workflows under .github/workflows on main; when the jobs of ci.yml are listed; then there is no gosec job and no dependency-review job | ci-workflow |  | approved | 1 item(s) |
+| REQ-REL-016-AC3 | Given a tag whose commit has a red or missing run of a check that required-checks.json or release-only-checks.json scopes to push (pin-age included); when release admission runs; then it refuses the tag | ci-workflow |  | approved | 1 item(s) |
 
 ### REQ-REL-014 — Pull requests run six checks; the rest run on push to main
 
