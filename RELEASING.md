@@ -87,7 +87,7 @@ rebuilds. Of the jobs above, Release is the only one that holds a registry crede
 Releases before v0.3.0 were built by the earlier eight-stage chain (source <!-- pinned: historical -->
 admission, build, image assembly, reproducibility, scans and acceptance,
 release authorization, promotion); the image signer of those releases was that
-chain's promotion workflow, which the v0.3.0 chain replaced.
+chain's promotion workflow, which the v0.3.0 chain replaced. <!-- pinned: historical -->
 
 ## Cutting a release
 
