@@ -1584,8 +1584,10 @@ def main(argv=None):
         # actions and images INSIDE the actions we pin (depth 3): listed when on a moving tag, and checked against the
         # same advisory lists
         seen = {it.key for it in audited} | set(head)
+        # a local workflow call has no metadata file to read; a local action step does, and must fail without it
         queue = [(it, 0) for it in [*(audited if a.base else head.values()), *pr_actions]
-                 if it.kind == "action" and it.version != "(local)"]
+                 if it.kind == "action"
+                 and not (it.version == "(local)" and it.name.startswith("local:./.github/workflows/"))]
         phase("nested references")
         while queue:
             def nested_safe(q):
