@@ -1,9 +1,12 @@
 name: Agent review gate
 
-# REQ-AUD-18 AC3: the verdict runs main's copies of two checks over the PR head, read as git objects, and
-# judges no review record: the allowlist guard (bin/check-file-allowlist.sh, over the head's file list, with
-# ALLOWLIST_HEAD_REV so the head is judged as a commit) and the scanner guard. Here — not in a check of its own —
-# because this check is the one a PR cannot skip, edit or impersonate (below).
+# REQ-AUD-18 AC3: the verdict runs main's copies of its checks over the PR head, read as git objects: the allowlist
+# guard (bin/check-file-allowlist.sh, over the head's file list, with ALLOWLIST_HEAD_REV so the head is judged as a
+# commit), so a PR cannot disable its own whole-tree guard by editing ci.yml, and the scanner guard. Here — not in a
+# check of its own — because this check is the one a PR cannot skip, edit or impersonate (below).
+#
+# A head whose every commit is authored by Dependabot or the reviewer's App needs no passed-audit record
+# (bin/audit-record-judge.sh); the checks above still run on it.
 #
 # Protected by construction (review loop, both vendors):
 # - pull_request_target: GitHub always runs the DEFAULT branch's copy of this file, so a PR can
@@ -79,28 +82,52 @@ jobs:
           got="$(git rev-parse refs/remotes/pr/head)"
           [ "$got" = "$HEAD_SHA" ] || { echo "::error::PR head moved (${got} != ${HEAD_SHA}); a newer run judges it" >&2; exit 1; }
 
-      - name: run the default branch's review gate and pin check over the PR head
-        id: gate
+      # Each check is its own step, judged by the checked-out default branch's copies (HEAD), never the PR's; a failed one does not stop the others,
+      # and the last step turns the three outcomes into the verdict.
+      # the PR cannot run its own copy of its guard: main's allowlist script judges the head's file list as git objects (nothing of the PR runs)
+      - name: the allowlist guard over the PR head's files
+        id: allowlist
+        continue-on-error: true
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          GH_TOKEN: ${{ github.token }}   # read-only: the judge reads check runs and pull requests with it
-          # the PR's identity, as the ci allowlist job sees it, for main's copy of the allowlist guard
+          # the PR's identity, for main's copy of the allowlist guard
           GITHUB_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           GITHUB_BASE_REF: ${{ github.event.pull_request.base.ref }}
           GITHUB_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
-          set -uo pipefail
-          # judged by the checked-out default branch's copies (HEAD), never the PR's
-          verdict=success
-          # the PR cannot run its own copy of its guard: main's allowlist script judges the head's file list as git objects
-          git ls-tree -r -z --name-only "$HEAD_SHA" | ALLOWLIST_NUL=1 ALLOWLIST_HEAD_REV="$HEAD_SHA" bash bin/check-file-allowlist.sh || verdict=failure
-          mkdir -p "$RUNNER_TEMP/yaml-shim" && ln -sfn "$PWD/.github/agent/fixtures/testlib/pyyaml" "$RUNNER_TEMP/yaml-shim/yaml"
-          # REQ-SCAN-015: main's scanner guard judges the head's workflows and composite actions as git objects, so a step
-          # of the PR's own CI that overwrites the guard on disk changes nothing
-          PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$HEAD_SHA" bash bin/scan-no-workflow-call-test.sh || verdict=failure
-          # REQ-REL-012 (release process rule 6): a pull request into main carries a passed-audit record for its exact head. Main's judge and main's writers policy read the record
-          # branch audit/<head sha> through the read-only token; the pull request supplies only its head sha and nothing else
-          bash bin/audit-record-judge.sh "$HEAD_SHA" "$GITHUB_BASE_REF" || verdict=failure
+          set -o pipefail
+          git ls-tree -r -z --name-only "$HEAD_SHA" | ALLOWLIST_NUL=1 ALLOWLIST_HEAD_REV="$HEAD_SHA" bash bin/check-file-allowlist.sh
+
+      - name: the yaml reader the scanner guard below loads
+        run: mkdir -p "$RUNNER_TEMP/yaml-shim" && ln -sfn "$PWD/.github/agent/fixtures/testlib/pyyaml" "$RUNNER_TEMP/yaml-shim/yaml"
+
+      # REQ-SCAN-015: main's scanner guard judges the head's workflows and composite actions as git objects, so a step
+      # of the PR's own CI that overwrites the guard on disk changes nothing
+      - name: the scanner guard over the PR head's workflows
+        id: scan
+        continue-on-error: true
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$HEAD_SHA" bash bin/scan-no-workflow-call-test.sh
+
+      # REQ-REL-012 (release process rule 6): a pull request into main carries a passed-audit record for its exact head. Main's judge and main's writers policy read the record
+      # branch audit/<head sha> through the read-only token; the pull request supplies only its head sha and nothing else
+      - name: the passed-audit record for the PR head
+        id: record
+        continue-on-error: true
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GITHUB_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          GH_TOKEN: ${{ github.token }}   # read-only: the judge reads check runs and pull requests with it
+        run: bash bin/audit-record-judge.sh "$HEAD_SHA" "$GITHUB_BASE_REF"
+
+      - name: the verdict
+        id: gate
+        env:
+          OUTCOMES: ${{ steps.allowlist.outcome }} ${{ steps.scan.outcome }} ${{ steps.record.outcome }}
+        run: |
+          verdict=failure
+          [ "$OUTCOMES" = "success success success" ] && verdict=success
           echo "verdict=${verdict}" >> "$GITHUB_OUTPUT"
           [ "$verdict" = success ]
 
@@ -127,7 +154,7 @@ jobs:
       - name: mint the App token (checks:write only)
         id: app
         if: steps.cfg.outputs.ok == 'true'
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           app-id: ${{ secrets.AUDITOR_APP_ID }}
           private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
@@ -167,7 +194,7 @@ jobs:
 
       - name: mint the App token (contents write, pull requests read)
         id: app
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           app-id: ${{ secrets.AUDITOR_APP_ID }}
           private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
@@ -219,7 +246,7 @@ jobs:
 
       - name: mint the App token (checks:write only)
         id: app
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           app-id: ${{ secrets.AUDITOR_APP_ID }}
           private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
@@ -271,7 +298,7 @@ jobs:
               if [ "$rc" = 0 ]; then continue; fi
               # a GitHub API error is no verdict: publish nothing, fail the run
               if [ "$rc" = 3 ]; then fail=1; continue; fi
-               elif git ls-tree -r -z --name-only "$sha" | ALLOWLIST_NUL=1 GITHUB_HEAD_REF="$headref" GITHUB_BASE_REF="$DEFAULT" GITHUB_HEAD_REPO="$headrepo" \
+            elif git ls-tree -r -z --name-only "$sha" | ALLOWLIST_NUL=1 GITHUB_HEAD_REF="$headref" GITHUB_BASE_REF="$DEFAULT" GITHUB_HEAD_REPO="$headrepo" \
                     ALLOWLIST_HEAD_REV="$sha" bash bin/check-file-allowlist.sh \
                && PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$sha" bash bin/scan-no-workflow-call-test.sh \
                && GH_TOKEN="$LIST_TOKEN" bash bin/audit-record-judge.sh "$sha" "$DEFAULT"; then

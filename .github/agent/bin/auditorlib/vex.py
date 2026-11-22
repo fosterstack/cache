@@ -19,7 +19,7 @@ def _load_schema():
     return _ALLOWED, _TOP
 
 
-def doc(fid, status, timestamp, justification=None, action=None, subcomponents=None, stmt_base=None):
+def doc(fid, status, timestamp, justification=None, action=None, subcomponents=None, stmt_base=None, aliases=()):
     product = {"@id": policy.VEX_PRODUCT}
     if subcomponents:
         # scope the statement to the exact package purls it is backed for (R11 rank 1:
@@ -32,6 +32,9 @@ def doc(fid, status, timestamp, justification=None, action=None, subcomponents=N
     # scopes of one CVE never collide and the same scope is stable across runs.
     st = {"@id": policy.scope_id(fid, product["@id"], subcomponents), "vulnerability": {"name": fid},
           "timestamp": timestamp, "products": [product], "status": status}
+    names = sorted(set(aliases) - {fid})
+    if names:
+        st["vulnerability"]["aliases"] = names      # the ids the scanners' own records give it; the gate looks up any
     if justification:
         st["justification"] = justification
     if action:
@@ -56,13 +59,13 @@ def validate(document):
 
 
 def write(out_dir, fid, status, timestamp, justification=None, action=None,
-          evidence=None, target_date=None, vex_name=None, subcomponents=None, lift_trigger=None):
+          evidence=None, target_date=None, vex_name=None, subcomponents=None, lift_trigger=None, aliases=()):
     """Write a conformant VEX and its evidence sidecar. Returns the VEX path.
 
     `lift_trigger` is a machine-checkable condition (REQ-AUD-14 AC3) recorded in the sidecar
     beside the evidence and the time box — the OpenVEX statement schema forbids extra keys, so
     the trigger and the carrier analysis live in the evidence sidecar the statement points at."""
-    document = doc(fid, status, timestamp, justification, action, subcomponents, stmt_base=vex_name)
+    document = doc(fid, status, timestamp, justification, action, subcomponents, stmt_base=vex_name, aliases=aliases)
     validate(document)
     vpath = os.path.join(out_dir, "vex", (vex_name or fid) + ".openvex.json")
     os.makedirs(os.path.dirname(vpath), exist_ok=True)

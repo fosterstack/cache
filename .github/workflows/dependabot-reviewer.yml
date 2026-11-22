@@ -28,12 +28,19 @@ name: Dependabot reviewer
 # (the App has no Issues permission). No vendor or model name appears anywhere here, in the
 # check, or in the issue (row 48); model ids live only in the `agent` environment's secrets.
 #
+# The second job, `vendor-records`, finishes a Go dependency bump nobody has to finish by hand: for every open
+# dependabot/go_modules/* and auditor/bump-* branch it regenerates the vendored tree and the provenance records and
+# adds ONE App-signed commit holding only those (vendor/, dependency-provenance.json, the reviewed licences). It runs
+# here for the same reason as the review: a run Dependabot's own push starts holds no secrets, so a scheduled sweep
+# from main's copy is the only way to hold the App key. Branches are fetched as data and never run
+# (.github/agent/bin/auditor-vendor-records.py).
+#
 # `dependabot-reviewer` is deliberately NOT a required check: it only ever runs on Dependabot's
 # pull requests, and a required check would block every human PR.
 
 on:
   schedule:
-    - cron: '23 * * * *'   # hourly (owner: not every ten minutes)
+    - cron: '23 * * * *'   # hourly
   workflow_dispatch:
     inputs:
       pr:
@@ -42,6 +49,10 @@ on:
         default: ''
       force:
         description: 'Re-review even if the head already carries a dependabot-reviewer check'
+        type: boolean
+        default: false
+      records_dry_run:
+        description: 'Records sweep: say what it would commit, commit nothing'
         type: boolean
         default: false
 
@@ -69,7 +80,7 @@ jobs:
 
       - name: mint the App token for the check run (checks:write only)
         id: app-checks
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           app-id: ${{ secrets.AUDITOR_APP_ID }}
           private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
@@ -78,7 +89,7 @@ jobs:
 
       - name: mint the App token for arming / disarming auto-merge (contents + pull-requests)
         id: app-merge
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           app-id: ${{ secrets.AUDITOR_APP_ID }}
           private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
@@ -115,7 +126,8 @@ jobs:
           # <sha>: the App's latest reviewer check on that commit: its conclusion, or none (also for a success of
           # another version)
           verdict_of() {
-            local run_url="repos/${GITHUB_REPOSITORY}/commits/$1/check-runs?check_name=dependabot-reviewer"
+            local run_url
+            run_url="repos/${GITHUB_REPOSITORY}/commits/$1/check-runs?check_name=dependabot-reviewer"
             GH_TOKEN="$APP_TOKEN" gh api "$run_url&filter=all&per_page=100" \
               --jq "if (.check_runs | length) >= 100 then error(\"the check runs are cut\") else . end
                     | [.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last
@@ -164,21 +176,33 @@ jobs:
                  "— the gate failure is published again for the sweep to judge"
           }
           gh pr list --base main --state open --author 'app/dependabot' --limit 100 \
-            --json number,title,body,headRefOid > "$RUNNER_TEMP/work/prs.json" || { echo "::error::cannot list PRs"; exit 1; }
+            --json number,title,body,headRefOid,files > "$RUNNER_TEMP/work/prs.json" || { echo "::error::cannot list PRs"; exit 1; }
           : > "$RUNNER_TEMP/work/candidates.txt"; : > "$RUNNER_TEMP/work/lane-arms.txt"
           while read -r pr; do
             n=$(jq -r .number <<<"$pr"); sha=$(jq -r .headRefOid <<<"$pr")
             [ -z "$ONLY_PR" ] || [ "$ONLY_PR" = "$n" ] || continue
+            # held out of auto-merge, handled as a normal PR: the pinned tool module (go.mod and go.sum under
+            # tools/govulncheck/, which ci.yml builds through bin/install-scanner.sh, so a new version gets a normal review), and any PR whose file list is at the API's cap of
+            # 100 (it may be cut, so it cannot be judged). Never reviewed or armed here, an arm made earlier is turned off; a lookup or a disarm that fails skips it and fails the step
+            if [ "$(jq '[.files[]?.path | select(startswith("tools/govulncheck/"))] | length' <<<"$pr")" != 0 ] || [ "$(jq '(.files | length) >= 100' <<<"$pr")" = true ]; then
+              if ! armed=$(gh pr view "$n" --json autoMergeRequest --jq '.autoMergeRequest != null'); then
+                echo "::error::PR #$n: could not get its auto-merge state — skipped this hour"; lookup_failed=1; continue
+              fi
+              if [ "$armed" != false ] && ! GH_TOKEN="$MERGE_TOKEN" gh pr merge --disable-auto "$n" >/dev/null; then
+                echo "::error::PR #$n: held out of auto-merge and could not be disarmed — skipped this hour"; lookup_failed=1; continue
+              fi
+              echo "PR #$n: touches tools/govulncheck/ or lists 100+ files — held out of auto-merge (a normal PR), never reviewed or armed here"; continue
+            fi
             jq -r '.body // ""' <<<"$pr" > "$RUNNER_TEMP/work/body-$n.txt"
             if ! python3 bin/dependabot-reviewer.py updates --title "$(jq -r .title <<<"$pr")" \
                    --body-file "$RUNNER_TEMP/work/body-$n.txt" > "$RUNNER_TEMP/work/updates-$n.json"; then
-              echo "::error::PR #$n: could not read its updates"; lookup_failed=1; continue
+              echo "::error::PR #$n: could not get its updates"; lookup_failed=1; continue
             fi
             lane=$(jq -r 'if length > 0 and all(.[]; .kind == "not-major") then "yes" else "no" end' \
                      "$RUNNER_TEMP/work/updates-$n.json") \
               || { echo "::error::PR #$n: could not tell its update kinds"; lookup_failed=1; continue; }
             if ! prior=$(verdict_of "$sha") || [ -z "$prior" ]; then
-              echo "::error::PR #$n ${sha:0:7}: could not read its reviewer checks — skipped this hour"; lookup_failed=1; continue
+              echo "::error::PR #$n ${sha:0:7}: could not get its reviewer checks — skipped this hour"; lookup_failed=1; continue
             fi
             if [ "$prior" = none ] && [ "$FORCE" != "true" ]; then
               # the spend guard (see above): walk back over merge commits to the nearest verdict;
@@ -195,7 +219,7 @@ jobs:
               if [ -n "$from" ] \
                  && python3 bin/dependabot-reviewer.py same-diff --repo "$GITHUB_REPOSITORY" --base main \
                       "$from" "$sha"; then
-                carried="Not read again: this head's diff against main is byte for byte the diff of ${from},"
+                carried="Not reviewed again: this head's diff against main is byte for byte the diff of ${from},"
                 carried+=" which two independent readers passed. The success is carried over from that head."
                 if ! GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=dependabot-reviewer \
                        -f head_sha="$sha" -f status=completed -f conclusion=success \
@@ -220,7 +244,7 @@ jobs:
                   lookup_failed=1
                 }
                 if ! armed_now=$(gh pr view "$n" --json autoMergeRequest --jq '.autoMergeRequest != null'); then
-                  echo "::error::PR #$n ${sha:0:7}: could not read its auto-merge state — skipped this hour"
+                  echo "::error::PR #$n ${sha:0:7}: could not get its auto-merge state — skipped this hour"
                   lookup_failed=1; continue
                 fi
                 if [ "$armed_now" != false ]; then
@@ -240,7 +264,7 @@ jobs:
                 # The reviewer arms and THEN publishes success, and a carried success lands after the auto-merge
                 # workflow saw the new head: that workflow can so turn an approved arm off (REQ-DEP-003-AC2).
                 if ! armed_now=$(gh pr view "$n" --json autoMergeRequest --jq '.autoMergeRequest != null'); then
-                  echo "::error::PR #$n ${sha:0:7}: could not read its auto-merge state — skipped this hour"
+                  echo "::error::PR #$n ${sha:0:7}: could not get its auto-merge state — skipped this hour"
                   lookup_failed=1; continue
                 fi
                 if [ "$armed_now" = false ]; then
@@ -252,13 +276,13 @@ jobs:
                                  else "auto_merge_enabled" end) + " " + .actor.login' \
                       | tail -n 1; \
                       [ "${PIPESTATUS[0]}" = 0 ]); then
-                    echo "::error::PR #$n ${sha:0:7}: could not read its auto-merge events — skipped this hour"; lookup_failed=1; continue
+                    echo "::error::PR #$n ${sha:0:7}: could not get its auto-merge events — skipped this hour"; lookup_failed=1; continue
                   fi
                   case "$last_event" in
                     "auto_merge_disabled github-actions[bot]"|"auto_merge_disabled github-actions")
                       if ! gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main" \
                            | jq -e '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]] | length > 0' > /dev/null; then
-                        echo "::error::PR #$n ${sha:0:7}: main lists no required status check, or its ruleset could not be read — the approved arm stays off this hour"; lookup_failed=1
+                        echo "::error::PR #$n ${sha:0:7}: main lists no required status check, or its ruleset could not be fetched — the approved arm stays off this hour"; lookup_failed=1
                       elif GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash --match-head-commit "$sha" "$n" >/dev/null; then
                         echo "PR #$n ${sha:0:7}: the approved arm was turned off meanwhile — put back"
                       else echo "::error::PR #$n ${sha:0:7}: could not put the approved arm back — retried next hour"; lookup_failed=1; fi ;;
@@ -273,7 +297,7 @@ jobs:
                 lookup_failed=1; continue
               fi
               if ! armed=$(gh pr view "$n" --json autoMergeRequest --jq '.autoMergeRequest != null'); then
-                echo "::error::PR #$n: could not read its auto-merge state — skipped this hour"; lookup_failed=1; continue
+                echo "::error::PR #$n: could not get its auto-merge state — skipped this hour"; lookup_failed=1; continue
               fi
               if [ "$armed" != false ] && [ "$lane" = yes ]; then
                 echo "$n $sha" >> "$RUNNER_TEMP/work/lane-arms.txt"
@@ -348,24 +372,11 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m pip install --require-hashes --break-system-packages -r .github/agent/adjudicator-requirements.txt
-          # no inline interpreter code (handoff 0094): the import check is a heredoc, the pin checker's documented boundary
+          # no inline interpreter code: the import check is a heredoc, the pin checker's documented boundary
           python3 - <<'PY'
           from anthropic.lib.credentials import WorkloadIdentityCredentials, IdentityTokenFile  # noqa: F401
           print("sdk ready")
           PY
-
-      # Row 76: a HOLD dispatches the fixer in the ops repository. Best effort: if the App is not
-      # installed on ops this mint fails and the hold still stands (the issue is the record).
-      - name: mint the App token for dispatching the fixer (ops, contents:write only)
-        id: app-ops
-        if: ${{ !cancelled() && steps.sdk.outcome == 'success' }}
-        continue-on-error: true
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ secrets.AUDITOR_APP_ID }}
-          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
-          repositories: ops
-          permission-contents: write
 
       - name: gather, read twice, decide, act — one PR at a time
         if: ${{ !cancelled() && steps.sdk.outcome == 'success' && steps.app-merge.outcome == 'success' }}
@@ -381,7 +392,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CHECKS_TOKEN: ${{ steps.app-checks.outputs.token }}
           MERGE_TOKEN: ${{ steps.app-merge.outputs.token }}
-          DISPATCH_TOKEN: ${{ steps.app-ops.outputs.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           # The runner starts bash with -e. Here every failure is handled explicitly, per PR, so
@@ -400,7 +410,7 @@ jobs:
                     "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://api.anthropic.com" | jq -r .value) || return 1
             [ -n "$tok" ] && [ "$tok" != "null" ] || return 1
             echo "::add-mask::$tok"
-            printf '%s' "$tok" > "$ANTHROPIC_IDENTITY_TOKEN_FILE"
+            printf '%s' "$tok" > "$RUNNER_TEMP/identity-token"
           }
           # The gate's sweep judges a green Dependabot head only for the verdict: a gate success must not
           # outlive a verdict that is not success.
@@ -426,7 +436,8 @@ jobs:
             ISSUE_NO=""
             if [ -n "$existing" ]; then gh issue edit "$existing" --body-file "$2" >/dev/null || return 1; ISSUE_NO="$existing"; echo "#$existing updated"
             else
-              local url; url=$(gh issue create --title "$1" --body-file "$2") || return 1
+              local url
+              url=$(gh issue create --title "$1" --body-file "$2") || return 1
               ISSUE_NO="${url##*/}"; echo "$url"
             fi
           }
@@ -468,7 +479,7 @@ jobs:
               --out "$d"; rc=$?
             if [ "$rc" = 5 ]; then
               moved=$((moved+1))
-              echo "PR #$n: its head is no longer ${sha:0:7} — nothing read, nothing published;" \
+              echo "PR #$n: its head is no longer ${sha:0:7} — nothing reviewed, nothing published;" \
                    "the new head is reviewed next hour"
               echo "::endgroup::"; continue
             elif [ "$rc" != 0 ]; then
@@ -477,7 +488,7 @@ jobs:
             # 2. two readers, independently, each with a fresh identity token
             for reader in AUDITOR_MODEL_PRIMARY AUDITOR_MODEL_FALLBACK; do
               mint || echo "::warning::PR #$n: could not mint a fresh identity token for $reader"
-              python3 bin/dependabot-reviewer.py read --bundle "$d/bundle.md" \
+              python3 bin/dependabot-reviewer.py review --bundle "$d/bundle.md" \
                 --prompt .github/policy/dependabot-reviewer-prompt.txt --model-env "$reader" --out "$d/reader-$reader.json" \
                 || echo "::warning::PR #$n: reader $reader did not complete"
             done
@@ -493,7 +504,7 @@ jobs:
             # commit by now, nothing is published and nothing is done to the PR: the new head is a candidate
             # next hour.
             if ! head_now=$(gh pr view "$n" --json headRefOid --jq .headRefOid) || [ -z "$head_now" ]; then
-              unfinished "$n" "$sha" "$prior" "could not read the PR's head after the review"
+              unfinished "$n" "$sha" "$prior" "could not get the PR's head after the review"
               echo "::endgroup::"; continue
             fi
             if [ "$head_now" != "$sha" ]; then
@@ -511,7 +522,8 @@ jobs:
                 # bound to the head that was reviewed: a later push voids the verdict (owner, Oct 1)
                 if GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash --match-head-commit "$sha" "$n"; then
                   if publish "$sha" success "Two independent readers found no documented change that breaks a line of ours ($names). Auto-merge armed; the required checks still gate the merge. Evidence: this run's artifact."; then
-                    merged=$((merged+1)); echo "PR #$n: merge (auto-merge armed, check published)"
+                    merged=$((merged+1))
+                    echo "PR #$n: merge (auto-merge armed, check published)"
                     grep -vx "$n $sha" "$W/armed-unpublished.txt" > "$W/armed-unpublished.tmp"; mv "$W/armed-unpublished.tmp" "$W/armed-unpublished.txt"
                   else unfinished "$n" "$sha" attempted "the success check could not be published (auto-merge turned back off)"; fi
                 else unfinished "$n" "$sha" "$prior" "auto-merge could not be armed"; fi ;;
@@ -523,7 +535,7 @@ jobs:
                   echo "This is the ccode queue's, not the owner's: fix our side, then re-run the reviewer with force=true."
                   echo; echo "Run: $RUN_URL"; echo
                   echo "## breaks-us findings"; echo
-                  jq -r '.breaks_us[] | "- **\(.title)** (\(.reader | sub("AUDITOR_MODEL_PRIMARY";"reader A") | sub("AUDITOR_MODEL_FALLBACK";"reader B")))  \n  release note: \(.release_note)  \n  our line: `\(.our_line)`  \n  why: \(.why)"' "$d/decision.json"
+                  jq -r '.breaks_us[] | "- **\(.title)** " + "(" + (.reader | sub("AUDITOR_MODEL_PRIMARY";"reader A") | sub("AUDITOR_MODEL_FALLBACK";"reader B")) + ")  \n  release note: \(.release_note)  \n  our line: `\(.our_line)`  \n  why: \(.why)"' "$d/decision.json"
                   echo; echo "## every finding, both readers, verbatim"
                   jq -r '.readers[] | "\n### \(.reader | sub("AUDITOR_MODEL_PRIMARY";"reader A") | sub("AUDITOR_MODEL_FALLBACK";"reader B"))\n", (if .error then "_(no answer: \(.error))_" elif (.findings|length)==0 then "_(no findings)_" else (.findings[] | "- [\(.severity)] **\(.title)**  \n  release note: \(.release_note)  \n  our line: `\(.our_line)`  \n  why: \(.why)") end)' "$d/decision.json"
                   echo; echo "## fix on our side"; echo; echo "_(ccode fills this in: the change to our line, or why the finding is wrong, then re-runs the reviewer with force=true)_"
@@ -536,9 +548,8 @@ jobs:
                 elif ! issue_upsert "$title" "$d/issue.md"; then
                   unfinished "$n" "$sha" "$prior" "could not open/update the held issue"
                 elif publish "$sha" failure "A reader found a documented change that breaks a line of ours ($names). Held (auto-merge off); see the issue. Evidence: this run's artifact."; then
-                  held=$((held+1)); echo "PR #$n: hold (issue open, check published)"
-                  # row 76: the fixer makes our-side change; a failed dispatch is a warning, the hold stands
-                  bash bin/dispatch-fixer.sh fix-held-bump "$ISSUE_NO" "$n" || true
+                  held=$((held+1))
+                  echo "PR #$n: hold (issue open, check published)"
                 else unfinished "$n" "$sha" "$prior" "held, issue open, but the failure check could not be published"; fi ;;
               no-checks)
                 unfinished "$n" "$sha" "$prior" "readers found nothing that breaks us, but main lists no required status check" ;;
@@ -635,14 +646,14 @@ jobs:
                     | if . == null or (.conclusion == \"success\" and .external_id != \"${version}\")
                         then \"none\"
                       else .conclusion // \"none\" end") || [ -z "$latest" ]; then
-              echo "::error::PR #$n ${sha:0:7}: could not read its reviewer checks — its arm is not settled"
+              echo "::error::PR #$n ${sha:0:7}: could not get its reviewer checks — its arm is not settled"
               bad=1; continue
             fi
             if ! armed=$(gh pr view "$n" --json state,headRefOid,autoMergeRequest \
                          --jq "if .state != \"OPEN\" then \"closed\"
                                elif .headRefOid != \"${sha}\" then \"moved\"
                                else (.autoMergeRequest != null) end"); then
-              echo "::error::PR #$n ${sha:0:7}: could not read its auto-merge state — its arm is not settled"
+              echo "::error::PR #$n ${sha:0:7}: could not get its auto-merge state — its arm is not settled"
               bad=1; continue
             fi
             case "$latest $armed" in
@@ -660,7 +671,7 @@ jobs:
                        | jq -e '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]] | length > 0' > /dev/null; then checks=listed; else checks=none; fi
                 fi
                 if [ "$checks" != listed ]; then
-                  echo "::error::PR #$n ${sha:0:7}: main lists no required status check, or its ruleset could not be read — the arm stays off"; bad=1; continue
+                  echo "::error::PR #$n ${sha:0:7}: main lists no required status check, or its ruleset could not be fetched — the arm stays off"; bad=1; continue
                 fi
                 if GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash --match-head-commit "$sha" "$n" >/dev/null; then
                   echo "PR #$n ${sha:0:7}: its review did not finish — armed again as it was before"
@@ -700,7 +711,7 @@ jobs:
           if [ -n "$existing" ]; then gh issue comment "$existing" --body-file "$RUNNER_TEMP/streak-issue.md" >/dev/null
           else gh issue create --title "$title" --body-file "$RUNNER_TEMP/streak-issue.md" >/dev/null; fi
 
-      # Owner, Oct 1: no identifier reaches the uploaded evidence, the bundle included. The readers
+      # No identifier reaches the uploaded evidence, the bundle included. The readers
       # receive the bundle unmasked (it is not uploaded as is); everything is masked in place here.
       # The upload runs only if this succeeded, and a failure here never fails the run (AC6).
       - name: mask the evidence before it is uploaded
@@ -724,3 +735,39 @@ jobs:
           name: dependabot-reviewer-${{ github.run_id }}
           path: ${{ runner.temp }}/work
           if-no-files-found: ignore
+
+  vendor-records:
+    name: records sweep
+    # The `agent` environment is limited to branch main, so a run from any other ref fails before the App key exists:
+    # the environment is the boundary here, not a condition inside this file (a hostile ref would just omit it).
+    runs-on: ubuntu-latest
+    environment: agent
+    permissions:
+      contents: read
+    steps:
+      # the full history of main: the sweep fetches each bump branch into this clone as data and finds its merge base
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: mint the App token for the records commits (contents:write, this repository only)
+        id: app-records
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          app-id: ${{ secrets.AUDITOR_APP_ID }}
+          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
+          repositories: cache
+          permission-contents: write
+
+      # the build's pinned Go toolchain at its fixed install path: go mod vendor and the records step both run it
+      - name: install the pinned Go toolchain
+        run: bash bin/install-scanner.sh go
+
+      - name: regenerate the records of every dependency-bump branch
+        env:
+          GH_TOKEN: ${{ steps.app-records.outputs.token }}
+          DRY_RUN: ${{ inputs.records_dry_run && '--dry-run' || '' }}
+        run: |
+          python3 -I .github/agent/bin/auditor-vendor-records.py --repo "$GITHUB_REPOSITORY" \
+            --workspace "$GITHUB_WORKSPACE" $DRY_RUN

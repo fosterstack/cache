@@ -9,6 +9,7 @@ any filename.
 import os, sys, json, hashlib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auditorlib import cli
+from auditorlib import reviewed
 from auditorlib import parsers as P
 
 
@@ -21,7 +22,19 @@ def index(log):
 
 
 def load(path):
+    """A run-internal file (the findings): a plain JSON read."""
     return json.load(open(path))
+
+
+def load_log(path):
+    """The known-defect log through the shared required-content reader: a missing or keyless log is a stop, never an empty history (cache#701)."""
+    try:
+        log = reviewed.read(path, as_name="known-defect-log.json")
+    except reviewed.ReviewedInputInvalid as e:
+        sys.exit("defectlog: %s" % e)
+    if log is None:
+        sys.exit("defectlog: the log %s does not exist" % path)
+    return log
 
 
 def set_hash(findings):
@@ -30,7 +43,7 @@ def set_hash(findings):
 
 
 def do_probe(out):
-    log = load(cli.opt("--log")); idx = index(log)
+    log = load_log(cli.opt("--log")); idx = index(log)
     a = cli.ARGS
     hs, hi, hp = a[a.index("--hit") + 1:a.index("--hit") + 4]
     hitrow = idx.get((hs, hi, hp))
@@ -46,7 +59,7 @@ def do_probe(out):
 
 
 def do_run(out):
-    logpath = cli.opt("--log"); log = load(logpath); idx = index(log)
+    logpath = cli.opt("--log"); log = load_log(logpath); idx = index(log)
     findings = load(cli.opt("--findings"))["findings"]
     adjudicator = cli.opt("--adjudicator"); append = cli.flag("--append")
     closed, misses, model_calls = [], [], 0
@@ -74,7 +87,7 @@ def do_run(out):
 
 
 def do_reconcile(out):
-    logpath = cli.opt("--log"); log = load(logpath)
+    logpath = cli.opt("--log"); log = load_log(logpath)
     a = cli.ARGS; sc, fid, purl = a[a.index("--finding") + 1:a.index("--finding") + 4]
     adjudicator = cli.opt("--adjudicator"); manifest = cli.opt("--manifest")
     readers = {}

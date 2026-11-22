@@ -3,8 +3,8 @@
   "@id": "https://fosterstack.com/vex/cache/openvex",
   "author": "FosterStack LLC",
   "role": "vendor",
-  "timestamp": "2026-11-07T00:24:01+00:00",
-  "version": 7,
+  "timestamp": "2026-11-19T08:11:28+00:00",
+  "version": 8,
   "statements": [
     {
       "vulnerability": {
@@ -19,10 +19,20 @@
       "timestamp": "2026-09-07T12:00:00-04:00",
       "products": [
         {
-          "@id": "pkg:golang/github.com/fosterstack/cache"
+          "@id": "pkg:golang/github.com/fosterstack/cache",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/github.com/golang-jwt/jwt/v4"
+            }
+          ]
         },
         {
-          "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+          "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/github.com/golang-jwt/jwt/v4"
+            }
+          ]
         }
       ],
       "status": "not_affected",

@@ -1,4 +1,5 @@
-# (no AC is registered for the auditor's signed-delivery helper: the guarantees are advisor 0209 / REQ-AUD-17, held in ops; this file is covered by the auditor coverage gate)
+# proves: REQ-VEND-001-AC16, REQ-VEND-001-AC19, REQ-VEND-001-AC20
+# (the file's other, older guarantees are advisor 0209 / REQ-AUD-17, held in ops; the file is covered by the auditor coverage gate)
 """auditorlib.signed_commit: the exact REST and GraphQL calls, the base64 file changes, the create-or-reset branch path, and every way the
 delivery must fail closed (an API error, no oid, an unsigned or unverifiable commit, a file over 5 MB, a branch outside auditor/). A recording
 fake `gh`; nothing touches the network."""
@@ -25,6 +26,7 @@ def mutation(oid=OID, signature=OK_SIG, **extra):
 
 
 H1 = "3" * 40          # the live branch head the run observed
+APP = "app[bot]"        # the App's login: the only author whose commits a branch may keep
 H2 = "4" * 40          # a head some other writer left there
 TMP = "auditor/tmp-test0001"
 
@@ -352,28 +354,41 @@ class Reusable(unittest.TestCase):
     files, with exactly the wanted bytes. It returns the verified head oid (the caller binds arming to it), else None."""
     WANT = {"go.mod": b"module m\n", "go.sum": None}
 
-    def lookup(self, verified=True, parents=(BASE,), files=(("go.mod", "modified"),), **extra):
+    def lookup(self, verified=True, parents=(BASE,), files=(("go.mod", "modified"),), committer="web-flow", **extra):
         fs = []
         for f in files:
             d = {"filename": f[0], "status": f[1]}
             d.update(f[2] if len(f) > 2 else {})
             fs.append(d)
-        return (0, json.dumps({"parents": [{"sha": p} for p in parents], "files": fs, "commit": {"verification": {"verified": verified}}, **extra}), "")
+        return (0, json.dumps({"parents": [{"sha": p} for p in parents], "files": fs, "author": {"login": APP},
+            "committer": {"login": committer},
+                                 "commit": {"verification": {"verified": verified}}, **extra}), "")
 
     def ok(self, **kw):
         return Gh(live=H1, lookup=self.lookup(**kw))
 
     def test_one_verified_commit_on_main_with_the_wanted_bytes_is_reused_and_nothing_is_written(self):
         gh = self.ok()
-        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh), H1)            # the verified head oid
+        # the verified head oid
+        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), H1)
         self.assertEqual(gh.writes(), [])
         self.assertIn(["gh", "api", "repos/o/r/commits/" + H1], gh.calls)
         self.assertIn(["gh", "api", "repos/o/r/contents/go.mod?ref=" + H1], gh.calls)
         both = Gh(live=H1, lookup=self.lookup(files=(("go.mod", "modified"), ("go.sum", "added"))), contents={"go.mod": b"module m\n", "go.sum": b"x\n"})
-        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, {"go.mod": b"module m\n", "go.sum": b"x\n"}, run=both), H1)
+        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, {"go.mod": b"module m\n", "go.sum": b"x\n"}, run=both,
+            app_login=APP), H1)
 
     def test_everything_else_is_not_reusable_so_the_branch_is_rebuilt_through_the_api(self):
+        other = (0, json.dumps({"parents": [{"sha": BASE}], "author": {"login": "someone"},
+            "committer": {"login": "web-flow"},
+                                "files": [{"filename": "go.mod", "status": "modified"}],
+                                "commit": {"verification": {"verified": True}}}), "")
         cases = {"unsigned head": self.ok(verified=False),
+                 "a head by another author": Gh(live=H1, lookup=other),
+                 "a head committed by someone else": self.ok(committer="someone"),
+                 "a head with no author": Gh(live=H1, lookup=(0, json.dumps({"parents": [{"sha": BASE}],
+                                            "files": [{"filename": "go.mod", "status": "modified"}],
+                                            "commit": {"verification": {"verified": True}}}), "")),
                  "verified string": Gh(live=H1, lookup=(0, json.dumps({"parents": [{"sha": BASE}], "files": [{"filename": "go.mod", "status": "modified"}], "commit": {"verification": {"verified": "true"}}}), "")),
                  "signed on an old main": self.ok(parents=("9" * 40,)),
                  "two parents, main first (a merge commit)": self.ok(parents=(BASE, "9" * 40)),
@@ -403,7 +418,7 @@ class Reusable(unittest.TestCase):
         orig = cases["contents not base64"].__call__
         cases["contents not base64"] = lambda cmd, **kw: subprocess.CompletedProcess(list(cmd), 0, json.dumps({"encoding": "none", "content": ""}), "") if "/contents/" in cmd[2] else orig(cmd, **kw)
         for name, gh in cases.items():
-            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh), name)
+            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), name)
             if hasattr(gh, "writes"):
                 self.assertEqual(gh.writes(), [], name)
 
@@ -411,14 +426,14 @@ class Reusable(unittest.TestCase):
         for answer in ((1, "", "HTTP 500"), (0, json.dumps({"encoding": "base64", "content": "abc"}), "")):
             gh = self.ok(); orig = gh.__call__
             run = lambda cmd, answer=answer, orig=orig, **kw: subprocess.CompletedProcess(list(cmd), answer[0], answer[1], answer[2]) if "/contents/" in cmd[2] else orig(cmd, **kw)
-            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=run), answer)
+            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=run, app_login=APP), answer)
 
     def test_the_default_runner_and_input_checks(self):
         gh = self.ok()
         with mock.patch.object(S.subprocess, "run", gh):
-            self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT), H1)
+            self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, app_login=APP), H1)
         for kw in (dict(repo="o"), dict(branch="main"), dict(base_sha="abc"), dict(want={}), dict(want={"../x": b""}), dict(want={"go.mod": "text"})):
-            args = dict(repo=REPO, branch=BRANCH, base_sha=BASE, want=self.WANT); args.update(kw)
+            args = dict(repo=REPO, branch=BRANCH, base_sha=BASE, want=self.WANT, app_login=APP); args.update(kw)
             self.assertIsNone(S.branch_reusable(run=Gh(), **args), kw)
 
 
@@ -510,12 +525,506 @@ class Prefixes(unittest.TestCase):
         evil = "go.mod?ref=main#"
         gh = Gh(live=H1, lookup=Reusable.lookup(None, files=((evil, "modified"), ("a b/c d.txt", "added"))),
                  contents={"go.mod%3Fref%3Dmain%23": b"x", "a%20b/c%20d.txt": b"y"})
-        S.branch_reusable(REPO, BRANCH, BASE, {evil: b"x", "a b/c d.txt": b"y"}, run=gh)
+        S.branch_reusable(REPO, BRANCH, BASE, {evil: b"x", "a b/c d.txt": b"y"}, run=gh, app_login=APP)
         urls = [c[2] for c in gh.calls if "/contents/" in c[2]]
         self.assertIn("repos/o/r/contents/go.mod%3Fref%3Dmain%23?ref=" + H1, urls)   # the request cannot be altered by the path
         self.assertIn("repos/o/r/contents/a%20b/c%20d.txt?ref=" + H1, urls)          # components encoded, the separators kept
         for u in urls:
             self.assertEqual(u.count("?"), 1, u); self.assertNotIn("#", u)
+
+
+JOB = "5" * 40          # the records commit the sweep puts on a bump branch
+JOB_MSG = "Vendor records for the client_golang-1.25.0 bump"
+
+
+class RecordsCommit(unittest.TestCase):
+    """commit_on_branch: ONE signed commit on a bump branch's own head (the head is the parent and the lease:
+    expectedHeadOid), in the two bump lanes only."""
+    BR = "dependabot/go_modules/github.com/prometheus/client_golang-1.25.0"
+
+    def gh(self, live=H1, **kw):
+        g = Gh(live=None, **kw); g.refs = {self.BR: live} if live else {}
+        return g
+
+    def test_the_commit_is_made_on_the_branch_itself_with_the_head_as_parent_and_nothing_else_is_written(self):
+        gh = self.gh(mutation=mutation())
+        self.assertEqual(S.commit_on_branch(REPO, self.BR, H1, JOB_MSG, {"vendor/a.go": b"x",
+            "dependency-provenance.json": b"{}\n", "vendor/old.go": None}, run=gh), OID)
+        # no temporary ref, no ref update
+        self.assertEqual(gh.writes(), [("COMMIT", self.BR)])
+        inp = gh.stdins[0]["variables"]["input"]
+        self.assertEqual(inp["expectedHeadOid"], H1)
+        self.assertEqual(inp["branch"], {"repositoryNameWithOwner": REPO, "branchName": self.BR})
+        self.assertEqual(inp["message"]["headline"], JOB_MSG)
+        self.assertEqual([a["path"] for a in inp["fileChanges"]["additions"]], ["dependency-provenance.json",
+            "vendor/a.go"])
+        self.assertEqual(inp["fileChanges"]["deletions"], [{"path": "vendor/old.go"}])
+
+    def test_the_auditors_bump_lane_is_allowed_too(self):
+        br = "auditor/bump-example.com-m-1.1.0"
+        gh = Gh(live=None, mutation=mutation()); gh.refs = {br: H1}
+        self.assertEqual(S.commit_on_branch(REPO, br, H1, JOB_MSG, {"vendor/a.go": b"x"}, run=gh), OID)
+
+    def test_a_branch_outside_the_two_bump_lanes_is_refused_before_any_call(self):
+        for br in ("main", "auditor/panel", "auditor/bump-", "auditor/bump", "dependabot/go_modules/",
+            "dependabot/npm_and_yarn/x", "patch-notes/v0.2.9",
+                   "audit/" + "a" * 40, "dependabot/go_modules/../x", "dependabot/go_modules/x.lock",
+                       "dependabot/go_modules/x/", "refs/heads/" + self.BR,
+                   "dependabot/go_modules/a b", "auditor/bump-x y"):
+            gh = self.gh()
+            with self.assertRaises(S.CommitError, msg=br):
+                S.commit_on_branch(REPO, br, H1, JOB_MSG, {"vendor/a.go": b"x"}, run=gh)
+            self.assertEqual(gh.calls, [], br)
+
+    def test_a_path_outside_the_records_places_is_refused_by_the_helper_itself(self):
+        for path in ("go.mod", "go.sum", ".github/workflows/ci.yml", "README.md",
+            "test-evidence/dependency-origins.yaml"):
+            gh = self.gh()
+            with self.assertRaises(S.CommitError, msg=path):
+                S.commit_on_branch(REPO, self.BR, H1, JOB_MSG, {"vendor/a.go": b"x", path: b"y"}, run=gh)
+            self.assertEqual(gh.calls, [], path)
+
+    def test_bad_arguments_are_refused_before_any_call(self):
+        ok = dict(repo=REPO, branch=self.BR, head_sha=H1, message=JOB_MSG, changes={"vendor/a.go": b"x"})
+        for kw in (dict(repo="o"), dict(head_sha="abc"), dict(message=" "), dict(changes={}),
+            dict(changes={"../x": b"1"}), dict(changes={"vendor/a": "text"}),
+                   dict(changes={"vendor/a": b"x" * (S.MAX_FILE_BYTES + 1)})):
+            gh = self.gh()
+            with self.assertRaises(S.CommitError, msg=kw):
+                S.commit_on_branch(run=gh, **{**ok, **kw})
+            self.assertEqual(gh.calls, [], kw)
+
+    def test_a_head_that_moved_since_it_was_read_fails_closed_with_no_commit_made(self):
+        gh = self.gh(live=H2)
+        with self.assertRaises(S.CommitError) as ctx:
+            S.commit_on_branch(REPO, self.BR, H1, JOB_MSG, {"vendor/a.go": b"x"}, run=gh)
+        self.assertIn("moved", str(ctx.exception))
+        self.assertEqual(gh.writes(), [])
+
+    def test_a_missing_branch_and_an_unreadable_branch_fail_closed(self):
+        broken = self.gh()
+        broken_call = broken.__call__
+        for gh in (self.gh(live=None), lambda cmd, **kw: subprocess.CompletedProcess(list(cmd), 1, "",
+            "HTTP 500") if "/git/ref/" in cmd[2] else broken_call(cmd, **kw)):
+            with self.assertRaises(S.CommitError):
+                S.commit_on_branch(REPO, self.BR, H1, JOB_MSG, {"vendor/a.go": b"x"}, run=gh)
+        self.assertEqual(broken.writes(), [])
+
+    def test_an_unsigned_commit_is_never_reported_made(self):
+        gh = self.gh(mutation=mutation(signature={"isValid": False, "state": "UNSIGNED"}))
+        with self.assertRaises(S.CommitError):
+            S.commit_on_branch(REPO, self.BR, H1, JOB_MSG, {"vendor/a.go": b"x"}, run=gh)
+
+    def test_the_lease_read_goes_through_the_default_runner_too(self):
+        gh = self.gh(mutation=mutation())
+        with mock.patch.object(S.subprocess, "run", gh):
+            self.assertEqual(S.commit_on_branch(REPO, self.BR, H1, JOB_MSG, {"vendor/a.go": b"x"}), OID)
+
+
+class LaneLists(unittest.TestCase):
+    """One list per kind of lane: ALLOWED_PREFIXES are the lanes commit_via_api writes, BUMP_PREFIXES the bump lanes
+    commit_on_branch writes; the bump-branch shape follows BUMP_PREFIXES, so nothing is listed twice."""
+
+    def test_the_lists(self):
+        self.assertEqual(tuple(S.ALLOWED_PREFIXES), ("auditor/", "patch-notes/", "audit/"))
+        self.assertEqual(tuple(S.BUMP_PREFIXES), ("dependabot/go_modules/", "auditor/bump-"))
+
+    def test_every_bump_prefix_is_a_lane_commit_on_branch_writes_and_a_bare_prefix_is_not(self):
+        for prefix in S.BUMP_PREFIXES:
+            br = prefix + "example.com-m-1.1.0"
+            gh = Gh(live=None, mutation=mutation()); gh.refs = {br: H1}
+            self.assertEqual(S.commit_on_branch(REPO, br, H1, JOB_MSG, {"vendor/a.go": b"x"}, run=gh), OID, prefix)
+            gh = Gh(live=None, mutation=mutation()); gh.refs = {prefix: H1}
+            with self.assertRaises(S.CommitError, msg=prefix):
+                S.commit_on_branch(REPO, prefix, H1, JOB_MSG, {"vendor/a.go": b"x"}, run=gh)
+            self.assertEqual(gh.calls, [], prefix)
+
+    def test_commit_via_api_writes_the_auditors_bump_lane_and_no_dependabot_lane(self):
+        rec = Prefixes.Rec()
+        self.assertEqual(S.commit_via_api(REPO, "auditor/bump-example.com-m-1.1.0", BASE, "m", {"x": b"1"}, run=rec), OID)
+        for prefixes in (S.BUMP_PREFIXES, ("dependabot/go_modules/",), ("auditor/bump-",)):
+            rec = Prefixes.Rec()
+            with self.assertRaises(S.CommitError, msg=prefixes):
+                S.commit_via_api(REPO, "dependabot/go_modules/x-1.0", BASE, "m", {"x": b"1"}, run=rec, prefixes=prefixes)
+            self.assertEqual(rec.calls, [], prefixes)
+        rec = Prefixes.Rec()
+        with self.assertRaises(S.CommitError):
+            S.commit_via_api(REPO, "dependabot/go_modules/x-1.0", BASE, "m", {"x": b"1"}, run=rec)
+        self.assertEqual(rec.calls, [])
+
+
+class IsBumpBranch(unittest.TestCase):
+    def test_the_two_bump_lanes_match(self):
+        for branch in ("dependabot/go_modules/github.com/a/b-1.2.3", "auditor/bump-example.com-m-1.1.0"):
+            self.assertIs(S.is_bump_branch(branch), True, branch)
+
+    def test_other_branches_do_not_match(self):
+        for branch in ("main", "auditor/panel", "dependabot/npm_and_yarn/x-1", "auditor/bump-",
+                       "dependabot/go_modules/", "xauditor/bump-a", "auditor/bump-a b"):
+            self.assertIs(S.is_bump_branch(branch), False, repr(branch))
+
+    def test_a_value_that_is_not_a_string_does_not_match(self):
+        for branch in (None, 7, b"auditor/bump-a"):
+            self.assertIs(S.is_bump_branch(branch), False, repr(branch))
+
+
+class CommitsAuthoredBy(unittest.TestCase):
+    """commits_authored_by(run, repo, base_sha, head_sha, logins, notes=None): True only when the compare endpoint lists
+    every commit from base to head, each GitHub-verified, authored by one of `logins`, and committed by GitHub itself
+    (web-flow) or one of `logins`. Anything else is False, with one cause line added to `notes`."""
+    LOGINS = ("dependabot[bot]", APP)
+
+    @staticmethod
+    def c(login="dependabot[bot]", verified=True, committer="web-flow"):
+        return {"sha": "3" * 40, "author": {"login": login}, "committer": {"login": committer},
+                "commit": {"verification": {"verified": verified}}}
+
+    def ask(self, doc=None, rc=0, out=None, logins=LOGINS, notes=None):
+        calls = []
+        def run(cmd, **kw):
+            calls.append(list(cmd))
+            text = out if out is not None else json.dumps(doc)
+            return subprocess.CompletedProcess(cmd, rc, text, "gh: HTTP 500" if rc else "")
+        return S.commits_authored_by(run, REPO, BASE, H1, logins, notes), calls
+
+    def test_the_compare_endpoint_is_asked_for_base_to_head(self):
+        ok, calls = self.ask({"total_commits": 1, "commits": [self.c()]})
+        self.assertTrue(ok)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][:2], ["gh", "api"])
+        self.assertTrue(calls[0][2].startswith("repos/o/r/compare/%s...%s" % (BASE, H1)), calls[0])
+
+    def test_verified_commits_by_a_listed_login_are_trusted_in_any_mix(self):
+        for commits in ([self.c()], [self.c(APP)], [self.c(), self.c(APP), self.c()]):
+            self.assertTrue(self.ask({"total_commits": len(commits), "commits": commits})[0])
+
+    def test_every_other_answer_is_not_trusted(self):
+        two = [self.c(), self.c()]
+        cases = {"a stranger": [self.c("someone")], "a stranger among others": [self.c(), self.c("someone")],
+                 "unverified": [self.c(verified=False)], "unverified among others": [self.c(), self.c(verified=False)],
+                 "verified is a string": [self.c(verified="true")],
+                 "no author login": [{"sha": "3" * 40, "author": None, "committer": {"login": "web-flow"},
+                                      "commit": {"verification": {"verified": True}}}],
+                 "no verification": [{"sha": "3" * 40, "author": {"login": "dependabot[bot]"},
+                                      "committer": {"login": "web-flow"}, "commit": {}}],
+                 "an entry that is not an object": ["x"]}
+        for name, commits in cases.items():
+            self.assertFalse(self.ask({"total_commits": len(commits), "commits": commits})[0], name)
+        self.assertFalse(self.ask({"total_commits": 3, "commits": two})[0], "truncated")
+        self.assertFalse(self.ask({"total_commits": 300, "commits": two})[0], "truncated, a long branch")
+        self.assertFalse(self.ask({"total_commits": 0, "commits": []})[0], "empty")
+        self.assertFalse(self.ask({"commits": two})[0], "no total")
+        self.assertFalse(self.ask({"total_commits": 2})[0], "no list")
+        self.assertFalse(self.ask({"total_commits": 2, "commits": "x"})[0], "list is not a list")
+
+    def test_a_failed_or_malformed_lookup_is_not_trusted(self):
+        self.assertFalse(self.ask(rc=1, doc={"total_commits": 1, "commits": [self.c()]})[0])
+        self.assertFalse(self.ask(out="not json")[0])
+        self.assertFalse(self.ask(out="[]")[0])
+        self.assertFalse(self.ask(out="")[0])
+
+    def test_a_login_that_is_not_listed_is_not_trusted(self):
+        one = {"total_commits": 1, "commits": [self.c(APP)]}
+        self.assertTrue(self.ask(one)[0])
+        for logins in ((), ("dependabot[bot]",), ("app",), ("",)):
+            self.assertFalse(self.ask(one, logins=logins)[0], logins)
+        self.assertFalse(self.ask({"total_commits": 1, "commits": [self.c(None)]}, logins=("", None))[0])
+
+    def test_a_bot_author_signed_by_a_contributor_is_not_trusted(self):
+        one = {"total_commits": 1, "commits": [self.c(APP, committer="contributor")]}
+        self.assertFalse(self.ask(one)[0])
+
+    def test_a_commit_committed_by_github_is_trusted(self):
+        self.assertTrue(self.ask({"total_commits": 1, "commits": [self.c(APP, committer="web-flow")]})[0])
+
+    def test_a_commit_committed_by_a_listed_login_is_trusted(self):
+        for committer in (APP, "dependabot[bot]"):
+            self.assertTrue(self.ask({"total_commits": 1, "commits": [self.c(APP, committer=committer)]})[0], committer)
+
+    def test_a_commit_with_no_committer_login_is_not_trusted(self):
+        for committer in (None, ""):
+            one = {"total_commits": 1, "commits": [self.c(APP, committer=committer)]}
+            self.assertFalse(self.ask(one)[0], committer)
+        no_committer = self.c(APP)
+        del no_committer["committer"]
+        self.assertFalse(self.ask({"total_commits": 1, "commits": [no_committer]})[0])
+
+    def test_a_falsy_login_never_matches_a_commit_with_a_missing_login(self):
+        both_missing = self.c(None, committer=None)
+        self.assertFalse(self.ask({"total_commits": 1, "commits": [both_missing]}, logins=("", None, APP))[0])
+        self.assertFalse(self.ask({"total_commits": 1, "commits": [self.c(APP, committer=None)]},
+                                  logins=(None, APP))[0])
+
+    def test_a_refusal_adds_one_cause_line_to_the_notes(self):
+        two = [self.c(), self.c()]
+        cases = {"a failed lookup": dict(rc=1, doc={}),
+                 "a malformed answer": dict(out="not json"),
+                 "a truncated list": dict(doc={"total_commits": 300, "commits": two}),
+                 "a stranger": dict(doc={"total_commits": 1, "commits": [self.c("someone")]}),
+                 "an unverified commit": dict(doc={"total_commits": 1, "commits": [self.c(verified=False)]}),
+                 "a foreign committer": dict(doc={"total_commits": 1, "commits": [self.c(APP, committer="someone")]})}
+        for name, kw in cases.items():
+            notes = []
+            self.assertFalse(self.ask(notes=notes, **kw)[0], name)
+            self.assertEqual(len(notes), 1, name)
+            self.assertTrue(notes[0] and isinstance(notes[0], str), name)
+
+    def test_the_cause_lines_tell_a_lookup_failure_from_an_unsigned_commit(self):
+        down, unsigned = [], []
+        self.ask(rc=1, doc={}, notes=down)
+        self.ask({"total_commits": 1, "commits": [self.c(verified=False)]}, notes=unsigned)
+        self.assertNotEqual(down, unsigned)
+
+    def test_a_trusted_answer_adds_no_note(self):
+        notes = []
+        self.assertTrue(self.ask({"total_commits": 1, "commits": [self.c()]}, notes=notes)[0])
+        self.assertEqual(notes, [])
+
+
+class RecordsPaths(unittest.TestCase):
+    """is_records_path: the four places the sweep may write, nothing else (go.mod and go.sum are never among them)."""
+    def test_the_four_places(self):
+        for p in ("vendor/modules.txt", "vendor/github.com/a/b/c.go", "vendor/x", "dependency-provenance.json",
+            "test-evidence/dependency-licenses.yaml"):
+            self.assertTrue(S.is_records_path(p), p)
+        for p in ("go.mod", "go.sum", "vendors/x", "vendor", "x/vendor/a", "dependency-provenance.json.bak",
+            "test-evidence/dependency-origins.yaml",
+                  ".github/workflows/ci.yml", "bin/vendor-check.sh", "", "../vendor/a", "vendor/../go.mod", "vendor//a",
+                      "vendor/./a", "/vendor/a", 7, None):
+            self.assertFalse(S.is_records_path(p), repr(p))
+
+    def test_the_records_message_is_one_line_naming_the_last_part_of_the_branch(self):
+        self.assertEqual(S.records_message(RecordsCommit.BR), JOB_MSG)
+        self.assertEqual(S.records_message("auditor/bump-example.com-m-1.1.0"),
+            "Vendor records for the bump-example.com-m-1.1.0 bump")
+
+
+JM = S.records_message(BRANCH)    # the sweep's message on BRANCH
+
+
+class RecordsReusable(unittest.TestCase):
+    """branch_reusable accepts a head whose ONE extra commit is the sweep's records commit: GitHub-verified, by the
+    App, its message exactly records_message(branch), one parent; that parent is judged by the ordinary rules (by the
+    App too). Every file in the records commit must be a records path (no renames). The file list is read page by page
+    (per_page=100, GitHub's cap) and must end on a short page (under 100 files) within thirty pages."""
+    WANT = {"go.mod": b"module m\n", "go.sum": None}
+
+    class Gh2(Gh):
+        """commit lookups by sha: `docs` maps sha -> (rc, out, err); the file list is cut into pages of 100 by the
+        page= query, and `pages` maps (sha, page) -> (rc, out, err) to replace one page's answer"""
+        def __init__(self, docs, pages=None, **kw):
+            super().__init__(**kw); self.docs, self.pages = docs, pages or {}
+
+        def __call__(self, cmd, **kw):
+            if "/commits/" in cmd[2]:
+                self.calls.append(list(cmd))
+                path, _, query = cmd[2].partition("?")
+                sha = path.rsplit("/", 1)[1]
+                page = int(dict(q.split("=") for q in query.split("&") if q).get("page", 1))
+                r = self.pages.get((sha, page)) or self.docs.get(sha, (1, "", "HTTP 404"))
+                if r[0] == 0 and not self.pages.get((sha, page)):
+                    doc = json.loads(r[1])
+                    if isinstance(doc.get("files"), list):
+                        doc["files"] = doc["files"][(page - 1) * 100:page * 100]
+                    r = (0, json.dumps(doc), "")
+                return subprocess.CompletedProcess(list(cmd), r[0], r[1], r[2])
+            return super().__call__(cmd, **kw)
+
+        def pages_asked(self, sha):
+            return [c[2].rsplit("?", 1)[1] for c in self.calls if "/commits/" + sha + "?" in c[2]]
+
+    @staticmethod
+    def doc(parent, files=(("go.mod", "modified"),), message="Bump", verified=True, login=APP, parents=None,
+            committer="web-flow"):
+        return (0, json.dumps({"parents": [{"sha": p} for p in (parents if parents is not None else [parent])],
+                               "files": [{"filename": f, "status": st} for f, st in files],
+                               "author": {"login": login}, "committer": {"login": committer},
+                               "commit": {"message": message, "verification": {"verified": verified}}}), "")
+
+    def gh(self, job=None, bump=None, **kw):
+        return self.Gh2({H1: job or self.doc(H2, message=JM), H2: bump or self.doc(BASE)}, live=H1, **kw)
+
+    def reuse(self, gh, branch=BRANCH, login=APP):
+        gh.refs = {branch: H1}
+        return S.branch_reusable(REPO, branch, BASE, self.WANT, run=gh, app_login=login)
+
+    RECORDS = (("vendor/a.go", "modified"), ("vendor/b.go", "added"), ("vendor/old.go", "removed"),
+               ("dependency-provenance.json", "modified"), ("test-evidence/dependency-licenses.yaml", "modified"))
+
+    def test_a_records_commit_on_a_reusable_bump_commit_is_reused_and_nothing_is_written(self):
+        gh = self.gh(job=self.doc(H2, self.RECORDS, JM))
+        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), H1)
+        self.assertEqual(gh.writes(), [])
+        # the wanted bytes are read at the real head
+        self.assertIn(["gh", "api", "repos/o/r/contents/go.mod?ref=" + H1], gh.calls)
+
+    def test_a_records_commit_with_a_long_but_listable_file_list_is_reused(self):
+        many = tuple(("vendor/f%d.go" % i, "modified") for i in range(299))
+        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=self.gh(job=self.doc(H2, many, JM)),
+                                           app_login=APP), H1)
+
+    def records_commit(self, n, last=None):
+        files = tuple(("vendor/f%d.go" % i, "modified") for i in range(n))
+        return self.gh(job=self.doc(H2, files + ((last,) if last else ()), JM))
+
+    def pages(self, n):
+        return ["per_page=100&page=%d" % i for i in range(1, n + 1)]
+
+    def test_a_records_commit_of_348_files_is_reused_by_paging_at_100_a_page(self):
+        gh = self.records_commit(348)
+        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), H1)
+        self.assertEqual(gh.pages_asked(H1), self.pages(4))
+        self.assertEqual(gh.writes(), [])
+
+    def test_a_short_first_page_is_one_request(self):
+        gh = self.records_commit(99)
+        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), H1)
+        self.assertEqual(gh.pages_asked(H1), self.pages(1))
+
+    def test_every_request_asks_for_100_a_page_and_never_300(self):
+        gh = self.records_commit(348)
+        S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP)
+        asked = gh.pages_asked(H1)
+        self.assertTrue(asked and all(q.startswith("per_page=100&") for q in asked), asked)
+
+    def test_a_list_of_exactly_100_files_ends_on_the_empty_second_page(self):
+        gh = self.records_commit(100)
+        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), H1)
+        self.assertEqual(gh.pages_asked(H1), self.pages(2))
+
+    def test_a_list_of_exactly_300_files_ends_on_the_empty_fourth_page(self):
+        gh = self.records_commit(300)
+        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), H1)
+        self.assertEqual(gh.pages_asked(H1), self.pages(4))
+
+    def test_the_last_page_of_3000_may_be_the_short_one(self):
+        gh = self.records_commit(2999)
+        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), H1)
+        self.assertEqual(len(gh.pages_asked(H1)), 30)
+
+    def test_a_list_with_no_short_page_within_3000_files_is_refused(self):
+        gh = self.records_commit(3000)
+        self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP))
+        self.assertEqual(len(gh.pages_asked(H1)), 30)
+        self.assertEqual(gh.writes(), [])
+
+    def test_a_bad_path_on_page_four_of_a_348_file_commit_is_refused(self):
+        gh = self.records_commit(347, last=("go.sum", "modified"))             # the 348th file, on page 4
+        self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP))
+        self.assertEqual(gh.pages_asked(H1), self.pages(4))
+
+    def test_a_bad_path_on_each_of_the_first_pages_is_refused(self):
+        for at in (0, 99, 100, 250, 299):
+            files = [("vendor/f%d.go" % i, "modified") for i in range(348)]
+            files[at] = ("go.sum", "modified")
+            gh = self.gh(job=self.doc(H2, tuple(files), JM))
+            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), at)
+
+    def test_a_failed_second_page_is_refused(self):
+        gh = self.records_commit(347)
+        gh.pages[(H1, 2)] = (1, "", "HTTP 502")
+        self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP))
+
+    def test_a_second_page_whose_files_are_not_a_list_is_refused(self):
+        gh = self.records_commit(347)
+        gh.pages[(H1, 2)] = (0, json.dumps({"files": "x"}), "")
+        self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP))
+
+    def test_a_second_page_that_is_not_json_is_refused(self):
+        gh = self.records_commit(347)
+        gh.pages[(H1, 2)] = (0, "not json", "")
+        self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP))
+
+    def test_a_records_commit_must_touch_records_paths_only(self):
+        bad = {"go.mod": (("go.mod", "modified"),),
+               "go.sum beside records": (("vendor/a.go", "modified"), ("go.sum", "modified")),
+               "a workflow": (("vendor/a.go", "modified"), (".github/workflows/x.yml", "added")),
+               "a file that only starts like vendor": (("vendorx/a.go", "modified"),),
+               "a path with a dot-dot": (("vendor/../go.mod", "modified"),),
+               "an empty list": ()}
+        for name, files in bad.items():
+            gh = self.gh(job=self.doc(H2, files, JM))
+            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), name)
+            self.assertEqual(gh.writes(), [], name)
+
+    def test_a_records_commit_with_a_rename_or_another_status_is_refused(self):
+        for status in ("renamed", "copied", "changed", "unchanged"):
+            gh = self.gh(job=self.doc(H2, (("vendor/a.go", status),), JM))
+            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), status)
+        # a rename into a records path from a path outside them: previous_filename is named
+        rename = (0, json.dumps({"parents": [{"sha": H2}], "author": {"login": APP}, "committer": {"login": "web-flow"},
+            "files": [{"filename": "vendor/a.go", "status": "modified", "previous_filename": "go.mod"}],
+            "commit": {"message": JM, "verification": {"verified": True}}}), "")
+        self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=self.gh(job=rename), app_login=APP))
+
+    def test_a_records_commit_without_a_file_list_is_refused(self):
+        nofiles = (0, json.dumps({"parents": [{"sha": H2}], "author": {"login": APP}, "committer": {"login": "web-flow"},
+            "commit": {"message": JM, "verification": {"verified": True}}}), "")
+        self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=self.gh(job=nofiles), app_login=APP))
+
+    def test_every_way_the_records_commit_can_be_wrong_is_not_reusable(self):
+        wrong = {"an unsigned records commit": self.gh(job=self.doc(H2, self.RECORDS, message=JM, verified=False)),
+                 "a records commit by another author": self.gh(job=self.doc(H2, self.RECORDS, message=JM, login="someone")),
+                 "a records commit committed by someone else": self.gh(job=self.doc(H2, self.RECORDS, message=JM,
+                     committer="someone")),
+                 "a records commit with no committer": self.gh(job=self.doc(H2, self.RECORDS, message=JM, committer=None)),
+                 "a bump commit committed by someone else": self.gh(bump=self.doc(BASE, committer="someone")),
+                 "a message that only starts like the sweep's": self.gh(job=self.doc(H2, self.RECORDS, message=JM + "\n\nmore")),
+                 "another branch's message": self.gh(job=self.doc(H2, self.RECORDS, message=JOB_MSG)),
+                 "an ordinary message on a second commit": self.gh(job=self.doc(H2, self.RECORDS, message="Bump")),
+                 "two parents on the records commit": self.gh(job=self.doc(None, self.RECORDS, message=JM, parents=[H2, BASE])),
+                 "no parent on the records commit": self.gh(job=self.doc(None, self.RECORDS, message=JM, parents=[])),
+                 "an unsigned bump commit under it": self.gh(bump=self.doc(BASE, verified=False)),
+                 "a bump commit by another author": self.gh(bump=self.doc(BASE, login="someone")),
+                 "a bump commit on an old main": self.gh(bump=self.doc("9" * 40)),
+                 "a bump commit changing another file": self.gh(bump=self.doc(BASE, (("go.mod", "modified"),
+                     ("README.md", "modified")))),
+                 "a records commit on a records commit": self.gh(bump=self.doc(H2, self.RECORDS, message=JM)),
+                 "the bump commit cannot be read": self.Gh2({H1: self.doc(H2, self.RECORDS, message=JM)}, live=H1),
+                 "the wanted bytes differ at the head": self.gh(contents={"go.mod": b"module other\n"})}
+        for name, gh in wrong.items():
+            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), name)
+            self.assertEqual(gh.writes(), [], name)
+
+    def test_a_records_commit_over_a_parent_that_is_unsigned_or_not_the_apps_is_not_reusable(self):
+        # the job's own files are records paths, so the parent is the commit judged here
+        for name, bump in (("unsigned", self.doc(BASE, verified=False)), ("another author", self.doc(BASE, login="someone"))):
+            gh = self.gh(job=self.doc(H2, self.RECORDS, JM), bump=bump)
+            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), name)
+            self.assertEqual(gh.writes(), [], name)
+
+    def test_without_the_apps_login_nothing_is_reusable(self):
+        for login in (None, "", "other[bot]"):
+            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=self.gh(), app_login=login), login)
+            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=self.Gh2({H1: self.doc(BASE)},
+                live=H1),
+                                                app_login=login), login)
+
+    def test_the_author_is_the_apis_author_login_a_null_login_is_refused_and_no_email_is_looked_up(self):
+        """The commit's author is the API's author.login. A commit whose login is null is refused even when its git author
+        email is the App's noreply address, whether it is the bump commit or the records commit on it; the email is never
+        resolved to a login (no call other than the commit, ref and contents reads)."""
+        email = {"email": "1+app[bot]@users.noreply.github.com", "name": "app[bot]"}
+        def with_email(doc, login):
+            d = json.loads(doc[1]); d["author"] = {"login": login}; d["commit"]["author"] = email
+            return (0, json.dumps(d), "")
+        for label, kw in (("a null login on the bump commit", dict(bump=with_email(self.doc(BASE), None))),
+                          ("a null login on the records commit", dict(job=with_email(self.doc(H2, self.RECORDS, JM), None))),
+                          ("an empty login on the bump commit", dict(bump=with_email(self.doc(BASE), "")))):
+            gh = self.gh(**kw)
+            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), label)
+            self.assertEqual(gh.writes(), [], label)
+            self.assertFalse([c for c in gh.calls if "users" in c[2] or "search" in c[2] or "@" in " ".join(c)], label)
+        nobody = json.loads(self.doc(BASE)[1]); nobody["author"] = None
+        self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, app_login=APP,
+                                            run=self.gh(bump=(0, json.dumps(nobody), ""))))
+        gh = self.gh(job=self.doc(H2, self.RECORDS, JM), bump=with_email(self.doc(BASE), APP))
+        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), H1)   # the login is what counts
+
+    def test_a_plain_commit_with_a_records_looking_message_is_judged_by_the_ordinary_rules(self):
+        # another branch's records message: just a message
+        gh = self.Gh2({H1: self.doc(BASE, message=JOB_MSG)}, live=H1)
+        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), H1)
 
 
 if __name__ == "__main__":
