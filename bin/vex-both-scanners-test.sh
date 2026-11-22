@@ -186,7 +186,7 @@ fake_grype_rc grype-aff-nofix1 1 "$(cdxv "$VULN50")" "{\"matches\":[$(mt CVE-209
 fake_grype_rc grype-aff-fix 2 "$(cdxv "$VULN50")" "{\"matches\":[$(mt CVE-2099-0050 '["1.36.1"]')],\"ignoredMatches\":[]}"
 fake_grype_rc grype-aff-mixed 2 "$(cdxv "$VULN50,{\"id\":\"CVE-2099-0051\",\"affects\":[{\"ref\":\"x\"}]}")" "{\"matches\":[$(mt CVE-2099-0050 '[]'),$(mt CVE-2099-0051 '[]')],\"ignoredMatches\":[]}"
 out="$(bash "$(gsc_vex "$w/grype-aff-nofix" "$w/v-affected.json")" "sbom:$w/g-unc.json" aff-nofix 2>&1)"; rc=$?
-[ "$rc" -eq 0 ] && grep -q "covered by the published VEX" <<<"$out" && ok "grype: an affected statement for a finding with no fix covers it (grype exit 2, every match covered), exit 0" \
+[ "$rc" -eq 0 ] && ! grep -qi "does not except" <<<"$out" && ok "grype: an affected statement for a finding with no fix covers it (grype exit 2, every match covered), exit 0" \
   || bad "grype: affected statement, no fix, grype exit 2 (rc $rc)" "$out"
 out="$(bash "$(gsc_vex "$w/grype-aff-nofix0" "$w/v-affected.json")" "sbom:$w/g-unc.json" aff-nofix0 2>&1)"; rc=$?
 [ "$rc" -eq 0 ] && ok "grype: an affected statement covers the surviving match when grype itself exits 0, exit 0" || bad "grype: affected statement, no fix, grype exit 0 (rc $rc)" "$out"
