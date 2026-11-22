@@ -100,6 +100,8 @@ readers that refuse a document stop, so a malformed statement never widens a sup
   architecture in both variants (an index has no one architecture); both together name one child.
 - Prefer scoping a statement by the package it names (a `subcomponents` entry) over scoping it by image: a
   package-scoped statement is applied by every scanner.
-- **Known limit:** Grype, and through the attestation Docker Scout, never see the `variant=` / `arch=`
-  qualifiers, so a statement scoped by them is applied by Inspector, Google and osv-scanner but not by Grype.
-  That is the safe direction (Grype keeps blocking). No statement is scoped this way today.
+- **Known limit:** Grype's own `--vex` option never reads the `variant=` / `arch=` qualifiers. Our pull-request
+  scan and release check therefore also run each Grype finding through the same reader as Inspector, so there a
+  statement scoped by them is applied to the images it names and to no other. The daily rescan gives Grype and
+  Docker Scout the file as it is and reads the qualifiers for neither, so do not count on either applying such a
+  statement: a finding it leaves in is reported. That is the safe direction. No statement is scoped this way today.
