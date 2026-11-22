@@ -118,33 +118,22 @@ jobs:
           set -euo pipefail
           ./bin/install-scanner.sh docker-scout "$RUNNER_TEMP"
           mkdir -p "$HOME/.docker/cli-plugins" && install -m 0755 "$RUNNER_TEMP/docker-scout" "$HOME/.docker/cli-plugins/docker-scout"
-      - name: try local forms
-        continue-on-error: true
-        run: |
-          set -uo pipefail
-          v=production; arch=amd64; tag="ghcr.io/fosterstack/cache:cand-${v}-${arch}"
-          mkdir -p /tmp/arc /tmp/try
-          ./bin/layout-archive.sh "/tmp/oci/${v}" "${arch}" "/tmp/arc/${v}-${arch}.tar" "$tag"
-          try() { n=$1; shift; echo "=== $n"; "$@" > "/tmp/try/$n.json" 2> "/tmp/try/$n.err"; echo "rc=$?"; tail -5 "/tmp/try/$n.err"; echo "bytes: $(wc -c < /tmp/try/$n.json)"; jq -c '[.. | .purl? // empty] | length' "/tmp/try/$n.json" 2>&1 | head -2; }
-          docker load -i "/tmp/arc/${v}-${arch}.tar"
-          id=$(docker image inspect -f '{{.Id}}' "$tag"); echo "id=$id"
-          try local_tag docker scout sbom --format json "local://${tag}"
-          try local_id docker scout sbom --format json "local://${id}"
-          try image_id docker scout sbom --format json "image://${id}"
-          try archive docker scout sbom --format json "archive:///tmp/arc/${v}-${arch}.tar"
-          try archive_plat docker scout sbom --format json --platform "linux/${arch}" "archive:///tmp/arc/${v}-${arch}.tar"
-          try bare_id docker scout sbom --format json "${id}"
-          which skopeo && skopeo --version
-          skopeo copy --override-arch "$arch" --override-os linux "oci:/tmp/oci/${v}" "docker-daemon:ghcr.io/fosterstack/cache:skopeo-${arch}"; echo "skopeo rc=$?"
-          try skopeo_local docker scout sbom --format json "local://ghcr.io/fosterstack/cache:skopeo-${arch}"
+      # The rescan stays mechanical (release audit row C1): no job of this file writes to a registry. Scout cannot read an OCI layout that holds an index with attestations, so each
+      # image's child is made into a docker-save tar (bin/layout-archive.sh), loaded into this runner's Docker and scanned there by its image id, given our OpenVEX file and its author.
+      # A finding no statement filters is reported as it is; the tally counts what Scout reports.
       - name: Docker Scout every image, given our OpenVEX file
         run: |
           set -uo pipefail
+          mkdir -p /tmp/arc
           for v in production fips; do
             for arch in amd64 arm64; do
               d="/tmp/panel/scout/${v}-${arch}"; mkdir -p "$d"
-              docker scout sbom --format json --platform "linux/${arch}" "oci-dir:///tmp/oci/${v}" > "${d}/sbom.json" \
-                && docker scout cves --format gitlab --vex-location .vex/fosterstack-cache.openvex.json --vex-author '^FosterStack LLC$' --platform "linux/${arch}" "oci-dir:///tmp/oci/${v}" > "${d}/cves.json" \
+              tag="ghcr.io/fosterstack/cache:cand-${v}-${arch}"
+              ./bin/layout-archive.sh "/tmp/oci/${v}" "${arch}" "/tmp/arc/${v}-${arch}.tar" "${tag}" > /dev/null \
+                && docker load -i "/tmp/arc/${v}-${arch}.tar" > /dev/null \
+                && id=$(docker image inspect -f '{{.Id}}' "${tag}") \
+                && docker scout sbom --format json --platform "linux/${arch}" "local://${id}" > "${d}/sbom.json" \
+                && docker scout cves --format gitlab --vex-location .vex/fosterstack-cache.openvex.json --vex-author '^FosterStack LLC$' --platform "linux/${arch}" "local://${id}" > "${d}/cves.json" \
                 || { rm -rf "${d}"; echo "::warning::docker scout could not scan ${v}-${arch} (the tally counts it as did not run)"; }
             done
           done
