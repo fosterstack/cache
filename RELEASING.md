@@ -75,8 +75,9 @@ rebuilds. Of the jobs above, Release is the only one that holds a registry crede
   Sign included (its three jobs take the release signing role; `sign-check`
   signs the candidate's records but not the release files), and Release's
   `release-verify`, and then ends: the Release job that holds the registry
-  credentials does not run, nothing is pushed, no release is created, no
-  floating tag moves. A tag that is
+  credentials does not run, nothing reaches the release registries (only the
+  live test pushes the candidate images, to dedicated test repositories), no
+  release is created, no floating tag moves. A tag that is
   neither `vX.Y.Z` nor that form is refused by `release-verify`.
 - **Floating tags**: a final release moves `:X.Y` to itself every time and `:X`
   and `:latest` only when it is the highest released version (the plain
