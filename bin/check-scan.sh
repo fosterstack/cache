@@ -253,8 +253,9 @@ for s in "${scanners[@]}"; do
     echo "check-scan: $s $name ($digest): $packages packages, exit $rc"
     sv=pass vexn=0 partnered=0
     if [ "$s" = grype ] && { [ "$rc" = 0 ] || [ "$rc" = 1 ]; }; then
-      # grype's --vex does not drop an `affected` statement's matches: findings that all have a VEX partner (affected while no fix is reported) are clean
-      img=""; [ -z "$plat" ] || img="cand-${name%%/*}-${plat#linux/}"
+      # grype's --vex does not drop the matches of an affected statement: findings that all have a VEX partner, affected while no fix is reported, are clean
+      cand=${name%%/*} arch=${plat#linux/} img=""
+      [ -z "$plat" ] || img="cand-$cand-$arch"
       if gout=$(python3 bin/inspector-gate.py grype "$img" "$tmp/out.json" "$VEX"); then
         partnered=1 rc=0 vexn=$(sed -n 's/^.*, \([0-9]*\) covered by.*$/\1/p' <<< "$gout")
       fi
@@ -314,7 +315,8 @@ for s in "${scanners[@]}"; do
     if [ "$rc" = 1 ]; then
       echo "check-scan: $s found vulnerabilities in $name ($digest) that the VEX document does not except" >&2; sv=fail
     elif [ "$rc" != 0 ]; then
-      echo "check-scan: $s could not run on $name, exit ${gx:-$rc}: nothing is judged behind a scanner that did not run" >&2; sv=fail
+      ec=${gx:-$rc}
+      echo "check-scan: $s could not run on $name (exit $ec): nothing is judged behind a scanner that did not run" >&2; sv=fail
     elif [ "$packages" -eq 0 ]; then
       echo "check-scan: $s reported 0 packages for $name: a scan that inventoried nothing did not run (REQ-REL-004-AC1)" >&2; sv=fail
     fi

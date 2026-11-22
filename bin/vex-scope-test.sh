@@ -165,11 +165,16 @@ ids_of() { # ids_of VEXFILE FIELD -> sorted ids of matches|ignoredMatches
 WANT3="CVE-2024-58251,CVE-2025-46394,CVE-2025-60876"
 if [ "$(ids_of "$work/vex-all.json" ignoredMatches)" = "$WANT3" ] && [ -z "$(ids_of "$work/vex-all.json" matches)" ]; then echo "PASS check path: the covering VEX excepts exactly the three BusyBox CVEs (none left as a finding)"; pass=$((pass+1)); else echo "FAIL check path: the covering VEX did not except exactly $WANT3 (ignored: $(ids_of "$work/vex-all.json" ignoredMatches); left: $(ids_of "$work/vex-all.json" matches))"; fail=$((fail+1)); fi
 if [ "$(ids_of "$work/vex-none.json" matches)" = "$WANT3" ]; then echo "PASS check path control: without a covering statement the same three CVEs are the findings"; pass=$((pass+1)); else echo "FAIL check path control: the findings without a covering statement are '$(ids_of "$work/vex-none.json" matches)', want $WANT3"; fail=$((fail+1)); fi
-# a statement scoped by variant= / arch= is never applied by grype (it derives no such qualifier from an image): fail-closed, in every child, the limit the VEX grammar notes (variant=/arch= are never seen by grype, so such a statement applies there never; the generator and the other readers honour it)
+# a statement scoped by variant=production&arch=amd64 names exactly one child image (.vex/README.md, "Which images a statement covers"): the production linux/amd64 child is covered and passes, the other three children are not covered and still fail
 run_check "$work/vex-qual.json"
 for v in production fips; do for a in amd64 arm64; do
-  if child_is $v $a fail; then echo "PASS check path: a variant/arch-scoped statement is not applied to the $v image's linux/$a child (grype keeps blocking: fail-closed)"; pass=$((pass+1))
-  else echo "FAIL check path: a variant/arch-scoped statement changed the $v image's linux/$a child's verdict"; fail=$((fail+1)); fi
+  if [ "$v/$a" = production/amd64 ]; then
+    if child_is $v $a pass; then echo "PASS check path: a variant=production&arch=amd64 statement covers the $v image's linux/$a child (1 package, verdict pass)"; pass=$((pass+1))
+    else echo "FAIL check path: a variant=production&arch=amd64 statement did not cover the $v image's linux/$a child (want pass over 1 package)"; fail=$((fail+1)); fi
+  else
+    if child_is $v $a fail; then echo "PASS check path: a variant=production&arch=amd64 statement does not cover the $v image's linux/$a child (still fails)"; pass=$((pass+1))
+    else echo "FAIL check path: a variant=production&arch=amd64 statement changed the $v image's linux/$a child's verdict"; fail=$((fail+1)); fi
+  fi
 done; done
 # The Go standard library statement (GO-2026-6809, CVE-2026-111943): the same scope rules, with grype's own stdlib package form (type go-module,
 # version go1.27.2, purl pkg:golang/stdlib@1.27.2) in place of busybox. The vulnerability id grype reports is the GO id; the statement names the CVE
