@@ -71,8 +71,10 @@ rebuilds. Of the jobs above, Release is the only one that holds a registry crede
   The stages of Release create no tag: a tag is made before they start, by a
   maintainer, or for an automatic patch release by the `sign-tag` and `cut` jobs
   of `release.yml` (see "Cutting a release" below).
-- **Release candidates**: a tag matching exactly `vX.Y.Z-rcN` runs every stage
-  and Release's `release-verify`, and then ends: no credential is read, nothing
+- **Release candidates**: a tag matching exactly `vX.Y.Z-rcN` runs every stage,
+  Sign included (its three jobs take the release signing role and sign the
+  candidate's records as they would a final tag's), and Release's
+  `release-verify`, and then ends: no registry credential is read, nothing
   is pushed, no release is created, no floating tag moves. A tag that is
   neither `vX.Y.Z` nor that form is refused by `release-verify`.
 - **Floating tags**: a final release moves `:X.Y` to itself every time and `:X`
@@ -90,7 +92,8 @@ chain's promotion workflow, which the v0.3.0 chain replaced.
 The release signing key is made by a terraform apply of the release signing
 key (the role `fosterstack-cache-release-signing` and the alias
 `alias/fosterstack-release-signing`), and that apply is the precondition of a
-real release: without it the `release-sign` step cannot sign. Before the first
+real release: without it Sign's jobs cannot sign (Release's `release-sign` step
+holds no key and only pushes what they signed). Before the first
 release, once the key exists, a person commits its public half as
 `build/keys/release.rsa.pub`, replacing the placeholder there (the output of
 `cosign public-key --key awskms:///alias/fosterstack-release-signing`).
