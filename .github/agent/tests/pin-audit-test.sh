@@ -241,10 +241,28 @@ mkrepo "$work/r-localwf" "5:$CLEANSHA"
 printf 'on: push\njobs:\n  c:\n    uses: ./.github/workflows/release.yml\n    with:\n      x: y\n' >"$work/r-localwf/.github/workflows/caller.yml"
 printf 'on:\n  workflow_call:\n    inputs:\n      x:\n        type: string\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n' >"$work/r-localwf/.github/workflows/release.yml"
 git -C "$work/r-localwf" add -A; git -C "$work/r-localwf" -c user.name=t -c user.email=t@x commit -q -m "local workflow call with a with: block"
-run localwf "$CLEAN" "$work/r-localwf"
-CASE="a local reusable-workflow call with a with: block (version (local)) is no nested-reference candidate in the daily audit: it is in the inventory, there is no no-metadata finding, exit 0, no issue"
-check test "$rc" -eq 0; check grep -q '@(local)' "$work/localwf.out" "$work/localwf.err"; check none_match -i 'no-metadata' "$work/localwf.out" "$work/localwf.err"
-check test "$(creates "$work/localwf.gh")" -eq 0
+CASE="a local reusable-workflow call with a with: block (version (local)) is no nested-reference candidate in the daily audit when the net raises NoMetadata for a local item: it is in the inventory, there is no no-metadata finding, exit 0, no issue"
+check python3 - "$aud" "$work" <<'PY'
+import contextlib, importlib.util, io, os, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+work = sys.argv[2]
+class N(pa.FixtureNet):   # a local item has no action metadata to read: asked for its nested references, the net raises NoMetadata
+    def nested(self, item):
+        if item.version == "(local)":
+            raise pa.NoMetadata(f"{item.name}: its action metadata was not found")
+        return super().nested(item)
+pa.FixtureNet = N
+open(work + "/localwf.fx.json", "w").write('{"lists": {}, "upstream": {}, "nested": {}, "versions": {}}')
+log = work + "/localwf.gh"
+open(work + "/localwfgh", "w").write("#!/bin/sh\necho \"$@\" >> %s\ncase \"$1 $2\" in 'issue list') echo '[]';; esac\nexit 0\n" % log); os.chmod(work + "/localwfgh", 0o755)
+out = io.StringIO()
+with contextlib.redirect_stdout(out):
+    rc = pa.main(["--root", work + "/r-localwf", "--fixtures", work + "/localwf.fx.json", "--now", "2026-10-05T12:00:00Z", "--gh", work + "/localwfgh"])
+txt = out.getvalue()
+assert rc == 0, (rc, txt)
+assert "@(local)" in txt and "no-metadata" not in txt.lower(), txt
+assert "issue create" not in (open(log).read() if os.path.exists(log) else ""), log
+PY
 
 # an action INSIDE a pinned action is checked against the advisory lists too (rule 2: actions inside actions), whether it is pinned or on a moving tag
 NEST_HIT="{\"lists\": {\"action:actions/cache@v3\": {\"github\": [{\"id\": \"GHSA-nest-nest-nest\", \"incident\": \"INC-N\", \"affected\": true, \"modified\": \"$(dago 5)\"}], \"osv\": []}}, \"upstream\": {}, \"prs\": [], \"versions\": {},
