@@ -403,7 +403,7 @@ check("gather: a replace-block edit in a real repo is not patch-clean", [P.class
 # admission's to read on the merged PR head, never here)
 REQ = {"required_checks": [{"context": "test", "integration_id": 15368, "scope": "push"},
                            {"context": "scan", "integration_id": 15368, "scope": "push"},
-                           {"context": "dependency-review", "integration_id": 15368, "scope": "pull_request"}]}
+                           {"context": "pin-age", "integration_id": 15368, "scope": "pull_request"}]}
 def run(name, status="completed", conclusion="success", app=15368):
     return {"name": name, "status": status, "conclusion": conclusion if status == "completed" else None, "app_id": app}
 for runs, want, why in [

@@ -2326,9 +2326,8 @@ requirements:
     statement: >
       On a pull request into main or a release branch only these checks shall run: test, lint, govulncheck, analyze (go),
       fips140-only and scan (with the jobs scan needs). Every other check shall run on push to main, on a schedule or in the
-      release chain, so release admission reads each of them on the exact tagged commit. dependency-review runs on push to main
-      and judges the versions the push moved (the commit before the push to the commit after it). The pin-age scan of pull
-      requests is deleted; the daily pin audit is the supply-chain check.
+      release chain, so release admission reads each of them on the exact tagged commit. The gosec and dependency-review
+      jobs are deleted. The pin-age scan of pull requests is deleted; the daily pin audit is the supply-chain check.
     source: [.github/workflows/ci.yml, .github/workflows/scan.yml, .github/workflows/codeql.yml, .github/workflows/acceptance.yml, .github/workflows/supply-chain.yml, .github/policy/required-checks.json]
     tier: community
     introduced: v0.3.0
@@ -2343,13 +2342,13 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-016-AC2
-        given: a push to main that moves a dependency version
-        when: dependency-review runs on that push
-        then: it judges the versions between the commit before the push and the commit after it
+        given: the workflows under .github/workflows on main
+        when: the jobs of ci.yml are listed
+        then: there is no gosec job and no dependency-review job
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-016-AC3
-        given: a tag whose commit has a red or missing run of a check that required-checks.json or release-only-checks.json scopes to push (pin-age and dependency-review included)
+        given: a tag whose commit has a red or missing run of a check that required-checks.json or release-only-checks.json scopes to push (pin-age included)
         when: release admission runs
         then: it refuses the tag
         verification: { method: ci-workflow, release_blocking: false }
