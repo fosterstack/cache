@@ -126,7 +126,6 @@ jobs:
           mkdir -p /tmp/arc /tmp/try
           ./bin/layout-archive.sh "/tmp/oci/${v}" "${arch}" "/tmp/arc/${v}-${arch}.tar" "$tag"
           try() { n=$1; shift; echo "=== $n"; "$@" > "/tmp/try/$n.json" 2> "/tmp/try/$n.err"; echo "rc=$?"; tail -5 "/tmp/try/$n.err"; echo "bytes: $(wc -c < /tmp/try/$n.json)"; jq -c '[.. | .purl? // empty] | length' "/tmp/try/$n.json" 2>&1 | head -2; }
-          docker version --format '{{.Server.Version}} {{.Driver}}' ; docker info --format '{{.DriverStatus}}'
           docker load -i "/tmp/arc/${v}-${arch}.tar"
           id=$(docker image inspect -f '{{.Id}}' "$tag"); echo "id=$id"
           try local_tag docker scout sbom --format json "local://${tag}"
