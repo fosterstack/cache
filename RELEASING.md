@@ -72,10 +72,11 @@ rebuilds. Of the jobs above, Release is the only one that holds a registry crede
   maintainer, or for an automatic patch release by the `sign-tag` and `cut` jobs
   of `release.yml` (see "Cutting a release" below).
 - **Release candidates**: a tag matching exactly `vX.Y.Z-rcN` runs every stage,
-  Sign included (its three jobs take the release signing role and sign the
-  candidate's records as they would a final tag's), and Release's
-  `release-verify`, and then ends: no registry credential is read, nothing
-  is pushed, no release is created, no floating tag moves. A tag that is
+  Sign included (its three jobs take the release signing role; `sign-check`
+  signs the candidate's records but not the release files), and Release's
+  `release-verify`, and then ends: the Release job that holds the registry
+  credentials does not run, nothing is pushed, no release is created, no
+  floating tag moves. A tag that is
   neither `vX.Y.Z` nor that form is refused by `release-verify`.
 - **Floating tags**: a final release moves `:X.Y` to itself every time and `:X`
   and `:latest` only when it is the highest released version (the plain
