@@ -395,14 +395,13 @@ def find_merged_pr(ctx):
     return None
 
 
-def one_green_run(runs, req, sha):
-    """The ONE successful check run of this name and app on this exact sha; none, several or a failure returns (None, why)."""
+def every_run_green(runs, req, sha):
+    """The check run of this name and app on this exact sha that an unbound required check passes on: at least one run, and every run
+    completed and success (several green runs pass; any red, cancelled or unfinished one, or none, returns (None, why)). Returns the newest."""
     mine = [r for r in runs if r["name"] == req["context"] and r["app_id"] == req["integration_id"] and r["head_sha"] == sha]
-    if len(mine) > 1:
-        return None, "is ambiguous: %d runs of it (app %s) on %s" % (len(mine), req["integration_id"], sha)
-    if not mine or mine[0]["conclusion"] != "success" or not isinstance(mine[0]["id"], int):
+    if not mine or any(r["conclusion"] != "success" or not isinstance(r["id"], int) for r in mine):
         return None, "(app %s) is not green on %s" % (req["integration_id"], sha)
-    return mine[0], None
+    return max(mine, key=lambda r: r["id"]), None
 
 
 def read_required_policy(ctx, rc):
@@ -486,7 +485,7 @@ def check_required_checks(ctx):
                 if not hit:
                     raise Refusal("required-checks", why)
             else:
-                hit, why = one_green_run(sha_runs, req, ctx.sha)
+                hit, why = every_run_green(sha_runs, req, ctx.sha)
                 if not hit:
                     raise Refusal("required-checks", "required check '%s' %s" % (ctx_name, why))
             ctx.verified.append({"context": ctx_name, "source": "check-run-on-tagged-sha", "evidence_sha": ctx.sha, "id": hit["id"],
@@ -494,7 +493,7 @@ def check_required_checks(ctx):
         else:
             if not pr:
                 raise Refusal("required-checks", "required check '%s' is pull_request-scoped but no merged PR produced this exact commit" % ctx_name)
-            hit, why = one_green_run(pr_runs, req, pr["head_sha"])
+            hit, why = every_run_green(pr_runs, req, pr["head_sha"])
             if not hit:
                 raise Refusal("required-checks", "required check '%s' %s (head of merged PR #%s)" % (ctx_name, why, pr["number"]))
             ctx.verified.append({"context": ctx_name, "source": "check-run-on-merged-pr-head", "pr": pr["number"],
