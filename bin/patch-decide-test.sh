@@ -413,11 +413,8 @@ for runs, want, why in [
     ([run("test"), run("scan", conclusion="failure")], "no", "one finished red"),
     ([run("test"), run("scan", conclusion="cancelled")], "no", "one cancelled"),
     ([run("test"), run("scan", app=999)], "wait", "a green run from another app does not count"),
-    ([run("test"), run("scan"), run("scan")], "ready", "two runs of one check, both green"),
-    ([run("test"), run("scan", conclusion="failure"), run("scan")], "no", "two runs of one check, one green and one red: the red is not hidden"),
-    ([run("test"), run("scan"), run("scan", "in_progress")], "wait", "one green run and one in_progress run of one check, no red"),
-    ([run("test"), run("scan"), run("scan", "queued")], "wait", "one green run and one queued run of one check, no red"),
-    ([run("test"), run("scan", conclusion="failure"), run("scan", "queued")], "no", "a red run and a queued run of one check: red decides"),
+    ([run("test"), run("scan", conclusion="failure"), run("scan")], "no", "two latest runs, one green, are ambiguous, as admission has it"),
+    ([run("test"), run("scan", conclusion="failure"), run("scan", "queued")], "no", "two latest runs, one queued, are ambiguous, as admission has it"),
     ([run("test"), run("scan", conclusion="neutral")], "no", "neutral is not success"),
 ]:
     got = P.ready(REQ, runs)
@@ -541,15 +538,9 @@ for st_ in ("in_progress", "queued"):
     pend_, scan_, chain_ = dict(run("test", status=st_), id=6), dict(run("scan"), id=7), dict(run("allowlist-chain"), id=8)
     v_, o_ = ready_files([REQF_, ROF_], [pend_, scan_, chain_], all_runs=[old_green_, pend_, scan_, chain_])
     check("REL-013-AC1 run selection: a required-checks context with an old green and a newer %s run -> wait (the latest run is pending)" % st_, v_ == "wait", o_)
-# runs of one unbound name and app: every run must be completed and success; a red run is not hidden by a green one
+# two latest runs of one unbound name and app, one green, are ambiguous to admission (one_green_run) -> no
 v_, o_ = ready_files([REQF_, ROF_], [dict(run("test"), id=5), dict(run("test", conclusion="failure"), id=6), run("scan"), run("allowlist-chain")])
-check("REL-013-AC1 run selection: two latest runs of one required-checks context, one green and one red -> no", v_ == "no", o_)
-v_, o_ = ready_files([REQF_, ROF_], [dict(run("test"), id=5), dict(run("test"), id=6), run("scan"), run("allowlist-chain")])
-check("REL-013-AC1 run selection: two latest runs of one required-checks context, both green -> ready", v_ == "ready", o_)
-v_, o_ = ready_files([REQF_, ROF_], [dict(run("test"), id=5), dict(run("test", status="in_progress"), id=6), run("scan"), run("allowlist-chain")])
-check("REL-013-AC1 run selection: one green and one in_progress run of one required-checks context, no red -> wait", v_ == "wait", o_)
-v_, o_ = ready_files([REQF_, ROF_], [dict(run("test", conclusion="cancelled"), id=5), dict(run("test"), id=6), run("scan"), run("allowlist-chain")])
-check("REL-013-AC1 run selection: one cancelled and one green run of one required-checks context -> no", v_ == "no", o_)
+check("REL-013-AC1 run selection: two latest runs of one required-checks context, one green, are ambiguous -> no", v_ == "no" and "ambiguous" in o_, o_)
 # a bound context keeps the every-run selection: --all-check-runs decides it, whatever --check-runs holds
 bound_all_ = [dict(run("test"), id=900), dict(run("scan"), id=901), dict(run("allowlist-chain"), id=10), dict(run("allowlist-chain", conclusion="failure"), id=20)]
 v_, o_ = ready_files([REQF_, ROF_], bound_all_[:2] + bound_all_[3:], [wr_(r["id"] + 1000) for r in bound_all_], all_runs=bound_all_)

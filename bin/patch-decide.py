@@ -1253,7 +1253,7 @@ def ready(required, check_runs, workflow_runs=None, sha=None, repo=None, bound=(
     requires both, and a bad file never lowers the requirement. The policies of `bound` (release-only-checks.json) are
     judged by admission's run selection (BOUND_CONTEXTS): the newest run of the producing file on `sha` decides, from
     `all_runs` (every run of the commit; `check_runs` when not given) and `workflow_runs` {id, path, event, head_sha}.
-    The others are judged on `check_runs`, the latest run of each name, as admission's every_run_green is: several runs of a name and app are ready when every one is a success, and any red one is "no". With no sha or repo, or a context the table does not bind, it is "no"."""
+    The others are judged on `check_runs`, the latest run of each name, as admission's one_green_run is: more than one latest run of a name and app is "no", as ambiguous. With no sha or repo, or a context the table does not bind, it is "no"."""
     waiting, red, reqs = [], [], []
     for policy in required if isinstance(required, list) else [required]:
         part = policy.get("required_checks") if isinstance(policy, dict) else None
@@ -1287,12 +1287,14 @@ def ready(required, check_runs, workflow_runs=None, sha=None, repo=None, bound=(
                 red.append(req["context"])
             continue
         mine = [r for r in check_runs if r.get("name") == req["context"] and r.get("app_id") == req["integration_id"]]
-        if mine and all(r.get("status") == "completed" and r.get("conclusion") == "success" for r in mine):
+        if len(mine) > 1:
+            return "no", "required check %r is ambiguous: %d runs of it (app %s)" % (req["context"], len(mine), req["integration_id"])
+        if any(r.get("status") == "completed" and r.get("conclusion") == "success" for r in mine):
             continue
-        if any(r.get("status") == "completed" and r.get("conclusion") != "success" for r in mine):
-            red.append(req["context"])
-        else:
+        if not mine or any(r.get("status") != "completed" for r in mine):
             waiting.append(req["context"])
+        else:
+            red.append(req["context"])
     if red and not waiting:
         return "no", "not green on the tagged commit: " + ", ".join(red)
     if waiting:
