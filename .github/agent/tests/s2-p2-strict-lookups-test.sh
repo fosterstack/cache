@@ -139,6 +139,7 @@ def wf(uses): return {".github/workflows/ci.yml": HEAD + "      - uses: " + uses
 CASES = {
     "local-yml-read":    (dict(wf("./.github/actions/ny"), **{".github/actions/ny/action.yml": COMP}), {}, HIT, "hit", "o/inner"),
     "local-yaml-read":   (dict(wf("./.github/actions/ny"), **{".github/actions/ny/action.yaml": COMP}), {}, HIT, "hit", "o/inner"),
+    "local-clean":       (dict(wf("./.github/actions/ok"), **{".github/actions/ok/action.yml": "runs:\n  using: node20\n  main: x.js\n"}), {}, {}, "clean", ""),
     "remote-yml-read":   (wf("o/act@" + SO + " # v1"), {"action.yml": COMP}, HIT, "hit", "o/inner"),
     "remote-yaml-read":  (wf("o/act@" + SO + " # v1"), {"action.yaml": COMP}, HIT, "hit", "o/inner"),
     "remote-sub-yaml-read": (wf("o/act/sub/dir@" + SO + " # v1"), {"sub/dir/action.yaml": COMP}, HIT, "hit", "o/inner"),
@@ -167,6 +168,9 @@ out, err = io.StringIO(), io.StringIO()
 with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
     rc = aud.main(["--root", r, "--fixtures", work + "/fx-nf.json", "--now", "2026-10-05T12:00:00Z", "--gh", gh])
 text = out.getvalue() + err.getvalue() + open(os.environ["GH_LOG"]).read()
+if want == "clean":
+    assert rc == 0 and not open(os.environ["GH_LOG"]).read(), ("want exit 0 and no issue", rc, text[-600:])
+    sys.exit(0)
 assert rc == 1, ("want exit 1", rc, text[-600:])
 assert named in text, ("the output does not name " + named, text[-600:])
 if want == "finding":
@@ -176,6 +180,8 @@ for c in local-yml-read local-yaml-read remote-yml-read remote-yaml-read remote-
   CASE="an action read from its action file ($c): the action it calls inside is checked, so a compromised one is a hit on it (exit 1)"
   check python3 "$work/nested-find.py" "$work/pre.py" "$work" "$c"
 done
+CASE="a valid local action (action.yml in the checkout): exit 0, no issue filed"
+check python3 "$work/nested-find.py" "$work/pre.py" "$work" local-clean
 for c in local-neither local-dir-no-file remote-neither remote-sub-neither remote-reusable-workflow; do
   CASE="an action with no action.yml or action.yaml, or a remote reusable workflow ($c): a finding on that item (exit 1, "
   CASE+="named), never an incomplete run"
