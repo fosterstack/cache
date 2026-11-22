@@ -103,7 +103,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       artifact-id: ${{ steps.upload.outputs.artifact-id }}
-    environment: agent   # the read-only Docker Hub token for Scout lives here
     permissions:
       contents: read
     steps:
@@ -119,13 +118,6 @@ jobs:
           set -euo pipefail
           ./bin/install-scanner.sh docker-scout "$RUNNER_TEMP"
           mkdir -p "$HOME/.docker/cli-plugins" && install -m 0755 "$RUNNER_TEMP/docker-scout" "$HOME/.docker/cli-plugins/docker-scout"
-      - name: log in to Docker Hub for Scout (read-only token)
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_SCOUT_TOKEN: ${{ secrets.DOCKERHUB_SCOUT_TOKEN }}
-        run: printf '%s' "$DOCKERHUB_SCOUT_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
-      # The rescan stays mechanical (release audit row C1): no job of this file writes to a registry, so Scout scans the candidate layouts Build uploaded, by local reference, and is given our
-      # OpenVEX file and its author. A finding no statement filters is reported as it is; the tally counts what Scout reports.
       - name: try local forms
         continue-on-error: true
         run: |
