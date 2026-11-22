@@ -61,8 +61,8 @@ cosign verify ghcr.io/fosterstack/cache:${VER} \
 
 The signing workflow depends on the release. The v0.2.x releases of the earlier chain <!-- pinned: historical -->
 were signed by `stage-promote.yml` (the one in the command above), a workflow file
-that exists in those releases' tags and not in v0.3.0 and later. The earliest release,
-v0.1.0, was signed by the old `release.yml`. For that release, use
+that exists in those releases' tags and not in v0.3.0 and later. The earliest release, <!-- pinned: historical -->
+v0.1.0, was signed by the old `release.yml`. For that release, use <!-- pinned: historical -->
 `--certificate-identity-regexp='^https://github.com/fosterstack/cache/.github/workflows/release.yml@'` instead. <!-- pinned: historical -->
 
 Sigstore's Fulcio (its certificate service) issued that certificate from a
@@ -230,7 +230,7 @@ any free Docker account or pull from GHCR.
 
 The rest of this section, and the `-debug` image in section 3, describe the
 earlier eight-stage chain, releases v0.2.x. Its stages were the `stage-*.yml`
-workflow files in those releases' tags; v0.3.0 and later have no such files, and
+workflow files in those releases' tags; v0.3.0 and later have no such files, and <!-- pinned: historical -->
 `release.yml` signs everything. It signed one predicate (a signed statement) per
 stage on the image digest.
 
