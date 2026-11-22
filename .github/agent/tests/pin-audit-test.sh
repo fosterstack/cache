@@ -237,6 +237,15 @@ CASE="a nested action or image on a MOVING tag is reported as INFORMATION (named
 check test "$rc" -eq 0; check test "$(creates "$work/nested.gh")" -eq 0
 check grep -q 'actions/cache@v3' "$work/nested.out"; check grep -q 'docker://alpine:3' "$work/nested.out"; check bash -c "! grep -q 'actions/upload-artifact@$SHA4' '$work/nested.out' || grep -qi 'information.*upload-artifact\\|pinned' '$work/nested.out'"
 
+mkrepo "$work/r-localwf" "5:$CLEANSHA"
+printf 'on: push\njobs:\n  c:\n    uses: ./.github/workflows/release.yml\n    with:\n      x: y\n' >"$work/r-localwf/.github/workflows/caller.yml"
+printf 'on:\n  workflow_call:\n    inputs:\n      x:\n        type: string\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n' >"$work/r-localwf/.github/workflows/release.yml"
+git -C "$work/r-localwf" add -A; git -C "$work/r-localwf" -c user.name=t -c user.email=t@x commit -q -m "local workflow call with a with: block"
+run localwf "$CLEAN" "$work/r-localwf"
+CASE="a local reusable-workflow call with a with: block (version (local)) is no nested-reference candidate in the daily audit: it is in the inventory, there is no no-metadata finding, exit 0, no issue"
+check test "$rc" -eq 0; check grep -q '@(local)' "$work/localwf.out" "$work/localwf.err"; check none_match -i 'no-metadata' "$work/localwf.out" "$work/localwf.err"
+check test "$(creates "$work/localwf.gh")" -eq 0
+
 # an action INSIDE a pinned action is checked against the advisory lists too (rule 2: actions inside actions), whether it is pinned or on a moving tag
 NEST_HIT="{\"lists\": {\"action:actions/cache@v3\": {\"github\": [{\"id\": \"GHSA-nest-nest-nest\", \"incident\": \"INC-N\", \"affected\": true, \"modified\": \"$(dago 5)\"}], \"osv\": []}}, \"upstream\": {}, \"prs\": [], \"versions\": {},
  \"nested\": {\"actions/checkout@$SHA1\": [{\"ref\": \"actions/cache@v3\", \"pinned\": false}]}}"
@@ -326,15 +335,20 @@ echo '{"not": "a list"}' >"$work/exc-bad.json"
 run badexc "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-bad.json"
 CASE="an unreadable exceptions file fails the run loudly (exit 2), never as 'no exceptions'"
 check test "$rc" -eq 2; check grep -q 'cannot do its job.*exceptions is not a list' "$work/badexc.err"
-CASE="the shipped exceptions file (.github/supply-chain-exceptions.json) holds the advisor rulings in the shared shape: trivy (GO-2026-4919 and GHSA-69fq-xp46-6x23, GitHub authoritative, range 0.69.4 only) and codeql-action (GHSA-vqf5-2xx6-9wfm, GitHub two ranges), each with evidence, a date and last-modified times"
+CASE="the shipped exceptions file (.github/supply-chain-exceptions.json) holds exactly five advisor rulings in the shared shape: codeql-action (GHSA-vqf5-2xx6-9wfm, GitHub two ranges, series 4.* and 3.37.8) and cosign 3.1.3 (three rows), none for trivy, each with evidence, a date and last-modified times"
 check python3 - "$root/.github/supply-chain-exceptions.json" <<'PY'
 import json, sys
 e = json.load(open(sys.argv[1]))["exceptions"]
-by = {x["package"]: x for x in e}
-t, c = by["trivy"], by["github/codeql-action"]
-assert sorted(t["ids"]) == ["GHSA-69fq-xp46-6x23", "GO-2026-4919"] and t["authoritative"]["source"] == "GitHub" and t["authoritative"]["ranges"] == ["= 0.69.4"], t
-assert c["ids"] == ["GHSA-vqf5-2xx6-9wfm"] and c["authoritative"] == {"source": "GitHub", "id": "GHSA-vqf5-2xx6-9wfm", "ranges": [">= 3.26.11, <= 3.28.2", ">= 2.26.11, < 3.0.0"]}, c
-for x in (t, c):
+assert len(e) == 5, [(x["package"], x["version"]) for x in e]
+assert not [x for x in e if x["package"] == "trivy" or {"GO-2026-4919", "GHSA-69fq-xp46-6x23"} & set(x["ids"])], "a dead trivy ruling is back"
+c = [x for x in e if x["package"] == "github/codeql-action"]
+assert sorted(x["version"] for x in c) == ["3.37.8", "4.*"], c
+for x in c:
+    assert x["ids"] == ["GHSA-vqf5-2xx6-9wfm"] and x["authoritative"]["source"] == "GitHub" and x["authoritative"]["id"] == "GHSA-vqf5-2xx6-9wfm", x
+    assert x["authoritative"]["ranges"], x
+co = [x for x in e if x["package"] == "cosign"]
+assert len(co) == 3 and {x["version"] for x in co} == {"3.1.3"} and all(x["authoritative"]["source"] == "GitHub" and x["authoritative"]["ranges"] for x in co), co
+for x in e:
     assert x["evidence"] and all(u.startswith("https://") for u in x["evidence"]) and x["date"], x
     assert set(x["modified"]) == set(x["ids"]) and all(x["modified"].values()), x
 PY

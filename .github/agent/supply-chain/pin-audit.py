@@ -246,7 +246,7 @@ GO_TOOLS = {"trivy": "github.com/aquasecurity/trivy", "grype": "github.com/ancho
             "syft": "github.com/anchore/syft",
             "osv": "github.com/google/osv-scanner/v2", "golangci-lint": "github.com/golangci/golangci-lint/v2",
             "goreleaser": "github.com/goreleaser/goreleaser/v2", "scout": "github.com/docker/scout-cli",
-            "cosign": "github.com/sigstore/cosign/v3",
+            "cosign": "github.com/sigstore/cosign/v3", "sigstore/cosign": "github.com/sigstore/cosign/v3",
             "kind": "sigs.k8s.io/kind", "helm": "helm.sh/helm/v3",
             # Go's own toolchain: the Go vulnerability database files the standard library under the package stdlib
             # (REQ-SUP-001-AC27: the exempt release is still audited)
@@ -1005,7 +1005,8 @@ def _ruling_label(e):
 
 
 def package_of(item):
-    return item.name.split("/", 1)[1] if item.kind == "package" else item.name
+    # the release download of cosign is the same package as the cosign pin: one ruling covers both
+    return item.name.split("/", 1)[1] if item.kind == "package" else "cosign" if item.name == "sigstore/cosign" else item.name
 
 
 def version_of(item):
@@ -1583,8 +1584,8 @@ def main(argv=None):
         # actions and images INSIDE the actions we pin (depth 3): listed when on a moving tag, and checked against the
         # same advisory lists
         seen = {it.key for it in audited} | set(head)
-        queue = [(it, 0) for it in (audited if a.base else head.values()) if it.kind == "action"] + [
-            (it, 0) for it in pr_actions if it.kind == "action"]
+        queue = [(it, 0) for it in [*(audited if a.base else head.values()), *pr_actions]
+                 if it.kind == "action" and it.version != "(local)"]
         phase("nested references")
         while queue:
             def nested_safe(q):
