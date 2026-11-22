@@ -1048,7 +1048,28 @@ f, sha = sys.argv[1:3]
 j = json.load(open(f))
 j["check_runs"].append({"name": "ci", "conclusion": "failure", "app": {"id": 15368}, "id": 13, "head_sha": sha}); json.dump(j, open(f, "w"))
 PY
-run_admit; expect_refuse "AC4 required-checks: a duplicate check name (one success, one failure) is ambiguous and refused" required-checks ci
+run_admit; expect_refuse "AC4 required-checks: a duplicate check name (one success, one failure) is ambiguous and refused" required-checks "not green"
+fresh; python3 - "$(ckf "$SHAC")" "$SHAC" <<'PY'
+import json, sys
+f, sha = sys.argv[1:3]
+j = json.load(open(f))
+j["check_runs"].append({"name": "ci", "conclusion": "success", "app": {"id": 15368}, "id": 113, "head_sha": sha}); json.dump(j, open(f, "w"))
+PY
+run_admit; expect_ok "AC4 required-checks: a duplicate check name with every run success (two runs of ci, distinct ids) passes"
+fresh; python3 - "$(ckf "$SHAC")" "$SHAC" <<'PY'
+import json, sys
+f, sha = sys.argv[1:3]
+j = json.load(open(f))
+j["check_runs"].append({"name": "ci", "conclusion": "failure", "app": {"id": 15368}, "id": 114, "head_sha": sha}); json.dump(j, open(f, "w"))
+PY
+run_admit; expect_refuse "AC4 required-checks: a duplicate check name with one failure among its runs is refused, a green run does not hide it" required-checks "not green"
+fresh; python3 - "$(ckf "$SHAC")" "$SHAC" <<'PY'
+import json, sys
+f, sha = sys.argv[1:3]
+j = json.load(open(f))
+j["check_runs"].append({"name": "ci", "status": "in_progress", "conclusion": None, "app": {"id": 15368}, "id": 115, "head_sha": sha}); json.dump(j, open(f, "w"))
+PY
+run_admit; expect_refuse "AC4 required-checks: an unfinished extra run of ci (no conclusion) is refused" required-checks "not green"
 fresh; python3 - "$(ckf "$SHAC")" <<'PY'
 import json, sys
 f = sys.argv[1]; j = json.load(open(f)); j["check_runs"][0]["head_sha"] = "c" * 40; json.dump(j, open(f, "w"))
