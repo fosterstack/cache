@@ -196,8 +196,28 @@ for name, ver, v1 in (("xtool", "0.5.0", "/v0"), ("ytool", "1.4.0", "/v1")):
     hit(ver, [record("GO-X-3", [(base, INTRO0), (base + v1, fixed("9.9.9"))])], none_ignored=True, sups=(True,), mk=mk)
 PY
 py "a tool NOT in the committed table (owner/repo form) is judged as before: the bare entry makes 3.1.3 a hit, nothing ignored" <<'PY'
-assert "sigstore/cosign" not in pa.GO_TOOLS
-hit("3.1.3", [G4309], ghsas=GG, none_ignored=True, sups=(True,), mk=lambda v, t=None: pa.inv.Item("tool", "sigstore/cosign", v, ""))
+assert "acme/widget" not in pa.GO_TOOLS
+W = "github.com/acme/widget"
+hit("3.1.3", [record("GO-X-30", [(W, INTRO0), (W + "/v2", fixed("2.6.2")), (W + "/v3", fixed("3.0.4"))])], none_ignored=True, sups=(True,),
+    mk=lambda v, t=None: pa.inv.Item("tool", "acme/widget", v, ""))
+PY
+py "a release download of cosign (item sigstore/cosign) is judged like the cosign tool: the table maps it to /v3, the bare and /v2 entries of GO-2026-4309" \
+   " are logged and 3.1.3 is clean, and the cosign rulings settle its disputes" <<'PY'
+assert pa.GO_TOOLS["sigstore/cosign"] == BARE + "/v3"
+mk = lambda v, t=None: pa.inv.Item("tool", "sigstore/cosign", v, "")
+clean("3.1.3", [G4309], ghsas=GG, sups=(True,), mk=mk)
+net = mknet([G4309], GG, True); finds, notes = run(mk("3.1.3"), net)
+assert finds == [] and sorted(e["path"] for e in ignored(net, True)) == [BARE, BARE + "/v2"], (finds, ignored(net))
+assert sum(1 for n in notes if n.startswith(ADV)) == 2, notes
+hit("3.0.3", [G4309], ghsas=GG, sups=(True,), mk=mk)
+assert pa.package_of(mk("3.1.3")) == "cosign"
+exc = pa.load_exceptions(CHECKED_IN, True)
+go, g = "GO-2024-2718", "GHSA-88jx-383q-w4qc"
+r = load("osv-%s.json" % go); r["aliases"] = sorted(set(r.get("aliases", [])) | {g})
+finds, _ = run(mk("3.1.3"), mknet([r], [g], True), [])
+assert finds and all(f.disputed for f in finds), [(f.kind, f.ids, f.disputed) for f in finds]
+finds, _ = run(mk("3.1.3"), mknet([r], [g], True), exc)
+assert finds == [], [(f.kind, f.ids) for f in finds]
 PY
 # An unparsable version of a tool in the table FAILS CLOSED (the approved read-back): the verdict is a HIT, or the audit stops, in both OSV modes; the
 # rule is not applied, so nothing is ignored. The table is the CORRECT /v3 path, so a fail-open audit (one that clears the version through the /v3
