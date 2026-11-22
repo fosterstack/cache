@@ -137,9 +137,8 @@ jobs:
               tag="ghcr.io/fosterstack/cache:cand-${v}-${arch}"
               ./bin/layout-archive.sh "/tmp/oci/${v}" "${arch}" "/tmp/arc/${v}-${arch}.tar" "${tag}" > /dev/null \
                 && docker load -i "/tmp/arc/${v}-${arch}.tar" > /dev/null \
-                && id=$(docker image inspect -f '{{.Id}}' "${tag}") \
-                && docker scout sbom --format json --platform "linux/${arch}" "local://${id}" > "${d}/sbom.json" \
-                && docker scout cves --format gitlab --vex-location .vex/fosterstack-cache.openvex.json --vex-author '^FosterStack LLC$' --platform "linux/${arch}" "local://${id}" > "${d}/cves.json" \
+                && docker scout sbom --format json --platform "linux/${arch}" "local://${tag}" > "${d}/sbom.json" \
+                && docker scout cves --format gitlab --vex-location .vex/fosterstack-cache.openvex.json --vex-author '^FosterStack LLC$' --platform "linux/${arch}" "local://${tag}" > "${d}/cves.json" \
                 || { rm -rf "${d}"; echo "::warning::docker scout could not scan ${v}-${arch} (the tally counts it as did not run)"; }
             done
           done

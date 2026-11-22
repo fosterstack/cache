@@ -122,7 +122,6 @@ else:
             with open(os.path.join(t, "stub", "docker"), "w") as fh:
                 fh.write("#!/usr/bin/env bash\n" + ("exit 23\n" if failing else
                          '{ printf docker; printf \' %q\' "$@"; printf \'\\n\'; } >> "$STUB_LOG"\n'
-                         'if [ "$1 $2" = "image inspect" ]; then t=${!#}; printf "sha256:%s" "${t##*:}"; exit 0; fi\n'
                          'if [ "$1 $2" = "scout cves" ]; then printf \'{"vulnerabilities":[]}\'; else printf \'{"artifacts":[]}\'; fi\n'))
             os.chmod(os.path.join(t, "stub", "docker"), 0o755)
             with open(os.path.join(t, "stub", "layout-archive.sh"), "w") as fh:
@@ -141,8 +140,8 @@ else:
     sboms = [c for c in calls if c[1:3] == ["scout", "sbom"]]
     def opt(c, flag):
         return c[c.index(flag) + 1] if flag in c[:-1] else None
-    def ref_of(c):   # the stub's image id names the tag the scan inspected: sha256:cand-<variant>-<arch>
-        m = re.fullmatch(r"local://sha256:cand-(production|fips)-(amd64|arm64)", c[-1])
+    def ref_of(c):   # the scan names the loaded image by the tag layout-archive.sh writes, which is how our VEX applies
+        m = re.fullmatch(r"local://ghcr\.io/fosterstack/cache:cand-(production|fips)-(amd64|arm64)", c[-1])
         return (m.group(1), m.group(2)) if m else (None, None)
     seen = []
     for c in cves:
@@ -154,10 +153,10 @@ else:
         if opt(c, "--format") != "gitlab" or opt(c, "--vex-location") != OPENVEX or opt(c, "--vex-author") != "^FosterStack LLC$" or a not in ("amd64", "arm64"):
             bad.append("a Scout scan is not given --format gitlab, our OpenVEX file as --vex-location, our author and a linux/<arch> platform: %s" % " ".join(c))
     if sorted(seen, key=str) != sorted([(v, a) for v in VAR for a in ("amd64", "arm64")], key=str):
-        bad.append("Scout does not scan the four loaded images (local://<image id>, production and fips, amd64 and arm64) once each: %s" % seen)
+        bad.append("Scout does not scan the four loaded images (local://ghcr.io/fosterstack/cache:cand-<variant>-<arch>, production and fips, amd64 and arm64) once each: %s" % seen)
     for c in sboms:
         if ref_of(c)[0] is None or ref_of(c)[1] != opt(c, "--platform").replace("linux/", ""):
-            bad.append("a Scout sbom call does not use the local image id of its own variant and architecture: %s" % " ".join(c))
+            bad.append("a Scout sbom call does not use the local tag of its own variant and architecture: %s" % " ".join(c))
     made_from = sorted((c[1], c[2]) for c in calls if c[0] == "layout-archive")
     if made_from != sorted(("/tmp/oci/" + v, a) for v in VAR for a in ("amd64", "arm64")):
         bad.append("the Scout scan does not make each tar from the downloaded layout /tmp/oci/<variant> and its architecture: %s" % made_from)
