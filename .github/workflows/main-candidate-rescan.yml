@@ -126,6 +126,26 @@ jobs:
         run: printf '%s' "$DOCKERHUB_SCOUT_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
       # The rescan stays mechanical (release audit row C1): no job of this file writes to a registry, so Scout scans the candidate layouts Build uploaded, by local reference, and is given our
       # OpenVEX file and its author. A finding no statement filters is reported as it is; the tally counts what Scout reports.
+      - name: try local forms
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          v=production; arch=amd64; tag="ghcr.io/fosterstack/cache:cand-${v}-${arch}"
+          mkdir -p /tmp/arc /tmp/try
+          ./bin/layout-archive.sh "/tmp/oci/${v}" "${arch}" "/tmp/arc/${v}-${arch}.tar" "$tag"
+          try() { n=$1; shift; echo "=== $n"; "$@" > "/tmp/try/$n.json" 2> "/tmp/try/$n.err"; echo "rc=$?"; tail -5 "/tmp/try/$n.err"; echo "bytes: $(wc -c < /tmp/try/$n.json)"; jq -c '[.. | .purl? // empty] | length' "/tmp/try/$n.json" 2>&1 | head -2; }
+          docker version --format '{{.Server.Version}} {{.Driver}}' ; docker info --format '{{.DriverStatus}}'
+          docker load -i "/tmp/arc/${v}-${arch}.tar"
+          id=$(docker image inspect -f '{{.Id}}' "$tag"); echo "id=$id"
+          try local_tag docker scout sbom --format json "local://${tag}"
+          try local_id docker scout sbom --format json "local://${id}"
+          try image_id docker scout sbom --format json "image://${id}"
+          try archive docker scout sbom --format json "archive:///tmp/arc/${v}-${arch}.tar"
+          try archive_plat docker scout sbom --format json --platform "linux/${arch}" "archive:///tmp/arc/${v}-${arch}.tar"
+          try bare_id docker scout sbom --format json "${id}"
+          which skopeo && skopeo --version
+          skopeo copy --override-arch "$arch" --override-os linux "oci:/tmp/oci/${v}" "docker-daemon:ghcr.io/fosterstack/cache:skopeo-${arch}"; echo "skopeo rc=$?"
+          try skopeo_local docker scout sbom --format json "local://ghcr.io/fosterstack/cache:skopeo-${arch}"
       - name: Docker Scout every image, given our OpenVEX file
         run: |
           set -uo pipefail
