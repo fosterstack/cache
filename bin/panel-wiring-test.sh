@@ -58,7 +58,7 @@ if "--vex .vex/fosterstack-cache.openvex.json" not in text("panel-grype"):
     bad.append("Grype is not given the VEX file")
 # REQ-REL-010 on the rescan (release audit row C1, ruled, security): the rescan stays mechanical. VEX reaches the image only in a release, never changing a digest
 # customers pull or a signature names; no rule gives a rescan job a write. So there is no vex-attach job, no registry write in any job of this file, and
-# panel-scout scans the candidate layouts it downloads from Build's artifact `images` (the input panel-grype uses) by local reference, given our OpenVEX file.
+# panel-scout scans the candidate layouts it downloads from Build's artifact `images` (the input panel-grype uses) as images loaded into the runner's Docker (by image id), given our OpenVEX file.
 import json, os, shlex, subprocess, tempfile
 ROOT = os.environ.get("PANEL_ROOT", ".")
 OPENVEX = ".vex/fosterstack-cache.openvex.json"
@@ -97,15 +97,15 @@ if re.search(r"login[^\n]*ghcr\.io|ghcr\.io[^\n]*login", st_text) or re.search(r
     bad.append("panel-scout logs in to ghcr.io")
 if "registry://" in all_scout:
     bad.append("panel-scout scans or names a registry:// reference")
-if re.search(r"digests\.json|fixture|/attach\b|\bskopeo\b|docker-daemon:|local://", all_scout):
-    bad.append("panel-scout reads fixture digests, an attach folder or a local daemon image, or runs skopeo")
+if re.search(r"digests\.json|fixture|/attach\b|\bskopeo\b", all_scout):
+    bad.append("panel-scout reads fixture digests or an attach folder, or runs skopeo")
 sdl = [x for x in scout_steps if str(x.get("uses", "")).startswith("actions/download-artifact@")]
 if len(sdl) != 1 or sdl[0].get("with") != {"name": "images", "path": "/tmp/oci/"}:
     bad.append("panel-scout does not download exactly Build's artifact images into /tmp/oci/ (the input panel-grype uses): %s" % [x.get("with") for x in sdl])
 hub = [x for x in scout_steps if "log in to Docker Hub for Scout" in (x.get("name") or "")]
 if len(hub) != 1 or "docker login docker.io" not in hub[0].get("run", "") or "DOCKERHUB_SCOUT_TOKEN" not in str(hub[0].get("env")) or "$DOCKERHUB_SCOUT_TOKEN" not in hub[0].get("run", "") or "--password-stdin" not in hub[0].get("run", ""):
     bad.append("panel-scout does not log in to Docker Hub with the read-only Scout token")
-# 3. the scan: one step, local oci-dir:// references of the downloaded layouts, our OpenVEX as a file, our author; run it against a stub docker
+# 3. the scan: one step, each downloaded layout's child made into a tar, loaded into Docker and scanned by image id, our OpenVEX as a file, our author; run it against a stub docker
 if not os.path.isfile(os.path.join(ROOT, "bin", "scout-selfcheck.py")):
     bad.append("bin/scout-selfcheck.py is gone")
 scans = [x for x in scout_steps if "docker scout cves" in (x.get("run") or "")]
@@ -124,9 +124,12 @@ else:
                          '{ printf docker; printf \' %q\' "$@"; printf \'\\n\'; } >> "$STUB_LOG"\n'
                          'if [ "$1 $2" = "scout cves" ]; then printf \'{"vulnerabilities":[]}\'; else printf \'{"artifacts":[]}\'; fi\n'))
             os.chmod(os.path.join(t, "stub", "docker"), 0o755)
+            with open(os.path.join(t, "stub", "layout-archive.sh"), "w") as fh:
+                fh.write('#!/usr/bin/env bash\n{ printf layout-archive; printf \' %q\' "$@"; printf \'\\n\'; } >> "$STUB_LOG"\n: > "$3"\n')
+            os.chmod(os.path.join(t, "stub", "layout-archive.sh"), 0o755)
             log = os.path.join(t, "log"); open(log, "w").close()
             env = dict(os.environ, PATH=os.path.join(t, "stub") + ":" + os.environ["PATH"], STUB_LOG=log, RUNNER_TEMP=t)
-            r = subprocess.run(["bash", "-e", "-c", scan["run"].replace("/tmp/panel/", t + "/panel/")], cwd=ROOT, env=env, capture_output=True, text=True)
+            r = subprocess.run(["bash", "-e", "-c", scan["run"].replace("/tmp/panel/", t + "/panel/").replace("./bin/layout-archive.sh", t + "/stub/layout-archive.sh").replace("/tmp/arc", t + "/arc")], cwd=ROOT, env=env, capture_output=True, text=True)
             made = {(v, a): os.path.isfile(os.path.join(t, "panel", "scout", "%s-%s" % (v, a), "cves.json")) for v in VAR for a in ("amd64", "arm64")}
             gone = {(v, a): not os.path.exists(os.path.join(t, "panel", "scout", "%s-%s" % (v, a))) for v in VAR for a in ("amd64", "arm64")}
             return r.returncode, r.stdout + r.stderr, [shlex.split(l) for l in open(log).read().splitlines()], made, gone
@@ -137,20 +140,29 @@ else:
     sboms = [c for c in calls if c[1:3] == ["scout", "sbom"]]
     def opt(c, flag):
         return c[c.index(flag) + 1] if flag in c[:-1] else None
-    def ref_ok(c, v):
-        return c[-1].rstrip("/") == "oci-dir:///tmp/oci/" + v
+    def ref_of(c):   # the scan names the loaded image by the tag layout-archive.sh writes, which is how our VEX applies
+        m = re.fullmatch(r"local://ghcr\.io/fosterstack/cache:cand-(production|fips)-(amd64|arm64)", c[-1])
+        return (m.group(1), m.group(2)) if m else (None, None)
     seen = []
     for c in cves:
-        v = next((x for x in VAR if c[-1].rstrip("/") == "oci-dir:///tmp/oci/" + x), None)
+        v, ia = ref_of(c)
         a = (opt(c, "--platform") or "").replace("linux/", "")
         seen.append((v, a))
+        if ia != a:
+            bad.append("a Scout scan is given the image of another architecture than its --platform: %s" % " ".join(c))
         if opt(c, "--format") != "gitlab" or opt(c, "--vex-location") != OPENVEX or opt(c, "--vex-author") != "^FosterStack LLC$" or a not in ("amd64", "arm64"):
             bad.append("a Scout scan is not given --format gitlab, our OpenVEX file as --vex-location, our author and a linux/<arch> platform: %s" % " ".join(c))
     if sorted(seen, key=str) != sorted([(v, a) for v in VAR for a in ("amd64", "arm64")], key=str):
-        bad.append("Scout does not scan the four local layouts (oci-dir:///tmp/oci/<variant>, production and fips, amd64 and arm64) once each: %s" % seen)
+        bad.append("Scout does not scan the four loaded images (local://ghcr.io/fosterstack/cache:cand-<variant>-<arch>, production and fips, amd64 and arm64) once each: %s" % seen)
     for c in sboms:
-        if not any(ref_ok(c, v) for v in VAR):
-            bad.append("a Scout sbom call does not use a local oci-dir:// reference of a downloaded layout: %s" % " ".join(c))
+        if ref_of(c)[0] is None or ref_of(c)[1] != opt(c, "--platform").replace("linux/", ""):
+            bad.append("a Scout sbom call does not use the local tag of its own variant and architecture: %s" % " ".join(c))
+    made_from = sorted((c[1], c[2]) for c in calls if c[0] == "layout-archive")
+    if made_from != sorted(("/tmp/oci/" + v, a) for v in VAR for a in ("amd64", "arm64")):
+        bad.append("the Scout scan does not make each tar from the downloaded layout /tmp/oci/<variant> and its architecture: %s" % made_from)
+    loads = [c for c in calls if c[1:2] == ["load"]]
+    if len(loads) != 4 or not all(c[2] == "-i" and c[3].endswith(".tar") for c in loads):
+        bad.append("the Scout scan does not load each of the four image tars into Docker once: %s" % loads)
     if not all(made.values()):
         bad.append("the Scout scan does not leave /tmp/panel/scout/<variant>-<arch>/cves.json for each image: %s" % made)
     rc, out, calls, _, gone = run_scan(True)
@@ -469,7 +481,7 @@ case_ scout-images-other-path bad "[x for x in $SC['steps'] if str(x.get('uses',
 case_ scout-ghcr-login        bad "$SC['steps'].insert(1, {'name': 'log in to GHCR', 'run': 'printf x | docker login ghcr.io -u me --password-stdin'})"
 case_ scout-ghcr-login-action bad "$SC['steps'].insert(1, {'uses': 'docker/login-action@0000000000000000000000000000000000000000', 'with': {'registry': 'ghcr.io'}})"
 case_ scout-registry-scan     bad "s=$SCAN; s['run'] = s['run'] + chr(10) + 'docker scout cves registry://ghcr.io/fosterstack/cache:x > /dev/null'"
-case_ scout-registry-ref      bad "s=$SCAN; s['run'] = s['run'].replace('oci-dir://', 'registry://')"
+case_ scout-registry-ref      bad "s=$SCAN; s['run'] = s['run'].replace('local://', 'registry://')"
 case_ scout-fixture-digests   bad "$SC['steps'].insert(3, {'name': 'read fixture digests', 'run': 'jq -er . \"\$RUNNER_TEMP/attach/digests.json\"'})"
 case_ scout-registry-selfcheck bad "$SC['steps'].insert(3, {'name': 'Scout applies our attestation to a fixture index', 'run': 'docker scout cves --vex-author x registry://ghcr.io/fosterstack/cache-scout-probe@sha256:1'})"
 case_ scout-skopeo            bad "s=$SCAN; s['run'] = chr(10).join(['skopeo copy oci:/tmp/oci/production docker-daemon:x', s['run']])"
