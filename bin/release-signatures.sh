@@ -17,7 +17,7 @@ for name in RELEASE_KMS_KEY_REF RUNNER_TEMP GITHUB_SHA GITHUB_SERVER_URL GITHUB_
   printenv "$name" > /dev/null || { echo "release-signatures: $name is unset" >&2; exit 2; }
 done
 tag=${GITHUB_REF_NAME:-}
-python3 -I -B bin/build-admit.py tag-ok --final "$tag" || { echo "release-signatures: tag refused: $tag is not vX.Y.Z (a release candidate never reaches this step)" >&2; exit 1; }
+python3 -I -B bin/build-admit.py tag-ok --final "$tag" || { echo "release-signatures: tag refused: $tag is not vX.Y.Z" >&2; exit 1; }
 # the one key-reference check (bin/chain-verify.py key-ref-check): the job's reference is the release key's, byte for byte; exit 2 before anything is made or signed. kms-sign asks the key for its algorithm on every call.
 python3 -I -B bin/chain-verify.py key-ref-check || exit $?
 # the release policy of this tag, made as release-verify makes it for Release: it is signed below, and Release checks the bundle against its own copy

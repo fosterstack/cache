@@ -485,11 +485,9 @@ calls = [l for l in log(t) if l.startswith("chain-verify")]
 check(rc == 0, "AC5 a good v0.3.0 passes", se)
 check([stage_of(c) for c in calls if stage_of(c)] == STAGES and calls and calls[0].startswith("chain-verify policy make"), "AC4 the policy is made first, then build, sign, rebuild, check are verified in that order", str(calls))
 check(all("--digests witness-build/digests.json" in c for c in calls if stage_of(c) and stage_of(c) not in ("items", "baseline")) and any("--tag v0.3.0" in c for c in calls if "policy" in c), "AC4 every record is checked against the same digest list and the policy is made for the tag")
-# REQ-CHAIN-007-AC14: a release candidate is vX.Y.Z-rcN by the one tag grammar of bin/build-admit.py (REQ-CHAIN-004-AC20):
-# case-sensitive, anchored, no leading zero in any number, an rc number of at least 1
-for tag in ("v0.3.0-rc1", "v10.20.30-rc12"):
-    t = vtree(); rc, so, se = run(t, "release-verify", tag=tag); check(rc == 0, "AC14 the release candidate %s passes release-verify exactly like a final" % tag, se)
-for tag in ("v01.02.03-rc01", "v0.3.0-rc0", "v0.3", "v0.3.0-rc", "v0.3.0-rc.1", "v0.3.0-rc.x", "v0.3.0-rc1x", "v0.3.0-rc1.2", "v0.3.0-RC1", "v0.3.0-Rc1", "v0.3.0rc1", "v0.rc1.3.0", "rc1", "v0.3.0-1rc1", "v0.3.0-rc-1", "v0.3.0-beta.1", "v0.3.0.1", "0.3.0", "main", "refs/heads/x", "v0.3.0-rc1\n", "v0.3.0\n", ""):
+# REQ-CHAIN-007-AC14: a release tag is vX.Y.Z by the one tag grammar of bin/build-admit.py (REQ-CHAIN-004-AC20):
+# case-sensitive, anchored, no leading zero in any number, no suffix
+for tag in ("v0.3.0-rc1", "v10.20.30-rc12", "v01.02.03-rc01", "v0.3.0-rc0", "v0.3", "v0.3.0-rc", "v0.3.0-rc.1", "v0.3.0-rc.x", "v0.3.0-rc1x", "v0.3.0-rc1.2", "v0.3.0-RC1", "v0.3.0-Rc1", "v0.3.0rc1", "v0.rc1.3.0", "rc1", "v0.3.0-1rc1", "v0.3.0-rc-1", "v0.3.0-beta.1", "v0.3.0.1", "0.3.0", "main", "refs/heads/x", "v0.3.0-rc1\n", "v0.3.0\n", ""):
     t = vtree(); rc, so, se = run(t, "release-verify", tag=tag)
     check(rc != 0 and first(se).startswith("refused at tag") and not [l for l in log(t) if l.startswith("chain-verify")], "AC5 the tag %r is refused first, naming the tag, before any verification" % tag, "rc=%s %s" % (rc, first(se)))
 for s in STAGES:
@@ -515,8 +513,6 @@ for n in KEYFILES:
     check(rc == 1 and first(se) == "release-verify: .github/policy/%s is missing: the release is refused before any credential step" % n and not log(t), "B-F22 without %s release-verify stops before any verifier call, naming it" % n, "rc=%s %s calls=%s" % (rc, first(se), log(t)[:1]))
     t = vtree(); os.replace(os.path.join(t, ".github/policy", n), os.path.join(t, "elsewhere")); os.symlink(os.path.join(t, "elsewhere"), os.path.join(t, ".github/policy", n)); rc, so, se = run(t, "release-verify")
     check(rc == 1 and n in first(se) and "missing" in first(se) and not log(t), "B-F22 %s as a symlink is refused like a missing file, before any verifier call" % n, "rc=%s %s" % (rc, first(se)))
-t = tree(); os.remove(os.path.join(t, ".github/policy/release-key-manifest.json")); rc, so, se = run(t, "release-verify", tag="v0.3.0-rc1")
-check(rc == 1 and "release-key-manifest.json" in first(se), "B-F22 a release candidate is held to the key files too", "rc=%s %s" % (rc, first(se)))
 def script_lines(name): return open(os.path.join(BIN, name)).read().split("\n")
 def py_lines(name): return [l for l in script_lines(name) if "python3" in l and not l.lstrip().startswith("#")]
 for name in ("release-verify.sh", "release-assets.sh"):
@@ -595,7 +591,8 @@ for s in ("release-sign", "release-publish", "release-assets"):
     check(not re.search(r"build-admit|tag-ok|tag-pattern|TAG_PATTERN|v\[0-9\]|\^v|-rc\[", src), "AC14 bin/%s.sh holds no tag regex and does not call or load bin/build-admit.py (the tag is judged once, in release-verify)" % s)
 import yaml
 _rel = yaml.safe_load(open(os.path.join(os.environ["RELEASE_ROOT"], ".github/workflows/release.yml")))["jobs"]["release"]
-check("!contains(github.ref_name, '-')" in str(_rel.get("if")) and {"release-verify", "release-compare"} <= set(_rel.get("needs", [])), "AC14 the release job, which holds the credentials, needs the release-verify and release-compare jobs and its if: holds the condition !contains(github.ref_name, '-')")
+_GUARD_S = "${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}"
+check(_rel.get("if") == _GUARD_S and {"release-verify", "release-compare"} <= set(_rel.get("needs", [])), "AC14 the release job, which holds the credentials, needs the release-verify and release-compare jobs and its if: is exactly the guard S")
 t = stree(); rc, so, se = run(t, "release-publish", creds=REG, env={"REG_CORRUPT": "docker.io"})
 check(rc != 0 and "differ" in se and DIG["image-production"] in se and "docker.io" in se, "AC7 a registry that shows another digest blocks release, naming the image and both digests", "rc=%s %s" % (rc, first(se)))
 t = stree(); rc, so, se = run(t, "release-publish", creds=REG, env={"REG_CORRUPT": "ghcr.io"}); h = [p[3].split("/")[0] for p in pushes(t)]

@@ -1280,7 +1280,7 @@ GATE = "${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v
 GUARD_S = ("inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && "
            "startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))")      # guard S: a v* tag push of release.yml itself, never in snapshot mode or under a workflow_call
 SIGN_IF = "${{ %s }}" % GUARD_S                                                    # sign, sign-rebuild, sign-check
-AFTER_IF = "${{ %s && !contains(github.ref_name, '-') }}" % GUARD_S                # release: a release candidate publishes nothing and never enters the environment release
+AFTER_IF = SIGN_IF                                                                 # release: exactly guard S, as the sign jobs
 # check-govulncheck has no needs: it also names the runs that start the chain, so a push to main or the daily run (the patch tag jobs only) never starts it
 GV_IF = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true) }}"
 CHECK_IF = "${{ inputs.mode != 'snapshot' }}"                                     # check-govulncheck and check
@@ -1299,7 +1299,7 @@ CHAIN_SPEC = {   # job -> exact needs, permissions, if and environment
     "sign-check": dict(needs=["build-assemble", "check", "sign"], perm=SIGN_PERMISSIONS, if_=SIGN_IF, env="sign"),
     "release-compare": dict(needs=["check", "sign", "sign-check", "sign-rebuild"], perm=PERM_READ, if_=None, env=None),
     "release-verify": dict(needs=["release-compare"], perm=PERM_READ, if_=None, env=None),
-    "release": dict(needs=["release-compare", "release-verify"], perm={"contents": "write", "packages": "write"}, if_=AFTER_IF, env="release"),      # no id-token and no KMS role: every signature it pushes was made by sign-check, and release-sign checks each one before it is used
+    "release": dict(needs=["hostile-verdict", "release-compare", "release-verify"], perm={"contents": "write", "packages": "write"}, if_=AFTER_IF, env="release"),      # no id-token and no KMS role: every signature it pushes was made by sign-check, and release-sign checks each one before it is used
 }
 CHAIN = sorted(CHAIN_SPEC)
 RELEASE_CONCURRENCY_LINE = re.compile(r"(?m)^  release:\n(?:    .*\n|\n)*?    concurrency:\n      group: release-publish\n      cancel-in-progress: false\n")

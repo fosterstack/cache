@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The hostile Build step of a release-candidate tag run (v0.3.0 rules 52a and 59; REQ-CHAIN-001-AC5). It runs as a step of the Build job, only when
-# the caller asks for it (`if: ${{ inputs.hostile }}`; release.yml sets it on a push of an -rc tag), and tries the five ways a Build step could reach Sign's signing identity.
+# The hostile Build step (v0.3.0 rules 52a and 59; REQ-CHAIN-001-AC5). It runs as a step of the Build job in every build, with no condition
+# (REQ-CHAIN-004-AC19), and tries the five ways a Build step could reach Sign's signing identity.
 # It writes only the RAW MATERIAL of each attempt (a file under attempts/) and never says whether an attempt worked: the verify
 # job judges every attempt with the real verifier, so this step cannot grade itself.
 #

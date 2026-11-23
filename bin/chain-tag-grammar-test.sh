@@ -2,10 +2,10 @@
 # proves: REQ-CHAIN-004-AC20, REQ-CHAIN-007-AC14
 #
 # One tag grammar for every release script and check that reads a release tag (REQ-CHAIN-004-AC20). The grammar is TAG_PATTERN of
-# bin/build-admit.py: vX.Y.Z or vX.Y.Z-rcN, no leading zero in any number, an rc number of at least 1, full match only (no trailing
+# bin/build-admit.py: vX.Y.Z, no leading zero in any number, full match only (no trailing
 # newline, no prefix). A Python script loads that pattern from bin/build-admit.py; a shell script or workflow step calls
-# `python3 -I -B bin/build-admit.py tag-ok [--final] TAG` (exit 0 accepted, exit 1 refused; --final also refuses a -rc tag) or reads
-# `python3 bin/build-admit.py tag-pattern`; none has a pattern of its own. v01.2.3, v1.2.3-rc0 and v1.2.3-rc.1 are refused by every one.
+# `python3 -I -B bin/build-admit.py tag-ok [--final] TAG` (exit 0 accepted, exit 1 refused; --final changes nothing) or reads
+# `python3 bin/build-admit.py tag-pattern`; none has a pattern of its own. v01.2.3, v1.2.3-rc1 and v1.2.3-rc.1 are refused by every one.
 # Nothing that holds a secret loads bin/build-admit.py, directly or through a script it runs (ruling (B)): the tag is judged before them,
 # in release-verify.sh and in Build's admission. So release-sign.sh, release-publish.sh and release-assets.sh judge no tag, and neither do
 # bin/chain-verify.py and bin/chain_items.py (which release-sign.sh runs) or bin/release-gate.py (the coverage gate of the release assets,
@@ -14,7 +14,7 @@
 # Parsers, one case group each (all under bin/ unless a path says otherwise):
 #   release-apks.sh release-signatures.sh release-stage.sh   final tags only (they read GITHUB_REF_NAME)
 #   release-assets.sh release-publish.sh release-sign.sh   NONE: they hold credentials and judge no tag; release-verify.sh judged it once
-#   release-verify.sh                final or rc        release-metadata.py   baseline command (final)
+#   release-verify.sh                final only         release-metadata.py   baseline command (final)
 #   release-postverify.py            final only         marker-pr-gate.py     rc only
 #   chain-verify.py, chain_items.py, release-gate.py   NONE (they run beside the secrets): chain-verify.py policy make takes a --tag as given
 #                                    (only a snapshot version v0.0.0 is refused) and a --ref as refs/tags/<non-empty> or refs/heads/<non-empty>;
@@ -59,8 +59,8 @@ tagcase() { # tagcase TAG WANT_ANY WANT_FINAL
 tagcase v1.2.3 0 0
 tagcase v0.0.0 0 0
 tagcase v10.20.30 0 0
-tagcase v1.2.3-rc1 0 1
-tagcase v1.2.3-rc12 0 1
+tagcase v1.2.3-rc1 1 1
+tagcase v1.2.3-rc12 1 1
 tagcase v01.2.3 1 1
 tagcase v1.02.3 1 1
 tagcase v1.2.03 1 1
@@ -109,8 +109,7 @@ reached_sh() { ! refused_sh "$1"; }                                             
 n=0
 shcase() { # shcase SCRIPT KIND(final|any) ENV...: every refusal, and the controls
   local sc=$1 kind=$2 c t; shift 2
-  local refuse="v01.2.3 v1.02.3 v1.2.03 v1.2.3-rc0 v1.2.3-rc.1 v1.2.3-rc01 1.2.3 v1.2.3-RC1 v1.2.3-rc"
-  [ "$kind" = final ] && refuse="$refuse v1.2.3-rc1"
+  local refuse="v01.2.3 v1.02.3 v1.2.03 v1.2.3-rc0 v1.2.3-rc.1 v1.2.3-rc01 1.2.3 v1.2.3-RC1 v1.2.3-rc v1.2.3-rc1 v1.2.3-rc12"
   for t in $refuse; do
     n=$((n+1)); c=$(mkcase "s$n" "$sc"); shrun "$c" "$sc" "$t" "$@"
     refused_sh "$c" && ok "$sc refuses $t" || bad "$sc refuses $t" "exit $RC, trips: $(tr '\n' ';' < "$c/trips" | head -c 100) err: $ERR"
@@ -118,7 +117,6 @@ shcase() { # shcase SCRIPT KIND(final|any) ENV...: every refusal, and the contro
   n=$((n+1)); c=$(mkcase "s$n" "$sc"); shrun "$c" "$sc" "v1.2.3$NL" "$@"
   refused_sh "$c" && ok "$sc refuses a tag with a trailing newline" || bad "$sc refuses a tag with a trailing newline" "exit $RC, trips: $(tr '\n' ';' < "$c/trips" | head -c 100) err: $ERR"
   local accept="v1.2.3 v0.0.0 v10.20.30"
-  [ "$kind" = any ] && accept="$accept v1.2.3-rc1 v1.2.3-rc12"
   for t in $accept; do
     n=$((n+1)); c=$(mkcase "s$n" "$sc"); shrun "$c" "$sc" "$t" "$@"
     reached_sh "$c" && ok "$sc accepts $t" || bad "$sc accepts $t" "exit $RC, the tag check refused it; err: $ERR"
@@ -131,10 +129,10 @@ COMMON=(RELEASE_KMS_KEY_REF="$KMS" GH_TOKEN=g DOCKERHUB_USERNAME=u DOCKERHUB_TOK
 shcase release-apks.sh final "${COMMON[@]}"
 shcase release-signatures.sh final "${COMMON[@]}"
 shcase release-stage.sh final "${COMMON[@]}"
-shcase release-verify.sh any "${COMMON[@]}"
-# the one place the tag is judged says so in the words of the rule
+shcase release-verify.sh final "${COMMON[@]}"
+# the one place the tag is judged says so in the words of the rule (the message ends there; ERR turns its newline into a space)
 c=$(mkcase "sv" release-verify.sh); shrun "$c" release-verify.sh v01.2.3 "${COMMON[@]}"
-case "$ERR" in *"refused at tag: "*" is not vX.Y.Z or vX.Y.Z-rcN"*) true;; *) false;; esac && ok "release-verify.sh refuses at tag with 'is not vX.Y.Z or vX.Y.Z-rcN'" || bad "release-verify.sh refuses at tag with 'is not vX.Y.Z or vX.Y.Z-rcN'" "err: $ERR"
+case "$ERR" in *"refused at tag: "*" is not vX.Y.Z "|*"refused at tag: "*" is not vX.Y.Z") true;; *) false;; esac && ok "release-verify.sh refuses at tag with 'is not vX.Y.Z'" || bad "release-verify.sh refuses at tag with 'is not vX.Y.Z'" "err: $ERR"
 
 # ------------------------------------------------------------------ C. chain-verify.py: policy make --tag / --ref (no grammar here: the tag is judged before, in release-verify.sh)
 K=$S/keys; mkdir -p "$K"
@@ -198,7 +196,7 @@ for r in refs/tags/ refs/heads/ refs/heads refs/tags refs/pull/1/merge v1.2.3 ma
   polref "$r"; cv_refuse && ok "chain-verify policy make --ref $(printf %q "$r") is refused at policy" || bad "chain-verify policy make --ref $(printf %q "$r") is refused at policy" "exit $RC: $ERR"
 done
 
-# chain_items.py (through chain-verify.py admission-baseline): the rc-versus-final decision for the baseline, and no grammar
+# chain_items.py (through chain-verify.py admission-baseline): a baseline version without -rc, and no grammar
 admcase() { # admcase TAG BASELINE_VERSION [BASELINE_PATH] [ARG_TAG] [ARG_SHA]: both legs agree; sets RC, ERR; $S/cv/adm-out.json is written only when accepted
   local tag=$1 bv=$2 sha=0123456789abcdef0123456789abcdef01234567
   local bp=${3:-requirements/releases/$2.yaml} at=${4:-$1} as=${5:-$sha}
@@ -211,8 +209,8 @@ for n in ("a1", "a2"):
 PY
   cvrun admission-baseline --admission "$S/cv/a1.json" --admission "$S/cv/a2.json" --tag "$at" --sha "$as" --out "$S/cv/adm-out.json"
 }
-# still refused: a final tag whose baseline is a release candidate; a release candidate tag whose baseline is not the tag itself; a baseline file that is not requirements/releases/<version>.yaml
-for pair in "v1.2.3 v1.2.3-rc1" "v1.2.3-rc1 v1.2.3-rc2" "v1.2.3-rc1 v1.2.2" "v01.2.3 v01.2.3-rc1" "v1.2.3-rc1 v1.2.3-rc01"; do
+# still refused: a baseline version with -rc, whatever the tag; a baseline file that is not requirements/releases/<version>.yaml
+for pair in "v1.2.3 v1.2.3-rc1" "v1.2.3-rc1 v1.2.3-rc2" "v01.2.3 v01.2.3-rc1" "v1.2.3-rc1 v1.2.3-rc01"; do
   set -- $pair; admcase "$1" "$2"
   [ "$RC" = 1 ] && [ ! -e "$S/cv/adm-out.json" ] && grep -q 'baseline' "$S/cv/err" && ok "chain_items admission-baseline refuses tag $1 with baseline $2" || bad "chain_items admission-baseline refuses tag $1 with baseline $2" "exit $RC: $ERR"
 done
@@ -232,8 +230,8 @@ json.dump(a, open(d + "/a1.json", "w")); a["baseline_version"] = "v1.1.0"; a["ba
 PY
 rm -f "$S/cv/adm-out.json"; cvrun admission-baseline --admission "$S/cv/a1.json" --admission "$S/cv/a2.json" --tag v1.2.3 --sha 0123456789abcdef0123456789abcdef01234567 --out "$S/cv/adm-out.json"
 [ "$RC" = 1 ] && [ ! -e "$S/cv/adm-out.json" ] && grep -q 'disagree' "$S/cv/err" && ok "chain_items admission-baseline refuses two legs that disagree" || bad "chain_items admission-baseline refuses two legs that disagree" "exit $RC: $ERR"
-# accepted: the decision is rc-versus-final only; a tag or baseline version the grammar would refuse is not judged here (build-admit.py judged it at admission)
-for pair in "v1.2.3 v1.2.3" "v1.2.3 v1.2.0" "v1.2.3-rc1 v1.2.3-rc1" "v1.2.3-rc12 v1.2.3-rc12" "v0.0.1 v0.0.0" "v01.2.3 v01.2.3" "v1.2.3 v01.2.0" "v1.2.3-rc0 v1.2.3-rc0" "v1.2.3-rc.1 v1.2.3-rc.1" "v1.2.3-rc01 v1.2.3-rc01"; do
+# accepted: the decision is the baseline's -rc only; a tag or baseline version the grammar would refuse is not judged here (build-admit.py judged it at admission)
+for pair in "v1.2.3 v1.2.3" "v1.2.3 v1.2.0" "v0.0.1 v0.0.0" "v01.2.3 v01.2.3" "v1.2.3 v01.2.0"; do
   set -- $pair; admcase "$1" "$2"
   [ "$RC" = 0 ] && [ -s "$S/cv/adm-out.json" ] && ok "chain_items admission-baseline accepts tag $1 with baseline $2 (no grammar judged here)" || bad "chain_items admission-baseline accepts tag $1 with baseline $2" "exit $RC: $ERR"
 done
@@ -287,7 +285,7 @@ for t in v1.2.3 v0.0.0; do
   pvcase "$t"; ! grep -qi 'refused at tag' "$S/pv/err" && ok "release-postverify accepts $t (goes on past the tag check)" || bad "release-postverify accepts $t" "exit $RC: $ERR"
 done
 
-# ------------------------------------------------------------------ F. marker-pr-gate.py (rc tags only): read_marker
+# ------------------------------------------------------------------ F. marker-pr-gate.py: read_marker (the grammar admits no rc tag, so it refuses every marker tag)
 mkdir -p "$S/mg/bin"; cp "$root/bin/marker-pr-gate.py" "$root/bin/build-admit.py" "$S/mg/bin/"
 mgcase() { # mgcase TAG: sets RC (0 accepted, 1 refused, 2 other failure)
   mkdir -p "$S/mg/head/.github/policy"
@@ -310,9 +308,6 @@ PY
 }
 for t in v1.2.3-rc0 v01.2.3-rc1 v1.2.3-rc.1 v1.2.3 v1.2.3-rc01 "v1.2.3-rc1$NL"; do
   mgcase "$t"; [ "$RC" = 1 ] && ok "marker-pr-gate refuses the marker tag $(printf %q "$t")" || bad "marker-pr-gate refuses the marker tag $(printf %q "$t")" "exit $RC: $ERR"
-done
-for t in v1.2.3-rc1 v0.3.0-rc12; do
-  mgcase "$t"; [ "$RC" = 0 ] && ok "marker-pr-gate accepts the marker tag $t" || bad "marker-pr-gate accepts the marker tag $t" "exit $RC: $ERR"
 done
 
 # ------------------------------------------------------------------ G. the helper that reads a command out of a workflow's own text (used by K)
@@ -440,10 +435,10 @@ PY
     { printf 'set -u\ntargets=$(cat targets.json)\n'; printf '%s\n' "$head_fr"; } > "$d/run.sh"
     (cd "$S/wf" && cd shape && mkdir -p bin; cp "$root/bin/build-admit.py" bin/; TAG_RE="$("$REALPY" -I "$root/bin/build-admit.py" tag-pattern)" PATH="/usr/bin:/bin" bash run.sh > out 2> err < /dev/null)
   }
-  for t in v01.2.3 v1.02.3 v1.2.3-rc0 v1.2.3-rc.1 v1.2.3-rc01 1.2.3; do
+  for t in v01.2.3 v1.02.3 v1.2.3-rc0 v1.2.3-rc.1 v1.2.3-rc01 1.2.3 v1.2.3-rc1 v1.2.3-rc12; do
     shape "$t" && bad "main-candidate-rescan refuses the target release $t" "accepted" || ok "main-candidate-rescan refuses the target release $t"
   done
-  for t in v1.2.3 v1.2.3-rc1 v1.2.3-rc12; do
+  for t in v1.2.3; do
     shape "$t" && ok "main-candidate-rescan accepts the target release $t" || bad "main-candidate-rescan accepts the target release $t" "refused: $(head -c 150 "$S/wf/shape/err")"
   done
 fi
@@ -486,10 +481,10 @@ cvna policy make --template "$K/template.json" --ref refs/heads/main --out "$S/n
 cvna policy make --template "$K/template.json" --tag v0.0.0 --out "$S/na/policy.json"
 [ "$RC" = 1 ] && [ ! -e "$S/na/policy.json" ] && grep -q 'refused at policy' "$S/na/err" && ok "chain-verify policy make with build-admit.py absent still refuses a snapshot version" || bad "chain-verify policy make with build-admit.py absent still refuses a snapshot version" "exit $RC: $ERR"
 sha=0123456789abcdef0123456789abcdef01234567
-for n in a1 a2; do printf '{"tag": "v1.2.3-rc1", "sha": "%s", "baseline_version": "v1.2.3-rc1", "baseline": "requirements/releases/v1.2.3-rc1.yaml"}' "$sha" > "$S/na/$n.json"; done
-cvna admission-baseline --admission "$S/na/a1.json" --admission "$S/na/a2.json" --tag v1.2.3-rc1 --sha "$sha" --out "$S/na/adm-out.json"
-[ "$RC" = 0 ] && [ -s "$S/na/adm-out.json" ] && ok "chain-verify admission-baseline with build-admit.py absent accepts a release candidate with its own baseline" || bad "chain-verify admission-baseline with build-admit.py absent accepts a release candidate with its own baseline" "exit $RC: $ERR"
-cvna admission-baseline --admission "$S/na/a1.json" --admission "$S/na/a2.json" --tag v1.2.3-rc2 --sha "$sha" --out "$S/na/adm-out2.json"
+for n in a1 a2; do printf '{"tag": "v1.2.3", "sha": "%s", "baseline_version": "v1.2.0", "baseline": "requirements/releases/v1.2.0.yaml"}' "$sha" > "$S/na/$n.json"; done
+cvna admission-baseline --admission "$S/na/a1.json" --admission "$S/na/a2.json" --tag v1.2.3 --sha "$sha" --out "$S/na/adm-out.json"
+[ "$RC" = 0 ] && [ -s "$S/na/adm-out.json" ] && ok "chain-verify admission-baseline with build-admit.py absent accepts a release tag with its baseline" || bad "chain-verify admission-baseline with build-admit.py absent accepts a release tag with its baseline" "exit $RC: $ERR"
+cvna admission-baseline --admission "$S/na/a1.json" --admission "$S/na/a2.json" --tag v1.2.4 --sha "$sha" --out "$S/na/adm-out2.json"
 [ "$RC" = 1 ] && [ ! -e "$S/na/adm-out2.json" ] && ok "chain-verify admission-baseline with build-admit.py absent still refuses an admission for another tag" || bad "chain-verify admission-baseline with build-admit.py absent still refuses an admission for another tag" "exit $RC: $ERR"
 # a load of build-admit.py leaves a module of that name behind: import chain-verify.py by path and look at what registered
 mods=$("$REALPY" -I -B - "$S/na/bin/chain-verify.py" 2> "$S/na/mods.err" <<'PY'

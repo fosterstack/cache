@@ -17,7 +17,7 @@ The chain files of a commit are read from the commit's own objects, never from a
     a comment is not code the chain runs and stays outside; a name that is not a file of the commit is not a chain file.
 The marker is the closed object {rc_tag, run_id, chain_sha256, records}: rc_tag is vX.Y.Z-rcN, run_id the digits of the rc run, chain_sha256 the sha256 above and
 records the sha256 of each record the rc run produced (build, sign, rekor, rebuild, hostile_verdict and, for each of the runners ubuntu-24.04 and ubuntu-24.04-arm, scanners, acceptance and runtime, keyed STEP-RUNNER). check-marker is what
-the patch decide job runs at tag time: the marker must be readable and closed, the rc tag must exist and be an ancestor of the commit, and the chain
+the verifier's rc-proof subcommand runs (the marker gate of ci.yml): the marker must be readable and closed, the rc tag must exist and be an ancestor of the commit, and the chain
 files of the commit AND of the rc tag's commit must both hash to chain_sha256 (the rc run ran those bytes). The records themselves were verified when the marker was
 merged (the verifier's rc-proof subcommand). Nothing is skipped: a missing marker is a refusal.
 

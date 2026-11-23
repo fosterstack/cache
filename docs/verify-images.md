@@ -92,7 +92,7 @@ The provenance names each image (`production` and `-fips`) by digest. Compare
 those digests with the digest of the image you pulled.
 
 The step-by-step commands are in the v0.3.0 release guide, <!-- pinned: historical -->
-[`docs/verify-release.md`](verify-release.md). Its commands are TO-VERIFY (not yet run) until a release candidate has run them.
+[`docs/verify-release.md`](verify-release.md). Its commands are TO-VERIFY (not yet run) until a release run has run them.
 
 Neither step tells you whether the artifact was scanned or tested. Other
 stages of the chain make those statements separately. See "Verify the whole

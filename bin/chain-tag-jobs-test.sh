@@ -8,7 +8,7 @@
 #   and sign-tag, in the environment sign). It runs on a push of a v* tag (the chain), on a push to main and the daily schedule '47 9 * * *' (only the four tag jobs below), on
 #   workflow_dispatch, and on workflow_call from scan.yml and main-candidate-rescan.yml in snapshot mode. The four tag jobs, in this order of `needs`:
 #     decide           decides only: no key, no push right (no contents: write, no id-token, no App token), no tag made, signed or pushed, no keyless signing tool named. Its job output
-#                      `tag` is the tag due (vX.Y.Z, the next patch) or empty. It runs rc-proof (which never fails: no marker means no decision), decide, the ACs-baseline pre-check, the
+#                      `tag` is the tag due (vX.Y.Z, the next patch) or empty. It runs decide, the ACs-baseline pre-check, the
 #                      required-checks wait and the notes, and uploads the tag request (the tag and its notes) as an artifact for sign-tag.
 #     sign-tag         needs exactly decide, environment sign, permissions exactly contents read and id-token write, runs-on ubuntu-24.04, if exactly `needs.decide.outputs.tag != ''`; no job-level env,
 #                      secrets, uses, container or services. Its steps are judged by the shared step checks (bin/chain-test-signers.py stage_grammar) and by the exact run: texts of the judge: checkout,
@@ -62,7 +62,6 @@ mut "decide signs a tag with a keyless tool"      $R '(      - name: decide \(bi
 mut "decide names the release key"                $R '(      - name: decide \(bin/patch-decide.py\)\n)'         '      - run: echo awskms:///alias/fosterstack-release-signing\n\1' 'decides only'
 mut "decide has no tag output"                    $R '(  decide:.*?)    outputs:\n      tag: [^\n]*\n'          '\1'                                        'output `tag`'
 mut "decide runs on every branch"                 $R "(  decide:\n    if: )[^\n]*"                              "\\1\${{ github.event_name != 'workflow_dispatch' }}" 'main only'
-mut "decide does not check the rc-proof marker"   $R 'patch-decide.py rc-proof'                                 'patch-decide.py rcproof'                   'rc-proof'
 mut "decide does not decide"                      $R 'patch-decide.py decide --event'                           'patch-decide.py dicide --event'            'fix-only decision'
 mut "decide does not check the ACs baseline"      $R 'python3 bin/admission-tag-signer.py baseline'             'python3 bin/admission-tag-signer.py basel1ne' 'ACs baseline'
 mut "decide does not wait for the required checks" $R 'patch-decide.py ready'                                   'patch-decide.py reedy'                     'required checks'
@@ -365,81 +364,6 @@ for label, t in muts:
     print(("OK %s is refused (%s)" % (label, me[0][:90])) if t != real and me else "FAIL %s passes the group judge (or did not apply)" % label)
 PY
 while IFS= read -r l; do case "$l" in OK\ *) ok "${l#OK }";; *) bad "${l#FAIL }";; esac; done < <(python3 -I "$work/group.py" "$root/.github/workflows/release.yml" 2>&1)
-# ---- decide is never red by design on main: its rc-proof step records ok=false and the steps that decide, scan and tag run only when ok is 'true' (REQ-CHAIN-001-AC6) ----
-cat > "$work/rcproof.py" <<'PY'
-import os, re, shutil, subprocess, sys, tempfile, yaml, json, hashlib
-root, work = sys.argv[1], sys.argv[2]
-IF_OK = "${{ steps.rcproof.outputs.ok == 'true' }}"
-d = yaml.safe_load(open(root + "/.github/workflows/release.yml").read())
-steps = d["jobs"]["decide"]["steps"]
-def step(text_steps, i): return next((s for s in text_steps if s.get("id") == i), None)
-rp, facts, dec = step(steps, "rcproof"), step(steps, "facts"), step(steps, "decide")
-ENV = {"PATH": os.environ["PATH"], "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null", "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
-       "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com", "HOME": work}
-def sh(cwd, *a, **k): return subprocess.run(a, cwd=cwd, env=ENV, capture_output=True, text=True, check=k.get("check", True))
-def scratch(name, marker=None, mutate=None):
-    """a scratch git repository with the real bin/patch-decide.py and bin/chain-bytes-sha.py, a minimal chain (one listed script, the five build inputs) and no marker, or the given one"""
-    r = os.path.join(work, name); os.makedirs(r + "/bin"); os.makedirs(r + "/.github/policy"); os.makedirs(r + "/build/locks")
-    for f in ("patch-decide.py", "chain-bytes-sha.py"): shutil.copy(root + "/bin/" + f, r + "/bin/" + f)
-    for f in ("build/sealed-env.json", "build/archive.json", "build/melange.yaml", "build/apko.yaml", "build/locks/fips-module.txt"): open(os.path.join(r, f), "w").write("x\n")
-    open(r + "/bin/x.sh", "w").write("echo x\n"); json.dump({"scripts": [{"path": "bin/x.sh"}]}, open(r + "/.github/policy/chain-scripts.json", "w"))
-    sh(r, "git", "init", "-q"); sh(r, "git", "add", "-A"); sh(r, "git", "commit", "-q", "-m", "rc"); sh(r, "git", "tag", "v0.3.0-rc1")
-    open(r + "/NOTES", "w").write("not a chain file\n"); sh(r, "git", "add", "-A"); sh(r, "git", "commit", "-q", "-m", "later")
-    if marker:
-        sha = sh(r, "python3", "-I", "bin/chain-bytes-sha.py", "sha", "--commit", "HEAD").stdout.strip()
-        keys = ("build", "sign", "rekor", "rebuild", "hostile_verdict") + tuple("%s-%s" % (n, x) for x in ("ubuntu-24.04", "ubuntu-24.04-arm") for n in ("scanners", "acceptance", "runtime"))
-        m = {"rc_tag": "v0.3.0-rc1", "run_id": "1234", "chain_sha256": sha if marker == "good" else "0" * 64, "records": {k: "a" * 64 for k in keys}}
-        json.dump(m, open(r + "/.github/policy/rc-proof.json", "w"))
-    return r
-def execute(run, r):
-    out = os.path.join(r, "gh-output"); open(out, "w").close()
-    e = dict(ENV, GITHUB_OUTPUT=out, GITHUB_SHA=sh(r, "git", "rev-parse", "HEAD").stdout.strip())
-    p = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", run], cwd=r, env=e, capture_output=True, text=True)
-    return p.returncode, open(out).read(), p.stdout + p.stderr
-def rc_errors(run, name, marker=None):
-    rc, out, msg = execute(run, scratch(name, marker))
-    want = "ok=true" if marker == "good" else "ok=false"
-    e = []
-    if rc != 0: e.append("the rc-proof step exits %d (%s marker): decide would be red on main by design: %s" % (rc, marker or "no", msg.strip()[-120:]))
-    if want not in out.splitlines(): e.append("the rc-proof step wrote %r to GITHUB_OUTPUT, wanted %s" % (out, want))
-    if marker != "good" and "ok=true" in out.splitlines(): e.append("the rc-proof step says ok=true for a marker that is %s" % (marker or "missing"))
-    return e
-def wiring_errors(t):
-    s = t["jobs"]["decide"]["steps"]; e = []
-    a, f, g = step(s, "rcproof"), step(s, "facts"), step(s, "decide")
-    if a is None or "rc-proof" not in str(a.get("run")): e.append("decide has no step with the id rcproof that runs patch-decide.py rc-proof")
-    elif "if" in a or "continue-on-error" in a: e.append("the rcproof step has an if or continue-on-error: it must always run and never hide a failure")
-    for n, x in (("facts", f), ("decide", g)):
-        if x is None: e.append("decide has no step %s" % n)
-        elif x.get("if") != IF_OK: e.append("the %s step must carry exactly `if: %s`, found %r" % (n, IF_OK, x.get("if")))
-    return e
-def report(cond, okmsg, badmsg): print(("OK " + okmsg) if cond else ("FAIL " + badmsg))
-w = wiring_errors(d)
-report(not w, "decide's rcproof step always runs and its facts and decide steps run only when steps.rcproof.outputs.ok == 'true'", "the real decide job: %s" % w)
-run = rp["run"]
-for label, marker in (("no marker", None), ("a marker that does not validate (it names other chain bytes)", "stale")):
-    e = rc_errors(run, "real-" + (marker or "none"), marker)
-    report(not e, "the real rc-proof step run in a scratch repository with %s exits 0, prints a notice and records ok=false" % label, "the real rc-proof step with %s: %s" % (label, e))
-rc, out, msg = execute(run, scratch("real-nomarker-notice"))
-report("::notice::" in msg, "the rc-proof step prints a notice when it records ok=false", "the rc-proof step printed no ::notice:: (%r)" % msg[-100:])
-e = rc_errors(run, "real-good", "good")
-report(not e, "with a marker that validates (an rc tag, the same chain bytes, built without the real chain files) the real rc-proof step records ok=true", "a marker that validates: %s" % e)
-m = re.search(r"^\s*if (python3 bin/patch-decide.py rc-proof[^;\n]*); then", run, re.M)
-assert m, run
-for label, mrun in (("the step run without its if-guard (the bare command)", m.group(1)), ("the step with the failure swallowed and nothing recorded", m.group(1) + " || true")):
-    e = rc_errors(mrun, "mut-" + str(len(label)))
-    report(e, "%s is refused (%s)" % (label, e[0][:90] if e else ""), "%s passes the rc-proof case" % label)
-import copy
-for n, i in (("facts", "facts"), ("decide", "decide"), ("the rcproof step itself", "rcproof")):
-    t = copy.deepcopy(d); s = step(t["jobs"]["decide"]["steps"], i)
-    if i == "rcproof": s["if"] = IF_OK
-    else: s.pop("if", None)
-    e = wiring_errors(t)
-    report(e, "%s %s is refused (%s)" % (n, "with an if" if i == "rcproof" else "without `if: steps.rcproof.outputs.ok == 'true'`", e[0][:80] if e else ""), "%s passes the wiring case" % n)
-t = copy.deepcopy(d); step(t["jobs"]["decide"]["steps"], "facts")["if"] = "${{ always() }}"
-e = wiring_errors(t); report(e, "the facts step with another if is refused", "the facts step with another if passes")
-PY
-while IFS= read -r l; do case "$l" in OK\ *) ok "${l#OK }";; *) bad "${l#FAIL }";; esac; done < <(python3 -I "$work/rcproof.py" "$root" "$work" 2>&1)
 # ---- REQ-REL-009-AC3: what release.yml's decide job passes to bin/patch-decide.py (the workflow text) ------------------
 cat > "$work/decide-text.py" <<'PY'
 import re, sys, yaml

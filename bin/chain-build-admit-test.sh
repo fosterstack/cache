@@ -530,13 +530,13 @@ fresh; run_admit GITHUB_REF=refs/heads/main;                  expect_refuse "AC4
 fresh; run_admit GITHUB_REF= GITHUB_REF_NAME=;                 expect_refuse "AC4 an empty ref is refused" tag-ref
 for t in v1.2 v1.2.3-rc V0.3.0 "v0.3.0 " \
     v0.3.0-rc.x 0.3.0 v0.3.0-rc.1-x v0.3.0-rc.1 v0.3.0-RC1 v0.3.0-rc1x v0.3.0rc1 v0.3.0-rc1-rc1 \
-    v01.2.3 v1.02.3 v0.3.0-rc0 v0.3.0-rc01 "v0.3.0
+    v01.2.3 v1.02.3 v0.3.0-rc0 v0.3.0-rc01 v0.3.0-rc1 v0.3.0-rc12 "v0.3.0
 x"; do
   fresh;
   run_admit "GITHUB_REF=refs/tags/$t" "GITHUB_REF_NAME=$t";
   expect_refuse "AC4 the tag syntax gate refuses '$(printf '%s' "$t" | tr '\n' '|')'" tag-syntax
 done
-for t in v0.3.0-rc1 v1.2.3 v10.20.30;
+for t in v1.2.3 v10.20.30;
 do fresh;
 run_admit "GITHUB_REF=refs/tags/$t" "GITHUB_REF_NAME=$t";
 { [ "$RC" = 0 ] || ! grep -q 'tag-syntax' "$W/c/err";
@@ -772,7 +772,7 @@ expect_refuse "AC4 required-checks.json missing on origin/main (present in the t
   required-checks.json
 # ---- a release branch is refused as a tag is: the same checks, the branch name in place of the tag ---------------------------------------
 fresh; G branch -q -f release/v0.3.0-rc1 HEAD; run_admit GITHUB_REF=refs/heads/release/v0.3.0-rc1 GITHUB_REF_NAME=release/v0.3.0-rc1
-expect_refuse "AC4 the branch release/v0.3.0-rc1 is refused at tag-syntax (a release branch names a final version)" tag-syntax "release candidate"
+expect_refuse "AC4 the branch release/v0.3.0-rc1 is refused at tag-syntax (a release branch names a version vX.Y.Z)" tag-syntax "does not match"
 fresh; G branch -q -f release/v0.3.0 HEAD; G checkout -q release/v0.3.0
 G -c user.signingkey="$W/keys/owner" commit -q -S --allow-empty -m "moved after the push"; G checkout -q --detach "$SHAC"
 run_admit GITHUB_REF=refs/heads/release/v0.3.0 GITHUB_REF_NAME=release/v0.3.0
@@ -1065,8 +1065,6 @@ expect_refuse "AC13 an owner-signed patch tag with no requirements/releases/v0.3
 # the release key on anything but a patch tag
 fresh; retag kms; run_admit
 expect_refuse "AC6 the release KMS key on the final tag v0.3.0 is refused at tag-signature (the owner signs vX.Y.0)" tag-signature
-fresh; G -c user.signingkey="$W/keys/kms" tag -s -m v0.3.0-rc2 v0.3.0-rc2; run_admit GITHUB_REF=refs/tags/v0.3.0-rc2 GITHUB_REF_NAME=v0.3.0-rc2
-expect_refuse "AC6 the release KMS key on a release candidate is refused at tag-signature" tag-signature
 fresh; G -c user.signingkey="$W/keys/kms" tag -s -m v1.0.0 v1.0.0; run_admit GITHUB_REF=refs/tags/v1.0.0 GITHUB_REF_NAME=v1.0.0
 expect_refuse "AC6 the release KMS key on a major tag is refused at tag-signature" tag-signature
 fresh; G -c user.signingkey="$W/keys/kms" tag -s -m v0.4.0 v0.4.0; run_admit GITHUB_REF=refs/tags/v0.4.0 GITHUB_REF_NAME=v0.4.0
@@ -1098,7 +1096,7 @@ expect_refuse "AC6 the release KMS key is no commit signer: a commit signed with
 kms_patch kms; { G cat-file tag v0.3.1; printf -- '-----BEGIN SIGNED MESSAGE-----\nMIIBfake\n-----END SIGNED MESSAGE-----\n'; } > "$W/c/two.obj"
 obj=$(G mktag < "$W/c/two.obj"); G update-ref refs/tags/v0.3.1 "$obj"; run_kms
 expect_refuse "AC6 a release-key signature followed by a second (keyless) signature block is refused at tag-signature" tag-signature
-# ---- required-checks.json on a release candidate tag: the list must be there and not empty ----------------------------------------------
+# ---- required-checks.json on a minor tag: the list must be there and not empty ----------------------------------------------
 poledit() { # poledit FILE PYCODE : change a policy file of the case's repo (d is its JSON)
   (cd "$W/c/repo" && python3 - "$1" "$2" <<'PY'
 import json, sys
@@ -1106,17 +1104,17 @@ p = sys.argv[1]; d = json.load(open(p)); exec(sys.argv[2]); json.dump(d, open(p,
 PY
   ); }
 RC_F=.github/policy/required-checks.json
-rcfresh() { # rcfresh [FILE PYCODE] : the release candidate tag v0.3.0-rc2, optionally on a main whose policy FILE is changed
+rcfresh() { # rcfresh [FILE PYCODE] : the owner-signed minor tag v0.4.0 with its own baseline, optionally on a main whose policy FILE is changed
   fresh; G checkout -q main; if [ "$#" -gt 0 ]; then poledit "$1" "$2"; fi
-  sed 's/^version: v0.3.0$/version: v0.3.0-rc2/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.0-rc2.yaml"
-  G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "rc2 baseline"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
-  G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.0-rc2 v0.3.0-rc2; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; mkfreeze; }
-rc_admit() { run_admit GITHUB_REF=refs/tags/v0.3.0-rc2 GITHUB_REF_NAME=v0.3.0-rc2; }
+  sed 's/^version: v0.3.0$/version: v0.4.0/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.4.0.yaml"
+  G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "v0.4.0 baseline"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
+  G -c user.signingkey="$W/keys/owner" tag -s -m v0.4.0 v0.4.0; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; mkfreeze; }
+rc_admit() { run_admit GITHUB_REF=refs/tags/v0.4.0 GITHUB_REF_NAME=v0.4.0; }
 rcfresh $RC_F 'd["required_checks"] = []'; rc_admit
 expect_refuse "AC4 required-checks.json with an empty required_checks list is refused at required-checks, naming the file" required-checks required-checks.json
 rcfresh $RC_F 'del d["required_checks"]'; rc_admit
 expect_refuse "AC4 required-checks.json with no required_checks list is refused at required-checks, naming the file" required-checks required-checks.json
-rcfresh; rc_admit; expect_ok "AC4 a release candidate tag with its approved baseline and every required check green is admitted"
+rcfresh; rc_admit; expect_ok "AC4 a minor tag with its approved baseline and every required check green is admitted"
 # ---- the committed web-flow keyring: exactly the current GitHub web-flow key, no expired key
 wf_keys=$(gpg --batch --show-keys --with-colons "$root/.github/policy/github-web-flow.gpg" 2> /dev/null | awk -F: '$1 == "pub" { print $5 ":" $2 }')
 [ "$wf_keys" = "B5690EEEBB952194:-" ] && ok "the committed github-web-flow.gpg holds only the current web-flow key B5690EEEBB952194, not expired" || bad "github-web-flow.gpg holds: ${wf_keys//$'\n'/ } (want only B5690EEEBB952194, not expired)"

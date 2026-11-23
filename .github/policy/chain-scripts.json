@@ -151,7 +151,7 @@
         "bin/loopback-get.sh"
       ],
       "signs": "other",
-      "reason": "the hostile Build step (a release-candidate tag push): signs forged material with a throwaway key made in this job (no token, no cosign) only to prove the verifiers refuse it; runs only when the caller asks (if: inputs.hostile; release.yml sets it on an -rc tag push)",
+      "reason": "the hostile Build step (every build): signs forged material with a throwaway key made in this job (no token, no cosign) only to prove the verifiers refuse it; runs in every build with no condition (REQ-CHAIN-004-AC19)",
       "exceptions": [
         {
           "rule": "deny",
@@ -217,7 +217,7 @@
       ],
       "runs": [],
       "signs": false,
-      "reason": "the chain-file set defined once (the release and stage workflows, the listed scripts, the policy files but the marker) and the rc-proof marker's local checks (REQ-CHAIN-001-AC6); loaded by chain-verify.py rc-proof; reads git objects with git cat-file and ls-tree, runs no listed script and signs nothing; `at` is the word of its `refused at` line"
+      "reason": "the chain-file set defined once (the release and stage workflows, the listed scripts, the policy files but the marker) and the rc-proof marker's local checks; loaded by chain-verify.py rc-proof (the marker gate of ci.yml); reads git objects with git cat-file and ls-tree, runs no listed script and signs nothing; `at` is the word of its `refused at` line"
     },
     {
       "path": "bin/install-build-tools.sh",
@@ -413,18 +413,11 @@
         "source",
         "gh"
       ],
-      "runs": [
-        "bin/chain-bytes-sha.py"
-      ],
+      "runs": [],
       "signs": false,
       "reason": "the one reader of a generated patch tag's notes (REQ-REL-009-AC8, AC14): its tag-notes subcommand prints the notes the tag carries, else exits 1, and refuses a notes text with a signature block; release-stage.sh (no credential) writes that output to the notes file that release-assets.sh posts on the GitHub release",
       "reads_env": [],
       "exceptions": [
-        {
-          "rule": "script-name",
-          "text": "chain-bytes-sha.py",
-          "why": "the file name joined to this script's own directory to run the one definition of the rc-proof marker's checks (listed in runs); a name, never a path to a command here"
-        },
         {
           "rule": "script-name",
           "text": "x.sh",
@@ -480,11 +473,6 @@
         {
           "name": "PATH",
           "text": "# (r10, A low 3 / B 4). Go itself is not on the decide job's PATH (release.yml installs no Go toolchain), so the parser is",
-          "why": "prose or the comment about a go.mod PATH directive or an -I isolation note: a word, never read or set"
-        },
-        {
-          "name": "PYTHONPATH",
-          "text": "    # marker: no patch decision (never a skip). -I: a module planted on PYTHONPATH or in the cwd is never imported by it",
           "why": "prose or the comment about a go.mod PATH directive or an -I isolation note: a word, never read or set"
         }
       ]
@@ -1704,7 +1692,7 @@
       "exceptions": [
         {
           "rule": "deny",
-          "line": "  { echo \"refused at tag: ${GITHUB_REF_NAME:-} is not vX.Y.Z or vX.Y.Z-rcN\" >&2; exit 1; }",
+          "line": "  { echo \"refused at tag: ${GITHUB_REF_NAME:-} is not vX.Y.Z\" >&2; exit 1; }",
           "count": 1,
           "why": "the refusal message must read `refused at <stage>` (the failure names its stage); `at` is a word of that message, not a command;"
         },

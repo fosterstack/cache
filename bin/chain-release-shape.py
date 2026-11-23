@@ -11,7 +11,7 @@ which is RED until PR 4 is implemented. Finite grammars and allowlists only, no 
                       release job or on any of its steps.
   others ROOT         REQ-CHAIN-007-AC3  nothing outside the release job holds packages write, a registry credential or the release environment; the release job holds no id-token.
   graph FILE          REQ-CHAIN-007-AC11 release.yml: release-compare needs exactly check, sign, sign-rebuild and sign-check, release-verify needs release-compare, release needs
-                      release-verify and release-compare; rebuild-apk needs build-assemble only; the guard S and the candidate rule are the if of release; no skip on a failed
+                      release-verify, release-compare and hostile-verdict; rebuild-apk needs build-assemble only; the guard S is the if of release; no skip on a failed
                       predecessor, no secrets, no tag.
   verify FILE         REQ-CHAIN-007-AC4  bin/release-verify.sh is `set -euo pipefail` and then EXACTLY the commands of VERIFY, in order.
   scan FILE JSON      REQ-CHAIN-007-AC6..AC10  a release script is plain: only its listed tools, no other script, no build command, no tag
@@ -38,7 +38,7 @@ RECORD_ENV_VERIFY_LOCAL = "python3 -I bin/chain-verify.py record-env --record wi
 CHECK_RUNNERS = ["ubuntu-24.04", "ubuntu-24.04-arm"]
 S_GUARD = ("inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && "
            "startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))")   # guard S: a push of a version tag, in release mode, in release.yml itself
-RC_IF = "${{ %s && !contains(github.ref_name, '-') }}" % S_GUARD   # the job if of release: S, then the candidate rule (a tag with a hyphen ends after release-verify)
+RELEASE_IF = "${{ %s }}" % S_GUARD   # the job if of release: exactly guard S
 BUILD_PAIRS = {"signed-witness-build": "witness-build", "digests": "witness-build", "items": "witness-build", "admission-baseline": "witness-build", "signed-witness-rebuild": "witness-rebuild", "provenance": "provenance"}
 CHECK_PAIRS = dict([("signed-witness-check-" + r, "witness-check/" + r) for r in CHECK_RUNNERS] + [("check-results-" + r, "check-results/" + r) for r in CHECK_RUNNERS])   # Check's two chips, each under its runner's name
 COMPARE_PAIRS = {"apk-ubuntu-24.04": "apks/ubuntu-24.04", "apk-ubuntu-24.04-arm": "apks/ubuntu-24.04-arm", "rapk-ubuntu-24.04": "rapks/ubuntu-24.04", "rapk-ubuntu-24.04-arm": "rapks/ubuntu-24.04-arm", "signed-witness-rapk-ubuntu-24.04": "witness-rapk-ubuntu-24.04", "signed-witness-rapk-ubuntu-24.04-arm": "witness-rapk-ubuntu-24.04-arm"}   # the compare job: Build's apks and Rebuild's, nothing else
@@ -47,7 +47,7 @@ RELEASE_PAIRS = dict(VERIFY_PAIRS, **{"dist": "dist", "images": "images", "apk-u
                                       "release-signed": "release-signed"})   # the release job: the verified records, what the later steps use (Build's artifacts only, never a rapk), and Sign's release-signed
 # the one job after release-verify: what it may hold, run and upload (REQ-CHAIN-007-AC1, AC2, AC3)
 JOBS = {
-    "release": dict(needs={"release-verify", "release-compare"}, environment="release", perm={"contents": "write", "packages": "write"}, installs=INSTALLS, steps=STEPS,
+    "release": dict(needs={"release-verify", "release-compare", "hostile-verdict"}, environment="release", perm={"contents": "write", "packages": "write"}, installs=INSTALLS, steps=STEPS,
                     helper="witnessed.sh", local=".local", pairs=RELEASE_PAIRS, concurrency={"group": "release-publish", "cancel-in-progress": "false"}, env=None,
                     ups=[("release-evidence", "release-evidence"), ("witness-release", "\n".join("witness-" + x for x in STEPS))]),
 }
@@ -79,12 +79,12 @@ def fed_env():
 # the jobs of the chain by their needs (REQ-CHAIN-007-AC11; rulings 1, 2 and 8 of cache#921): job -> exactly the jobs it needs
 NEEDS_OF = {"build-apk": {"build-freeze"}, "build-assemble": {"build-apk"}, "sign": {"build-assemble"}, "rebuild-apk": {"build-assemble"}, "rebuild-assemble": {"rebuild-apk"}, "sign-rebuild": {"build-assemble", "rebuild-assemble", "sign"},
             "check": {"check-govulncheck", "build-assemble"}, "sign-check": {"build-assemble", "check", "sign"}, "release-compare": {"check", "sign", "sign-rebuild", "sign-check"}, "release-verify": {"release-compare"},
-            "release": {"release-verify", "release-compare"}}
+            "release": {"release-verify", "release-compare", "hostile-verdict"}}
 CHAIN_JOBS = ["build-freeze", "check-govulncheck"] + list(NEEDS_OF)
 NEEDS_SKIPPED = re.compile(r"always\(\)|cancelled\(\)|failure\(\)|success\(\)")   # a status function in an if lets a job run after a failed predecessor
-# the tag rule (REQ-CHAIN-007-AC14, REQ-CHAIN-004-AC20): vX.Y.Z or a release candidate vX.Y.Z-rcN, decided by bin/build-admit.py tag-ok, the one tag grammar
+# the tag rule (REQ-CHAIN-007-AC14, REQ-CHAIN-004-AC20): vX.Y.Z, decided by bin/build-admit.py tag-ok, the one tag grammar
 TAGLINE = (r'python3 -I -B bin/build-admit\.py tag-ok "\$\{GITHUB_REF_NAME:-\}" \|\| '
-           r'\{ echo "refused at tag: \$\{GITHUB_REF_NAME:-\} is not vX\.Y\.Z or vX\.Y\.Z-rcN" >&2; exit 1; \}')
+           r'\{ echo "refused at tag: \$\{GITHUB_REF_NAME:-\} is not vX\.Y\.Z" >&2; exit 1; \}')
 # G1: the one line with which bin/release-signatures.sh makes policy.json (the same command as release-verify.sh's), so that the file it signs exists
 POLICY_MAKE = ('python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json '
                '--tag "$GITHUB_REF_NAME" --out policy.json')
@@ -289,8 +289,8 @@ def release_job(name, j):
     nd = j.get("needs")
     if (set([nd]) if isinstance(nd, str) else set(nd or [])) != spec["needs"]:
         bad.append("%s must need exactly %s (needs), got %r" % (lab, sorted(spec["needs"]), nd))
-    if j.get("if") != RC_IF:
-        bad.append("%s must carry exactly the job-level if %s (guard S, then the candidate rule: a release candidate never enters it), got %r" % (lab, RC_IF, j.get("if")))
+    if j.get("if") != RELEASE_IF:
+        bad.append("%s must carry exactly the job-level if %s (guard S), got %r" % (lab, RELEASE_IF, j.get("if")))
     allowed = {"runs-on", "permissions", "steps", "name", "timeout-minutes", "needs", "if"} | ({"environment"} if spec["environment"] else set()) | ({"concurrency"} if spec["concurrency"] else set()) | ({"env"} if spec["env"] else set())
     if set(j) - allowed:
         bad.append("%s: job keys not allowed: %s" % (lab, sorted(set(j) - allowed)))
@@ -344,8 +344,8 @@ def release_job(name, j):
             kinds.append("RE:" + r.split()[-1].split("/")[0][len("witness-"):])
         else:
             bad.append("%s: a step that is none of checkout, install, download, witnessed (bin/%s) or upload: %r" % (lab, spec["helper"], r or s.get("name")))
-        if len(kinds) > nk and "if" in s:   # only a step that was classified is judged; the job-level if skips the whole job for a release candidate
-            bad.append("%s: step %r must carry no if (the job-level if ends a release candidate before any step)" % (lab, r or u))
+        if len(kinds) > nk and "if" in s:   # only a step that was classified is judged; the job-level if decides for the whole job
+            bad.append("%s: step %r must carry no if (the job-level if decides for the whole job)" % (lab, r or u))
     head = ["checkout"] + ["install:" + t for t in spec["installs"]]
     ds = [i for i, k in enumerate(kinds) if k == "down"]
     ws = [k for k in kinds if k.startswith("W:")]
@@ -509,8 +509,8 @@ def graph(path):
     for n in CHAIN_JOBS:
         j, cond = jobs[n], str(jobs[n].get("if", "")).strip()
         if n in JOBS:
-            if cond != RC_IF:
-                bad.append("job %s must carry exactly the if %s, found %r" % (n, RC_IF, j.get("if")))
+            if cond != RELEASE_IF:
+                bad.append("job %s must carry exactly the if %s, found %r" % (n, RELEASE_IF, j.get("if")))
         elif n in ("release-compare", "release-verify"):
             if cond:
                 bad.append("job %s must carry no if, found %r" % (n, j.get("if")))

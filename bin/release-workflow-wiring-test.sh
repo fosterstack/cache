@@ -4,7 +4,7 @@
 # /srv/handoffs/briefs/cache-921-signer-identity-ruling.md and kvm-postponed-one-build-path.md). This suite judges that file from the PARSED workflow (never from substrings of
 # the text), once on the real file, which must pass, and on mutated copies, each of which must be refused FOR THE REASON NAMED (a refusal for another reason, or a crash, counts as a failure).
 # What it pins is what the English rows say and nothing more:
-#   REQ-CHAIN-005-AC5  the job graph: the chain jobs and their needs, the gate G on build-freeze, the guard S on sign, sign-rebuild, sign-check and (followed by && !contains(github.ref_name, '-')) release, the Check jobs'
+#   REQ-CHAIN-005-AC5  the job graph: the chain jobs and their needs, the gate G on build-freeze, the guard S on sign, sign-rebuild, sign-check and release, the Check jobs'
 #                      condition, no if on the Rebuild jobs, workflow-level permissions {}, the allowed other jobs, the dry-run input a boolean
 #   REQ-CHAIN-001-AC9  the four sign jobs: environment sign, exactly contents read and id-token write, the three KMS federation literals as job env, the only jobs that run a signing
 #                      command; the release job holds no AWS role and no id-token; no other file's job names the key role, except the one publish step of
@@ -43,7 +43,7 @@ NEEDS = {   # exactly, as REQ-CHAIN-005-AC5 lists them
     "rebuild-assemble": ["rebuild-apk"], "sign-rebuild": ["build-assemble", "rebuild-assemble", "sign"],
     "sign-check": ["build-assemble", "check", "sign"],
     "release-compare": ["check", "sign", "sign-rebuild", "sign-check"], "release-verify": ["release-compare"],
-    "release": ["release-verify", "release-compare"],
+    "release": ["release-verify", "release-compare", "hostile-verdict"],
 }
 NEEDS_AT_LEAST = {"check": ["check-govulncheck", "build-assemble"]}
 
@@ -63,7 +63,6 @@ def norm(expr):
     return "".join(out)
 G = norm("(github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true || inputs.mode == 'snapshot'")
 S = norm("inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))")
-S_TAG = S + norm(" && !contains(github.ref_name, '-')")   # release: S, then the release-candidate rule, in the job's if
 NOT_SNAPSHOT = norm("inputs.mode != 'snapshot'")
 # check-govulncheck has no needs, so its own if keeps it off in a run on main (a push or the schedule): a tag push, a push of a release/vX.Y.Z branch or a dry run only
 GV_IF = norm("inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true)")
@@ -150,13 +149,12 @@ for jn in CHAIN:
 if "build-freeze" in jobs and norm(jobs["build-freeze"].get("if", "")) != G:
     bad.append("build-freeze does not carry the gate G exactly: %s" % jobs["build-freeze"].get("if"))
 for jn in SIGN_JOBS + ["release"]:
-    want = S_TAG if jn == "release" else S
-    if jn in jobs and norm(jobs[jn].get("if", "")) != want:
-        bad.append("guard S: %s does not carry the guard S exactly%s (it must run only on a v* tag push of release.yml itself, never in snapshot mode or under workflow_call): %s" % (jn, " followed by && !contains(github.ref_name, '-') (a release candidate never enters the environment)" if want == S_TAG else "", jobs[jn].get("if")))
+    if jn in jobs and norm(jobs[jn].get("if", "")) != S:
+        bad.append("guard S: %s does not carry the guard S exactly (it must run only on a v* tag push of release.yml itself, never in snapshot mode or under workflow_call): %s" % (jn, jobs[jn].get("if")))
 for jn in ("release",):
     for s in steps_of(jobs.get(jn) or {}):
         if "contains(github.ref_name,'-')" in norm(s.get("if", "")):
-            bad.append("candidate rule: a step of %s carries the release-candidate condition (it belongs in the job's if)" % jn)
+            bad.append("candidate rule: a step of %s carries a tag-name condition (the job's if decides for the whole job)" % jn)
 for jn in CHECK_JOBS:
     want = GV_IF if jn == "check-govulncheck" else NOT_SNAPSHOT
     if jn in jobs and norm(jobs[jn].get("if", "")) != want:
@@ -212,15 +210,15 @@ for jn in SIGN_JOBS:
         bad.append("sign job %s does not read Build's digests through needs.build-assemble.outputs.digests" % jn)
     if not SIGNING.search(runs_of(j)):
         bad.append("sign job %s runs no signing command" % jn)
-# S2: sign-check makes every signature of the release on a final tag (bin/release-signatures.sh), from Build's outputs, and hands them over as the artifact release-signed
+# S2: sign-check makes every signature of the release on every tag run (bin/release-signatures.sh), from Build's outputs, and hands them over as the artifact release-signed
 sc = jobs.get("sign-check")
 if sc:
     rs = [s for s in steps_of(sc) if (s.get("run") or "").strip() == "bash bin/release-signatures.sh"]
-    if len(rs) != 1 or norm(rs[0].get("if", "")) != norm("!contains(github.ref_name, '-')") or rs[0].get("env"):
-        bad.append("sign-check does not run `bash bin/release-signatures.sh` exactly once, on a final tag only (if: ${{ !contains(github.ref_name, '-') }}) and with no step env")
+    if len(rs) != 1 or "if" in rs[0] or rs[0].get("env"):
+        bad.append("sign-check does not run `bash bin/release-signatures.sh` exactly once, with no step if and no step env")
     ups = [s for s in steps_of(sc) if "actions/upload-artifact@" in str(s.get("uses")) and (s.get("with") or {}).get("name") == "release-signed"]
-    if len(ups) != 1 or str((ups[0].get("with") or {}).get("path", "")).rstrip("/") != "release-signed" or norm(ups[0].get("if", "")) != norm("!contains(github.ref_name, '-')"):
-        bad.append("sign-check does not upload release-signed from release-signed/ exactly once, on a final tag only")
+    if len(ups) != 1 or str((ups[0].get("with") or {}).get("path", "")).rstrip("/") != "release-signed" or "if" in ups[0]:
+        bad.append("sign-check does not upload release-signed from release-signed/ exactly once, with no step if")
     if re.search(r"\bsecrets\.|DOCKERHUB|GH_TOKEN|GITHUB_TOKEN|github\.token|packages", text_of(sc)):
         bad.append("sign-check names a secret, a registry credential (DOCKERHUB_*, GH_TOKEN), the run's token or packages write: it holds none")
 for jn in ("sign", "sign-rebuild", "sign-check"):
@@ -543,6 +541,8 @@ for pair in "build-apk:build-freeze" "build-assemble:build-apk" "sign:build-asse
 done
 case_ sign-rebuild-no-rebuild bad "job sign-rebuild needs" "$J['sign-rebuild']['needs'] = ['build-assemble']"
 case_ sign-check-no-check     bad "job sign-check needs" "$J['sign-check']['needs'] = ['build-assemble']"
+# REQ-CHAIN-001-AC5: release publishes only after the hostile verdict is green, so it needs hostile-verdict
+case_ release-no-hostile-verdict bad "job release needs" "$J['release']['needs'] = ['release-verify', 'release-compare']"
 case_ release-compare-no-sign-check bad "job release-compare needs" "$J['release-compare']['needs'] = ['check', 'sign', 'sign-rebuild']"
 case_ release-verify-no-compare bad "job release-verify needs" "$J['release-verify'].pop('needs')"
 case_ release-no-verify       bad "job release needs" "$J['release']['needs'] = ['release-compare']"
@@ -571,12 +571,12 @@ for jn in sign sign-rebuild sign-check release; do
   case_ "guard-$jn-no-workflow-ref" bad "guard S: $jn" "$J['$jn']['if'] = \"\${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}\""
   case_ "guard-$jn-always"         bad "guard S: $jn" "$J['$jn']['if'] = 'always()'"
 done
-# the release-candidate rule is in the job's if of release (guard S followed by && !contains(github.ref_name, '-')), nowhere else
+# the guard S alone is the if of release; a tag-name rule added to any sign job or to release, or to a step of release, is refused
 for jn in sign sign-rebuild sign-check; do
   case_ "guard-$jn-with-candidate-rule" bad "guard S: $jn" "$J['$jn']['if'] = $J['$jn']['if'] + \" && !contains(github.ref_name, '-')\""
 done
 for jn in release; do
-  case_ "guard-$jn-without-candidate-rule" bad "guard S: $jn" "$J['$jn']['if'] = $J['sign']['if']"
+  case_ "guard-$jn-with-candidate-rule" bad "guard S: $jn" "$J['$jn']['if'] = $J['sign']['if'] + \" && !contains(github.ref_name, '-')\""
   case_ "guard-$jn-candidate-rule-other" bad "guard S: $jn" "$J['$jn']['if'] = $J['sign']['if'] + \" && !contains(github.ref_name, '-rc')\""
   case_ "guard-$jn-candidate-rule-first" bad "guard S: $jn" "$J['$jn']['if'] = \"\${{ !contains(github.ref_name, '-') && \" + $J['sign']['if'].replace('\${{ ', '', 1)"
   case_ "guard-$jn-candidate-rule-on-step" bad "candidate rule: a step of $jn" "$J['$jn']['steps'][-1]['if'] = \"\${{ !contains(github.ref_name, '-') }}\""
@@ -636,7 +636,7 @@ case_ release-job-verify-step bad "does not run exactly release-verify, release-
 case_ release-job-assets-first bad "does not run exactly release-verify, release-apks, release-publish" "a = [i for i, s in enumerate($J['release']['steps']) if 'release-assets.sh' in (s.get('run') or '')][0]; b = [i for i, s in enumerate($J['release']['steps']) if 'release-postverify.sh' in (s.get('run') or '')][0]; $J['release']['steps'][a], $J['release']['steps'][b] = $J['release']['steps'][b], $J['release']['steps'][a]"
 case_ release-runs-signatures bad "job release runs a signing command" "$J['release']['steps'].append({'run': 'bash bin/release-signatures.sh'})"
 case_ sign-check-no-signatures bad "sign-check does not run" "$J['sign-check']['steps'] = [s for s in $J['sign-check']['steps'] if 'release-signatures.sh' not in (s.get('run') or '')]"
-case_ sign-check-signatures-on-rc bad "sign-check does not run" "hit(s.pop('if') for s in $J['sign-check']['steps'] if 'release-signatures.sh' in (s.get('run') or ''))"
+case_ sign-check-signatures-with-if bad "sign-check does not run" "hit(s.__setitem__('if', \"\${{ !contains(github.ref_name, '-') }}\") for s in $J['sign-check']['steps'] if 'release-signatures.sh' in (s.get('run') or ''))"
 case_ sign-check-no-release-signed bad "sign-check does not upload release-signed" "$J['sign-check']['steps'] = [s for s in $J['sign-check']['steps'] if (s.get('with') or {}).get('name') != 'release-signed']"
 case_ sign-check-gh-token bad "sign-check names a secret" "$J['sign-check']['steps'][-1].setdefault('env', {})['GH_TOKEN'] = \"\${{ github.token }}\""
 case_ sign-runs-no-sign-records bad "does not run chain-verify.py sign-records" "$J['sign']['steps'] = [s for s in $J['sign']['steps'] if 'sign-records' not in (s.get('run') or '')]"
