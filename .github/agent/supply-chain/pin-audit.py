@@ -246,7 +246,7 @@ GO_TOOLS = {"trivy": "github.com/aquasecurity/trivy", "grype": "github.com/ancho
             "syft": "github.com/anchore/syft",
             "osv": "github.com/google/osv-scanner/v2", "golangci-lint": "github.com/golangci/golangci-lint/v2",
             "goreleaser": "github.com/goreleaser/goreleaser/v2", "scout": "github.com/docker/scout-cli",
-            "cosign": "github.com/sigstore/cosign/v3",
+            "cosign": "github.com/sigstore/cosign/v3", "sigstore/cosign": "github.com/sigstore/cosign/v3",
             "kind": "sigs.k8s.io/kind", "helm": "helm.sh/helm/v3",
             # Go's own toolchain: the Go vulnerability database files the standard library under the package stdlib
             # (REQ-SUP-001-AC27: the exempt release is still audited)
@@ -374,6 +374,34 @@ def _go_rule(item, version):
     toolchain itself is asked as stdlib and toolchain, not by module path), other kinds of item, an empty version."""
     return GoRule(item,
                   version) if item.kind == "tool" and item.name in GO_TOOLS and item.name != "go" and version else None
+
+
+def _action_refs(item, text):
+    """What an action's metadata file calls: its composite steps' uses and its docker image."""
+    try:
+        doc = inv.yaml.load(text, Loader=inv.yaml.BaseLoader) or {}
+    except inv.yaml.YAMLError:
+        raise Fail(f"{item.name}: its action metadata is not YAML")
+    runs = doc.get("runs") or {}
+    refs = [st.get("uses") for st in (runs.get("steps") or []) if isinstance(st, dict)
+            and isinstance(st.get("uses"), str)]
+    if isinstance(runs.get("image"), str):
+        refs.append(runs["image"])  # docker://... or a Dockerfile in the action's repository
+    return [{"ref": ref, "pinned": bool(re.search(r"@[0-9a-f]{40}$|@sha256:[0-9a-f]{64}$", ref))} for ref in refs]
+
+
+def local_nested(root, item):
+    """A local action step is read from the checkout, never from GitHub's API."""
+    path = item.name[len("local:"):].rsplit("~", 1)[0].strip()
+    for name in ("action.yml", "action.yaml"):
+        try:
+            with open(os.path.join(root, path, name), encoding="utf-8") as f:
+                return _action_refs(item, f.read())
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        except (OSError, UnicodeDecodeError) as e:
+            raise Fail(f"{item.name}: its action metadata could not be read: {e}")
+    raise NoMetadata(f"{item.name}: its action metadata was not found")
 
 
 class LiveNet:
@@ -802,18 +830,7 @@ class LiveNet:
             sub = f"{item.path}/" if getattr(item, "path", "") else ""
             c = self._gh_json(f"repos/{item.name}/contents/{sub}{name}?ref={item.version}", need=(("content", str),))
             if c and c["content"]:
-                try:
-                    doc = inv.yaml.load(base64.b64decode(c["content"]).decode(), Loader=inv.yaml.BaseLoader) or {}
-                except inv.yaml.YAMLError:
-                    raise Fail(f"{item.name}: its action metadata is not YAML")
-                runs = doc.get("runs") or {}
-                refs = [st.get("uses") for st in (runs.get("steps") or []) if isinstance(st, dict)
-                        and isinstance(st.get("uses"), str)]
-                if isinstance(runs.get("image"), str):
-                    refs.append(runs["image"])  # docker://... or a Dockerfile in the action's repository
-                for ref in refs:
-                    out.append({"ref": ref, "pinned": bool(re.search(r"@[0-9a-f]{40}$|@sha256:[0-9a-f]{64}$", ref))})
-                return out
+                return _action_refs(item, base64.b64decode(c["content"]).decode())
         raise NoMetadata(f"{item.name}: its action metadata was not found")
 
     def versions(self, item):
@@ -1005,7 +1022,8 @@ def _ruling_label(e):
 
 
 def package_of(item):
-    return item.name.split("/", 1)[1] if item.kind == "package" else item.name
+    # the release download of cosign is the same package as the cosign pin: one ruling covers both
+    return item.name.split("/", 1)[1] if item.kind == "package" else "cosign" if item.name == "sigstore/cosign" else item.name
 
 
 def version_of(item):
@@ -1583,13 +1601,15 @@ def main(argv=None):
         # actions and images INSIDE the actions we pin (depth 3): listed when on a moving tag, and checked against the
         # same advisory lists
         seen = {it.key for it in audited} | set(head)
-        queue = [(it, 0) for it in (audited if a.base else head.values()) if it.kind == "action"] + [
-            (it, 0) for it in pr_actions if it.kind == "action"]
+        # a local workflow call has no metadata file to read; a local action step does (read from the checkout), and must fail without it
+        queue = [(it, 0) for it in [*(audited if a.base else head.values()), *pr_actions]
+                 if it.kind == "action"
+                 and not (it.version == "(local)" and it.name.startswith("local:./.github/workflows/"))]
         phase("nested references")
         while queue:
             def nested_safe(q):
                 try:
-                    return net.nested(q[0])
+                    return (local_nested(a.root, q[0]) if q[0].version == "(local)" else net.nested(q[0]))
                 except NoMetadata as e:
                     findings.append(Finding(q[0], "unreadable", ["no-metadata"],
                         f"{e}: what it calls cannot be read, so it cannot be checked"))
