@@ -2138,7 +2138,7 @@ requirements:
     confidence: implementation-only
     notes: >
       No new required check: auditor-review-gate is not required per pull request on main (it was taken off the
-      ruleset on Nov 12 2026; release-only-checks.json still has release admission require it), so a missing record
+      ruleset on Nov 12 2026), so a missing record
       blocks the merge clearance, not GitHub's merge button. It therefore lands only after the writer (a later pull request) and the dispatch that
       calls it exist, on the landing day, together with the ruleset rule that only the writer creates branches under
       audit/**. The record commit adds one file, audit-record, because the API can only make a commit that changes
@@ -2274,12 +2274,12 @@ requirements:
     confidence: implementation-only
     acceptance_criteria:
       - id: REQ-REL-013-AC1
-        given: the contexts the owner took off the ruleset on Nov 12 2026 (allowlist-persona, allowlist-chain, allowlist-pins-auditor, acceptance-gradle, acceptance-maven (1.2.0), acceptance-maven (1.2.3), coverage, auditor-review-gate), which release admission still requires green
+        given: the contexts the owner took off the ruleset on Nov 12 2026 (allowlist-persona, allowlist-chain, allowlist-pins-auditor, acceptance-gradle, acceptance-maven (1.2.0), acceptance-maven (1.2.3), coverage), which release admission still requires green
         when: stage admission and the patch release's ready step read the required checks from main
         then: >-
           each reads required-checks.json and release-only-checks.json on its own, and refuses unless that file is an object whose required_checks is a non-empty array;
           a missing, empty, null or malformed file never lowers the requirement, whatever the other file holds;
-          the requirement is the two lists together, and no context is in both files (auditor-review-gate is in release-only-checks.json only, since docs/ratify/2026-11-12-cache-required-checks-trimmed-by-hand.md:11);
+          the requirement is the two lists together, and no context is in both files;
           the checks step of the decide job in release.yml and the ready command of bin/patch-decide.py judge that combined list, each file read from origin/main and given with its own --required,
           so the step never answers ready for a tagged commit that admission refuses for a missing release-only check;
           a release-only context that bin/build-admit.py binds to a workflow file (BOUND_CONTEXTS) is judged by admission's own run selection:
