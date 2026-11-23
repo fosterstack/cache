@@ -1,6 +1,6 @@
 """bin/check-bind.py --digests FILE --images DIR [--archives DIR] [--members-out DIR]: Check reads the bytes Build recorded (REQ-CHAIN-006-AC4, AC5, AC6; PR 3 round 1 F1).
 
-stage-start authenticates digests.json (Build's signed record names its digest). What Check then DOWNLOADS is not the record: an image directory that
+What Check DOWNLOADS beside digests.json is not the record: an image directory that
 merely holds oci-layout and index.json, or an archive that merely has the right name, may be anything. Before any scan, load or run, this file
 binds each file Check is about to judge to the digest Build recorded:
   - DIR/production and DIR/fips: the layout is re-derived from digests.json' image-production / image-fips with Build's own layout check

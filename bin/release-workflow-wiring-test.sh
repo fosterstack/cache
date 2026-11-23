@@ -40,12 +40,12 @@ OTHER_ALLOWED = {"decide", "sign-tag", "cut", "patch-notes", "patch-failed", "li
 KMS_ENV = ["AWS_ROLE_ARN", "AWS_REGION", "RELEASE_KMS_KEY_REF"]
 NEEDS = {   # exactly, as REQ-CHAIN-005-AC5 lists them
     "build-freeze": [], "build-apk": ["build-freeze"], "rebuild-apk": ["build-assemble"], "build-assemble": ["build-apk"], "sign": ["build-assemble"],
-    "rebuild-assemble": ["rebuild-apk"], "sign-rebuild": ["build-assemble", "rebuild-assemble"],
-    "sign-check": ["build-assemble", "check"],
+    "rebuild-assemble": ["rebuild-apk"], "sign-rebuild": ["build-assemble", "rebuild-assemble", "sign"],
+    "sign-check": ["build-assemble", "check", "sign"],
     "release-compare": ["check", "sign", "sign-rebuild", "sign-check"], "release-verify": ["release-compare"],
     "release": ["release-verify", "release-compare"],
 }
-NEEDS_AT_LEAST = {"check": ["check-govulncheck", "build-assemble", "sign"]}
+NEEDS_AT_LEAST = {"check": ["check-govulncheck", "build-assemble"]}
 
 def norm(expr):
     """an expression with the ${{ }} wrapper removed and whitespace removed only OUTSIDE quoted strings (exact comparison)"""
@@ -61,12 +61,12 @@ def norm(expr):
         elif not c.isspace():
             out.append(c)
     return "".join(out)
-G = norm("(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true || inputs.mode == 'snapshot'")
+G = norm("(github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true || inputs.mode == 'snapshot'")
 S = norm("inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))")
 S_TAG = S + norm(" && !contains(github.ref_name, '-')")   # release: S, then the release-candidate rule, in the job's if
 NOT_SNAPSHOT = norm("inputs.mode != 'snapshot'")
-# check-govulncheck has no needs, so its own if keeps it off in a run on main (a push or the schedule): a tag push or a dry run only
-GV_IF = norm("inputs.mode != 'snapshot' && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true)")
+# check-govulncheck has no needs, so its own if keeps it off in a run on main (a push or the schedule): a tag push, a push of a release/vX.Y.Z branch or a dry run only
+GV_IF = norm("inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true)")
 
 def load(p): return yaml.load(open(p), Loader=yaml.BaseLoader)
 def needs_of(j):
@@ -313,8 +313,8 @@ for jn, j in jobs.items():
             bad.append("job %s calls %s: release.yml calls no workflow file but persona-uat.yml" % (jn, j["uses"]))
         else:
             c = j.get("if", "")
-            if "PERSONA_UAT_ENABLED" not in c or "-rc" not in c or NOT_SNAPSHOT not in norm(c):
-                bad.append("the persona-uat.yml call %s lacks the gate PERSONA_UAT_ENABLED, the release-candidate tag condition or the snapshot guard: %s" % (jn, c))
+            if "PERSONA_UAT_ENABLED" not in c or "refs/heads/release/v" not in c or NOT_SNAPSHOT not in norm(c):
+                bad.append("the persona-uat.yml call %s lacks the gate PERSONA_UAT_ENABLED, the release-branch push condition or the snapshot guard: %s" % (jn, c))
             if "secrets" in j and j["secrets"] == "inherit":
                 bad.append("the persona-uat.yml call %s passes secrets: inherit" % jn)
 
@@ -417,9 +417,6 @@ for jn in REBUILD_JOBS:   # both start from Build's UNSIGNED record, in release 
             bad.append("%s does not download the unsigned record artifact witness-build exactly once into witness-build/ with no condition (never signed-witness-build, no mode conditional): %s" % (jn, [(s.get("with"), s.get("if")) for s in rec]))
         if "signed-witness-build" in text_of(jobs[jn]):
             bad.append("%s names signed-witness-build (Rebuild needs Build only, so it cannot need Sign)" % jn)
-if "rebuild-assemble" in jobs and "stage-start" not in runs_of(jobs["rebuild-assemble"]) + runs_of(jobs.get("rebuild-apk") or {}) + "\n".join(
-        open(os.path.join(root, "bin", b)).read() for b in ("build-stage-rebuild-apk.sh", "build-stage-assemble.sh") if os.path.exists(os.path.join(root, "bin", b))):
-    bad.append("Rebuild does not start from chain-verify.py stage-start against Build's record (in the jobs or their two scripts)")
 
 # ---- Check (REQ-CHAIN-006-AC1) ------------------------------------------------------------------------------------------------------------------------
 if "check-govulncheck" in jobs:
@@ -550,8 +547,7 @@ case_ release-compare-no-sign-check bad "job release-compare needs" "$J['release
 case_ release-verify-no-compare bad "job release-verify needs" "$J['release-verify'].pop('needs')"
 case_ release-no-verify       bad "job release needs" "$J['release']['needs'] = ['release-compare']"
 case_ release-no-compare      bad "job release needs" "$J['release']['needs'] = ['release-verify']"
-case_ check-not-after-govulncheck bad "job check must need at least" "$J['check']['needs'] = ['build-assemble', 'sign']"
-case_ check-not-after-sign    bad "job check must need at least" "$J['check']['needs'] = ['check-govulncheck', 'build-assemble']"
+case_ check-not-after-govulncheck bad "job check must need at least" "$J['check']['needs'] = ['build-assemble']"
 case_ rebuild-apk-not-after-build bad "job rebuild-apk needs" "$J['rebuild-apk'].pop('needs')"
 case_ rebuild-apk-needs-sign  bad "job rebuild-apk needs" "$J['rebuild-apk']['needs'] = ['build-assemble', 'sign']"
 for jn in sign rebuild-apk check release; do
@@ -564,9 +560,9 @@ case_ release-no-permissions  bad "release declares no permissions of its own" "
 case_ unpinned-action         bad "not pinned by a full digest" "$J['release-compare']['steps'][0]['uses'] = 'actions/checkout@v4'"
 # the gate G and the guard S, one case each (REQ-CHAIN-003-AC5, REQ-CHAIN-005-AC5)
 case_ gate-gone               bad "gate G" "$J['build-freeze'].pop('if')"
-case_ gate-without-dry-run    bad "gate G" "$J['build-freeze']['if'] = \"\${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.mode == 'snapshot' }}\""
-case_ gate-without-snapshot   bad "gate G" "$J['build-freeze']['if'] = \"\${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}\""
-case_ gate-dispatch-on-tag    bad "gate G" "$J['build-freeze']['if'] = \"\${{ startsWith(github.ref, 'refs/tags/v') || inputs.dry-run == true || inputs.mode == 'snapshot' }}\""
+case_ gate-without-dry-run    bad "gate G" "$J['build-freeze']['if'] = \"\${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.mode == 'snapshot' }}\""
+case_ gate-without-snapshot   bad "gate G" "$J['build-freeze']['if'] = \"\${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true }}\""
+case_ gate-dispatch-on-tag    bad "gate G" "$J['build-freeze']['if'] = \"\${{ (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v')) || inputs.dry-run == true || inputs.mode == 'snapshot' }}\""
 for jn in sign sign-rebuild sign-check release; do
   case_ "guard-$jn-gone"           bad "guard S: $jn" "$J['$jn'].pop('if')"
   case_ "guard-$jn-no-snapshot"    bad "guard S: $jn" "$J['$jn']['if'] = \"\${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}\""
@@ -661,10 +657,10 @@ case_ decide-reachable-in-snapshot bad "reachable in snapshot mode" "$J['decide'
 case_ build-apk-gets-id-token bad "reachable in snapshot mode" "$J['build-apk']['permissions']['id-token'] = 'write'"
 case_ rebuild-assemble-writes bad "reachable in snapshot mode" "$J['rebuild-assemble']['permissions']['packages'] = 'write'"
 case_ live-test-writes-in-snapshot bad "reachable in snapshot mode" "$J['live-test']['permissions'] = {'id-token': 'write'}; $J['live-test'].pop('if', None)"
-case_ persona-call-unguarded  bad "reachable in snapshot mode" "$J['persona-uat-rc'] = {'needs': 'build-assemble', 'uses': './.github/workflows/persona-uat.yml', 'permissions': {'contents': 'read', 'id-token': 'write'}, 'if': \"\${{ vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}\"}"
-case_ persona-call-ok         ok  "" "$J['persona-uat-rc'] = {'needs': 'build-assemble', 'uses': './.github/workflows/persona-uat.yml', 'permissions': {'contents': 'read', 'id-token': 'write'}, 'if': \"\${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}\"}"
-case_ persona-call-no-gate    bad "lacks the gate PERSONA_UAT_ENABLED" "$J['persona-uat-rc'] = {'needs': 'build-assemble', 'uses': './.github/workflows/persona-uat.yml', 'permissions': {'contents': 'read'}, 'if': \"\${{ inputs.mode != 'snapshot' && contains(github.ref_name, '-rc') }}\"}"
-case_ persona-call-no-rc      bad "lacks the gate PERSONA_UAT_ENABLED" "$J['persona-uat-rc'] = {'needs': 'build-assemble', 'uses': './.github/workflows/persona-uat.yml', 'permissions': {'contents': 'read'}, 'if': \"\${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' }}\"}"
+case_ persona-call-unguarded  bad "reachable in snapshot mode" "$J['persona-uat-rc'] = {'needs': 'build-assemble', 'uses': './.github/workflows/persona-uat.yml', 'permissions': {'contents': 'read', 'id-token': 'write'}, 'if': \"\${{ vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v') }}\"}"
+case_ persona-call-ok         ok  "" "$J['persona-uat-rc'] = {'needs': 'build-assemble', 'uses': './.github/workflows/persona-uat.yml', 'permissions': {'contents': 'read', 'id-token': 'write'}, 'if': \"\${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v') }}\"}"
+case_ persona-call-no-gate    bad "lacks the gate PERSONA_UAT_ENABLED" "$J['persona-uat-rc'] = {'needs': 'build-assemble', 'uses': './.github/workflows/persona-uat.yml', 'permissions': {'contents': 'read'}, 'if': \"\${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v') }}\"}"
+case_ persona-call-no-branch  bad "lacks the gate PERSONA_UAT_ENABLED" "$J['persona-uat-rc'] = {'needs': 'build-assemble', 'uses': './.github/workflows/persona-uat.yml', 'permissions': {'contents': 'read'}, 'if': \"\${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' }}\"}"
 case_ calls-another-workflow  bad "release.yml calls no workflow file but persona-uat.yml" "$J['x'] = {'uses': './.github/workflows/ci.yml'}; $J['x']['permissions'] = {'contents': 'read'}"
 
 # Build (REQ-CHAIN-004-AC1, AC12)

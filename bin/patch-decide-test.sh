@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-009-AC1, REQ-REL-009-AC2, REQ-REL-009-AC3, REQ-REL-009-AC4, REQ-REL-009-AC8, REQ-REL-009-AC11, REQ-REL-009-AC14, REQ-REL-009-AC15, REQ-CHAIN-001-AC6, REQ-REL-013-AC1
+# proves: REQ-REL-009-AC1, REQ-REL-009-AC2, REQ-REL-009-AC3, REQ-REL-009-AC4, REQ-REL-009-AC8, REQ-REL-009-AC11, REQ-REL-009-AC14, REQ-REL-009-AC15, REQ-CHAIN-001-AC6
 # Rules 61 and 65 (advisor Oct 12): there is no Dockerfile; the base inputs are the committed apko base locks, the melange lock and the archive records listed in
 # .github/policy/base-inputs.json (one list, read by the decide job and by this script); a change in them is the "base input changed" signal, fix-class.
 # The automatic patch-release decision (owner RATIFIED Oct 2; advisor read-backs 0051/0055/0056), offline: commits are
@@ -398,16 +398,14 @@ g(blk, "commit", "-qam", "repl")
 cs = P.gather_commits("v0.2.1", blk)
 check("gather: a replace-block edit in a real repo is not patch-clean", [P.classify(x)[0] for x in cs] == ["fix", "dirty"], [P.classify(x) for x in cs])
 
-# --- `ready` (advisor 0063; rules 2, 4, 7): a cut waits until the tagged commit's push-scoped required checks have
-# finished, judged exactly as admission judges them (a success from the pinned app; pull_request-scoped checks are
-# admission's to read on the merged PR head, never here)
+# --- `ready` (advisor 0063; rules 2, 4, 7): a cut waits until the tagged commit's required checks have
+# finished, judged exactly as admission judges them (a success from the pinned app)
 REQ = {"required_checks": [{"context": "test", "integration_id": 15368, "scope": "push"},
-                           {"context": "scan", "integration_id": 15368, "scope": "push"},
-                           {"context": "pin-age", "integration_id": 15368, "scope": "pull_request"}]}
+                           {"context": "scan", "integration_id": 15368, "scope": "push"}]}
 def run(name, status="completed", conclusion="success", app=15368):
     return {"name": name, "status": status, "conclusion": conclusion if status == "completed" else None, "app_id": app}
 for runs, want, why in [
-    ([run("test"), run("scan")], "ready", "every push-scoped check green from the pinned app"),
+    ([run("test"), run("scan")], "ready", "every required check green from the pinned app"),
     ([run("test"), run("scan", "in_progress")], "wait", "one still running"),
     ([run("test")], "wait", "one not created yet"),
     ([run("test"), run("scan", conclusion="failure")], "no", "one finished red"),
@@ -428,131 +426,16 @@ with contextlib.redirect_stdout(buf):
     rc = P.main(["ready", "--required", pol, "--check-runs", cr])
 check("ready CLI: prints the verdict first", rc == 0 and buf.getvalue().split()[0] == "ready", buf.getvalue())
 
-# REQ-REL-013-AC1: `ready` judges the combined list, one --required per policy file (required-checks.json and release-only-checks.json), as admission does
+# `ready` reads one policy file, main's required-checks.json; a file admission refuses is "no", never a lower requirement
 rd_ = tempfile.mkdtemp()
 def jf_(obj):
     f = os.path.join(rd_, "f%d.json" % len(os.listdir(rd_))); open(f, "w").write(obj if isinstance(obj, str) else json.dumps(obj)); return f
-RO_ = {"required_checks": [{"context": "allowlist-chain", "integration_id": 15368, "scope": "push"},
-                           {"context": "auditor-review-gate", "integration_id": 5054756, "scope": "pull_request"}]}
-SHA_, REPO_, OTHER_SHA_ = "a" * 40, "fosterstack/payments", "b" * 40
-FS_ = ".github/workflows/full-suite.yml"
-def ro_file(obj):
-    d = tempfile.mkdtemp(dir=rd_); f = os.path.join(d, "release-only-checks.json"); json.dump(obj, open(f, "w")); return f   # a policy file is "bound" by this basename
-def with_ids(runs):
-    """give every run an id and a details url (run id = id + 1000) unless it has them"""
-    out = []
-    for i, r in enumerate(runs, 1):
-        r = dict(r); r.setdefault("id", i); r.setdefault("url", "https://github.com/%s/actions/runs/%d/job/1" % (REPO_, r["id"] + 1000)); out.append(r)
-    return out
-def wr_(run_id, path=FS_, event="schedule", sha=SHA_):
-    return {"id": run_id, "path": path, "event": event, "head_sha": sha}
-def ready_files(files, runs, wrs=None, sha=SHA_, repo=REPO_, all_runs=None):
-    runs = with_ids(runs)
-    wrs = [wr_(r["id"] + 1000) for r in runs] if wrs is None else wrs
-    cmd = [sys.executable, sys.argv[1], "ready"] + [x for f in files for x in ("--required", f)] + ["--check-runs", jf_(runs), "--workflow-runs", jf_(wrs)]
-    if all_runs is not None: cmd += ["--all-check-runs", jf_(with_ids(all_runs))]   # every run; only the bound contexts read it
-    if sha: cmd += ["--sha", sha]
-    if repo: cmd += ["--repo", repo]
-    r = subprocess.run(cmd, capture_output=True, text=True)
+def ready_file(policy, runs):
+    r = subprocess.run([sys.executable, sys.argv[1], "ready", "--required", jf_(policy), "--check-runs", jf_(runs)], capture_output=True, text=True)
     return (r.stdout.split() or [""])[0], r.stdout
-REQF_, ROF_ = jf_(REQ), ro_file(RO_)
-v_, o_ = ready_files([REQF_, ROF_], [run("test"), run("scan"), run("allowlist-chain")])
-check("AC1 ready: both files' push contexts green (the pull_request one of either skipped) -> ready", v_ == "ready", o_)
-v_, o_ = ready_files([REQF_, ROF_], [run("test"), run("scan")])
-check("AC1 ready: a release-only push context with no run -> wait, naming it", v_ == "wait" and "allowlist-chain" in o_, o_)
-v_, o_ = ready_files([REQF_, ROF_], [run("allowlist-chain")])
-check("AC1 ready: a required-checks context with no run (the release-only one green) -> wait, naming it", v_ == "wait" and "test" in o_, o_)
-v_, o_ = ready_files([ROF_, REQF_], [run("test"), run("scan"), run("allowlist-chain", conclusion="failure")])
-check("AC1 ready: a release-only context finished red -> no", v_ == "no", o_)
-v_, o_ = ready_files([REQF_, ROF_], [run("test"), run("scan"), run("allowlist-chain", app=999)])
-check("AC1 ready: a release-only context green from another app does not count -> wait", v_ == "wait", o_)
-
-# REQ-REL-013-AC1 run selection: a bound release-only context is judged by admission's own selection (newest qualifying run alone decides)
-def sel(ctx_runs, wrs=None, **kw):
-    """ctx_runs: [(id, conclusion-or-status)] of allowlist-chain; the workflow run of id N is N+1000"""
-    runs = [run("test"), run("scan")]
-    for i, st in ctx_runs:
-        r = run("allowlist-chain", status=st) if st in ("in_progress", "queued") else run("allowlist-chain", conclusion=st)
-        r["id"] = i; r["url"] = "https://github.com/%s/actions/runs/%d/job/1" % (REPO_, i + 1000); runs.append(r)
-    for j, r in enumerate(runs):
-        r.setdefault("id", 900 + j); r.setdefault("url", "https://github.com/%s/actions/runs/%d/job/1" % (REPO_, r["id"] + 1000))
-    wl = [wr_(r["id"] + 1000) for r in runs] if wrs is None else wrs
-    return ready_files([REQF_, ROF_], runs, wl, **kw)
-def wrs_with(over):
-    """qualifying workflow runs for the test/scan runs, plus the given ones for allowlist-chain"""
-    return [wr_(1000 + 900), wr_(1000 + 901)] + over
-v_, o_ = sel([(10, "success"), (20, "failure")])
-check("REL-013-AC1 run selection: older green, newer failed qualifying run -> no", v_ == "no", o_)
-v_, o_ = sel([(20, "failure"), (10, "success")])
-check("REL-013-AC1 run selection: the newest is by id, not list order (newer failed listed first) -> no", v_ == "no", o_)
-v_, o_ = sel([(10, "success"), (20, "in_progress")])
-check("REL-013-AC1 run selection: older green, newer in_progress -> wait", v_ == "wait", o_)
-v_, o_ = sel([(10, "failure"), (20, "success")])
-check("REL-013-AC1 run selection: older red, newer green -> ready", v_ == "ready", o_)
-v_, o_ = sel([(10, "failure"), (20, "success")], wrs=wrs_with([wr_(1010), wr_(1020, event="push")]))
-check("REL-013-AC1 run selection: a newer green run of a push workflow run is skipped, the older qualifying red decides -> no", v_ == "no", o_)
-v_, o_ = sel([(10, "failure"), (20, "success")], wrs=wrs_with([wr_(1010), wr_(1020, path=".github/workflows/ci.yml")]))
-check("REL-013-AC1 run selection: a newer green run of another workflow file is skipped -> no", v_ == "no", o_)
-v_, o_ = sel([(10, "failure"), (20, "success")], wrs=wrs_with([wr_(1010), wr_(1020, sha=OTHER_SHA_)]))
-check("REL-013-AC1 run selection: a newer green run of another head_sha is skipped -> no", v_ == "no", o_)
-v_, o_ = sel([(10, "failure"), (20, "success")], wrs=wrs_with([wr_(1010, event="workflow_dispatch"), wr_(1020, event="pull_request")]))
-check("REL-013-AC1 run selection: workflow_dispatch qualifies, pull_request does not -> no", v_ == "no", o_)
-v_, o_ = sel([(20, "success")], wrs=wrs_with([wr_(1020, event="push")]))
-check("REL-013-AC1 run selection: only a push-event green run, none qualifies -> wait", v_ == "wait", o_)
-v_, o_ = sel([(20, "success")], wrs=wrs_with([wr_(1020, path=".github/workflows/ci.yml")]))
-check("REL-013-AC1 run selection: only a green run of another file, none qualifies -> wait", v_ == "wait", o_)
-v_, o_ = sel([(20, "success")], wrs=wrs_with([wr_(1020, sha=OTHER_SHA_)]))
-check("REL-013-AC1 run selection: only a green run of another head_sha, none qualifies -> wait", v_ == "wait", o_)
-v_, o_ = sel([(20, "success")], wrs=wrs_with([]))
-check("REL-013-AC1 run selection: green run whose workflow run is missing from the workflow runs -> no", v_ == "no", o_)
-v_, o_ = sel([(10, "success"), (20, "success")], wrs=wrs_with([wr_(1010)]))
-check("REL-013-AC1 run selection: the newest run's workflow run is unreadable (missing) -> no, never the older green", v_ == "no", o_)
-v_, o_ = sel([(20, "success")], sha=None)
-check("REL-013-AC1 run selection: a bound context but no --sha -> no", v_ == "no", o_)
-v_, o_ = sel([(20, "success")], repo=None)
-check("REL-013-AC1 run selection: a bound context but no --repo -> no", v_ == "no", o_)
-v_, o_ = sel([(20, "success")])
-check("REL-013-AC1 run selection: control, one qualifying green run -> ready", v_ == "ready", o_)
-# the acceptance / * glob is bound to full-suite.yml
-ACC_ = ro_file({"required_checks": [{"context": "acceptance / x", "integration_id": 15368, "scope": "push"}]})
-def acc(conclusions, path=FS_):
-    runs = [run("test"), run("scan")] + [dict(run("acceptance / x", conclusion=c_), id=i) for i, c_ in conclusions]
-    for j, r in enumerate(runs[:2]): r["id"] = 900 + j
-    runs = with_ids(runs)
-    return ready_files([REQF_, ACC_], runs, [wr_(r["id"] + 1000, path=path if r["name"].startswith("acceptance") else FS_) for r in runs])
-v_, o_ = acc([(10, "success"), (20, "failure")])
-check("REL-013-AC1 run selection: 'acceptance / x' is bound to full-suite.yml, older green newer red -> no", v_ == "no", o_)
-v_, o_ = acc([(10, "failure"), (20, "success")])
-check("REL-013-AC1 run selection: 'acceptance / x' older red newer green -> ready", v_ == "ready", o_)
-v_, o_ = acc([(20, "success")], path=".github/workflows/scan.yml")
-check("REL-013-AC1 run selection: 'acceptance / x' green from scan.yml does not qualify -> wait", v_ == "wait", o_)
-# a required-checks.json context is never bound: admission judges the latest run of its name (--check-runs holds the latest of each name, --all-check-runs every run)
-old_red_, new_green_ = dict(run("test", conclusion="failure"), id=5), dict(run("test"), id=6)
-v_, o_ = ready_files([REQF_, ROF_], [new_green_, run("scan"), run("allowlist-chain")],
-                     [wr_(1005, event="push"), wr_(1006, event="push")] + [wr_(1000 + i) for i in (3, 4)], all_runs=[old_red_, new_green_, run("scan"), run("allowlist-chain")])
-check("REL-013-AC1 run selection: a required-checks context with an old red and a newer green stays ready (unbound, push event irrelevant)", v_ == "ready", o_)
-old_green_ = dict(run("test"), id=5)
-v_, o_ = ready_files([REQF_, ROF_], [dict(run("test", conclusion="failure"), id=6), run("scan"), run("allowlist-chain")], all_runs=[old_green_, dict(run("test", conclusion="failure"), id=6), run("scan"), run("allowlist-chain")])
-check("REL-013-AC1 run selection: a required-checks context with an old green and a newer red is no (admission judges the latest run, an older green never counts)", v_ == "no", o_)
-for st_ in ("in_progress", "queued"):
-    pend_, scan_, chain_ = dict(run("test", status=st_), id=6), dict(run("scan"), id=7), dict(run("allowlist-chain"), id=8)
-    v_, o_ = ready_files([REQF_, ROF_], [pend_, scan_, chain_], all_runs=[old_green_, pend_, scan_, chain_])
-    check("REL-013-AC1 run selection: a required-checks context with an old green and a newer %s run -> wait (the latest run is pending)" % st_, v_ == "wait", o_)
-# two latest runs of one unbound name and app, one green, are ambiguous to admission (one_green_run) -> no
-v_, o_ = ready_files([REQF_, ROF_], [dict(run("test"), id=5), dict(run("test", conclusion="failure"), id=6), run("scan"), run("allowlist-chain")])
-check("REL-013-AC1 run selection: two latest runs of one required-checks context, one green, are ambiguous -> no", v_ == "no" and "ambiguous" in o_, o_)
-# a bound context keeps the every-run selection: --all-check-runs decides it, whatever --check-runs holds
-bound_all_ = [dict(run("test"), id=900), dict(run("scan"), id=901), dict(run("allowlist-chain"), id=10), dict(run("allowlist-chain", conclusion="failure"), id=20)]
-v_, o_ = ready_files([REQF_, ROF_], bound_all_[:2] + bound_all_[3:], [wr_(r["id"] + 1000) for r in bound_all_], all_runs=bound_all_)
-check("REL-013-AC1 run selection: a bound release-only context with an old green and a newer red is still no when --check-runs holds only the latest of each name", v_ == "no", o_)
-# a release-only context the table does not bind is a policy error
-UNB_ = ro_file({"required_checks": [{"context": "some-unbound-context", "integration_id": 15368, "scope": "push"}]})
-v_, o_ = ready_files([REQF_, UNB_], [run("test"), run("scan"), run("some-unbound-context")])
-check("REL-013-AC1 run selection: an unbound context in release-only-checks.json is a policy error -> no", v_ == "no", o_)
 for what_, bad_ in (("no required_checks", {"comment": []}), ("an empty required_checks", {"required_checks": []}), ("malformed JSON", "{"), ("a list instead of an object", [])):
-    for pos_, files_ in (("second", [REQF_, jf_(bad_)]), ("first", [jf_(bad_), REQF_])):
-        v_, o_ = ready_files(files_, [run("test"), run("scan"), run("allowlist-chain")])
-        check("AC1 ready: a policy file (%s) with %s is a policy error -> no, never a lower requirement" % (pos_, what_), v_ == "no", o_)
+    v_, o_ = ready_file(bad_, [run("test"), run("scan")])
+    check("ready: a policy file with %s is a policy error -> no, never a lower requirement" % what_, v_ == "no", o_)
 # a queued decide run recomputes the version from the tags its own checkout sees (advisor 0063): after an earlier run
 # pushed v0.2.2, the next one cuts v0.2.3, never a second v0.2.2
 check("a queued run after v0.2.2 was cut computes v0.2.3", P.decide("push", FIX, ["v0.2.1", "v0.2.2"], cut_today=True,

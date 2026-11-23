@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-012-AC1, REQ-REL-012-AC2, REQ-REL-012-AC3, REQ-REL-012-AC4, REQ-REL-012-AC5, REQ-REL-012-AC7
+# proves: REQ-REL-012-AC1, REQ-REL-012-AC2, REQ-REL-012-AC3, REQ-REL-012-AC4, REQ-REL-012-AC5
 # proves: REQ-REL-012-AC8, REQ-REL-012-AC9, REQ-REL-012-AC10, REQ-REL-012-AC11, REQ-REL-012-AC12
 # proves: REQ-DEP-001-AC14
 # Gate 6 of the release process (owner RATIFIED Oct 23, ops/docs/ratify/2026-10-23-release-process-features-sections-audits.md, rule 6, "a
@@ -547,6 +547,22 @@ def broken_refused(script):
 check("cli release: the unparseable-file case passes for the real judge", broken_refused(sys.argv[1]), "not refused")
 check("cli release: the unparseable-file case fails when a decode error is treated as an absent file",
     not broken_refused(decode_as_absent), "the decode-as-absent judge still refused")
+# REQ-AUD-17 AC5 at admission: `held` is the open-item logic of the release check alone (admission runs main's copy on every tag
+# and release branch); it reads no record, no tag object and no writers policy, so a base root with the items file only is enough
+def held_run(script, items, raw=None):
+    b = tempfile.mkdtemp(dir=d)
+    if raw is not None or items is not None:
+        os.makedirs(b + "/.auditor")
+        open(b + "/.auditor/accepted-items.json", "w").write(raw if raw is not None else json.dumps({"accepted_items": items}))
+    return subprocess.run([sys.executable, "-I", script, "held", "--base-root", b], capture_output=True, text=True)
+for name, items, raw, code in (("an open item", [item("at_or_above")], None, 1), ("an expired below item", [item("below", "2000-01-01")], None, 1),
+    ("a below item", [item("below")], None, 0), ("an empty list", [], None, 0), ("no file", None, None, 0),
+    ("unparseable json", None, "{broken", 1), ("a list instead of an object", None, "[]", 1)):
+    r = held_run(sys.argv[1], items, raw)
+    check("cli held: %s exits %d%s" % (name, code, " and names the file" if code else ""), r.returncode == code
+        and (code == 0 or "accepted-items.json" in r.stdout) and "Traceback" not in r.stdout + r.stderr, (r.returncode, r.stdout, r.stderr))
+check("cli held: the open-item case fails when the logic is replaced by success",
+    held_run(always_ok, [item("at_or_above")]).returncode == 0, "the always-succeeding script refused")
 def wrap_rel(tag="v0.3.0", ref=REF, commit=COMMIT, ref_err=None, obj_text=APPROVED):
     fk = tempfile.mkdtemp(dir=d)
     for name, o, err in (("ref", ref, ref_err), ("commit", commit, None)):
@@ -655,61 +671,58 @@ r, c, f = run_rel("bin/audit-record-request.sh", ["release", HEAD], status="dive
 check("request release: a commit not on main -> nothing requested, exit 1",
     r.returncode == 1 and "workflow run" not in c, (r.returncode, r.stderr, c))
 
-# the admission check (gate 7): bin/build-admit.py's audit-approval check is the reviewed one. It comes after the tag signature and the
-# on-main check and before the required checks, reads main's copies only (never the tagged commit's), runs the judge in release mode on the
-# tagged sha, the tag and the tag object the signature check wrote, and swallows nothing.
+# the admission check (REQ-AUD-17 AC5): bin/build-admit.py's owner-decision check is the reviewed one. It comes after the tag signature and
+# the on-main check and before the required checks, reads main's copies only (never the tagged commit's), runs main's audit-record.py held
+# over them, and swallows nothing.
 import ast
 def adm_problems(src):
     tree = ast.parse(src); fns = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}; bad = []
-    admit = fns.get("admit"); fn = fns.get("check_audit_approval")
-    if admit is None or fn is None: return ["admit or check_audit_approval is missing"]
+    admit = fns.get("admit"); fn = fns.get("check_owner_decision")
+    if admit is None or fn is None: return ["admit or check_owner_decision is missing"]
     order = [x for x in sorted(((c.lineno, c.func.id) for c in ast.walk(admit) if isinstance(c, ast.Call)
         and isinstance(c.func, ast.Name) and c.func.id.startswith("check_")))]
     names = [x[1] for x in order]
-    if names.count("check_audit_approval") != 1: return ["the check is not called exactly once"]
-    i = names.index("check_audit_approval")
+    if names.count("check_owner_decision") != 1: return ["the check is not called exactly once"]
+    i = names.index("check_owner_decision")
     for before in ("check_tag_signature", "check_ancestor_of_main"):
         if before not in names[:i]: bad.append("it must come after " + before)
     if "check_required_checks" not in names[i + 1:]: bad.append("it must come before check_required_checks")
     seg = ast.get_source_segment(src, fn)
-    for need in ('"origin/main:" + path', '"--release"', "ctx.tag_object", "ctx.sha", "ctx.tag", "BASH",
-        'raise Refusal("audit-approval"', "rc != 0"):
+    for need in ('"origin/main:" + AUDIT_RECORD', '"origin/main:" + AUDIT_ITEMS', '"held"', "PYTHON3",
+        'raise Refusal("owner-decision"', "rc != 0"):
         if need not in seg: bad.append("lacks: " + need)
     if "ctx.sha + " in seg or "git_show(ctx" in seg: bad.append("reads the tagged commit's own copy")
+    if "tag_object" in seg or '"release"' in seg or "--release" in seg: bad.append("reads a record or the tag message")
     if any(isinstance(n, (ast.Try, ast.ExceptHandler)) for n in ast.walk(fn)): bad.append("catches an error")
     assigns = [n for n in ast.walk(fn) if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "rc"
         for t in n.targets)]
-    if assigns or any(isinstance(n, ast.Return) for n in ast.walk(fn)): bad.append("rc is assigned or the check returns early")
-    consts = [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "AUDIT_FILES"
-        for t in n.targets)]
-    if not consts or ast.literal_eval(consts[0].value) != ("bin/audit-record-judge.sh", "bin/audit-record.py",
-        ".github/policy/audit-writers.json"): bad.append("AUDIT_FILES is not the judge, its helper and the writers policy")
-    items = [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "AUDIT_ITEMS"
-        for t in n.targets)]
-    if not items or ast.literal_eval(items[0].value) != ".auditor/accepted-items.json": bad.append("AUDIT_ITEMS is not the accepted-items file")
-    if "AUDIT_ITEMS" not in seg: bad.append("check_audit_approval does not use AUDIT_ITEMS")
-    if not any(isinstance(n, ast.Name) and n.id == "AUDIT_FILES" for n in ast.walk(fn)): bad.append("the three required files are not read")
+    if len(assigns) > 0 or any(isinstance(n, ast.Return) for n in ast.walk(fn)): bad.append("rc is assigned or the check returns early")
+    def const(name):
+        found = [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") == name for t in n.targets)]
+        return ast.literal_eval(found[0].value) if found else None
+    if const("AUDIT_RECORD") != "bin/audit-record.py": bad.append("AUDIT_RECORD is not the open-item logic")
+    if const("AUDIT_ITEMS") != ".auditor/accepted-items.json": bad.append("AUDIT_ITEMS is not the accepted-items file")
     return bad
 admit_src = open(os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), "build-admit.py")).read()
-check("build-admit.py: the audit-approval check is the reviewed one", adm_problems(admit_src) == [], adm_problems(admit_src))
+check("build-admit.py: the owner-decision check is the reviewed one", adm_problems(admit_src) == [], adm_problems(admit_src))
 for name, old, new, frag in (
-    ("the check not called", "        check_audit_approval(ctx)\n", "", "exactly once"),
-    ("the check moved after the required checks", "        check_audit_approval(ctx)\n        check_required_checks(ctx)",
-        "        check_required_checks(ctx)\n        check_audit_approval(ctx)", "before check_required_checks"),
-    ("the check before the on-main check", "        check_ancestor_of_main(ctx)\n        check_audit_approval(ctx)",
-        "        check_audit_approval(ctx)\n        check_ancestor_of_main(ctx)", "after check_ancestor_of_main"),
-    ("the tagged commit's own judge", '    for path in AUDIT_FILES:\n        data = git_show("origin/main:" + path)\n',
-        '    for path in AUDIT_FILES:\n        data = git_show(ctx.sha + ":" + path)\n', "lacks"),
-    ("a non-release mode", '"--release"', '"--verify"', "lacks"),
+    ("the check not called", "        check_owner_decision(ctx)\n", "", "exactly once"),
+    ("the check moved after the required checks", "        check_owner_decision(ctx)\n        check_required_checks(ctx)",
+        "        check_required_checks(ctx)\n        check_owner_decision(ctx)", "before check_required_checks"),
+    ("the check before the on-main check", "        check_ancestor_of_main(ctx)\n        check_owner_decision(ctx)",
+        "        check_owner_decision(ctx)\n        check_ancestor_of_main(ctx)", "after check_ancestor_of_main"),
+    ("the tagged commit's own open-item logic", '    data = git_show("origin/main:" + AUDIT_RECORD)\n',
+        '    data = git_show(ctx.sha + ":" + AUDIT_RECORD)\n', "lacks"),
+    ("the tagged commit's own items file", '        data = git_show("origin/main:" + AUDIT_ITEMS)\n',
+        '        data = git_show(ctx.sha + ":" + AUDIT_ITEMS)\n', "lacks"),
+    ("the release mode (a record and an approval line read)", '"held", "--base-root", root]',
+        '"release", "--base-root", root]', "lacks"),
     ("a swallowed result", "    why = one_line(text(out) or text(err), 300)\n",
         "    why = one_line(text(out) or text(err), 300)\n    rc = 0\n", "rc is assigned"),
-    ("an early return", "    judge = os.path.join(root, AUDIT_FILES[0])\n",
-        "    return\n    judge = os.path.join(root, AUDIT_FILES[0])\n", "early"),
-    ("the items file a required one", 'AUDIT_FILES = ("bin/audit-record-judge.sh", "bin/audit-record.py", ".github/policy/audit-writers.json")',
-        'AUDIT_FILES = ("bin/audit-record-judge.sh", "bin/audit-record.py", ".github/policy/audit-writers.json", ".auditor/accepted-items.json")',
-        "AUDIT_FILES is not"),
-    ("a caught error", "    rc, out, err = run([BASH, judge,",
-        "    try:\n        pass\n    except Exception:\n        pass\n    rc, out, err = run([BASH, judge,", "catches"),
+    ("an early return", "    root = os.path.join(ctx.tmp, \"audit-root\")\n",
+        "    return\n    root = os.path.join(ctx.tmp, \"audit-root\")\n", "early"),
+    ("a caught error", "    rc, out, err = run([PYTHON3, \"-I\", os.path.join(root, AUDIT_RECORD),",
+        "    try:\n        pass\n    except Exception:\n        pass\n    rc, out, err = run([PYTHON3, \"-I\", os.path.join(root, AUDIT_RECORD),", "catches"),
 ):
     if admit_src.count(old) != 1: check("build-admit.py: a copy with %s is refused" % name, False, "anchor not found"); continue
     probs = adm_problems(admit_src.replace(old, new)); check("build-admit.py: a copy with %s is refused" % name,
@@ -1270,11 +1283,6 @@ check("verify_record: a record sha with a trailing newline is refused", not ok, 
 ok, why = plan_rel(head=NL); check("plan release: a head sha with a trailing newline is refused", not ok, (ok, why))
 ok, why = plan(pr=mut(PR, ["head", "sha"], NL), head=NL)
 check("plan: a head sha with a trailing newline is refused", not ok, (ok, why))
-# the items file never copied: every use of AUDIT_ITEMS inside check_audit_approval removed
-fn_src = ast.get_source_segment(admit_src, [n for n in ast.walk(ast.parse(admit_src)) if isinstance(n, ast.FunctionDef)
-    and n.name == "check_audit_approval"][0])
-probs = adm_problems(admit_src.replace(fn_src, fn_src.replace("AUDIT_ITEMS", "()")))
-check("build-admit.py: a copy with the items file never copied is refused", any("does not use AUDIT_ITEMS" in x for x in probs), probs)
 print("audit-record: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
