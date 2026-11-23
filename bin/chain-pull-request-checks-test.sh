@@ -178,10 +178,6 @@ WANT = {"test": "push", "lint": "push", "govulncheck": "push", "analyze (go)": "
         "scan": "push", "go-exact-pins": "push"}
 res(scopes == WANT, "AC3: required-checks.json holds exactly the ten remaining contexts with their scopes (diff: %s)"
     % sorted(k for k in set(scopes) | set(WANT) if scopes.get(k) != WANT.get(k)))
-ro = json.load(open(root + "/.github/policy/release-only-checks.json"))["required_checks"]
-res({c["context"]: c["scope"] for c in ro}.get("allowlist-chain") == "push", "AC3: release-only-checks.json holds allowlist-chain, scope push")
-res(not ({c["context"] for c in checks} & {c["context"] for c in ro}),
-    "AC3: no context is in both required-checks.json and release-only-checks.json (%s)" % sorted({c["context"] for c in checks} & {c["context"] for c in ro}))
 res("allowlist-chain" not in scopes, "AC3: required-checks.json has no allowlist-chain entry")
 res([c for c in checks if c["context"] == "go-exact-pins"] == [{"context": "go-exact-pins", "integration_id": 15368, "scope": "push"}],
     "AC3: required-checks.json has exactly one go-exact-pins entry, integration_id 15368, scope push")

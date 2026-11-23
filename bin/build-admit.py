@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Source admission, Build's first action (REQ-CHAIN-004-AC4, AC5): every check the old stage-admission.yml made, none dropped.
+"""Source admission, Build's first action (REQ-CHAIN-004-AC4, AC5).
 
-    python3 bin/build-admit.py run [--out admission.json]   run from the root of the checkout of the tagged commit
+    python3 bin/build-admit.py run [--out admission.json]   run from the root of the checkout of the tagged commit, or of a release branch
     python3 bin/build-admit.py list-checks                  one check name per line, in the order they run
     python3 bin/build-admit.py tag-ok [--final] TAG         exit 0 when TAG is a release tag (--final: and not a release candidate), else 1
     python3 bin/build-admit.py tag-pattern                  print TAG_PATTERN, for a step that matches it itself (jq)
 
 The tag, ref and sha come ONLY from the runner environment (GITHUB_REF, GITHUB_REF_NAME, GITHUB_SHA, GITHUB_REPOSITORY, GITHUB_RUN_ID,
 GITHUB_RUN_ATTEMPT); an argument naming one is a usage error. They are never put in a shell: every command is an argument list.
+On a push of a release/vX.Y.Z branch the branch name without "release/" is used wherever the tag is, and the checks of a tag object
+(annotated, signature) do not run.
 Policy (allowed signers, the pinned web-flow key, the required checks, the signer router) is read from
 origin/main, never from the tagged commit, because the tagged commit is the thing being admitted. GitHub is read with `gh api`
 (GET only, no -X / -f / -F / --input) and the JSON is parsed here. The token (GH_TOKEN) is inherited by `gh` and never printed.
@@ -17,7 +19,6 @@ is left. Exit 2: usage or environment error.
 """
 import argparse
 import datetime
-import fnmatch
 import hashlib
 import json
 import os
@@ -28,10 +29,10 @@ import subprocess
 import sys
 import tempfile
 
-# The twelve checks, in order. Each is the counterpart of a step of the old stage-admission.yml (bin/chain-admission-old-steps.txt).
+# The eleven checks, in order. Each is the counterpart of a step of the old stage-admission.yml (bin/chain-admission-old-steps.txt).
 CHECKS = [
     "tag-ref", "tag-syntax", "policy-from-main", "tag-annotated", "tag-signature",
-    "commit-signature", "ancestor-of-main", "audit-approval", "required-checks", "baseline", "rc-proof",
+    "commit-signature", "ancestor-of-main", "owner-decision", "required-checks", "baseline",
     "admission-evidence",
 ]
 
@@ -42,7 +43,6 @@ GPG = "/usr/bin/gpg"            # TEST-SUBST
 GPGCONF = "/usr/bin/gpgconf"    # TEST-SUBST
 SSH_KEYGEN = "/usr/bin/ssh-keygen"  # TEST-SUBST
 PYTHON3 = "/usr/bin/python3"    # TEST-SUBST
-BASH = "/usr/bin/bash"          # TEST-SUBST
 
 # The one tag grammar: no leading zeros, an rc number of at least 1.
 # v1.2.3 and v1.2.3-rc1 match; v01.2.3 and v1.2.3-rc0 do not.
@@ -51,6 +51,7 @@ TAG_SYNTAX = re.compile(TAG_PATTERN)  # fullmatch: no trailing newline slips thr
 SHA_SYNTAX = re.compile(r"[0-9a-f]{40}")
 SSH_GOOD = re.compile(r'^Good "git" signature for (\S+) with .* key (SHA256:\S+)$', re.M)
 OWNER_SSH = "owner-ssh"
+RELEASE_BRANCH = "release/"         # a release is built on the branch release/vX.Y.Z before its tag exists: the rest of the name is its version
 KMS_RELEASE = "kms-release"         # the one release KMS key, admitted on a patch tag only (REQ-REL-009-AC6)
 PATCH_TAG = re.compile(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.[1-9][0-9]*")
 # The freeze check (the requirements tool, Go code of the tagged commit) runs in the `freeze` job before Build, not
@@ -59,26 +60,15 @@ PATCH_TAG = re.compile(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.[1-9][0-9]*")
 FREEZE_FILE = "freeze/freeze.txt"
 FREEZE_CAP = 65536
 FREEZE_LINE = re.compile(r"freeze-ok ([0-9a-f]{40}) (%s)" % TAG_PATTERN)
-# REQ-CHAIN-004-AC21: each promotion or release-only context, by glob, and the one workflow file that produces it. A check run of
-# such a context counts only from a schedule or dispatch run of that file on the tagged commit. A literal of pairs, read as data by others.
-BOUND_CONTEXTS = (
-    ("analyze (go)", "codeql.yml"),
-    ("reproducibility", "scan.yml"),
-    ("scan", "scan.yml"),
-    ("allowlist-chain", "full-suite.yml"),
-    ("acceptance / *", "full-suite.yml"),
-)
-BOUND_EVENTS = ("schedule", "workflow_dispatch")
-RC_MARKER = ".github/policy/rc-proof.json"      # read from origin/main with bin/chain-bytes-sha.py of origin/main, only for a final or patch tag (REQ-CHAIN-001-AC6)
-RC_BYTES = "bin/chain-bytes-sha.py"
 SIGNER = "bin/admission-tag-signer.py"
+# owner-decision (REQ-AUD-17-AC5): main's open-item logic and, when main has it, its items file, read from origin/main into a scratch
+# root and never taken from the commit being admitted
+AUDIT_RECORD = "bin/audit-record.py"
+AUDIT_ITEMS = ".auditor/accepted-items.json"
 # the policy inputs read from origin/main, each copied into the policy directory under its file name
-# gate 7 (REQ-REL-012-AC7): main's judge, its helper, the writers policy and (when main has it) the owner-decision items, read from origin/main into a scratch root and never taken from the tagged commit
-AUDIT_FILES = ("bin/audit-record-judge.sh", "bin/audit-record.py", ".github/policy/audit-writers.json")
-AUDIT_ITEMS = ".auditor/accepted-items.json"      # the judge also reads it when main has it: an open owner-decision item holds the tag
 RELEASE_SIGNER = ".github/policy/release_tag_signer"    # one ssh-rsa line, the release KMS public key; absent until a human commits it
 POLICY_FILES = (".github/policy/allowed_signers", ".github/policy/github-web-flow.gpg", ".github/policy/required-checks.json",
-    ".github/policy/release-only-checks.json", SIGNER, "bin/build-admit.py",   # the signer loads the tag grammar from the copy beside it
+                SIGNER, "bin/build-admit.py",   # the signer loads the tag grammar from the copy beside it
                 RELEASE_SIGNER)
 
 
@@ -126,7 +116,9 @@ class Context:
     def __init__(self, tmp):
         env = os.environ
         self.ref = env["GITHUB_REF"]
-        self.tag = env["GITHUB_REF_NAME"]
+        name = env["GITHUB_REF_NAME"]
+        self.branch = name if self.ref == "refs/heads/" + name and name.startswith(RELEASE_BRANCH) else None
+        self.tag = name[len(RELEASE_BRANCH):] if self.branch else name     # on a release branch: the version its name carries
         self.sha = env["GITHUB_SHA"]
         self.repo = env["GITHUB_REPOSITORY"]
         self.run_id = env["GITHUB_RUN_ID"]
@@ -148,26 +140,29 @@ class Context:
 # ---------------------------------------------------------------- 1-2. tag-ref, tag-syntax (REQ-CHAIN-004-AC4)
 
 def check_tag_ref(ctx):
-    """The ref is a tag ref and GITHUB_REF_NAME is the tag in it."""
-    if not ctx.ref.startswith("refs/tags/") or ctx.ref != "refs/tags/" + ctx.tag:
-        raise Refusal("tag-ref", "admission runs only for tag pushes (got ref %r, name %r)" % (ctx.ref, ctx.tag))
+    """The ref is a tag ref and GITHUB_REF_NAME is the tag in it, or the ref is a release branch (Context)."""
+    if not ctx.branch and (not ctx.ref.startswith("refs/tags/") or ctx.ref != "refs/tags/" + ctx.tag):
+        raise Refusal("tag-ref", "admission runs only for tag pushes and pushes of a release/vX.Y.Z branch (got ref %r, name %r)" % (ctx.ref, ctx.tag))
 
 
 def check_tag_syntax(ctx):
     """The strict release-version syntax, before anything else looks at the tag."""
     if not TAG_SYNTAX.fullmatch(ctx.tag):
         raise Refusal("tag-syntax", "tag %r does not match vMAJOR.MINOR.PATCH[-rcN]" % ctx.tag)
+    if ctx.branch and "-rc" in ctx.tag:     # the name already passed TAG_SYNTAX, so "-rc" means a release candidate
+        raise Refusal("tag-syntax", "branch %s names a release candidate: a release branch is release/vMAJOR.MINOR.PATCH" % ctx.branch)
 
 
 def check_tag_points_at_sha(ctx):
-    """The re-tag race: the tag as it is now must still point at the event's commit (part of tag-ref)."""
+    """The re-tag race: the tag (or the release branch) as it is now must still point at the event's commit (part of tag-ref)."""
     if not SHA_SYNTAX.fullmatch(ctx.sha):
         raise Refusal("tag-ref", "GITHUB_SHA %r is not a full lower-case commit sha" % ctx.sha)
-    rc, out, _ = run([GIT, "rev-parse", "--verify", "-q", "refs/tags/%s^{commit}" % ctx.tag])
+    what = "branch %s" % ctx.branch if ctx.branch else "tag %s" % ctx.tag
+    rc, out, _ = run([GIT, "rev-parse", "--verify", "-q", ctx.ref + "^{commit}"])
     if rc != 0:
-        raise Refusal("tag-ref", "tag %s does not exist in the checkout (or does not point at a commit)" % ctx.tag)
+        raise Refusal("tag-ref", "%s does not exist in the checkout (or does not point at a commit)" % what)
     if text(out).strip() != ctx.sha:
-        raise Refusal("tag-ref", "tag %s points at %s, not at GITHUB_SHA %s (moved after the event)" % (ctx.tag, text(out).strip(), ctx.sha))
+        raise Refusal("tag-ref", "%s points at %s, not at GITHUB_SHA %s (moved after the event)" % (what, text(out).strip(), ctx.sha))
 
 
 # ---------------------------------------------------------------- 3. policy-from-main
@@ -292,13 +287,13 @@ def check_ancestor_of_main(ctx):
         raise Refusal("ancestor-of-main", "the tagged commit %s is not an ancestor of origin/main" % ctx.sha)
 
 
-# ---------------------------------------------------------------- 8. audit-approval (REQ-REL-012-AC7)
+# ---------------------------------------------------------------- 8. owner-decision (REQ-AUD-17-AC5)
 
 def is_on_main(path):
     """True when origin/main has the file; only a path that is not in its tree is absent, any git error refuses."""
     rc, out, err = run([GIT, "ls-tree", "--name-only", "origin/main", "--", path])
     if rc != 0:
-        raise Refusal("audit-approval", "git could not list origin/main: %s" % one_line(text(err), 300))
+        raise Refusal("owner-decision", "git could not list origin/main: %s" % one_line(text(err), 300))
     return out.strip() != b""
 
 
@@ -308,33 +303,28 @@ def copy_into(root, path, data):
         fh.write(data)
 
 
-def check_audit_approval(ctx):
-    """Release process rule 7: a tag that is not a patch tag needs the passed-audit record of the tagged commit AND the owner's
-    `Audit-approved: <record commit>` line in the signed tag message (the signature was verified above, so the line is the owner's).
-    The decision is main's judge (bin/audit-record-judge.sh --release), the only place that knows what a patch tag is: it reads no record
-    for one. Exit 0 passes; exit 1 (no or bad record, no or ambiguous line), exit 3 (a GitHub API error) and anything else refuse."""
+def check_owner_decision(ctx):
+    """An open owner-decision item (a Critical or KEV acceptance waiting on the owner) holds every release, a patch too, on a tag and
+    on a release branch. Whether one is open is decided by main's bin/audit-record.py (held: the open-item logic of its release
+    check, with no record and no tag read) over main's .auditor/accepted-items.json. No such file on main: nothing is open; a file
+    main lists but that cannot be read refuses. Exit 0 passes; any other exit refuses."""
     root = os.path.join(ctx.tmp, "audit-root")
-    for path in AUDIT_FILES:
-        data = git_show("origin/main:" + path)
-        if data is None:
-            raise Refusal("audit-approval", "%s is not on origin/main, so the whole-release audit cannot be judged" % path)
-        copy_into(root, path, data)
+    data = git_show("origin/main:" + AUDIT_RECORD)
+    if data is None:
+        raise Refusal("owner-decision", "%s is not on origin/main, so the owner-decision items cannot be judged" % AUDIT_RECORD)
+    copy_into(root, AUDIT_RECORD, data)
     if is_on_main(AUDIT_ITEMS):
         data = git_show("origin/main:" + AUDIT_ITEMS)
         if data is None:
-            raise Refusal("audit-approval", "%s is on origin/main but cannot be read, so the whole-release audit cannot be judged" % AUDIT_ITEMS)
+            raise Refusal("owner-decision", "%s is on origin/main but cannot be read, so the owner-decision items cannot be judged" % AUDIT_ITEMS)
         copy_into(root, AUDIT_ITEMS, data)
-    judge = os.path.join(root, AUDIT_FILES[0])
-    rc, out, err = run([BASH, judge, ctx.sha, "main", "--release", ctx.tag, ctx.tag_object])
+    rc, out, err = run([PYTHON3, "-I", os.path.join(root, AUDIT_RECORD), "held", "--base-root", root])
     why = one_line(text(out) or text(err), 300)
-    if rc == 3:
-        raise Refusal("audit-approval", "a GitHub API error stopped the whole-release audit check: %s" % why)
     if rc != 0:
-        raise Refusal("audit-approval", "%s" % (why or "the judge exited %d" % rc))
-    print("audit-approval %s: %s" % (ctx.tag, why))
+        raise Refusal("owner-decision", why or "main's %s held exited %d" % (AUDIT_RECORD, rc))
 
 
-# ---------------------------------------------------------------- 9. required-checks (audit F02, F03)
+# ---------------------------------------------------------------- 9. required-checks (audit F03)
 
 def decode_json_stream(raw):
     """gh api --paginate prints the pages one after the other: decode every JSON value in the stream."""
@@ -362,16 +352,16 @@ def gh_get(path, paginate=False):
         raise Refusal("required-checks", "gh api %s returned unreadable JSON" % path.split("?")[0])
 
 
-def fetch_check_runs(ctx, sha, which="latest"):
-    """Every check run of a commit (all pages; the latest of each name, or every run) as {name, conclusion, app_id, id, head_sha, url}."""
+def fetch_check_runs(ctx):
+    """The check runs of the commit (all pages; the latest of each name) as {name, conclusion, app_id, id, head_sha}."""
     runs = []
-    for page in gh_get("repos/%s/commits/%s/check-runs?filter=%s&per_page=100" % (ctx.repo, sha, which), paginate=True):
+    for page in gh_get("repos/%s/commits/%s/check-runs?filter=latest&per_page=100" % (ctx.repo, ctx.sha), paginate=True):
         if not isinstance(page, dict) or not isinstance(page.get("check_runs"), list):
-            raise Refusal("required-checks", "the check-runs answer for %s has no check_runs list" % sha)
+            raise Refusal("required-checks", "the check-runs answer for %s has no check_runs list" % ctx.sha)
         for r in page["check_runs"]:
             app = r.get("app") if isinstance(r.get("app"), dict) else {}
             runs.append({"name": r.get("name"), "conclusion": r.get("conclusion"), "app_id": app.get("id"),
-                         "id": r.get("id"), "head_sha": r.get("head_sha"), "url": r.get("details_url")})
+                         "id": r.get("id"), "head_sha": r.get("head_sha")})
     return runs
 
 
@@ -383,20 +373,8 @@ def fetch_statuses(ctx):
     return [{"context": s.get("context"), "state": s.get("state"), "id": s.get("id")} for s in pages[0]["statuses"]]
 
 
-def find_merged_pr(ctx):
-    """The merged PR whose squash produced exactly this commit (merge_commit_sha equal, base main, merged), or None."""
-    pages = gh_get("repos/%s/commits/%s/pulls" % (ctx.repo, ctx.sha))
-    prs = [p for page in pages if isinstance(page, list) for p in page if isinstance(p, dict)]
-    for p in prs:
-        base = p.get("base") if isinstance(p.get("base"), dict) else {}
-        head = p.get("head") if isinstance(p.get("head"), dict) else {}
-        if p.get("merge_commit_sha") == ctx.sha and base.get("ref") == "main" and p.get("merged_at") and SHA_SYNTAX.fullmatch(str(head.get("sha"))):
-            return {"number": p.get("number"), "head_sha": head["sha"]}
-    return None
-
-
 def every_run_green(runs, req, sha):
-    """The check run of this name and app on this exact sha that an unbound required check passes on: at least one run, and every run
+    """The check run of this name and app on this exact sha that a required check passes on: at least one run, and every run
     completed and success (several green runs pass; any red, cancelled or unfinished one, or none, returns (None, why)). Returns the newest."""
     mine = [r for r in runs if r["name"] == req["context"] and r["app_id"] == req["integration_id"] and r["head_sha"] == sha]
     if not mine or any(r["conclusion"] != "success" or not isinstance(r["id"], int) for r in mine):
@@ -404,100 +382,33 @@ def every_run_green(runs, req, sha):
     return max(mine, key=lambda r: r["id"]), None
 
 
-def read_required_policy(ctx, rc):
-    """Main's required-checks.json (with its promotion_checks) and release-only-checks.json, validated: an empty or unknown-scope list is a
-    policy error, not a skipped check. The release-only list counts on every tag, promotion_checks on a release candidate tag only."""
-    out = []
-    for name, keys in (("required-checks.json", ("required_checks", "promotion_checks")), ("release-only-checks.json", ("required_checks",))):
-        try:
-            with open(os.path.join(ctx.policy, name), encoding="utf-8") as fh:
-                doc = json.load(fh)
-            lists = [(key, doc[key]) for key in keys]
-        except (ValueError, KeyError, TypeError, OSError) as e:
-            raise Refusal("required-checks", "main's %s is unreadable: %s" % (name, one_line(str(e), 100)))
-        for key, reqs in lists:
-            if not isinstance(reqs, list) or not reqs:
-                raise Refusal("required-checks", "main's %s %s is not a non-empty list" % (name, key))
-            for r in reqs:
-                if not isinstance(r, dict) or not isinstance(r.get("context"), str) or not isinstance(r.get("integration_id"), int):
-                    raise Refusal("required-checks", "a required check entry in main's policy is malformed: %s" % one_line(json.dumps(r), 100))
-                scope = r.get("scope", "push")
-                if scope not in ("push", "pull_request"):
-                    raise Refusal("required-checks", "unknown scope %r for required check %r: policy error" % (scope, r["context"]))
-                if key != "promotion_checks" or rc:
-                    out.append({"context": r["context"], "integration_id": r["integration_id"], "scope": scope,
-                                "bound": name != "required-checks.json" or key == "promotion_checks"})
-    return out
-
-
-def producing_file(context):
-    """The workflow file BOUND_CONTEXTS binds a context to, or None."""
-    for pattern, file in BOUND_CONTEXTS:
-        if fnmatch.fnmatchcase(context, pattern):
-            return file
-    return None
-
-
-def bound_run(ctx, runs, req, file):
-    """The newest run of a bound context that qualifies decides: (run, None), or (None, why). A run qualifies when its workflow run has the
-    path of the producing file, an event of BOUND_EVENTS and the tagged commit; one that cannot be read is a refusal, never skipped."""
-    prefix = "https://github.com/%s/actions/runs/" % ctx.repo
-    mine = sorted((r for r in runs if r["name"] == req["context"] and r["app_id"] == req["integration_id"]
-                   and isinstance(r["id"], int)), key=lambda r: -r["id"])
-    for r in mine:
-        url = r["url"] if isinstance(r["url"], str) and r["url"].startswith(prefix) else ""
-        run_id = url[len(prefix):].split("/")[0]
-        if not run_id.isascii() or not run_id.isdigit():
-            continue
-        gone = "cannot read workflow run %s behind required check '%s'" % (run_id, req["context"])
-        rc, out, _ = run([GH, "api", "repos/%s/actions/runs/%s" % (ctx.repo, run_id)])
-        try:
-            facts = json.loads(text(out)) if rc == 0 else None
-        except ValueError:
-            facts = None
-        if not isinstance(facts, dict) or not all(isinstance(facts.get(k), str) for k in ("path", "event", "head_sha")):
-            raise Refusal("required-checks", gone)
-        if facts["path"] != ".github/workflows/" + file or facts["event"] not in BOUND_EVENTS or facts["head_sha"] != ctx.sha:
-            continue
-        if r["conclusion"] is None:
-            return None, "required check '%s' (app %s) is pending: its run %s has not finished" % (req["context"], req["integration_id"], run_id)
-        if r["conclusion"] != "success":
-            return None, "required check '%s' (app %s) is not green on %s: its run %s is %s" % (req["context"], req["integration_id"], ctx.sha, run_id, r["conclusion"])
-        return r, None
-    return None, "required check '%s' (app %s) has no schedule or dispatch run of %s on %s" % (req["context"], req["integration_id"], file, ctx.sha)
+def read_required_policy(ctx):
+    """Main's required-checks.json, validated: an empty list or an unknown scope is a policy error, not a skipped check."""
+    try:
+        with open(os.path.join(ctx.policy, "required-checks.json"), encoding="utf-8") as fh:
+            reqs = json.load(fh)["required_checks"]
+    except (ValueError, KeyError, TypeError, OSError) as e:
+        raise Refusal("required-checks", "main's required-checks.json is unreadable: %s" % one_line(str(e), 100))
+    if not isinstance(reqs, list) or not reqs:
+        raise Refusal("required-checks", "main's required-checks.json required_checks is not a non-empty list")
+    for r in reqs:
+        if not isinstance(r, dict) or not isinstance(r.get("context"), str) or not isinstance(r.get("integration_id"), int):
+            raise Refusal("required-checks", "a required check entry in main's policy is malformed: %s" % one_line(json.dumps(r), 100))
+        if r.get("scope", "push") != "push":
+            raise Refusal("required-checks", "unknown scope %r for required check %r: policy error" % (r["scope"], r["context"]))
+    return reqs
 
 
 def check_required_checks(ctx):
-    reqs = read_required_policy(ctx, "-rc" in ctx.tag)
-    sha_runs = fetch_check_runs(ctx, ctx.sha)
-    all_runs = fetch_check_runs(ctx, ctx.sha, "all") if any(r["bound"] and r["scope"] == "push" for r in reqs) else []
+    reqs = read_required_policy(ctx)
+    runs = fetch_check_runs(ctx)
     ctx.statuses = fetch_statuses(ctx)
-    pr = find_merged_pr(ctx)
-    pr_runs = fetch_check_runs(ctx, pr["head_sha"]) if pr and any(r["scope"] == "pull_request" for r in reqs) else []
     for req in reqs:
-        ctx_name = req["context"]
-        if req["scope"] == "push":
-            file = producing_file(ctx_name) if req["bound"] else None
-            if req["bound"] and not file:
-                raise Refusal("required-checks", "required check '%s' has no producing workflow file in the admission table" % ctx_name)
-            if file:
-                hit, why = bound_run(ctx, all_runs, req, file)
-                if not hit:
-                    raise Refusal("required-checks", why)
-            else:
-                hit, why = every_run_green(sha_runs, req, ctx.sha)
-                if not hit:
-                    raise Refusal("required-checks", "required check '%s' %s" % (ctx_name, why))
-            ctx.verified.append({"context": ctx_name, "source": "check-run-on-tagged-sha", "evidence_sha": ctx.sha, "id": hit["id"],
-                                 "conclusion": "success"})
-        else:
-            if not pr:
-                raise Refusal("required-checks", "required check '%s' is pull_request-scoped but no merged PR produced this exact commit" % ctx_name)
-            hit, why = every_run_green(pr_runs, req, pr["head_sha"])
-            if not hit:
-                raise Refusal("required-checks", "required check '%s' %s (head of merged PR #%s)" % (ctx_name, why, pr["number"]))
-            ctx.verified.append({"context": ctx_name, "source": "check-run-on-merged-pr-head", "pr": pr["number"],
-                                 "evidence_sha": pr["head_sha"], "id": hit["id"], "conclusion": "success"})
+        hit, why = every_run_green(runs, req, ctx.sha)
+        if not hit:
+            raise Refusal("required-checks", "required check '%s' %s" % (req["context"], why))
+        ctx.verified.append({"context": req["context"], "source": "check-run-on-tagged-sha", "evidence_sha": ctx.sha, "id": hit["id"],
+                             "conclusion": "success"})
 
 
 # ---------------------------------------------------------------- 10. baseline (REQ-REL-009-AC13)
@@ -574,7 +485,8 @@ def check_baseline(ctx):
     except ImportError:
         raise EnvError("PyYAML is required")
     base, signed = ctx.tag, None
-    if ctx.method == KMS_RELEASE:
+    # a release branch has no tag signature to choose by: there a patch version takes its line's baseline
+    if PATCH_TAG.fullmatch(ctx.tag) if ctx.branch else ctx.method == KMS_RELEASE:
         base, signed = inherited_baseline(ctx)
     ctx.base = base
     path = "requirements/releases/%s.yaml" % base
@@ -595,32 +507,7 @@ def check_baseline(ctx):
         raise Refusal("baseline", "release baseline invalid: " + "; ".join(errs))
 
 
-# ---------------------------------------------------------------- 11. rc-proof (REQ-CHAIN-001-AC6, advisor Oct 12)
-
-def check_rc_proof(ctx):
-    """A final or patch tag is admitted only when the committed marker of origin/main validates for the tagged commit: it names an rc tag that is an
-    ancestor, and the chain files of the commit hash to its sha (bin/chain-bytes-sha.py check-marker, main's copy). A release candidate tag is exempt (it is how
-    the proof is made). A missing marker is a refusal, never a skip."""
-    if "-rc" in ctx.tag:      # the tag already passed TAG_SYNTAX, so "-rc" means a release candidate
-        return
-    marker = git_show("origin/main:" + RC_MARKER)
-    if marker is None:
-        raise Refusal("rc-proof", "the rc-proof marker %s is not on origin/main: no final or patch tag is admitted without a recorded green rc run of these chain files" % RC_MARKER)
-    script = git_show("origin/main:" + RC_BYTES)
-    if script is None:
-        raise Refusal("rc-proof", "%s is not on origin/main, so the marker cannot be checked" % RC_BYTES)
-    marker_path = os.path.join(ctx.policy, "rc-proof.json")
-    script_path = os.path.join(ctx.policy, os.path.basename(RC_BYTES))
-    for path, data in ((marker_path, marker), (script_path, script)):
-        with open(path, "wb") as fh:
-            fh.write(data)
-    rc, _, err = run([PYTHON3, "-I", script_path, "check-marker", "--marker", marker_path, "--commit", ctx.sha,
-        "--repo", "."])
-    if rc != 0:
-        raise Refusal("rc-proof", "the rc-proof marker %s does not validate for %s: %s" % (RC_MARKER, ctx.sha, one_line(text(err), 300)))
-
-
-# ---------------------------------------------------------------- 12. admission-evidence
+# ---------------------------------------------------------------- 11. admission-evidence
 
 def check_admission_evidence(ctx, out_path):
     """Write the canonical admission.json (sorted keys, jq -S layout) so its digest is stable."""
@@ -635,6 +522,8 @@ def check_admission_evidence(ctx, out_path):
         "baseline_version": ctx.base,
         "run": {"id": int(ctx.run_id), "attempt": int(ctx.run_attempt)},
     }
+    if ctx.branch:
+        del doc["tag_signature"]
     with open(out_path, "w", encoding="utf-8") as fh:
         fh.write(json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
 
@@ -665,17 +554,17 @@ def admit(out_path):
         check_tag_syntax(ctx)
         check_tag_points_at_sha(ctx)
         check_policy_from_main(ctx)
-        check_tag_annotated(ctx)
-        check_tag_signature(ctx)
+        if not ctx.branch:      # a branch has no tag object
+            check_tag_annotated(ctx)
+            check_tag_signature(ctx)
         check_commit_signature(ctx)
         check_ancestor_of_main(ctx)
-        check_audit_approval(ctx)
+        check_owner_decision(ctx)
         check_required_checks(ctx)
         check_baseline(ctx)
-        check_rc_proof(ctx)
         check_admission_evidence(ctx, out_path)
-        print("admitted %s (%s): signed by %s (%s), %d required checks green, baseline %s" %
-              (ctx.tag, ctx.sha, ctx.principal, ctx.method, len(ctx.verified), ctx.base))
+        signer = "" if ctx.branch else " signed by %s (%s)," % (ctx.principal, ctx.method)
+        print("admitted %s (%s):%s %d required checks green, baseline %s" % (ctx.tag, ctx.sha, signer, len(ctx.verified), ctx.base))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

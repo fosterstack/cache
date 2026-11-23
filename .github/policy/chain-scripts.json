@@ -217,7 +217,7 @@
       ],
       "runs": [],
       "signs": false,
-      "reason": "the chain-file set defined once (the release and stage workflows, the listed scripts, the policy files but the marker) and the rc-proof marker's local checks (REQ-CHAIN-001-AC6); loaded by chain-verify.py rc-proof, run by build-admit.py (from origin/main); reads git objects with git cat-file and ls-tree, runs no listed script and signs nothing; `at` is the word of its `refused at` line"
+      "reason": "the chain-file set defined once (the release and stage workflows, the listed scripts, the policy files but the marker) and the rc-proof marker's local checks (REQ-CHAIN-001-AC6); loaded by chain-verify.py rc-proof; reads git objects with git cat-file and ls-tree, runs no listed script and signs nothing; `at` is the word of its `refused at` line"
     },
     {
       "path": "bin/install-build-tools.sh",
@@ -427,11 +427,6 @@
         },
         {
           "rule": "script-name",
-          "text": "build-admit.py",
-          "why": "the file name joined to this script's own directory and parsed, not run: BOUND_CONTEXTS and BOUND_EVENTS are read as data from its source, so the bound check table has one definition; a name, never a command here"
-        },
-        {
-          "rule": "script-name",
           "text": "x.sh",
           "why": "a file-name pattern or an example of one in the classifier (data and prose), never run from here"
         },
@@ -512,6 +507,8 @@
     {
       "path": "bin/build-stage-apk.sh",
       "tools": [
+        "at",
+        "git",
         "python3"
       ],
       "runs": [
@@ -522,16 +519,23 @@
         "bin/build-baselayout-apk.sh"
       ],
       "signs": false,
-      "reason": "Build, job apk: admission, the two apk builds with cache's script, the version checks, this architecture's items fragment",
+      "reason": "Build, job apk: admission, on a release branch the job-local tag at HEAD (refuses outside GitHub Actions, deletes the other local v* tags at HEAD), the two apk builds with cache's script, the version checks, this architecture's items fragment",
       "reads_env": [
         "GH_TOKEN"
+      ],
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "  [ \"${GITHUB_ACTIONS:-}\" = true ] || { echo \"refusing to delete tags outside GitHub Actions (run in a throwaway clone)\" >&2; exit 2; }",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; the same guard line as the snapshot apk scripts, indented inside the release-branch block)"
+        }
       ]
     },
     {
       "path": "bin/build-stage-assemble.sh",
       "tools": [
         "at",
-        "make",
         "python3"
       ],
       "runs": [
@@ -547,7 +551,8 @@
     {
       "path": "bin/build-stage-rebuild-apk.sh",
       "tools": [
-        "make",
+        "at",
+        "git",
         "python3"
       ],
       "runs": [
@@ -556,13 +561,20 @@
         "bin/build-baselayout-apk.sh"
       ],
       "signs": false,
-      "reason": "Rebuild, job rapk: verify Build's record, rebuild the apks, write the fragment"
+      "reason": "Rebuild, job rapk: on a release branch the same job-local tag at HEAD as Build's apk job, rebuild the apks, write the fragment",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "  [ \"${GITHUB_ACTIONS:-}\" = true ] || { echo \"refusing to delete tags outside GitHub Actions (run in a throwaway clone)\" >&2; exit 2; }",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; the same guard line as the snapshot apk scripts, indented inside the release-branch block)"
+        }
+      ]
     },
     {
       "path": "bin/build-admit.py",
       "tools": [
         "python3",
-        "bash",
         "command",
         "gh",
         "at",
@@ -574,9 +586,7 @@
       ],
       "runs": [
         "bin/admission-tag-signer.py",
-        "bin/audit-record-judge.sh",
-        "bin/audit-record.py",
-        "bin/chain-bytes-sha.py"
+        "bin/audit-record.py"
       ],
       "signs": "other",
       "reason": "verifies (never makes) the owner's SSH signature of a release tag and calls gh for GET-only reads",
@@ -606,7 +616,7 @@
         },
         {
           "name": "PYTHON3",
-          "text": "run([PYTHON3, \"-I\", script_path, \"check-marker\"",
+          "text": "run([PYTHON3, \"-I\", os.path.join(root, AUDIT_RECORD), \"held\"",
           "why": "the fixed python3 path constant, read as a Python name; no environment variable is read or set"
         },
         {
@@ -638,18 +648,6 @@
           "line": "PYTHON3 = \"/usr/bin/python3\"    # TEST-SUBST",
           "count": 1,
           "why": "admission runs first, so it runs python3 at its fixed location and never searches PATH (a path constant, the test suites substitute it)"
-        },
-        {
-          "rule": "deny",
-          "line": "BASH = \"/usr/bin/bash\"          # TEST-SUBST",
-          "count": 1,
-          "why": "admission runs first, so it runs bash at its fixed location and never searches PATH (a path constant, the test suites substitute it)"
-        },
-        {
-          "rule": "deny",
-          "line": "    (\"analyze (go)\", \"codeql.yml\"),",
-          "count": 1,
-          "why": "the name of a CodeQL context in the table of bound contexts (analyze (go)), a string read as data; no go command is named or run"
         }
       ]
     },
@@ -673,7 +671,7 @@
         "bin/audit-record.py"
       ],
       "signs": false,
-      "reason": "gate 7 (REQ-REL-012-AC7): main's copy, read from origin/main by bin/build-admit.py and run on the tagged commit's sha, tag and tag object; reads the record branch with gh GET only and writes nothing"
+      "reason": "the passed-audit record judge (REQ-REL-012); reads the record branch with gh GET only and writes nothing"
     },
     {
       "path": "bin/audit-record.py",
@@ -690,7 +688,7 @@
         "bin/dependabot-reviewer-version.sh"
       ],
       "signs": false,
-      "reason": "gate 7 (REQ-REL-012-AC7): the judge's decision over data the wrapper fetched (the record, the writers policy, the tag object) and main's accepted-items.json, the fourth input; reads and decides, signs and writes nothing"
+      "reason": "the judge's decision over data the wrapper fetched (the record, the writers policy, the tag object) and main's accepted-items.json, the fourth input; main's copy, read from origin/main by bin/build-admit.py, runs held (the owner-decision hold, REQ-AUD-17-AC5); reads and decides, signs and writes nothing"
     },
     {
       "path": "bin/dependabot-reviewer-version.sh",
@@ -921,12 +919,10 @@
       "path": "bin/check-phase.sh",
       "tools": [
         "bash",
-        "make",
         "python3",
         "script"
       ],
       "runs": [
-        "bin/chain-verify.py",
         "bin/check-scan.sh",
         "bin/check-govulncheck.py",
         "bin/check-acceptance.sh",
@@ -935,7 +931,7 @@
         "bin/check-artifacts.sh"
       ],
       "signs": false,
-      "reason": "Check's one script, run by the same three witnessed steps on both chips: makes the release policy for the tag, verifies Build, then runs the phase's check scripts; the chip comes from uname -m (REQ-CHAIN-006-AC1, AC3)",
+      "reason": "Check's one script, run by the same three witnessed steps on both chips: runs the phase's check scripts; the chip comes from uname -m (REQ-CHAIN-006-AC1, AC3)",
       "exceptions": [
         {
           "rule": "script-name",

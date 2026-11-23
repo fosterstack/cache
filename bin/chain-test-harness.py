@@ -198,8 +198,9 @@ def expected(d, kind, which, tag, vex=True):
 FAKE_ADMIT = '''#!/usr/bin/env python3
 import json, os, subprocess, sys
 open("calls.log", "a").write("admit gh=%s\\n" % ("yes" if os.environ.get("GH_TOKEN") else "no"))
-json.dump({"tag": os.environ.get("GITHUB_REF_NAME", "v0.3.0"), "sha": os.environ.get("GITHUB_SHA", "0" * 40), "baseline_version": os.environ.get("GITHUB_REF_NAME", "v0.3.0"),
-           "baseline": "requirements/releases/%s.yaml" % os.environ.get("GITHUB_REF_NAME", "v0.3.0")}, open("admission.json", "w"))      # what the real admission writes at the repository root
+tag = os.environ.get("GITHUB_REF_NAME", "v0.3.0").removeprefix("release/")      # as the real admission: a release branch is admitted as the tag its name carries
+json.dump({"tag": tag, "sha": os.environ.get("GITHUB_SHA", "0" * 40), "baseline_version": tag,
+           "baseline": "requirements/releases/%s.yaml" % tag}, open("admission.json", "w"))      # what the real admission writes at the repository root
 subprocess.run(["gh", "api", "repos/fosterstack/cache/commits/0123/check-runs"])      # the admission reads (GET only); the fake gh logs the call to gh.log
 sys.exit(int(os.environ.get("FAKE_ADMIT_RC", "0")))
 '''
@@ -331,14 +332,7 @@ h = importlib.util.module_from_spec(spec); spec.loader.exec_module(h)
 a = sys.argv[1:]
 open("calls.log", "a").write("verify " + " ".join(a) + "\\n")
 def arg(n): return a[a.index(n) + 1]
-rc, cmd = int(os.environ.get("FAKE_VERIFY_RC", "0")), a[0]
-if cmd == "policy":
-    if "-rc" in os.environ.get("GITHUB_REF_NAME", "").lower():      # an rc tag runs the REAL `policy make` (the rc grammar is the verifier's; the Build harness must not fake it)
-        os.execv(sys.executable, [sys.executable, os.environ["REAL_CV"]] + a)
-    open("policy.json", "w").write("{}"); sys.exit(0)
-if cmd in ("verify", "stage-start"):
-    if rc: sys.stderr.write("refused at build: identity (fake)\\n")
-    sys.exit(rc)
+cmd = a[0]
 if cmd == "admission-baseline":     # REQ-CHAIN-007-AC19: the REAL command (bin/chain_items.py) runs, so a refusal of an admitted tag shows up in the integration cases (Codex 4b-2 r1)
     os.execv(sys.executable, [sys.executable, os.environ["REAL_CV"]] + a)
 if cmd == "bind" and os.environ.get("FAKE_BIND_RC"):      # a refused local record (the building job's own record): the bind is the only check left in the building job
@@ -448,18 +442,13 @@ def mktree(d, kind, script, mode="oracle", tag="v0.3.0"):
                 write("%s/.bind/%s" % (d, ("%s/%s/%s" % (pre, r, rel)).replace("/", "_")), sha(b))
             write("%s/%s/%s/%s-collection.json" % (d, rec, r, step), "{}")
     if kind in ("rebuild-apk", "rebuild-assemble"):
-        write(d + "/witness-build/build-collection.json", "{}")
+        write(d + "/witness-build/build-collection.local.json", "{}")
         write(d + "/build-in/digests.json", "{}")
     if kind in ("snapshot-rebuild-apk", "snapshot-rebuild-assemble"):
         write(d + "/witness-build/snapshot-build-collection.json", "{}")
         write(d + "/build-in/digests.json", "{}")
     if kind in ("rebuild-assemble", "snapshot-rebuild-assemble"):
         write(d + "/build-in/items.json", json.dumps(expected(d, kind, "items", tag), sort_keys=True, indent=1))
-    if "-rc" in tag:        # the REAL template and trust files, so the real `policy make` of the rc cases has everything it reads
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        for n in ("release-policy.template.json", "sigstore-trust.json", "rekor.pub"):      # `policy make` pins the Rekor key from the two files beside the template (ratify B)
-            shutil.copy(os.path.join(root, ".github", "policy", n), d + "/.github/policy/" + n)
-        make_test_manifest(d + "/.github/policy")      # the template's own directory is where `policy make` looks for the manifest
     write(d + "/calls.log", "")
     return d
 

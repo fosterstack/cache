@@ -4,8 +4,8 @@ acceptance stages. Each judge prints `ok` or the list of faults and exits 1 on a
 known-good fixture and on mutated copies (a judge that cannot fail proves nothing), then applies it to the real repository, which is
 RED until PR 3 is implemented. Finite grammars and allowlists only; no shell analysis (final PR 1 design, advisor decision b).
 
-  stage FILE            REQ-CHAIN-006-AC1: the Check jobs of release.yml (FILE) are an ALLOWLIST: check-govulncheck (credential-free, builds govulncheck) and ONE job `check`: needs exactly check-govulncheck,
-                        build-assemble and sign; runs-on ${{ matrix.runner }} with a matrix over exactly ubuntu-24.04 and ubuntu-24.04-arm; permissions exactly contents read (no identity token, no environment, no
+  stage FILE            REQ-CHAIN-006-AC1: the Check jobs of release.yml (FILE) are an ALLOWLIST: check-govulncheck (credential-free, builds govulncheck) and ONE job `check`: needs exactly check-govulncheck
+                        and build-assemble; runs-on ${{ matrix.runner }} with a matrix over exactly ubuntu-24.04 and ubuntu-24.04-arm; permissions exactly contents read (no identity token, no environment, no
                         job output); no per-chip job; steps EXACTLY, in order: checkout, the checksum-pinned installs, the govulncheck hand-over, the digest-pinned downloads (images exactly once), THREE
                         `bash bin/witnessed-local.sh STEP bin/check-phase.sh STEP` steps (STEP scanners, acceptance, runtime), the records-list step, and the uploads witness-check-R, check-results-R and
                         check-records-R (R the matrix runner)
@@ -21,7 +21,7 @@ RED until PR 3 is implemented. Finite grammars and allowlists only; no shell ana
                         STEPS takes the same three names and this copy is deleted in favour of it.
   cluster FILE          REQ-CHAIN-006-AC14: bin/acceptance-k8s.sh creates its cluster with exactly CLUSTER (the node image by digest) and no action.
   suites FILE           REQ-CHAIN-006-AC5: acceptance.yml's job runs the shared suite scripts (one copy of each suite).
-  script FILE           REQ-CHAIN-006-AC1, AC3: bin/check-phase.sh is `set -euo pipefail`, the chip case (uname -m), the two verify commands, then ONE fixed `case "$1"` with
+  script FILE           REQ-CHAIN-006-AC1, AC3: bin/check-phase.sh is `set -euo pipefail`, the chip case (uname -m), then ONE fixed `case "$1"` with
                         exactly the phases of PHASES (each with exactly its commands, in order; govulncheck only when the chip is amd64, check-artifacts told --arch "$arch") and nothing else.
   records JSON          REQ-CHAIN-006-AC13 (rule 66): .github/policy/chain-records.json has no row for the old acceptance record and has a row
                         for the Witness collection naming Check as a producer and `release` as consumer. [P: the table's shape is PR 1's]
@@ -39,7 +39,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import guide_plan_judge   # noqa: E402
 
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
-DOWN = {"signed-witness-build", "digests", "dist", "locks", "images"}   # Build's artifacts (Check's previous stage is Build; Sign's provenance is Release's to verify); images travel as files (OCI tarballs)
+DOWN = {"digests", "dist", "locks", "images"}   # Build's artifacts (Check's previous stage is Build; Sign's provenance is Release's to verify); images travel as files (OCI tarballs)
 RECORD_DIRS = "witness-scanners\nwitness-acceptance\nwitness-runtime"           # PR 2's helper writes witness-STEP/STEP-collection.json
 RUNNER = "${{ matrix.runner }}"
 RUNNERS = ["ubuntu-24.04", "ubuntu-24.04-arm"]   # the two chips of the one check job (REQ-CHAIN-006-AC1)
@@ -51,8 +51,8 @@ REC_LINE = 'bash bin/check-records-digests.sh "$LEG" check-records.json witness-
 REC_ENV = {"LEG": "${{ matrix.runner }}"}
 SNAPSHOT_IF = "${{ inputs.mode != 'snapshot' }}"
 # check-govulncheck has no needs, so a push to main or the daily run (which run only the patch tag jobs) would start it: it also names the runs that start the chain
-GV_IF = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true) }}"
-CHECK_NEEDS = ["check-govulncheck", "build-assemble", "sign"]
+GV_IF = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true) }}"
+CHECK_NEEDS = ["check-govulncheck", "build-assemble"]
 CHECK_STRATEGY = {"matrix": {"runner": RUNNERS}}
 GV_BUILD = "check-govulncheck"   # REQ-REL-011-AC1 (advisor, Oct 23; Witness review F9): the job with no credential that builds govulncheck; the check job (no identity token) only installs what it hands over
 GV_BUILD_LINE = "bash bin/install-scanner.sh govulncheck"
@@ -106,12 +106,6 @@ def control_chars(raw):
     return sorted({"U+%04X" % ord(c) for c in raw if (ord(c) < 32 and c not in "\t\n") or 127 <= ord(c) <= 159 or c in "\u2028\u2029"})
 
 
-POLICY = (r'python3 -I -B bin/chain-verify\.py policy make --template \.github/policy/release-policy\.template\.json --tag "\$GITHUB_REF_NAME" '
-          r'--out policy\.json')   # Q5 (advisor, Oct 10): Check makes the release policy per tag, as PR 2's Rebuild does, before it verifies
-VERIFY = [  # bin/check-phase.sh after `set -euo pipefail` and the policy line: the verify step first (rule 58: Check's previous stage is Build), before any check (every phase re-verifies);
-            # isolated and with no bytecode cache, as PR 1's Sign step runs the verifier (python3 -I -B, PR 1 r5)
-    r"python3 -I -B bin/chain-verify\.py stage-start --stage check --previous build --record witness-build/build-collection\.json --digests witness-build/digests\.json --policy policy\.json",
-]
 CHIP = [  # bin/check-phase.sh after `set -euo pipefail`: the chip comes from uname -m, never from an argument; any other chip stops the script
     ("lit", 'case "$(uname -m)" in'), ("lit", "x86_64) arch=amd64 ;;"), ("lit", "aarch64) arch=arm64 ;;"),
     ("lit", '*) echo "unknown chip: $(uname -m)" >&2; exit 2 ;;'), ("lit", "esac")]
@@ -148,7 +142,7 @@ def load(path):
     return yaml.load(open(path), Loader=yaml.BaseLoader)
 
 
-CHECK_DOWNLOADS = [("signed-witness-build", "witness-build"), ("digests", "witness-build"), ("dist", "dist"), ("images", "images")]   # the inputs bin/check-phase.sh verifies
+CHECK_DOWNLOADS = [("digests", "witness-build"), ("dist", "dist"), ("images", "images")]   # the inputs bin/check-phase.sh reads
 
 
 def exact_steps(label, steps, want, what):
@@ -234,7 +228,7 @@ def stage(path):
     if "outputs" in j:
         bad.append("check exposes no job output: its records travel as the artifact check-records-<runner>")
     if j.get("needs") != CHECK_NEEDS:
-        bad.append("check must need exactly %s (the job that builds govulncheck with no credential, Build's records, and Sign's signature of them), got %r" % (CHECK_NEEDS, j.get("needs")))
+        bad.append("check must need exactly %s (the job that builds govulncheck with no credential, and Build), got %r" % (CHECK_NEEDS, j.get("needs")))
     if j.get("runs-on") != RUNNER:
         bad.append("check must run on its matrix runner %s, got %r" % (RUNNER, j.get("runs-on")))
     if j.get("strategy") != CHECK_STRATEGY:
@@ -304,7 +298,7 @@ def stage(path):
               + [("run", REC_LINE)]
               + [("up", (n, p)) for n, p in UP.items()])
     bad += exact_steps("check", steps, want_c, "checkout, Witness install, one install per listed scanner, "
-                                               "four downloads, the three witnessed steps, the records step, the three uploads")
+                                               "three downloads, the three witnessed steps, the records step, the three uploads")
     imgs = [s for s in steps if (s.get("uses") or "").startswith("actions/download-artifact@") and (s.get("with") or {}).get("name") == "images"]
     if len(imgs) != 1 or (imgs[0].get("with") or {}).get("path") != "images":
         bad.append("exactly one download of the images artifact, into images/, is required; found %d" % len(imgs))
@@ -382,12 +376,12 @@ def suites(path):
 
 
 def script(path):
-    """bin/check-phase.sh: set -euo pipefail, the chip case (uname -m), the policy and verify commands, then ONE fixed case "$1" with exactly the PHASES. Nothing else."""
+    """bin/check-phase.sh: set -euo pipefail, the chip case (uname -m), then ONE fixed case "$1" with exactly the PHASES. Nothing else."""
     bad = []
     lines = [l.strip() for l in open(path).read().split("\n") if l.strip() and not l.strip().startswith("#")]
     if lines and lines[0].startswith("#!"):
         lines = lines[1:]
-    want = [("lit", "set -euo pipefail")] + CHIP + [("rx", POLICY)] + [("rx", r) for r in VERIFY] + [("lit", 'case "$1" in')]
+    want = [("lit", "set -euo pipefail")] + CHIP + [("lit", 'case "$1" in')]
     for ph, cmds in PHASES.items():
         want += [("lit", ph + ")")] + [("rx", c) for c in cmds] + [("lit", ";;")]
     want += [("lit", '*) echo "unknown phase: $1" >&2; exit 2 ;;'), ("lit", "esac")]
@@ -402,7 +396,7 @@ def script(path):
 
 
 def signcheck(path):
-    """REQ-CHAIN-006-AC1, REQ-REL-011-AC1: sign-check is the Check stage's signing job: environment sign, the identity token (for the KMS role) and nothing else, it needs build-assemble and check,
+    """REQ-CHAIN-006-AC1, REQ-REL-011-AC1: sign-check is the Check stage's signing job: environment sign, the identity token (for the KMS role) and nothing else, it needs build-assemble, check and sign,
     downloads for each runner the record folders (witness-check-R into rec-check/R), the results (check-results-R into artifacts/check-results-R) and the list of the records
     (check-records-R into rec-digests/R), runs ONE `chain-verify.py sign-records --stage check` with both lists and the six record folders (the two runners times scanners, acceptance, runtime),
     then signs each runner's staged tree once (`bash bin/witness-sign-staged.sh staged/R signed/R`), and uploads signed-witness-check-R carrying signed/R."""
@@ -416,8 +410,8 @@ def signcheck(path):
     if j.get("permissions") != {"contents": "read", "id-token": "write"}:
         bad.append("sign-check permissions must be exactly contents read and id-token write (the KMS role), got %s" % j.get("permissions"))
     n = j.get("needs") or []
-    if set([n] if isinstance(n, str) else n) != {"build-assemble", "check"}:
-        bad.append("sign-check must need exactly build-assemble and check, got %s" % n)
+    if set([n] if isinstance(n, str) else n) != {"build-assemble", "check", "sign"}:
+        bad.append("sign-check must need exactly build-assemble, check and sign, got %s" % n)
     steps = j.get("steps") or []
     downs = sorted((s["with"].get("name"), s["with"].get("path")) for s in steps if (s.get("uses") or "").startswith("actions/download-artifact@"))
     want_d = sorted([("witness-check-" + r, "rec-check/" + r) for r in RUNNERS] + [("check-results-" + r, "artifacts/check-results-" + r) for r in RUNNERS] + [("check-records-" + r, "rec-digests/" + r) for r in RUNNERS]
@@ -473,7 +467,7 @@ def oldcheck(root):
 
 
 def graph(path):
-    """REQ-CHAIN-006-AC2: the Check jobs sit beside Rebuild's in release.yml: check needs exactly check-govulncheck, build-assemble and sign; sign-check needs build-assemble and check; the release job waits (directly or through another job) for check, sign, sign-rebuild and sign-check."""
+    """REQ-CHAIN-006-AC2: the Check jobs sit beside Rebuild's in release.yml: check needs exactly check-govulncheck and build-assemble; sign-check needs build-assemble, check and sign; the release job waits (directly or through another job) for check, sign, sign-rebuild and sign-check."""
     d, bad = load(path), []
     jobs = d.get("jobs") or {}
     def needs(n):
@@ -490,11 +484,11 @@ def graph(path):
     if "uses" in jobs["check"] or "uses" in jobs["check-govulncheck"]:
         bad.append("the check jobs are jobs of release.yml itself, not a call of another workflow")
     if needs("check") != set(CHECK_NEEDS):
-        bad.append("check must need exactly %s (its previous stage is Build, whose record it verifies as Sign signed it; Sign's provenance is Release's to verify, rule 58), found %s" % (CHECK_NEEDS, sorted(needs("check"))))
+        bad.append("check must need exactly %s (its previous stage is Build; Sign's provenance is Release's to verify, rule 58), found %s" % (CHECK_NEEDS, sorted(needs("check"))))
     if any("check" in reach(n) for n in rebuilds) or any(n in reach("check") for n in rebuilds):
         bad.append("check and rebuild must run side by side (rule 70)")
-    if needs("sign-check") != {"build-assemble", "check"}:
-        bad.append("sign-check must need exactly build-assemble and check, found %s" % sorted(needs("sign-check")))
+    if needs("sign-check") != {"build-assemble", "check", "sign"}:
+        bad.append("sign-check must need exactly build-assemble, check and sign, found %s" % sorted(needs("sign-check")))
     missing = {"check", "sign", "sign-rebuild", "sign-check"} - reach("release")
     if missing:   # the Witness move: Sign signs Build's records, sign-rebuild Rebuild's, sign-check Check's
         bad.append("the release job must wait for check, sign, sign-rebuild and sign-check; it does not wait for %s" % sorted(missing))

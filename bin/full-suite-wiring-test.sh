@@ -3,8 +3,7 @@
 # The full suite at promotion (REQ-CI-007; owner, Nov 10 2026), offline. Reads the real workflows and the policy files as data and judges each
 # against the English; every judge is also run over mutated copies, each of which must be caught:
 #   AC5  full-suite.yml: a daily schedule and workflow_dispatch only; suite-list, suites and allowlist-chain run the tracked suites that no
-#        step of ci.yml runs, ci.yml holds none of the three; acceptance.yml is called once, from source, and by nothing else;
-#        every promotion or release-only context has a producing file in bin/build-admit.py's table, and that file has a job of the name
+#        step of ci.yml runs, ci.yml holds none of the three; acceptance.yml is called once, from source, and by nothing else
 #   AC6  full-suite.yml, scan.yml and codeql.yml end with a report-failure job for a failed scheduled run; its script is run here with a stand-in
 #        for gh: it opens one issue with a fixed title and label, or comments on the open one, naming the run
 #   AC7  full-suite.yml, scan.yml and codeql.yml each can run before the tag, from a schedule or a dispatch; full-suite.yml has no push
@@ -14,7 +13,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 python3 -I - "$root" "$work" <<'PY'
-import ast, copy, json, os, re, subprocess, sys, tempfile, yaml
+import copy, json, os, re, subprocess, sys, tempfile, yaml
 root, work = sys.argv[1], sys.argv[2]
 passed = failed = 0
 def check(name, ok, got=""):
@@ -25,8 +24,6 @@ def load(p): return yaml.load(open(os.path.join(root, p)), Loader=yaml.BaseLoade
 WF = ".github/workflows/"
 ALL = {fn: load(WF + fn) for fn in sorted(os.listdir(os.path.join(root, WF))) if fn.endswith(".yml")}
 ci, fs = ALL["ci.yml"], ALL["full-suite.yml"]
-POLICY = json.load(open(os.path.join(root, ".github/policy/required-checks.json")))
-RELEASE_ONLY = json.load(open(os.path.join(root, ".github/policy/release-only-checks.json")))["required_checks"]
 def mutated(doc, fn):
     d = copy.deepcopy(doc); fn(d); return d
 def verdict(name, problems, want_ok):
@@ -126,9 +123,7 @@ full_mutants("full-suite.yml", [
     ("the scan called from full-suite.yml", lambda d: d["fs"]["jobs"].__setitem__("scan", {"uses": "./.github/workflows/scan.yml"})),
 ])
 
-# the table of bin/build-admit.py, read as data: each promotion or release-only context has a producing file, and that file has a job of the name
-TABLE = [t for n in ast.walk(ast.parse(open(os.path.join(root, "bin/build-admit.py")).read())) if isinstance(n, ast.Assign)
-         and any(getattr(x, "id", "") == "BOUND_CONTEXTS" for x in n.targets) for t in ast.literal_eval(n.value)]
+# no check name the full suite makes (its gate and the acceptance jobs it calls) is also made by another workflow file
 def job_names(w, wfs):
     """the contexts a workflow's jobs report: a called workflow's job as "<calling job> / <job>", a matrix job per value of its first axis"""
     out = set()
@@ -141,52 +136,15 @@ def job_names(w, wfs):
             values = next(iter(((k.get("strategy") or {}).get("matrix") or {}).values()), [])
             out.update([re.sub(r"\$\{\{.*?\}\}", "*", name)] if "${{" in name else [name])
     return out
-def table_problems(table, wfs, policy, release_only):
-    bad = []
-    files = {}
-    for ctx, f in table: files.setdefault(f, []).append(ctx)
-    for f, ctxs in files.items():
-        if f not in wfs: bad.append("the table names %s, which does not exist" % f); continue
-        names = job_names(wfs[f], wfs)
-        for ctx in ctxs:
-            if ctx.endswith("*"):
-                if not any(n.startswith(ctx[:-1]) for n in names): bad.append("%s has no job named %s" % (f, ctx))
-            elif ctx not in names: bad.append("%s has no job named %s" % (f, ctx))
-    bound = [e["context"] for e in policy["promotion_checks"]] + [e["context"] for e in release_only if e["integration_id"] == 15368]
-    for ctx in bound:
-        files_of = [f for t, f in table if ctx == t or (t.endswith("*") and ctx.startswith(t[:-1]))]
-        if not files_of: bad.append("%s has no producing file in the table" % ctx)
-        elif files_of[0] in wfs and ctx not in job_names(wfs[files_of[0]], wfs): bad.append("%s has no job named %s" % (files_of[0], ctx))
-    for ctx, f in table:
-        if ctx == "fips140-only" or ctx == "coverage": bad.append("%s is bound to %s, which has no such job" % (ctx, f))
-    bound_names = lambda names: {n for n in names if any(n == c or (c.endswith("*") and n.startswith(c[:-1])) for c, _ in table)}
-    made_in_two = [n for f, w in wfs.items() if f != "full-suite.yml" for n in bound_names(job_names(w, wfs)) & bound_names(job_names(wfs["full-suite.yml"], wfs))]
-    if made_in_two: bad.append("a full-suite.yml job name is also made by another workflow: %s" % made_in_two)
-    return bad
-verdict("the table: three promotion contexts and the release-only ones, each bound to a file with a job of the name; no name made in two files",
-        table_problems(TABLE, ALL, POLICY, RELEASE_ONLY), True)
-check("the table holds exactly analyze (go), reproducibility, scan, allowlist-chain and acceptance / *",
-      sorted(TABLE) == sorted([("analyze (go)", "codeql.yml"), ("reproducibility", "scan.yml"), ("scan", "scan.yml"),
-                               ("allowlist-chain", "full-suite.yml"), ("acceptance / *", "full-suite.yml")]), TABLE)
-check("promotion_checks are exactly analyze (go), reproducibility and scan, push-scoped, from the Actions app",
-      [(e["context"], e["scope"], e["integration_id"]) for e in POLICY["promotion_checks"]]
-      == [("analyze (go)", "push", 15368), ("reproducibility", "push", 15368), ("scan", "push", 15368)], POLICY["promotion_checks"])
-def table_mutants(label, cases):
-    for name, fn in cases:
-        t, w, p, r = copy.deepcopy(TABLE), copy.deepcopy(ALL), copy.deepcopy(POLICY), copy.deepcopy(RELEASE_ONLY)
-        fn(t, w, p, r)
-        check("%s: a copy with %s is refused" % (label, name), table_problems(t, w, p, r) != [], "accepted")
-table_mutants("the table", [
-    ("a table entry whose file lacks the job", lambda t, w, p, r: w["full-suite.yml"]["jobs"].pop("allowlist-chain")),
-    ("a table entry for a file that is gone", lambda t, w, p, r: t.append(("x", "gone.yml"))),
-    ("a table entry bound to a job the file has not (coverage)", lambda t, w, p, r: t.append(("coverage", "full-suite.yml"))),
-    ("a promotion context with no table entry", lambda t, w, p, r: p["promotion_checks"].append({"context": "zz", "integration_id": 15368, "scope": "push"})),
-    ("a release-only context with no table entry", lambda t, w, p, r: r.append({"context": "zz", "integration_id": 15368, "scope": "push"})),
-    ("the analyze job renamed in codeql.yml", lambda t, w, p, r: w["codeql.yml"]["jobs"]["analyze"].__setitem__("name", "codeql")),
-    ("scan.yml without a scan job", lambda t, w, p, r: w["scan.yml"]["jobs"].pop("scan")),
-    ("acceptance.yml's job renamed", lambda t, w, p, r: w["acceptance.yml"]["jobs"]["acceptance"].__setitem__("name", "accept")),
-    ("a name made by full-suite.yml and ci.yml", lambda t, w, p, r: w["ci.yml"]["jobs"].__setitem__("allowlist-chain", {"name": "allowlist-chain", "runs-on": "x", "steps": []})),
-])
+def full_suite_name(n): return n == "allowlist-chain" or n.startswith("acceptance / ")
+def two_makers(wfs):
+    mine = {n for n in job_names(wfs["full-suite.yml"], wfs) if full_suite_name(n)}
+    made_in_two = [n for f, w in wfs.items() if f != "full-suite.yml" for n in job_names(w, wfs) if n in mine]
+    return ["a full-suite.yml job name is also made by another workflow: %s" % made_in_two] if made_in_two else []
+verdict("no name made in two files", two_makers(ALL), True)
+w_ = copy.deepcopy(ALL)
+w_["ci.yml"]["jobs"]["allowlist-chain"] = {"name": "allowlist-chain", "runs-on": "x", "steps": []}
+check("a copy with a name made by full-suite.yml and ci.yml is refused", two_makers(w_) != [], "accepted")
 
 # ------------------------------------------------------------------------------------------------------------------ AC6: report-failure
 FAKE_GH = r'''#!/usr/bin/env python3

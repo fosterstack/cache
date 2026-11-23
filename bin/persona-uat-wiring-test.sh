@@ -3,7 +3,7 @@
 # AC3's workflow-graph guard (no downstream job can open an issue) is NOT proven by these tests: three review rounds could not close it (advisor 0244, rule 4); the driver-level
 # proof (the driver opens no issue and never calls gh) remains. Only the simple structural check stays: release.yml's patch-failed does not list persona-uat in needs.
 # Where the persona UAT runs (owner ratified Oct 3 and Oct 4; point 9). The wiring is read from the PARSED workflows, never
-# from substrings: a persona-uat job in the release chain that runs only for v*-rc.* tags, after the image and promotion,
+# from substrings: a persona-uat job in the release chain that runs only for a push of a release/v* branch, after the image and promotion,
 # in the persona-uat environment, taking the image by the chain's digests, running the driver as a step that nothing can
 # skip or make non-fatal, with the owner's model/budget variables and the model identity on THAT step, uploading the
 # driver's output directory (transcripts and reports) even when personas fail; and a persona-uat job in the weekly
@@ -730,7 +730,7 @@ LOAD_RUN_EXPECTED = ('set -euo pipefail\nwant=$(jq -er \'.["image-production"]\'
                      'got=$(crane digest localhost:5000/cache:rc)\n[ "$got" = "$want" ] || { echo "::error::the pushed digest ${got} is not the one Build attested (${want})"; exit 1; }')
 
 def _atom(a, ctx):
-    """one atom of a job `if:` conjunction, evaluated on a context {vars, schedule, ref, ref_name}. The model is GitHub's own: `==` on strings IGNORES CASE, so 'true' and
+    """one atom of a job `if:` conjunction, evaluated on a context {vars, schedule, event, ref, ref_name}. The model is GitHub's own: `==` on strings IGNORES CASE, so 'true' and
     'TRUE' are both on. Enabling the personas by a differently cased value is the owner's act and is accepted; unset, empty, 'false' and '1' are off."""
     if re.fullmatch(r"vars\.PERSONA_UAT_ENABLED=='true'", a):
         return str(ctx["vars"].get("PERSONA_UAT_ENABLED", "")).lower() == "true"
@@ -738,6 +738,8 @@ def _atom(a, ctx):
         return ctx.get("mode", "") != "snapshot"
     if a == "inputs.digests!=''":
         return ctx.get("digests", "") != ""
+    if a == "github.event_name=='push'":
+        return ctx.get("event") == "push"
     m = re.fullmatch(r"github\.event\.schedule=='([^']*)'", a)
     if m: return ctx.get("schedule") == m.group(1)
     m = re.fullmatch(r"startsWith\(github\.ref,'([^']*)'\)", a)
@@ -767,17 +769,17 @@ def judge_gate_others(name, wf, allowed, bad):
 def judge_gate(name, j, bad):
     """the PERSONA_UAT_ENABLED gate (owner): the job runs only for the exact string 'true' (unset = off), on every trigger, and nothing mints a token or enters the persona-uat
     environment when it is off: the condition is the JOB's own `if:`. `name` is the call in release.yml (call), or the persona-uat.yml job of the release-candidate leg (rc) or of the weekly leg (weekly)"""
-    rc_tag = {"ref": "refs/tags/v1.2.3-rc.1", "ref_name": "v1.2.3-rc.1"}
+    branch = {"ref": "refs/heads/release/v1.2.3", "ref_name": "release/v1.2.3", "event": "push"}
     main = {"ref": "refs/heads/main", "ref_name": "main"}
     if name == "call":
-        trig = {"tag push": rc_tag, "workflow_dispatch": main}
+        trig = {"branch push": branch, "workflow_dispatch": dict(main, event="workflow_dispatch")}
     elif name == "rc":
         trig = {"a call with digests": {"digests": "{}"}, "a call without digests": {}}
     else:
         trig = {"schedule": dict(main, schedule="43 6 * * 1"), "workflow_dispatch": main}
     try:
         for tn, base in trig.items():
-            trigger_ok = tn in ("tag push", "schedule", "a call with digests")           # a dispatch never satisfies a trigger conjunct; the gate is a separate conjunct that no trigger overrides
+            trigger_ok = tn in ("branch push", "schedule", "a call with digests")           # a dispatch never satisfies a trigger conjunct; the gate is a separate conjunct that no trigger overrides
             for label, v in (("unset", None), ("empty", ""), ("false", "false"), ("TRUE", "TRUE"), ("True", "True"), ("1", "1"), ("true", "true"), (" true", " true"), ("yes", "yes")):
                 ctx = dict(base, vars={} if v is None else {"PERSONA_UAT_ENABLED": v})
                 got, want = job_runs(j, ctx), (str(v).lower() == "true" and trigger_ok)
@@ -785,11 +787,11 @@ def judge_gate(name, j, bad):
                     bad.append(f"{name} persona-uat gate: on {tn} with PERSONA_UAT_ENABLED {label} the job {'runs' if got else 'is off'}, expected {'on' if want else 'off'}")
         if name == "call":
             on = {"PERSONA_UAT_ENABLED": "true"}
-            if job_runs(j, dict(rc_tag, mode="snapshot", vars=on)):
-                bad.append("call persona-uat gate: in snapshot mode on an rc tag with the gate on the call runs (the persona run is for release mode only)")
-            final = {"ref": "refs/tags/v1.2.3", "ref_name": "v1.2.3", "vars": on}
-            if job_runs(j, final):
-                bad.append("call persona-uat gate: a final tag with the gate on runs the job (only a release candidate does)")
+            if job_runs(j, dict(branch, mode="snapshot", vars=on)):
+                bad.append("call persona-uat gate: in snapshot mode on a release branch with the gate on the call runs (the persona run is for release mode only)")
+            tag = {"ref": "refs/tags/v1.2.3", "ref_name": "v1.2.3", "event": "push", "vars": on}
+            if job_runs(j, tag):
+                bad.append("call persona-uat gate: a tag push with the gate on runs the job (only a push of a release branch does)")
     except ValueError as e:
         bad.append(f"{name} persona-uat gate: the job's if has an expression this judge cannot evaluate ({e})")
     if GATE not in norm(j.get("if", "")).split("&&"):
@@ -812,7 +814,7 @@ def judge_release(r, bad):
     judge_call(r, bad)
 
 def judge_call(r, bad):
-    """release.yml calls persona-uat.yml exactly once (REQ-UAT-001-AC1, AC6): a job-level `uses`, in release mode only, on a release-candidate tag, behind the gate, after build-assemble,
+    """release.yml calls persona-uat.yml exactly once (REQ-UAT-001-AC1, AC6): a job-level `uses`, in release mode only, on a push of a release branch, behind the gate, after build-assemble,
     with the identity token for the persona federation and no write of any kind; the called file's job takes the digests as its input and its secrets from its own environment"""
     jobs = r.get("jobs", {})
     calls = sorted(n for n, j in jobs.items() if "persona-uat.yml" in str(j.get("uses", "")))
@@ -827,8 +829,8 @@ def judge_call(r, bad):
     needs = [needs] if isinstance(needs, str) else needs
     if sorted(needs) != ["build-assemble"]:
         bad.append(f"release.yml's persona-uat-rc needs are not exactly build-assemble (it tests the candidate Build made; it never waits for, or runs after, a stage that publishes): {sorted(needs)}")
-    if norm(j.get("if", "")) != "inputs.mode!='snapshot'&&" + GATE + "&&startsWith(github.ref,'refs/tags/v')&&contains(github.ref_name,'-rc')":
-        bad.append(f"release.yml's persona-uat-rc does not run only in release mode, for a release-candidate tag, behind the PERSONA_UAT_ENABLED gate (if: {j.get('if')!r})")
+    if norm(j.get("if", "")) != "inputs.mode!='snapshot'&&" + GATE + "&&github.event_name=='push'&&startsWith(github.ref,'refs/heads/release/v')":
+        bad.append(f"release.yml's persona-uat-rc does not run only in release mode, for a push of a release branch, behind the PERSONA_UAT_ENABLED gate (if: {j.get('if')!r})")
     judge_gate("call", j, bad)
     want = {"contents": "read", "id-token": "write"}
     if j.get("permissions") != want:
@@ -1227,7 +1229,7 @@ def synth_persona_job(weekly):
 RS = {"on": {"push": {"tags": ["v*"]}}, "jobs": {
     "build-assemble": {"steps": [{"run": "true"}]}, "release": {"needs": ["build-assemble"], "steps": [{"run": "true"}]},
     "patch-failed": {"needs": ["build-assemble", "release"], "if": "${{ failure() }}", "steps": [{"run": 'gh issue create --title "auditor: release failed" --body "$RUN_URL"'}]},
-    "persona-uat-rc": {"needs": "build-assemble", "if": "${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}",
+    "persona-uat-rc": {"needs": "build-assemble", "if": "${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v') }}",
                        "permissions": {"contents": "read", "id-token": "write"}, "uses": PERSONA_FILE, "with": {"digests": "${{ needs.build-assemble.outputs.digests }}"}}}}
 FS = {"on": {"schedule": [{"cron": "23 6 * * *"}]}, "jobs": {
     "check": {"if": "${{ github.event.schedule == '23 6 * * *' }}", "steps": [{"run": 'gh issue create --title "go freshness" --body x'}]}}}
@@ -1571,8 +1573,8 @@ mutate("rc job grants packages read", "permissions are not exactly", lambda j: j
 mutate("rc job reads the job token", "names github.token", lambda j: next(x for x in j["steps"] if "crane push" in str(x.get("run", ""))).setdefault("env", {}).update(DIGESTS="${{ inputs.digests }}", T="${{ github.token }}"))
 mutate("rc job reads a registry secret", "reads secrets.GHCR_TOKEN", lambda j: next(x for x in j["steps"] if "crane push" in str(x.get("run", ""))).setdefault("env", {}).update(P="${{ secrets.GHCR_TOKEN }}"))
 mutate("call needs release as well", "needs are not exactly build-assemble", lambda j: j.update(needs=["build-assemble", "release"]), "call")
-mutate("call runs in snapshot mode (no mode guard)", "in snapshot mode on an rc tag", lambda j: j.update({"if": "${{ vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"}), "call")
-mutate("call also runs on a final tag", "a final tag with the gate on runs the job", lambda j: j.update({"if": "${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') }}"}), "call")
+mutate("call runs in snapshot mode (no mode guard)", "in snapshot mode on a release branch", lambda j: j.update({"if": "${{ vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v') }}"}), "call")
+mutate("call also runs on a tag push", "a tag push with the gate on runs the job", lambda j: j.update({"if": "${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' }}"}), "call")
 mutate("rc checkout keeps credentials", "persist-credentials must be false", lambda j: j["steps"].insert(0, {"uses": "actions/checkout@" + "a" * 40, "with": {}}))
 mutate("rc image is a literal, not an expression", "takes the image from something other than Build's own image-production digest",
        lambda j: set_image(j, "localhost:5000/cache@fromJSON(inputs.digests)['image-production']"))
@@ -1650,8 +1652,8 @@ mutate("call holds packages: write", "permissions are not exactly", lambda j: j[
 mutate("call holds no id-token", "permissions are not exactly", lambda j: j["permissions"].pop("id-token"), "call")
 mutate("call passes the secrets on (secrets: inherit)", "passes secrets to the called file", lambda j: j.update(secrets="inherit"), "call")
 mutate("call passes something else than Build's digests", "does not pass exactly Build's digests", lambda j: j.update({"with": {"digests": "${{ needs.release.outputs.digests }}"}}), "call")
-mutate("call loses the rc tag condition", "does not run only in release mode", lambda j: j.update({"if": "${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' }}"}), "call")
-mutate("call loses the gate", "does not run only in release mode", lambda j: j.update({"if": "${{ inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"}), "call")
+mutate("call loses the release-branch condition", "does not run only in release mode", lambda j: j.update({"if": "${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' }}"}), "call")
+mutate("call loses the gate", "does not run only in release mode", lambda j: j.update({"if": "${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v') }}"}), "call")
 mutate("call in release mode only is spelled as a snapshot test the wrong way round", "does not run only in release mode", lambda j: j.update({"if": str(j["if"]).replace("!=", "==")}), "call")
 mutate("go-freshness.yml gets a persona job back", "outside persona-uat.yml", lambda f: f["jobs"].update({"persona-uat": {"if": "${{ vars.PERSONA_UAT_ENABLED == 'true' }}", "runs-on": "ubuntu-24.04", "steps": [{"run": "true"}]}}), "fresh_wf")
 mutate("go-freshness.yml gets the Monday persona cron back", "Monday persona cron", lambda f: f["on"]["schedule"].append({"cron": "43 6 * * 1"}), "fresh_wf")

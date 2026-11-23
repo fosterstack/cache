@@ -5,9 +5,9 @@
 # proves: REQ-REL-014-AC1 — the job allowlist runs on push to main only, accepted only exactly (the push-condition cases)
 # proves: REQ-CI-007-AC4 — the jobs suite-list, suites and allowlist-chain of full-suite.yml run on a schedule and on workflow_dispatch only, the gate only as `always()` (plain or in an expression), accepted only exactly (the full-suite event cases)
 # The workflow ci.yml runs a suite by a counting step (`bash PATH`); full-suite.yml runs every other suite by its own leg of the suites matrix, which the job suite-list computes
-# from the tracked files, and its job allowlist-chain is the one gate over the suites job (a release-only check, bound to full-suite.yml by admission). The judge below takes the
-# pinned actions, permissions and env of every job of ci.yml, the step lists' shape of the job allowlist, the required-check policy (allowlist) and the release-only policy
-# (allowlist-chain) and the check names of every other workflow. The judge of full-suite.yml takes the same hazards of every job of that file and the step lists' shape of the jobs
+# from the tracked files, and its job allowlist-chain is the one gate over the suites job. The judge below takes the
+# pinned actions, permissions and env of every job of ci.yml, the step lists' shape of the job allowlist
+# and the check names of every other workflow. The judge of full-suite.yml takes the same hazards of every job of that file and the step lists' shape of the jobs
 # suite-list, suites and allowlist-chain (not the text of the list and leg steps: ci-suites-matrix-test.sh judges those by running them). The real ci.yml and the real
 # full-suite.yml must pass; each mutated copy must be caught.
 # Known limit (by design): later steps of the CI allowlist job can edit this test on disk;
@@ -17,7 +17,7 @@ here=$(cd "$(dirname "$0")/../../.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 
-judge() { PIN_WIRING_WORKFLOWS_DIR="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}" PIN_WIRING_RELEASE_ONLY_FILE="${PIN_WIRING_RELEASE_ONLY_FILE:-$here/.github/policy/release-only-checks.json}" python3 - "$1" <<'PY'
+judge() { PIN_WIRING_WORKFLOWS_DIR="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}" python3 - "$1" <<'PY'
 import sys, os, yaml
 # cheap pre-parse, BEFORE any structure is built: a token scan is linear and expands nothing, so an
 # anchor/alias bomb cannot hang the judge
@@ -356,25 +356,7 @@ for _i, st in enumerate(steps_):
     if "uses" in st and _by_shape(st) not in ALLOWLIST_ACTIONS:
         bad.append(f"the allowlist step {_i + 1} ({st.get('name') or st['uses']}) is not a judged action step")
 
-# the release-only list (release admission reads it): a readable JSON object whose required_checks is a list of objects with unique contexts, with exactly one correct entry
-# for the gate allowlist-chain. Anything unreadable or malformed is refused (fail closed). required-checks.json is not read here: only release admission reads it, the ruleset is the required list.
 PROTECTED = ("allowlist", "allowlist-chain")
-def policy_entries(var, label):
-    try:
-        pol = json.load(open(os.environ[var]))["required_checks"]
-        if not isinstance(pol, list) or not all(isinstance(c, dict) for c in pol):
-            raise ValueError("required_checks is not a list of objects")
-    except (OSError, ValueError, KeyError, TypeError) as e:
-        bad.append(f"{label} is unreadable or malformed ({type(e).__name__})")
-        return None
-    ctxs = [c.get("context") for c in pol]
-    for dup in sorted({c for c in ctxs if ctxs.count(c) > 1}, key=str):
-        bad.append(f"{label} lists the context {dup} more than once")
-    return pol, ctxs
-def one_entry(listing, label, jid):
-    if listing is not None and (sum(1 for c in listing[0] if c == {"context": jid, "integration_id": 15368, "scope": "push"}) != 1 or listing[1].count(jid) != 1):
-        bad.append(f"{label} does not have exactly one entry {jid} (integration 15368, scope push)")
-one_entry(policy_entries("PIN_WIRING_RELEASE_ONLY_FILE", "release-only-checks.json"), "release-only-checks.json", "allowlist-chain")
 # the protected check names belong to their jobs alone: no other job of this workflow may produce a check run with such a name (a job named
 # `allowlist-chain` that succeeds after the real one failed satisfies admission, which accepts any success with the matching name), and no job
 # name may be an expression or come from a matrix (its rendered name cannot be judged).
@@ -692,12 +674,11 @@ PY
 # objects (never checked out, never run), and nothing else
 if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
   git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/ci.yml" > "$work/head-ci.yml" || { echo "pin-wiring: no ci.yml at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
-  git show "${PIN_WIRING_JUDGE_GIT}:.github/policy/release-only-checks.json" > "$work/head-release-only.json" || { echo "pin-wiring: no release-only-checks.json at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
   mkdir -p "$work/head-wf"
   for wf in $(git ls-tree --name-only "${PIN_WIRING_JUDGE_GIT}" .github/workflows/ | sed 's|.*/||'); do   # every workflow of the commit, as git objects
     git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/$wf" > "$work/head-wf/$wf" || { echo "pin-wiring: cannot read workflow $wf" >&2; exit 1; }
   done
-  PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" PIN_WIRING_RELEASE_ONLY_FILE="$work/head-release-only.json" judge "$work/head-ci.yml" || exit 1
+  PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" judge "$work/head-ci.yml" || exit 1
   [ -f "$work/head-wf/full-suite.yml" ] || { echo "pin-wiring: no full-suite.yml at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
   fsjudge "$work/head-wf/full-suite.yml" || exit 1
   gvgate_judge "$work/head-ci.yml" || { echo "pin-wiring: the govulncheck job of the head's ci.yml is not the Check-equivalent form (REQ-REL-004-AC1)" >&2; exit 1; }
@@ -927,7 +908,7 @@ case_fs suites-step-added           bad "$SU['steps'].append({'name': 'x', 'run'
 case_fs suites-steps-reordered      bad "st = $SU['steps']; st[0], st[1] = st[1], st[0]"
 case_fs suites-pip-env              bad "[s for s in $SU['steps'] if s.get('name') == 'pin pip (hash-checked)'][0]['env'] = {'PIP_INDEX_URL': 'http://x'}"
 
-# the gate of full-suite.yml: the release-only check allowlist-chain (REQ-CI-001, REQ-CI-007-AC2): the name, needs the suites job and no other, always runs (no event condition: the file has no push run), no checkout and no action, fails unless the result is exactly success
+# the gate of full-suite.yml: the check allowlist-chain (REQ-CI-001, REQ-CI-007-AC2): the name, needs the suites job and no other, always runs (no event condition: the file has no push run), no checkout and no action, fails unless the result is exactly success
 GT='d["jobs"]["allowlist-chain"]'
 case_fs gate-renamed          bad "$GT['name'] = 'allowlist-chain-gate'"
 case_fs gate-needs-gone       bad "$GT.pop('needs')"
@@ -976,7 +957,6 @@ case_ impersonate-by-id     bad "d['jobs']['allowlist-chain-x'] = {'name': 'allo
 gitcase() {  # gitcase <name> <expect ok|bad> <python edit or empty> [the workflow file the edit applies to, ci.yml by default]
   local r="$work/git-$1"; rm -rf "$r"; mkdir -p "$r/.github/workflows"
   cp "$here/.github/workflows/ci.yml" "$r/.github/workflows/ci.yml"
-  mkdir -p "$r/.github/policy"; cp "$here/.github/policy/release-only-checks.json" "$r/.github/policy/release-only-checks.json"
   cp "$here"/.github/workflows/*.y*ml "$r/.github/workflows/" 2>/dev/null || true
   if [ -n "$3" ]; then python3 - "$r/.github/workflows/${4:-ci.yml}" "$3" <<'PY'
 import sys, yaml
@@ -1163,24 +1143,6 @@ WF
   if [ "$got" = "$want" ]; then pass=$((pass+1)); echo "PASS other-workflow-$mut → $got"; else failn=$((failn+1)); echo "FAIL other-workflow-$mut → $got, want $want ($out)"; fi
 done
 
-# the release-only policy: the gate allowlist-chain must stay listed with integration 15368 and scope push (release admission reads it)
-for mut in "drop" "scope" "integration" "null" "empty" "garbage" "dup" "notlist"; do
-  python3 - "$here/.github/policy/release-only-checks.json" "$work/pol-$mut.json" "$mut" <<'PY'
-import json, sys
-d = json.load(open(sys.argv[1])); rc = d["required_checks"]
-e = [c for c in rc if c["context"] == "allowlist-chain"][0]
-if sys.argv[3] == "drop": rc.remove(e)
-elif sys.argv[3] == "scope": e["scope"] = "pull_request"
-elif sys.argv[3] == "integration": e["integration_id"] = 1
-elif sys.argv[3] == "null": d["required_checks"] = None
-elif sys.argv[3] == "empty": d = {}
-elif sys.argv[3] == "dup": rc.append(dict(e, scope="pull_request"))
-elif sys.argv[3] == "notlist": d["required_checks"] = {"a": 1}
-if sys.argv[3] == "garbage": open(sys.argv[2], "w").write("{not json")
-else: json.dump(d, open(sys.argv[2], "w"))
-PY
-  if out=$(PIN_WIRING_RELEASE_ONLY_FILE="$work/pol-$mut.json" judge "$here/.github/workflows/ci.yml"); then failn=$((failn+1)); echo "FAIL policy-$mut accepted"; else pass=$((pass+1)); echo "PASS policy-$mut → bad ($out)"; fi
-done
 # the judge does not read required-checks.json (only release admission does): an unreadable file at PIN_WIRING_POLICY_FILE, or one that lists the gate, changes nothing
 printf '{not json' > "$work/pol-required-garbage.json"
 if out=$(PIN_WIRING_POLICY_FILE="$work/pol-required-garbage.json" judge "$here/.github/workflows/ci.yml"); then pass=$((pass+1)); echo "PASS required-checks.json is not read"; else failn=$((failn+1)); echo "FAIL required-checks.json is read ($out)"; fi

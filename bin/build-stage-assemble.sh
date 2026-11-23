@@ -5,16 +5,10 @@
 set -euo pipefail
 step=$1
 dir=${step#snapshot-}
-version=${GITHUB_REF_NAME#v}
+tag=${GITHUB_REF_NAME#release/}
+version=${tag#v}
 case "$step" in
   snapshot-*) version=0.0.0-rc.1 ;;
-esac
-case "$step" in
-  rapk)
-    python3 -I bin/chain-verify.py policy make --template .github/policy/release-policy.template.json \
-      --tag "$GITHUB_REF_NAME" --out policy.json
-    python3 -I bin/chain-verify.py stage-start --stage rebuild --previous build \
-      --record witness-build/build-collection.json --digests build-in/digests.json --policy policy.json ;;
 esac
 python3 -I bin/chain-verify.py bind --local --step "$step" \
   --record "rec-$dir/ubuntu-24.04/$step-collection.local.json" --dir "$dir/ubuntu-24.04" --as out
@@ -25,7 +19,7 @@ case "$step" in
     # the baseline admission chose (both legs, bound by the binds above) becomes a file of Build's own record,
     # which Release verifies (REQ-CHAIN-007-AC19)
     python3 -I bin/chain-verify.py admission-baseline --admission apk/ubuntu-24.04/admission.json \
-      --admission apk/ubuntu-24.04-arm/admission.json --tag "$GITHUB_REF_NAME" --sha "$GITHUB_SHA" \
+      --admission apk/ubuntu-24.04-arm/admission.json --tag "$tag" --sha "$GITHUB_SHA" \
       --out admission-baseline.json ;;
 esac
 mkdir -p melange-repo
@@ -59,7 +53,7 @@ python3 -I bin/chain-verify.py items-merge --fragment "$dir/ubuntu-24.04/items-a
 case "$step" in
   rapk)
     cp build-in/digests.json digests.json
-    python3 -I bin/chain-verify.py rebuild-compare --build-record witness-build/build-collection.json \
+    python3 -I bin/chain-verify.py rebuild-compare --build-record witness-build/build-collection.local.json \
       --expected build-in/items.json --actual items.json --out witness-rebuild/verdict.json ;;
   snapshot-rapk)
     python3 -I bin/chain-verify.py rebuild-compare --snapshot \
