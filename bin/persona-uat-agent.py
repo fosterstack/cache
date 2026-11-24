@@ -35,6 +35,7 @@ SHELL_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR")
 DOCKER_ENV = ("DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH", "DOCKER_API_VERSION")
 BASE_ENV = SHELL_ENV + DOCKER_ENV
 MODEL_ENV_PREFIX = "ANTHROPIC_"      # the model identity (key or federated-identity variables); the provider alone receives it
+ERR_LIMIT = 4000                     # characters of the provider's own stderr kept in a Fail (it reaches the encrypted transcript only)
 OUT_LIMIT = 8000                     # characters of each stream returned to the model
 ACTION_TOOLS = ("shell", "cosign", "kubectl", "gradle", "maven")
 DIGEST_REF = re.compile(r"^[a-z0-9][^\s@]*@sha256:[0-9a-f]{64}$")
@@ -75,8 +76,13 @@ def run_bounded(argv, stdin_text, timeout, env, cwd=None):
         return None, out or "", err or "", True
 
 
-def clip(s):
-    return s if len(s) <= OUT_LIMIT else s[:OUT_LIMIT] + "\n[truncated: %d more characters]" % (len(s) - OUT_LIMIT)
+def clip(s, limit=OUT_LIMIT):
+    return s if len(s) <= limit else s[:limit] + "\n[truncated: %d more characters]" % (len(s) - limit)
+
+
+def replay(act):
+    """an action as the model is told it said it: the protocol's own form ({"action": ...}), not the provider's output form ({"type": ...})"""
+    return json.dumps({"action" if k == "type" else k: v for k, v in act.items()})
 
 
 def valid_findings(fs):
@@ -87,7 +93,7 @@ def valid_findings(fs):
 def call_provider(cmd, model, system, messages, timeout):
     rc, out, err, timed_out = run_bounded(cmd, json.dumps({"model": model, "system": system, "messages": messages}), timeout, child_env(True))
     if timed_out or rc != 0:
-        raise Fail("the provider failed (exit %s)" % ("timeout" if timed_out else rc))
+        raise Fail("the provider failed (exit %s): %s" % ("timeout" if timed_out else rc, clip(scrub(err.strip(), model), ERR_LIMIT)))
     try:
         a = json.loads(out)
     except ValueError:
@@ -289,7 +295,7 @@ def main():
             if tool not in ACTION_TOOLS or tool not in tools:
                 text = "refused: unknown tool %r; the tools are %s" % (tool, ", ".join(ACTION_TOOLS))
                 note("$ %s\n%s" % (label, text))
-                messages.append({"role": "assistant", "content": json.dumps(act)})
+                messages.append({"role": "assistant", "content": replay(act)})
                 messages.append({"role": "user", "content": text})
                 continue
             shells += 1
@@ -306,7 +312,7 @@ def main():
             journal({"t": "result", "id": jid, "exit": res[0] if res else 124, "bytes": {"stdout": len(o_.encode("utf-8", "replace")), "stderr": len(e_.encode("utf-8", "replace"))},
                      "truncated": {"stdout": len(o_) > OUT_LIMIT, "stderr": len(e_) > OUT_LIMIT}})
             note("$ %s\n%s" % (label, text))
-            messages.append({"role": "assistant", "content": json.dumps(act)})
+            messages.append({"role": "assistant", "content": replay(act)})
             messages.append({"role": "user", "content": text})
         findings = list(findings or [])
         # a pass must be earned: the persona ran something, and a clean finish needs an answer from the endpoint
