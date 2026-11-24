@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-AUD-018-AC1, REQ-AUD-018-AC2, REQ-AUD-018-AC3, REQ-REL-012-AC4, REQ-REL-012-AC5, REQ-REL-012-AC6, REQ-REL-012-AC9
-# proves: REQ-DEP-001-AC13
+# proves: REQ-AUD-018-AC1, REQ-AUD-018-AC2, REQ-AUD-018-AC3, REQ-REL-012-AC5, REQ-REL-012-AC9
 # Matrix-first EFFECT-OBSERVING failing suite for the daily CVE auditor
 # (.github/agent/docs/cve-auditor-matrix.md). Round-7 hardening after the second review
 # pass. Fixtures are inputs only, in neutral files with no prose; the mapping from
@@ -3477,300 +3476,37 @@ RQ
 eq "$rq" "OK" && ok || no "requirements resolve step in the required job + pydantic group" "$rq"
 
 begin "req18-ac3-no-record-requirement" "no change needs a review record in this repository: the record-judging \
-script is gone, the passed-audit judge occurs 4 times in the workflow (the verdict job, the sweep's two calls and the \
-record writer's last step), and the trusted verdict (judge and sweep) runs the allowlist guard \
-and the scanner guard and nothing else (and the record judge) over the head"
+script is gone, the passed-audit judge occurs once in the workflow (the record writer's last step), and no job of the \
+workflow runs on a pull request event"
 nr="$(python3 - <<'NR'
-import os,re
+import os,re,sys
+sys.path.insert(0,".github/agent/fixtures/testlib")
+import pyyaml as yaml
 gate=".github/agent/bin/auditor-review-gate.py"
 src=open(".github/workflows/agent-review-gate.yml").read()
-tools=("bin/check-file-allowlist.sh","bin/scan-no-workflow-call-test.sh")
+d=yaml.safe_load(src); on=d.get("on") or d.get(True) or {}
 code="\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
 ok=(not os.path.exists(gate) and "auditor-review-gate.py" not in src and "--subs-rev" not in src
-    and all(code.count(t)==2 for t in tools) and code.count("bin/audit-record-judge.sh")==4 and "reviews/" not in src)
-# the audit-record judge occurs 4 times: the verdict job, the sweep, the reviewer-gate sweep and the record writer's
-# last step
+    and code.count("bin/audit-record-judge.sh")==1 and "reviews/" not in src
+    and set(on)=={"workflow_dispatch"} and set(d["jobs"])=={"record"} and "check-runs" not in src)
 print("OK" if ok else "BAD")
 NR
 )"
-eq "$nr" "OK" && ok || no "no review-record script; the verdict runs the three checks in judge and sweep" "state=$nr"
+eq "$nr" "OK" && ok || no "no review-record script; the gate file is the dispatch-only record writer" "state=$nr"
 
-begin "req18-ac3-verdict-runs-and-propagates" "the judge and the sweep, run as written with recording stand-ins for the three checks, publish success only when the allowlist guard, the scanner guard and the passed-audit record judge ALL exit 0, call each check, and fail when any one fails"
-vp="$(python3 - <<'VP'
-import sys, os, subprocess, tempfile, itertools, shutil
-sys.path.insert(0, ".github/agent/fixtures/testlib")
-import pyyaml as yaml
-d = yaml.safe_load(open(".github/workflows/agent-review-gate.yml"))
-def step(job, key):
-    r = [x for x in d["jobs"][job]["steps"] if key in x.get("name", "")]
-    return r[0]["run"] if len(r) == 1 else None
-# the judge job runs each check as its own step (continue-on-error), then the verdict step turns the three outcomes into the verdict
-jsteps = {x["id"]: x["run"] for x in d["jobs"]["judge"]["steps"] if x.get("id") in ("allowlist", "scan", "record", "gate")}
-shim = [x["run"] for x in d["jobs"]["judge"]["steps"] if "yaml reader" in x.get("name", "")]
-judge_run = "judge" if len(jsteps) == 4 and len(shim) == 1 and all(x.get("continue-on-error") for x in d["jobs"]["judge"]["steps"] if x.get("id") in ("allowlist", "scan", "record")) else None
-sweep_run = step("sweep", "judge and publish every open PR")
-if not judge_run or not sweep_run:
-    print("BAD missing step"); sys.exit()
-def sh(*a, **k): return subprocess.run(a, check=True, capture_output=True, text=True, **k).stdout.strip()
-def run_judge(fx, env):
-    subprocess.run(["bash", "-eo", "pipefail", "-c", shim[0]], cwd=fx, env=env, capture_output=True, text=True)
-    outcomes = ["success" if subprocess.run(["bash", "-eo", "pipefail", "-c", jsteps[k]], cwd=fx, env=env, capture_output=True, text=True).returncode == 0 else "failure"
-                for k in ("allowlist", "scan", "record")]
-    return subprocess.run(["bash", "-eo", "pipefail", "-c", jsteps["gate"]], cwd=fx, env=dict(env, OUTCOMES=" ".join(outcomes)), capture_output=True, text=True)
-gitenv = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t",
-              GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null")
-root = tempfile.mkdtemp(prefix="verdict-")
-try:
-    src = os.path.join(root, "src"); fx = os.path.join(root, "fx")
-    os.makedirs(src)
-    sh("git", "-C", src, "init", "-q"); open(os.path.join(src, "f"), "w").write("x")
-    subprocess.run(["git", "-C", src, "add", "-A"], check=True, env=gitenv)
-    subprocess.run(["git", "-C", src, "commit", "-qm", "c", "--no-gpg-sign"], check=True, env=gitenv, capture_output=True)
-    sha = sh("git", "-C", src, "rev-parse", "HEAD")
-    sh("git", "-C", src, "update-ref", "refs/pull/7/head", sha)
-    sh("git", "clone", "-q", src, fx)
-    for rel, body in {
-        "bin/check-file-allowlist.sh": "cat >/dev/null\necho allow >> \"$CALLS\"\nexit \"$STUB_ALLOW\"\n",
-        "bin/scan-no-workflow-call-test.sh": "echo scan >> \"$CALLS\"\nexit \"$STUB_SCAN\"\n",
-        "bin/audit-record-judge.sh": "echo audit >> \"$CALLS\"\nexit \"$STUB_AUDIT\"\n",
-    }.items():
-        f = os.path.join(fx, rel); os.makedirs(os.path.dirname(f), exist_ok=True); open(f, "w").write(body)
-    os.makedirs(os.path.join(fx, ".github/agent/fixtures/testlib/pyyaml"), exist_ok=True)
-    stubbin = os.path.join(root, "stubbin"); os.makedirs(stubbin)
-    gh = os.path.join(stubbin, "gh")
-    open(gh, "w").write('#!/bin/sh\n'
-        'case "$1 $2" in\n'
-        '"pr list") echo "7 %s feature owner/repo" ;;\n'
-        '"api repos/o/r/commits/%s/check-runs?check_name=auditor-review-gate&per_page=100") echo none ;;\n'
-        '"api repos/o/r/check-runs") for a in "$@"; do case "$a" in conclusion=*) echo "$a" >> "$CALLS" ;; esac; done ;;\n'
-        '*) echo "unexpected gh $*" >> "$CALLS"; exit 9 ;;\n'
-        'esac\n' % (sha, sha))
-    os.chmod(gh, 0o755)
-    bad = []
-    for allow, scan, audit in itertools.product((0, 1), repeat=3):
-        allpass = (allow, scan, audit) == (0, 0, 0)
-        for which, run in (("judge", judge_run), ("sweep", sweep_run)):
-            calls = os.path.join(root, "calls"); out = os.path.join(root, "out"); tmp = os.path.join(root, "tmp")
-            for f in (calls, out): open(f, "w").close()
-            os.makedirs(tmp, exist_ok=True)
-            env = dict(os.environ, CALLS=calls, GITHUB_OUTPUT=out, RUNNER_TEMP=tmp, HEAD_SHA=sha,
-                       GITHUB_HEAD_REF="feature", GITHUB_BASE_REF="main", GITHUB_HEAD_REPO="owner/repo",
-                       GITHUB_REPOSITORY="o/r", LIST_TOKEN="t", APP_TOKEN="t", APP_SLUG="app", DEFAULT="main", RUN_URL="u",
-                       STUB_ALLOW=str(allow), STUB_SCAN=str(scan), STUB_AUDIT=str(audit),
-                       PATH=stubbin + ":" + os.environ["PATH"])
-            r = run_judge(fx, env) if which == "judge" else subprocess.run(["bash", "-e", "-c", run], cwd=fx, env=env, capture_output=True, text=True)
-            c = open(calls).read().split()
-            tag = "%s allow=%d scan=%d audit=%d" % (which, allow, scan, audit)
-            if which == "judge":
-                v = open(out).read().strip()
-                if sorted(c) != ["allow", "audit", "scan"]: bad.append(tag + " calls=%s" % c)
-                if v != ("verdict=success" if allpass else "verdict=failure"): bad.append(tag + " out=%s" % v)
-                if (r.returncode == 0) != allpass: bad.append(tag + " rc=%d" % r.returncode)
-            else:
-                pub = [x for x in c if x.startswith("conclusion=")]
-                if pub != ["conclusion=success" if allpass else "conclusion=failure"]: bad.append(tag + " published=%s" % pub)
-                if "allow" not in c or (allpass and sorted(x for x in c if not x.startswith("conclusion=")) != ["allow", "audit", "scan"]):
-                    bad.append(tag + " calls=%s" % c)
-                if any("unexpected" in x for x in c): bad.append(tag + " unexpected gh call")
-    print("OK" if not bad else "BAD " + "; ".join(bad[:4]))
-finally:
-    shutil.rmtree(root, ignore_errors=True)
-VP
-)"
-eq "$vp" "OK" && ok || no "judge and sweep run as written publish success only when all three checks exit 0" "$vp"
-
-begin "dep001-ac13-sweep-skips-a-green-head-except-dependabot" "the gate's sweep skips a green head, except a \
-Dependabot head (head branch dependabot/...): that one is judged again for the reviewer's verdict only, and a check \
-goes up only when the conclusion differs from the one there"
-# REQ-DEP-001-AC13: the gate's sweep skips a green head, except a Dependabot head (head branch dependabot/...): that one
-# is judged again, and a check goes up only when the conclusion differs from the one there. The sweep runs as written,
-# over stand-ins for the three checks and a gh that serves the pull request list and the App's gate checks.
-sw="$(python3 - "$repo" "$WORK" <<'SW'
-import datetime, json, os, shutil, subprocess, sys
-sys.path.insert(0, ".github/agent/fixtures/testlib")
-import pyyaml as yaml
-root, work = sys.argv[1], sys.argv[2]
-steps = yaml.safe_load(open(os.path.join(root, ".github/workflows/agent-review-gate.yml")))["jobs"]["sweep"]["steps"]
-(sweep,) = [s["run"] for s in steps if "judge and publish every open PR" in s.get("name", "")]
-def sh(*a, **k): return subprocess.run(a, check=True, capture_output=True, text=True, **k).stdout.strip()
-genv = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t",
-        GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null")
-base = os.path.join(work, "ac13-sweep"); src, fx, stub = (os.path.join(base, x) for x in ("src", "fx", "stub"))
-os.makedirs(src); os.makedirs(stub)
-subprocess.run(["git", "init", "-q", src], check=True, env=genv)
-open(os.path.join(src, "f"), "w").write("x")
-subprocess.run(["git", "-C", src, "add", "-A"], check=True, env=genv)
-subprocess.run(["git", "-C", src, "commit", "-qm", "c", "--no-gpg-sign"], check=True, env=genv, capture_output=True)
-sha = sh("git", "-C", src, "rev-parse", "HEAD")
-sh("git", "-C", src, "update-ref", "refs/pull/7/head", sha)
-sh("git", "-C", src, "update-ref", "refs/pull/8/head", sha)
-sh("git", "clone", "-q", src, fx)
-for rel, body in {
-    "bin/check-file-allowlist.sh": "cat >/dev/null\necho allow >> \"$CALLS\"\n",
-    "bin/scan-no-workflow-call-test.sh": "echo scan >> \"$CALLS\"\n",
-    "bin/audit-record-judge.sh": "echo audit >> \"$CALLS\"\n"
-        "[ \"$(grep -c audit \"$CALLS\")\" = 1 ] && exit \"$STUB_AUDIT\"\n"
-        "exit \"${STUB_AUDIT2:-$STUB_AUDIT}\"\n",
-}.items():
-    f = os.path.join(fx, rel); os.makedirs(os.path.dirname(f), exist_ok=True)
-    open(f, "w").write(body)
-os.makedirs(os.path.join(fx, ".github/agent/fixtures/testlib/pyyaml"), exist_ok=True)
-open(os.path.join(stub, "gh"), "w").write("""#!/usr/bin/env bash
-case "$1 $2" in
-  "pr list") echo "7 %s $HEADREF owner/repo"; [ -z "${SECOND:-}" ] || echo "8 %s $HEADREF owner/repo" ;;
-  "api repos/o/r/commits/%s/check-runs?check_name=auditor-review-gate&per_page=100")
-      f=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done; jq -r "$f" "$GATE_JSON" ;;
-  "api repos/o/r/check-runs") [ "${PUBFAIL:-}" = 1 ] && exit 1
-      for a in "$@"; do case "$a" in conclusion=*) echo "$a" >> "$PUBLISHED" ;; esac; done ;;
-  *) echo "unexpected gh $*" >> "$CALLS"; exit 9 ;;
-esac
-""" % (sha, sha, sha))
-os.chmod(os.path.join(stub, "gh"), 0o755)
-# the sweep lists the merge queue's branches before it posts: none
-open(os.path.join(stub, "git"), "w").write('#!/bin/sh\n[ "$1" = ls-remote ] && exit 0\nexec %s "$@"\n' % shutil.which("git"))
-os.chmod(os.path.join(stub, "git"), 0o755)
-def sweep_over(headref, gate, audit, pubfail=False, older=0, total=None, audit2=None):
-    """(exit status, what was published, the checks called) for one open pull request.
-    older: runs of the gate's check that finished an hour before it; total: the total_count GitHub reports"""
-    calls, published, gate_json = (os.path.join(base, x) for x in ("calls", "published", "gate.json"))
-    for f in (calls, published): open(f, "w").close()
-    stamp = "%Y-%m-%dT%H:%M:%SZ"
-    now = datetime.datetime.now(datetime.timezone.utc).strftime(stamp)
-    runs = [] if gate == "none" else [{"conclusion": gate, "completed_at": now, "app": {"slug": "app"}}]
-    hour_ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)).strftime(stamp)
-    runs = [{"conclusion": "failure", "completed_at": hour_ago, "app": {"slug": "app"}}] * older + runs
-    json.dump({"total_count": len(runs) if total is None else total, "check_runs": runs}, open(gate_json, "w"))
-    env = dict(os.environ, CALLS=calls, PUBLISHED=published, GATE_JSON=gate_json, HEADREF=headref,
-            RUNNER_TEMP=os.path.join(base, "tmp"),
-               GITHUB_REPOSITORY="o/r", LIST_TOKEN="t", APP_TOKEN="t", APP_SLUG="app", DEFAULT="main", RUN_URL="u",
-               STUB_AUDIT=str(audit), SECOND="1" if audit2 is not None else "",
-               PUBFAIL="1" if pubfail else "", PATH=stub + ":" + os.environ["PATH"])
-    if audit2 is not None: env["STUB_AUDIT2"] = str(audit2)
-    os.makedirs(env["RUNNER_TEMP"], exist_ok=True)
-    r = subprocess.run(["bash", "-e", "-c", sweep], cwd=fx, env=env, capture_output=True, text=True)
-    return r.returncode, open(published).read().split(), open(calls).read().split()
-bad = []
-dep = "dependabot/pip/requests-2.0"
-def want(name, got, rc, published, judged):
-    code, pub, calls = got
-    if code != rc or pub != published or ("audit" in calls) != judged or any("unexpected" in c for c in calls):
-        bad.append("%s: exit %s (want %s), published %s (want %s), judged %s (want %s)" % (name, code, rc, pub,
-                published, "audit" in calls, judged))
-for headref in ("feature/bump", "dependabot", "dependabot-pip/x", "xdependabot/pip/x", "feature/dependabot/pip/x",
-        "Dependabot/pip/x"):
-    for audit in (0, 1):
-        want("a head %r with a gate success is skipped (judge %d)" % (headref, audit), sweep_over(headref, "success",
-                audit), 0, [], False)
-# REQ-DEP-001-AC13: a green Dependabot head did not change, so it is judged only for the reviewer's verdict (the
-# passed-audit judge, which refuses a success of an old version of the reviewer): the allowlist and scanner
-# checks are never called on it
-def only_the_judge(name, got, rc, published):
-    code, pub, calls = got
-    if code != rc or pub != published or calls != ["audit"]:
-        bad.append("%s: exit %s (want %s), published %s (want %s), checks called %s (want only the judge)" % (name,
-                code, rc, pub, published, calls))
-only_the_judge("a green Dependabot head whose reviewer success is of an old version (the judge fails): it loses its "
-        "green", sweep_over(dep, "success", 1), 0, ["conclusion=failure"])
-only_the_judge("a green Dependabot head whose judge passes: nothing published", sweep_over(dep, "success",
-        0), 0, [])
-only_the_judge("a green Dependabot head, judge failing, the failure cannot be published: the run fails",
-        sweep_over(dep, "success", 1, pubfail=True), 1, [])
-# the judge's exit 3 is a GitHub API error: nothing is published for the head and the run fails
-only_the_judge("a green Dependabot head whose judge hits a GitHub API error (exit 3): nothing published, the run fails",
-        sweep_over(dep, "success", 3), 1, [])
-# GitHub runs a step as bash -e: a judge exit 1 or 3 must not end the sweep before the next pull request
-for first, rc, published in ((1, 0, ["conclusion=failure", "conclusion=failure"]), (3, 1, ["conclusion=failure"])):
-    code, pub, calls = sweep_over(dep, "success", first, audit2=1)
-    if (code, pub, calls) != (rc, published, ["audit", "audit"]):
-        bad.append("two green Dependabot heads, the first judge exits %d under bash -e: both are judged, "
-                "only a failing "
-                "judge's head gets a failure, the run fails only on exit 3: exit %s (want %s), published %s (want %s), "
-                "calls %s" % (first, code, rc, pub, published, calls))
-# a full page of 100 runs may have been cut: the read fails closed, so nothing is judged or published
-want("a full page of 100 gate runs is a failed read: nothing judged or published, the run fails",
-        sweep_over(dep, "success", 1, older=99), 1, [], False)
-want("99 gate runs are the whole answer: the newest, a success, skips a feature head",
-        sweep_over("feature/bump", "success", 1, older=98), 0, [], False)
-want("a total_count above the 99 runs read is ignored: the newest, a success, skips a feature head",
-        sweep_over("feature/bump", "success", 1, older=98, total=150), 0, [], False)
-want("a Dependabot head with no gate check is judged and published as before", sweep_over(dep, "none", 0), 0,
-        ["conclusion=success"], True)
-if sweep_over(dep, "none", 0)[2] != ["allow", "scan", "audit"]:
-    bad.append("a head with no gate check runs every check, in order: %s" % sweep_over(dep, "none", 0)[2])
-want("a Dependabot head with a recent gate failure that still fails publishes nothing", sweep_over(dep, "failure", 1),
-        0, [], True)
-print("OK" if not bad else "BAD " + "; ".join(bad))
-SW
-)"
-eq "$sw" "OK" && ok || no "a green head is skipped, a green Dependabot head is judged for the verdict only, and only \
-a changed conclusion is published" "$sw"
-
-begin "req18-ac3-gate-runs-from-base-on-pull-request-target" "the review gate runs on pull_request_target (default-branch workflow) incl. retargets; a secret-free JUDGE reads the PR head as data only against the checked-out default branch and rejects a moved head; a PUBLISHER holds only a checks:write token of the automation App (agent environment) and never touches PR data; a scheduled SWEEP covers PRs whose run had no App credentials (Dependabot); the auditor's own App token cannot write checks"
+begin "req18-ac3-auditor-app-token-cannot-write-checks" "the auditor's own App token cannot write checks"
 wg="$(python3 - <<'WG'
 import sys; sys.path.insert(0,".github/agent/fixtures/testlib")
 import pyyaml as yaml
-src=open(".github/workflows/agent-review-gate.yml").read(); d=yaml.safe_load(src)
-on=d.get("on") or d.get(True) or {}
-J=d["jobs"]; j=J.get("judge",{}); p=J.get("publish",{}); w=J.get("sweep",{})
-runs=lambda job: "\n".join(x.get("run","") for x in job.get("steps",[]))
-jr, pr, wr = runs(j), runs(p), runs(w)
-co=[x for x in j.get("steps",[]) if str(x.get("uses","")).startswith("actions/checkout@")]
-wco=[x for x in w.get("steps",[]) if str(x.get("uses","")).startswith("actions/checkout@")]
-tok=lambda job: [x for x in job.get("steps",[]) if str(x.get("uses","")).startswith("actions/create-github-app-token@")]
-main_only="github.event.pull_request.base.ref == github.event.repository.default_branch"
-def scoped(t): return len(t)==1 and {k for k in (t[0].get("with") or {}) if k.startswith("permission-")}=={"permission-checks"} and t[0]["with"]["permission-checks"]=="write"
-ok=(set(on)=={"pull_request_target","schedule","workflow_dispatch"}
-    and "edited" in on["pull_request_target"]["types"]
-    and d.get("permissions")=={} and set(J)=={"judge","publish","record","sweep"}
-    # judge: no secrets, read-only, base checkout, data-only fetch, moved-head rejection, HEAD merge-base
-    and j.get("permissions")=={"contents":"read","checks":"read","pull-requests":"read"}
-    and "secrets." not in yaml.safe_dump(j) and main_only in str(j.get("if"))
-    and len(co)==1 and (co[0].get("with") or {}).get("persist-credentials") is False and "ref" not in (co[0].get("with") or {})
-    and "refs/pull/${PR}/head:refs/remotes/pr/head" in jr and '[ "$got" = "$HEAD_SHA" ] ||' in jr
-    and "base.sha" not in yaml.safe_dump(j) and "auditor-review-gate.py" not in jr
-    and "checkout" not in jr and "pip install" not in jr
-    # publisher: agent-env App token (checks only), no PR data, not on cancellation
-    and p.get("needs")=="judge" and p.get("environment")=="agent" and p.get("permissions")=={}
-    and "!cancelled()" in str(p.get("if")) and main_only in str(p.get("if")) and scoped(tok(p))
-    and "actions/checkout" not in yaml.safe_dump(p) and "refs/pull" not in pr and "git " not in pr
-    and "-f name=auditor-review-gate" in pr and '-f head_sha="$HEAD_SHA"' in pr
-    # sweep: schedule/dispatch only, base checkout, data-only fetch + sha check, only App-authored checks count
-    and w.get("environment")=="agent" and "pull_request_target" not in str(w.get("if")) and "schedule" in str(w.get("if"))
-    and len(wco)==1 and (wco[0].get("with") or {}).get("persist-credentials") is False and "ref" not in (wco[0].get("with") or {})
-    and scoped(tok(w)) and 'refs/remotes/pr/${n}' in wr and '= "$sha" ] || continue' in wr
-    and 'select(.app.slug == \\"${APP_SLUG}\\")' in wr and "auditor-review-gate.py" not in wr
-    and "checkout" not in wr and "statuses" not in src and "gh-readonly-queue" not in src
-    and wr.index("while read") < wr.index("bin/audit-record-judge.sh") < wr.index("-f name=auditor-review-gate"))
-# the auditor's own mint of the same App never includes checks
 a=yaml.safe_load(open(".github/workflows/auditor.yml"))
 mints=[x for jb in a["jobs"].values() for x in jb.get("steps",[]) if str(x.get("uses","")).startswith("actions/create-github-app-token@")]
-ok = ok and len(mints)==1 and {k for k in mints[0]["with"] if k.startswith("permission-")}=={"permission-contents","permission-pull-requests"}
+ok = len(mints)==1 and {k for k in mints[0]["with"] if k.startswith("permission-")}=={"permission-contents","permission-pull-requests"}
 print("OK" if ok else "BAD")
 WG
 )"
-# (the required-checks.json entry lands in a follow-up PR once the gate is proven on main:
-#  pull_request_target always runs the DEFAULT branch's workflow, so it cannot be proven earlier)
-eq "$wg" "OK" && ok || no "protected judge/publish/sweep gate; auditor token without checks" "workflow=$wg"
+eq "$wg" "OK" && ok || no "auditor token without checks" "workflow=$wg"
 
-begin "rel012-ac9-judge-jobs-hold-the-read-scopes-of-the-judge's-reader" "the jobs that run \
-bin/audit-record-judge.sh with the read token (judge, sweep) hold checks: read and pull-requests: read, \
-besides contents: read, because the judge's reader calls commits/SHA/pulls and commits/SHA/check-runs"
-rs="$(python3 - <<'RS'
-import sys; sys.path.insert(0, ".github/agent/fixtures/testlib")
-import pyyaml as yaml
-J = yaml.safe_load(open(".github/workflows/agent-review-gate.yml"))["jobs"]
-bad = []
-for name in ("judge", "sweep"):
-    run = "\n".join(x.get("run", "") for x in J[name]["steps"])
-    if "bin/audit-record-judge.sh" not in run: bad.append(name + " does not run the judge"); continue
-    if J[name].get("permissions") != {"contents": "read", "checks": "read", "pull-requests": "read"}:
-        bad.append("%s holds %s" % (name, J[name].get("permissions")))
-print("OK" if not bad else "BAD " + "; ".join(bad))
-RS
-)"
-eq "$rs" "OK" && ok || no "the jobs that run the judge hold checks: read and pull-requests: read" "$rs"
-
-begin "req-rel-012-record-writer-job-shape-and-sweep-stale-path" "the passed-audit record writer (REQ-REL-012) is a dispatch-only job of the review gate: agent environment, a contents-only App token, the two inputs only through env, the prepare script then the committed signed-commit CLI on audit/<head> then the judge; the sweep does not run on a record dispatch; and the sweep re-judges an OLD failure when the head has a record branch and skips it when it has none"
+begin "req-rel-012-record-writer-job-shape" "the passed-audit record writer (REQ-REL-012) is a dispatch-only job of the review gate: agent environment, a contents-only App token, the two inputs only through env, the prepare script then the committed signed-commit CLI on audit/<head> then the judge"
 rw="$(python3 - <<'RW'
 import copy, itertools, os, shutil, subprocess, sys, tempfile
 sys.path.insert(0, ".github/agent/fixtures/testlib")
@@ -3799,8 +3535,6 @@ def problems(d):
     if sign.get("if") != "steps.prep.outputs.state == 'proceed'" or sign.get("env") != {"GH_TOKEN": envs["GH_TOKEN"], "AUDIT_HEAD": envs["AUDIT_HEAD"]} or sign.get("run") != 'python3 .github/agent/bin/auditor-signed-commit.py --repo "$GITHUB_REPOSITORY" --branch "audit/${AUDIT_HEAD}" --base "$AUDIT_HEAD" --prefix audit/ --message "audit record" --path audit-record': bad.append("sign step")
     if judge.get("if") != "steps.prep.outputs.state == 'proceed'" or judge.get("env") != {"GH_TOKEN": envs["GH_TOKEN"], "AUDIT_HEAD": envs["AUDIT_HEAD"]} or judge.get("run") != 'bash bin/audit-record-judge.sh "$AUDIT_HEAD" main': bad.append("judge step")
     if any("${{" in x.get("run", "") for x in st) or any(k in x for x in st for k in ("continue-on-error",)): bad.append("an expression inside a run, or continue-on-error")
-    sw = d["jobs"]["sweep"]
-    if sw.get("if") != "github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.audit_head == '')": bad.append("the sweep must not run on a record dispatch")
     if "format('record-{0}', inputs.audit_pr)" not in str((d.get("concurrency") or {}).get("group")): bad.append("a record dispatch needs its own concurrency group")
     return bad
 ok = problems(d) == []
@@ -3809,54 +3543,13 @@ for name, fn in (("token widened", lambda x: x["jobs"]["record"]["steps"][1]["wi
                  ("another prefix", lambda x: x["jobs"]["record"]["steps"][3].update({"run": x["jobs"]["record"]["steps"][3]["run"].replace("--prefix audit/", "--prefix auditor/")})),
                  ("another base", lambda x: x["jobs"]["record"]["steps"][3].update({"run": x["jobs"]["record"]["steps"][3]["run"].replace('--base "$AUDIT_HEAD"', "--base main")})),
                  ("no environment", lambda x: x["jobs"]["record"].pop("environment")),
-                 ("sweep runs on record dispatch", lambda x: x["jobs"]["sweep"].update({"if": "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"})),
                  ("sign always", lambda x: x["jobs"]["record"]["steps"][3].pop("if"))):
     m = copy.deepcopy(d); fn(m)
     ok = ok and problems(m) != []
-# the sweep's stale path: run the step as written with stand-ins
-sweep_run = [x for x in d["jobs"]["sweep"]["steps"] if "judge and publish every open PR" in x.get("name", "")][0]["run"]
-def sh(*a, **k): return subprocess.run(a, check=True, capture_output=True, text=True, **k).stdout.strip()
-gitenv = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t", GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null")
-root = tempfile.mkdtemp(prefix="stale-")
-try:
-    srcd = os.path.join(root, "src"); fx = os.path.join(root, "fx"); os.makedirs(srcd)
-    sh("git", "-C", srcd, "init", "-q"); open(os.path.join(srcd, "f"), "w").write("x")
-    subprocess.run(["git", "-C", srcd, "add", "-A"], check=True, env=gitenv)
-    subprocess.run(["git", "-C", srcd, "commit", "-qm", "c", "--no-gpg-sign"], check=True, env=gitenv, capture_output=True)
-    sha = sh("git", "-C", srcd, "rev-parse", "HEAD"); sh("git", "-C", srcd, "update-ref", "refs/pull/7/head", sha); sh("git", "clone", "-q", srcd, fx)
-    for rel in ("bin/check-file-allowlist.sh", "bin/scan-no-workflow-call-test.sh", "bin/audit-record-judge.sh"):
-        f = os.path.join(fx, rel); os.makedirs(os.path.dirname(f), exist_ok=True)
-        open(f, "w").write("cat >/dev/null 2>&1\necho judged >> \"$CALLS\"\n")
-    os.makedirs(os.path.join(fx, ".github/agent/fixtures/testlib/pyyaml"), exist_ok=True)
-    stubbin = os.path.join(root, "stubbin"); os.makedirs(stubbin)
-    gh = os.path.join(stubbin, "gh")
-    open(gh, "w").write('#!/bin/sh\n'
-        'case "$1 $2" in\n'
-        '"pr list") echo "7 %s feature owner/repo" ;;\n'
-        '"api repos/o/r/commits/%s/check-runs?check_name=auditor-review-gate&per_page=100") echo "$STUB_LAST" ;;\n'
-        '"api repos/o/r/git/ref/heads/audit/%s") [ "$STUB_REC" = 1 ] || exit 1 ;;\n'
-        '"api repos/o/r/check-runs") for a in "$@"; do case "$a" in conclusion=*) echo "$a" >> "$CALLS" ;; esac; done ;;\n'
-        '*) echo "unexpected gh $*" >> "$CALLS"; exit 9 ;;\n'
-        'esac\n' % (sha, sha, sha))
-    os.chmod(gh, 0o755)
-    def run(last, rec):
-        calls = os.path.join(root, "calls"); out = os.path.join(root, "out"); tmp = os.path.join(root, "tmp")
-        for f in (calls, out): open(f, "w").close()
-        os.makedirs(tmp, exist_ok=True)
-        env = dict(os.environ, CALLS=calls, GITHUB_OUTPUT=out, RUNNER_TEMP=tmp, GITHUB_REPOSITORY="o/r", LIST_TOKEN="t", APP_TOKEN="t", APP_SLUG="app", DEFAULT="main", RUN_URL="u",
-                   STUB_LAST=last, STUB_REC=str(rec), PATH=stubbin + ":" + os.environ["PATH"])
-        subprocess.run(["bash", "-e", "-c", sweep_run], cwd=fx, env=env, capture_output=True, text=True)
-        return open(calls).read().split()
-    c = run("stale", 1); ok = ok and c.count("judged") == 3 and "conclusion=success" in c           # old failure + a record branch -> judged again, published
-    c = run("stale", 0); ok = ok and c == []                                                          # old failure, no record -> skipped, nothing called
-    c = run("success", 1); ok = ok and c == []                                                        # already green -> nothing
-    c = run("failure", 0); ok = ok and c.count("judged") == 3                                         # a recent failure is judged as before
-finally:
-    shutil.rmtree(root, ignore_errors=True)
 print("OK" if ok else "BAD")
 RW
 )"
-eq "$rw" "OK" && ok || no "record writer job shape, mutants refused, sweep stale path" "$rw"
+eq "$rw" "OK" && ok || no "record writer job shape, mutants refused" "$rw"
 
 echo "=== report: one line per thing, render-safe (owner's test Sep 27, handoff 0004) ==="
 rpt="$WORK/rpt"; rm -rf "$rpt"; mkdir -p "$rpt"

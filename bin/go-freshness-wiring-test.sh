@@ -24,7 +24,7 @@ tree = sys.argv[2]
 bad = []
 # (SEC-157-02 B): repository-wide, the jobs that may reach the agent environment, the App's secrets, the token action,
 # every secret (toJSON) or inherited secrets are exactly these; a new consumer must come through review and be listed.
-ALLOWED = {("agent-review-gate.yml", "publish"), ("agent-review-gate.yml", "sweep"), ("agent-review-gate.yml", "record"), ("auditor.yml", "audit"),
+ALLOWED = {("agent-review-gate.yml", "record"), ("auditor.yml", "audit"),
            ("auditor.yml", "panel-probe"), ("dependabot-reviewer.yml", "review"), ("go-freshness.yml", "check"), ("go-freshness.yml", "refresh"),
            ("main-candidate-rescan.yml", "panel-scout"),
            ("main-candidate-rescan.yml", "panel-google"),  # the release.yml promotion job (scans) is gone: Check holds no secret (PR 3), Release is the release job (PR 4)

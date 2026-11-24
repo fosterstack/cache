@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-012-AC1, REQ-REL-012-AC2, REQ-REL-012-AC3, REQ-REL-012-AC4, REQ-REL-012-AC5
+# proves: REQ-REL-012-AC1, REQ-REL-012-AC2, REQ-REL-012-AC3, REQ-REL-012-AC5
 # proves: REQ-REL-012-AC8, REQ-REL-012-AC9, REQ-REL-012-AC10, REQ-REL-012-AC11, REQ-REL-012-AC12
 # proves: REQ-DEP-001-AC14
 # Gate 6 of the release process (owner RATIFIED Oct 23, ops/docs/ratify/2026-10-23-release-process-features-sections-audits.md, rule 6, "a

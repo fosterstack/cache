@@ -2,8 +2,8 @@
 # proves: REQ-REL-016-AC1, REQ-REL-016-AC2, REQ-REL-016-AC3
 # Pull requests run six checks; the rest run on push to main (owner, Nov 17 2026). Read from the PARSED workflow files:
 #   AC1  the jobs that run on the pull_request event (a workflow's `on:` keys and each job's `if` and `needs` decide) are
-#        test, lint, govulncheck, analyze (go), fips140-only and scan, the jobs scan needs, and the jobs of the two
-#        untouched workflows (agent-review-gate.yml, dependabot-auto-merge.yml); every other job of ci.yml and scan.yml
+#        test, lint, govulncheck, analyze (go), fips140-only and scan, the jobs scan needs, and the job of the
+#        untouched workflow (dependabot-auto-merge.yml); every other job of ci.yml and scan.yml
 #        still runs on push to main (scan's report-failure runs on a schedule); the suites and acceptance.yml are called or run
 #        only by full-suite.yml, which has no pull_request or push trigger; supply-chain.yml has no job on a pull request or a push.
 #   AC2  supply-chain.yml (the daily audit) has no push, pull_request, pull_request_target or workflow_run trigger: the
@@ -163,7 +163,7 @@ def closure(w, jid):
 
 SIX = {"ci.yml:test", "ci.yml:lint", "ci.yml:govulncheck", "ci.yml:fips140-only", "codeql.yml:analyze", "scan.yml:scan"}
 SIX_NAMES = {"test", "lint", "govulncheck", "analyze (go)", "fips140-only", "scan"}
-UNTOUCHED = {"agent-review-gate.yml:judge", "agent-review-gate.yml:publish", "dependabot-auto-merge.yml:auto-merge"}
+UNTOUCHED = {"dependabot-auto-merge.yml:auto-merge"}
 # the chain's own pull-request jobs, outside the six (a later change removes them); marker-gate has no push run
 CHAIN_PR = {"ci.yml:marker-gate", "customer-words-edited.yml:customer-words-edited"}
 
@@ -245,7 +245,6 @@ for name, f, edit, want_bad in [
     ("supply-chain-on-pull-request", "supply-chain.yml", "d['on']['pull_request'] = {}; J['daily-audit'].pop('if')", True),
     ("scan-off-pull-request", "scan.yml", "d['on'].pop('pull_request')", True),
     ("scan-dropped-from-push", "scan.yml", "d['on'].pop('push')", True),
-    ("review-gate-job-added", "agent-review-gate.yml", "J['sweep'].pop('if')", True),
 ]:
     got = judge_ac1(mutated(f, edit))
     check("AC1 mutant %s is caught" % name, bool(got) == want_bad, got)

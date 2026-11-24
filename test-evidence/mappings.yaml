@@ -526,20 +526,11 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/audit-record-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/full-suite.yml:suites — runs bin/audit-record-test.sh (the judge, its refusals, and the wrapper with a fake gh)" }
-  - ac: REQ-REL-012-AC4
-    evidence:
-      - { type: shell-test, ref: "bin/audit-record-test.sh" }
-      - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:test — runs the auditor matrix, whose req18-ac3-verdict-runs-and-propagates case runs the verdict job and the sweep with its three checks" }
   - ac: REQ-REL-012-AC5
     evidence:
       - { type: shell-test, ref: "bin/audit-record-test.sh" }
       - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:test — runs the auditor matrix (the record job's pinned shape and mutants) and the signed-commit unit tests (the audit/ lane guard)" }
-  - ac: REQ-REL-012-AC6
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:test — runs the auditor matrix, whose record case runs the sweep step with an old failure, with and without a record branch" }
   - ac: REQ-REL-012-AC8
     evidence:
       - { type: shell-test, ref: "bin/audit-record-test.sh" }
@@ -684,7 +675,6 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
-      - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
   - ac: REQ-DEP-001-AC14
     evidence:
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
@@ -817,13 +807,6 @@ mappings:
   - ac: REQ-SCAN-015-AC1
     evidence:
       - { type: shell-test, ref: "bin/scan-no-workflow-call-test.sh" }
-  - ac: REQ-SCAN-015-AC2
-    evidence:
-      - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml:judge and sweep — the base branch's scanner guard over every PR head's workflows (required check auditor-review-gate)" }
-  - ac: REQ-SCAN-015-AC3
-    evidence:
-      - { type: shell-test, ref: "bin/scan-no-workflow-call-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml:judge and sweep — the default branch's scanner guard over every PR head read as git objects (SCAN_GUARD_JUDGE_GIT); the second review that a change to the guard script needs is enforced outside this repository by the private review tooling (REQ-AUD-018 note); the required check auditor-review-gate judges no review record" }
   - ac: REQ-SCAN-009-AC4
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }
@@ -1214,7 +1197,7 @@ mappings:
   - ac: REQ-AUD-018-AC3
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
-      - { type: inspection, ref: "the second review is enforced by the private review tooling before merge; the repository's verdict (agent-review-gate.yml) judges the passed-audit record of the head, and the matrix test asserts it runs only the allowlist guard, the scanner guard and the record judge" }
+      - { type: inspection, ref: "the second review is enforced by the private review tooling before merge; no pull-request job of the repository judges a review record, and the matrix test asserts the gate workflow is the dispatch-only record writer" }
   - ac: REQ-CHAIN-004-AC1
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
