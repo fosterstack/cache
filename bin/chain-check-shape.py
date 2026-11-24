@@ -442,8 +442,8 @@ def signcheck(path):
     if [r for _, r in signs] != want_s:
         bad.append("sign-check must sign each runner's staged tree once, as %s, found %s" % (want_s, [r for _, r in signs]))
     sig = [i for i, r in runs if r == "bash bin/release-signatures.sh"]
-    if len(sig) != 1 or (signs and sig[0] < max(i for i, _ in signs)) or steps[sig[0]].get("if") != "${{ !contains(github.ref_name, '-') }}":
-        bad.append("sign-check must run `bash bin/release-signatures.sh` once, after the staged signing, with exactly the if ${{ !contains(github.ref_name, '-') }} (a release candidate makes no release signatures)")
+    if len(sig) != 1 or (signs and sig[0] < max(i for i, _ in signs)) or "if" in steps[sig[0]]:
+        bad.append("sign-check must run `bash bin/release-signatures.sh` once, after the staged signing, with no step if (the job-level guard S decides)")
     if recs and signs and (min(i for i, _ in signs) < recs[0][0] or any(not (s.get("uses") or "").startswith("actions/upload-artifact@") for s in steps[max(sig + [i for i, _ in signs]) + 1:])):
         bad.append("sign-check must sign after sign-records and upload last")
     other = [r for i, r in runs if "sign-records" not in r and "witness-sign-staged" not in r and r not in ("bash bin/install-scanner.sh aws-cli", "printf '%s' \"$DIGESTS\" > digests.json", "bash bin/release-signatures.sh")]

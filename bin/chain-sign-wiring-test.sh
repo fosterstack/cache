@@ -6,9 +6,8 @@
 # steps of the build jobs; judge_tree: the tracked files of the repository; judge_calls: who may call release.yml
 # and which of its jobs carry the guard), each first shown to pass a known-good fixture and to fail every mutated
 # copy, then applied to the real tree.
-# sign-check also signs the release files on a final tag (cache#912): after Check's records it runs bin/release-signatures.sh over Build's
-# verified outputs, which it downloads, and uploads release-signed/ as the artifact release-signed; those two steps alone carry
-# `if: ${{ !contains(github.ref_name, '-') }}`.
+# sign-check also signs the release files on every tag run (cache#912): after Check's records it runs bin/release-signatures.sh over Build's
+# verified outputs, which it downloads, and uploads release-signed/ as the artifact release-signed; no step of the sign jobs carries an if.
 # The signer table is bin/chain-test-signers.json, shared with chain-records-test.sh. Needs python3 with
 # PyYAML.
 set -euo pipefail
@@ -53,7 +52,6 @@ R_SIGNSTAGED = r"bash bin/witness-sign-staged\.sh staged signed"
 R_SIGNSTAGED_RUNNER = r"bash bin/witness-sign-staged\.sh staged/(ubuntu-24\.04|ubuntu-24\.04-arm) signed/(ubuntu-24\.04|ubuntu-24\.04-arm)"      # Check: one tree per runner, each signed on its own
 R_INSTALL_WIT = r"bash bin/install-scanner\.sh witness"
 R_SIGNATURES = r"bash bin/release-signatures\.sh"      # sign-check's release signing step
-RC_IF = "${{ !contains(github.ref_name, '-') }}"      # the if of that step and of the release-signed upload: a release candidate makes no release signatures
 # the Witness records of the building jobs carry a throwaway key's signature only (owner Oct 22, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md): Sign checks them against
 # the artifacts it receives and signs each one keyless; the Rebuild records in their own job, which receives no Rebuild apk or image (the owner's separation rule)
 R_REC_BUILD = r"env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify\.py sign-records --stage build --template \.github/policy/release-policy\.template\.json --digests digests\.json --artifacts-dir artifacts --out staged --record-dir witness-build --record-dir witness-apk-ubuntu-24\.04 --record-dir witness-apk-ubuntu-24\.04-arm"
@@ -189,10 +187,8 @@ def judge_sign(path):
                     why = "touches the identity token request (sinks reachable: %s)" % (", ".join(sinks) or "none, but no step may touch it") if re.search(TOKEN, run, re.I) else "is not one of the allowed command lines (install witness or the aws CLI; printf an env value into one of the four record/digest files; the three sign-records forms; witness-sign-staged.sh; bin/release-signatures.sh in sign-check; the one chain-verify.py sign --check ... --out provenance)"
                     bad.append("AC2/AC3: run step %r %s" % (sn, why))
                 if "${{" in run or ".." in run: bad.append("AC2: run step %r interpolates an expression or uses `..`" % sn)
-            # S3: only sign-check's release signing step and its release-signed upload carry an if, exactly the release-candidate one; no step of sign or sign-rebuild may
-            has_rc_if = name == "sign-check" and bool(seq) and seq[-1] in (("signatures",), ("upload", "release-signed", "release-signed"))
-            if has_rc_if and s.get("if") != RC_IF: bad.append("S3: step %r of sign-check must carry exactly `if: %s` (a release candidate makes no release signatures), found %r" % (sn, RC_IF, s.get("if")))
-            if not has_rc_if and "if" in s: bad.append("S3: step %r of %s carries an if; only sign-check's release signing step and its release-signed upload may, with the release candidate if" % (sn, name))
+            # S3: no step of sign, sign-rebuild or sign-check carries an if (the job-level guard S decides for the whole job)
+            if "if" in s: bad.append("S3: step %r of %s carries an if; no step of the sign jobs may (the job-level guard S decides)" % (sn, name))
         want = EXPECT_STEPS.get(name)
         if want is not None and seq != want: bad.append("AC2: job %s's steps must be exactly %s in that order (check-then-sign: the records step and, in sign, the provenance step are the only signers), found %s" % (name, want, seq))
     return bad
@@ -502,13 +498,12 @@ def judge_tree(base):
     return bad
 
 SIGN_GUARD = "inputs.mode!='snapshot'&&github.event_name=='push'&&startsWith(github.ref,'refs/tags/v')&&startsWith(github.workflow_ref,format('{0}/.github/workflows/release.yml@',github.repository))"
-FINAL_GUARD = SIGN_GUARD + "&&!contains(github.ref_name,'-')"      # the job that runs for a final tag only (REQ-CHAIN-007): release
-GUARDED = {"sign": SIGN_GUARD, "sign-rebuild": SIGN_GUARD, "sign-check": SIGN_GUARD, "release": FINAL_GUARD}
+GUARDED = {"sign": SIGN_GUARD, "sign-rebuild": SIGN_GUARD, "sign-check": SIGN_GUARD, "release": SIGN_GUARD}
 def judge_calls(root):
     """REQ-CHAIN-003-AC5 (the release is the one file release.yml; owner rule workflow-grouped-by-purpose, Nov 13): no workflow file other than scan.yml and
     main-candidate-rescan.yml calls release.yml, each only with `with: mode: snapshot`; no workflow calls a stage-*.yml file (by local path or by repository path and digest);
     and each of sign, sign-rebuild and sign-check carries the guard S that skips it in snapshot mode and under workflow_call (a called release.yml's token names the caller's file,
-    so the guard, not the file name, keeps every sign job out of a caller's run); release carries S followed by && !contains(github.ref_name, '-')
+    so the guard, not the file name, keeps every sign job out of a caller's run); release carries the same guard S
     (final tags only). One finding per job."""
     bad = []
     wd = os.path.join(root, ".github/workflows")
@@ -882,7 +877,6 @@ jobs:
           RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
         run: bash bin/witness-sign-staged.sh staged/ubuntu-24.04-arm signed/ubuntu-24.04-arm
       - name: sign the release files
-        if: \${{ !contains(github.ref_name, '-') }}
         env:
           AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
           AWS_REGION: us-east-1
@@ -897,7 +891,6 @@ jobs:
           name: signed-witness-check-ubuntu-24.04-arm
           path: signed/ubuntu-24.04-arm
       - uses: actions/upload-artifact@$sha # v7
-        if: \${{ !contains(github.ref_name, '-') }}
         with:
           name: release-signed
           path: release-signed
@@ -1012,13 +1005,13 @@ NBSP=$(printf '\xc2\xa0'); ZWSP=$(printf '\xe2\x80\x8b')
 caught "AC1 run line: a trailing NBSP after the sign line (str.strip() would drop it; bash keeps it in the last word)" "$SIGNLINE" "$SIGNLINE$NBSP"
 caught "AC1 run line: a leading NBSP before the install line" 'run: bash bin/install-scanner.sh aws-cli' "run: ${NBSP}bash bin/install-scanner.sh aws-cli"
 caught "AC1 run line: a trailing U+200B after the sign line" "$SIGNLINE" "$SIGNLINE$ZWSP"
-# ---- S2/S3 (cache#912): sign-check runs bin/release-signatures.sh and uploads release-signed, on a final tag only
-caught "S2 sign-check does not run bin/release-signatures.sh" '      - name: sign the release files\n        if: [^\n]*\n        env:\n(?:          [^\n]*\n)+        run: bash bin/release-signatures\.sh\n' ''
-caught "S2 sign-check does not upload release-signed" '      - uses: actions/upload-artifact@a{40} # v7\n        if: [^\n]*\n        with:\n          name: release-signed\n          path: release-signed\n' ''
+# ---- S2/S3 (cache#912): sign-check runs bin/release-signatures.sh and uploads release-signed, with no step if
+caught "S2 sign-check does not run bin/release-signatures.sh" '      - name: sign the release files\n        env:\n(?:          [^\n]*\n)+        run: bash bin/release-signatures\.sh\n' ''
+caught "S2 sign-check does not upload release-signed" '      - uses: actions/upload-artifact@a{40} # v7\n        with:\n          name: release-signed\n          path: release-signed\n' ''
 caught "S2 sign-check does not download images" '      - uses: actions/download-artifact@a{40} # v8\n        with:\n          name: images\n          path: images\n' ''
 caught "S2 sign-check downloads the govulncheck results into another path" 'name: check-results-ubuntu-24.04\n          path: check-results/ubuntu-24.04' 'name: check-results-ubuntu-24.04\n          path: elsewhere'
-caught "S3 the release signing step has no if (a release candidate would sign)" '(      - name: sign the release files\n)        if: [^\n]*\n' '\1'
-caught "S3 the release-signed upload has no if" '        if: [^\n]*\n(        with:\n          name: release-signed\n)' '\1'
+caught "S3 the release signing step carries an if" '(      - name: sign the release files\n)' '\1        if: ${{ !contains(github.ref_name, "-") }}\n'
+caught "S3 the release-signed upload carries an if" '(        with:\n          name: release-signed\n)' '        if: ${{ !contains(github.ref_name, "-") }}\n\1'
 caught "S2 sign-check runs bin/release-signatures.sh with arguments" 'run: bash bin/release-signatures\.sh\n' 'run: bash bin/release-signatures.sh --force\n'
 okmut() { if mutate "$1" "$2" "$3"; then expect ok "$1" sign "$work/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _).yml"; fi; }
 caught "AC1 Sign judge: runs-on ubuntu-. is not in the closed runner set (Sonnet #249 r7 R2)" 'ubuntu-24.04' 'ubuntu-.'
@@ -3105,12 +3098,11 @@ expect caught "AC1 a signer row naming stage-sign.yml, a file that no longer exi
 # 003-AC5: only scan.yml and main-candidate-rescan.yml call release.yml, each only with mode snapshot; no stage-*.yml is called; every sign job and release carries the guard that skips it
 # in snapshot mode and under workflow_call (a called release.yml's token names the caller's file)
 GUARD="\${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}"
-FINAL_GUARD="\${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) && !contains(github.ref_name, '-') }}"
-rel_fixture() { # rel_fixture DIR [JOB-WITHOUT-GUARD]: release.yml with the four guarded jobs (release for final tags only)
+rel_fixture() { # rel_fixture DIR [JOB-WITHOUT-GUARD]: release.yml with the four jobs, each guarded by S
   local j
   { printf 'jobs:\n'; for j in sign sign-rebuild sign-check release; do
       printf '  %s:\n' "$j"
-      if [ "$j" != "${2:-}" ]; then case $j in release) printf '    if: %s\n' "$FINAL_GUARD" ;; *) printf '    if: %s\n' "$GUARD" ;; esac; fi
+      if [ "$j" != "${2:-}" ]; then printf '    if: %s\n' "$GUARD"; fi
       printf '    runs-on: ubuntu-24.04\n'; done; } > "$1/.github/workflows/release.yml"
 }
 snap_caller() { printf 'on: push\njobs:\n  build:\n    uses: ./.github/workflows/release.yml\n    with:\n      mode: snapshot\n' > "$1"; }
@@ -3124,13 +3116,9 @@ for j in sign sign-rebuild sign-check release; do
   d=$(mk "c_nopush_$j"); rel_fixture "$d"; sed -i.bak "/^  $j:\$/,/^  [a-z]/ s/github.event_name == 'push' && //" "$d/.github/workflows/release.yml"
   expect caught "003-AC5 $j with a guard that does not require a push" calls "$d"
 done
-for j in release; do
-  d=$(mk "c_rc_$j"); rel_fixture "$d"; sed -i.bak "/^  $j:\$/,/^  [a-z]/ s/ && !contains(github.ref_name, '-')//" "$d/.github/workflows/release.yml"
-  expect caught "003-AC5 $j with the guard S alone (it must also leave out release candidates: && !contains(github.ref_name, '-'))" calls "$d"
-done
-for j in sign sign-rebuild sign-check; do
+for j in sign sign-rebuild sign-check release; do
   d=$(mk "c_final_$j"); rel_fixture "$d"; sed -i.bak "/^  $j:\$/,/^  [a-z]/ s/ }}\$/ \&\& !contains(github.ref_name, '-') }}/" "$d/.github/workflows/release.yml"
-  expect caught "003-AC5 $j with the final-tag guard (the jobs that sign for a release candidate carry S alone)" calls "$d"
+  expect caught "003-AC5 $j with a tag-name rule after guard S (each of the four carries S alone)" calls "$d"
 done
 d=$(mk c_second); rel_fixture "$d"; printf 'on: push\njobs:\n  x:\n    uses: ./.github/workflows/release.yml\n    with:\n      mode: snapshot\n' > "$d/.github/workflows/ci.yml"
 expect caught "003-AC5 a second workflow (ci.yml) calls release.yml" calls "$d"
@@ -5406,7 +5394,7 @@ def step(**kw): return dict({"uses": GO, "with": {"go-version-file": "go.mod", "
 out = []
 def case(label, want_bad, got): out.append((label, bool(got) == want_bad, got[:1]))
 case("the real release.yml: no job uses setup-go and each job that needs Go has its one pinned installer line", False, findings(load()))
-for jn in NEED_GO + ("sign", "release", "live-test"):
+for jn in NEED_GO + ("sign", "release", "live-test-release"):
     case("the exact step the earlier round allowed (pinned digest, go-version-file go.mod, cache false) added to job %s is refused" % jn, True, mut(lambda d: d["jobs"][jn]["steps"].insert(1, step())))
 case("a floating tag is refused", True, mut(lambda d: d["jobs"]["build-apk"]["steps"].insert(1, {"uses": "actions/setup-go@v7"})))
 case("setup-go with another digest is refused", True, mut(lambda d: d["jobs"]["check"]["steps"].insert(1, {"uses": "actions/setup-go@" + "1" * 40 + " # v7.0.0"})))

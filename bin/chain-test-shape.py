@@ -1280,7 +1280,7 @@ GATE = "${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v
 GUARD_S = ("inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && "
            "startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))")      # guard S: a v* tag push of release.yml itself, never in snapshot mode or under a workflow_call
 SIGN_IF = "${{ %s }}" % GUARD_S                                                    # sign, sign-rebuild, sign-check
-AFTER_IF = "${{ %s && !contains(github.ref_name, '-') }}" % GUARD_S                # release: a release candidate publishes nothing and never enters the environment release
+AFTER_IF = SIGN_IF                                                                 # release: exactly guard S, as the sign jobs
 # check-govulncheck has no needs: it also names the runs that start the chain, so a push to main or the daily run (the patch tag jobs only) never starts it
 GV_IF = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true) }}"
 CHECK_IF = "${{ inputs.mode != 'snapshot' }}"                                     # check-govulncheck and check
@@ -1299,7 +1299,7 @@ CHAIN_SPEC = {   # job -> exact needs, permissions, if and environment
     "sign-check": dict(needs=["build-assemble", "check", "sign"], perm=SIGN_PERMISSIONS, if_=SIGN_IF, env="sign"),
     "release-compare": dict(needs=["check", "sign", "sign-check", "sign-rebuild"], perm=PERM_READ, if_=None, env=None),
     "release-verify": dict(needs=["release-compare"], perm=PERM_READ, if_=None, env=None),
-    "release": dict(needs=["release-compare", "release-verify"], perm={"contents": "write", "packages": "write"}, if_=AFTER_IF, env="release"),      # no id-token and no KMS role: every signature it pushes was made by sign-check, and release-sign checks each one before it is used
+    "release": dict(needs=["hostile-verdict", "release-compare", "release-verify"], perm={"contents": "write", "packages": "write"}, if_=AFTER_IF, env="release"),      # no id-token and no KMS role: every signature it pushes was made by sign-check, and release-sign checks each one before it is used
 }
 CHAIN = sorted(CHAIN_SPEC)
 RELEASE_CONCURRENCY_LINE = re.compile(r"(?m)^  release:\n(?:    .*\n|\n)*?    concurrency:\n      group: release-publish\n      cancel-in-progress: false\n")
@@ -1318,12 +1318,11 @@ STATUS_FUNCTION = re.compile(r"always\(\)|cancelled\(\)|failure\(\)|success\(\)"
 # token) -> patch-notes (the changelog PR). decide's job output `tag` is the tag due, or empty: each of the three runs only when it is non-empty (decide's own if keeps a dry run, a snapshot call and every ref but main out).
 TAG_DUE_IF = "${{ needs.decide.outputs.tag != '' }}"
 PATCH_NOTES_IF = TAG_DUE_IF
-LIVE_TEST_RC_IF = "${{ inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}"
 LIVE_TEST_FINAL_IF = "${{ inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc') && !inputs.dry-run }}"
 PERSONA_RC_IF = "${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v') }}"
 # The persona job's only secrets (REQ-UAT-001-AC1, the persona-uat environment): the model names and the federation identifiers. It holds no registry credential or write token.
 # The live-test environment's Docker Hub credentials (REQ-SCAN-012-AC1, amended on the advisor reading of Oct 17): the test user and its push token (an organization access token
-# scoped to the test repository only) and the read-only Scout token with its user; the same four in both live-test jobs, nothing else
+# scoped to the test repository only) and the read-only Scout token with its user; the same four in the live-test job, nothing else
 LIVE_TEST_SECRETS = {"DOCKERHUB_USERNAME", "DOCKERHUB_TEST_USERNAME", "DOCKERHUB_TEST_PUSH_TOKEN", "DOCKERHUB_SCOUT_TOKEN"}
 PERSONA_SECRETS = {"PERSONA_UAT_MODEL", "PERSONA_UAT_COMPLIANCE_MODEL", "ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_SERVICE_ACCOUNT_ID", "ANTHROPIC_WORKSPACE_ID"}
 DECIDE_IF = "${{ inputs.mode != 'snapshot' && github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}"
@@ -1358,11 +1357,10 @@ NON_CHAIN = {
     # cut pushes the signed tag with the auditor App's token (environment agent holds the App's secrets): its own token reads contents only, it holds no id-token
     "cut": {"perm": {"contents": "read"}, "agent": True, "needs": ["decide", "sign-tag"], "if": TAG_DUE_IF},
     "patch-notes": {"perm": {"contents": "read"}, "agent": True, "needs": ["cut", "decide"], "if": PATCH_NOTES_IF},
-    "patch-failed": {"perm": {"contents": "read", "issues": "write"}, "agent": False, "needs": CHAIN},
-    # The rule-12 live tests of our VEX files (REQ-SCAN-012): federated into the dedicated live-test accounts only (environment live-test, whose trust names nothing
-    # else), after Check on a release candidate and after Release on a final tag; they publish nothing, hold no secrets but the live-test environment's four Docker Hub test credentials (LIVE_TEST_SECRETS), and cannot run in the dry run.
-    # They stay in release.yml, guarded off in snapshot mode and under workflow_call, in their own environments with the identity token for their own federations only (ruling 8), never the KMS role.
-    "live-test": {"perm": {"contents": "read", "id-token": "write"}, "agent": False, "env": "live-test", "needs": ["check"], "if": LIVE_TEST_RC_IF, "secrets": LIVE_TEST_SECRETS},
+    "patch-failed": {"perm": {"contents": "read", "issues": "write"}, "agent": False, "needs": CHAIN + ["hostile-verdict", "hostile-verify"]},
+    # The rule-12 live test of our VEX files (REQ-SCAN-012): federated into the dedicated live-test accounts only (environment live-test, whose trust names nothing
+    # else), after Release on a final tag; it publishes nothing, holds no secrets but the live-test environment's four Docker Hub test credentials (LIVE_TEST_SECRETS), and cannot run in the dry run.
+    # It stays in release.yml, guarded off in snapshot mode and under workflow_call, in its own environment with the identity token for its own federations only (ruling 8), never the KMS role.
     "live-test-release": {"perm": {"contents": "read", "id-token": "write"}, "agent": False, "env": "live-test", "needs": ["release"], "if": LIVE_TEST_FINAL_IF, "secrets": LIVE_TEST_SECRETS},
     # The persona UAT of a release candidate (REQ-UAT-001-AC1): the ONE job-level call of persona-uat.yml (which holds the persona jobs and their environment), in release mode only, after
     # Build only; contents read and the federated token (id-token write) for the persona federation, no registry credential, no write, never the KMS role.

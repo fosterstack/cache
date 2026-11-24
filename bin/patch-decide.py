@@ -1515,20 +1515,6 @@ def gomod_versions(text, name="go.mod"):
     return out
 
 
-def cmd_rc_proof(a):
-    # the helper is the one definition of the chain-file set and of the marker's checks; an unreadable or mismatching
-    # marker: no patch decision (never a skip). -I: a module planted on PYTHONPATH or in the cwd is never imported by it
-    helper = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chain-bytes-sha.py")
-    r = subprocess.run([sys.executable, "-I", helper, "check-marker", "--marker", a.marker, "--commit", a.commit,
-                        "--repo", a.repo], capture_output=True, text=True)
-    if r.returncode != 0:
-        why = (r.stderr.strip().splitlines() or ["the marker does not validate"])[0].replace("refused at marker: ", "")
-        print(_clean("refused at marker: no patch decision: " + why), file=sys.stderr)
-        return 1
-    print("rc-proof: the marker %s validates for %s" % (a.marker, a.commit))
-    return 0
-
-
 def cmd_base_moved(a):
     try:
         listed = load_base_inputs(a.base_inputs)
@@ -1688,7 +1674,7 @@ def cmd_tag_notes(a):
     return 0
 
 
-COMMANDS = {"decide": cmd_decide, "base-moved": cmd_base_moved, "rc-proof": cmd_rc_proof, "ready": cmd_ready,
+COMMANDS = {"decide": cmd_decide, "base-moved": cmd_base_moved, "ready": cmd_ready,
             "removed": cmd_removed, "notes": cmd_notes, "variants": cmd_variants, "tag-notes": cmd_tag_notes,
             "changelog": cmd_changelog}
 
@@ -1713,10 +1699,6 @@ def main(argv=None):
     bm.add_argument("--since", required=True, help="the latest release's tag")
     bm.add_argument("--base-inputs", help="the list of base inputs (default: .github/policy/base-inputs.json beside this script)")
     bm.add_argument("--repo", default=".")
-    q = sub.add_parser("rc-proof", help="REQ-CHAIN-001-AC6: exit 0 only when the committed rc-proof marker validates for the commit about to be tagged; else exit 1, naming the marker")
-    q.add_argument("--marker", required=True)
-    q.add_argument("--commit", required=True)
-    q.add_argument("--repo", default=".")
     k = sub.add_parser("ready")
     k.add_argument("--required", required=True, help="the policy file required-checks.json")
     k.add_argument("--check-runs", required=True, help="JSON list of the latest check run of each name {name, status, conclusion, app_id}")

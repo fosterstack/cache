@@ -71,14 +71,12 @@ rebuilds. Of the jobs above, Release is the only one that holds a registry crede
   The stages of Release create no tag: a tag is made before they start, by a
   maintainer, or for an automatic patch release by the `sign-tag` and `cut` jobs
   of `release.yml` (see "Cutting a release" below).
-- **Release candidates**: a tag matching exactly `vX.Y.Z-rcN` runs every stage,
-  Sign included (its three jobs take the release signing role; `sign-check`
-  signs the candidate's records but not the release files), and Release's
-  `release-verify`, and then ends: the Release job that holds the registry
-  credentials does not run, nothing reaches the release registries (only the
-  live test pushes the candidate images, to dedicated test repositories), no
-  release is created, no floating tag moves. A tag that is
-  neither `vX.Y.Z` nor that form is refused by `release-verify`.
+- **Release branches**: a push of a `release/vX.Y.Z` branch builds once and
+  runs Rebuild, Check and the persona tests on that build, with no key: Sign
+  and Release do not run, nothing is pushed and no release is created. The
+  release tag `vX.Y.Z` of a minor or major release is pushed by hand;
+  patch tags are made on `main` by the `sign-tag` and `cut` jobs. A tag that
+  is not `vX.Y.Z` is refused at Build's admission and by `release-verify`.
 - **Floating tags**: a final release moves `:X.Y` to itself every time and `:X`
   and `:latest` only when it is the highest released version (the plain
   `X.Y.Z` tags of `ghcr.io/fosterstack/cache`); the `-fips` image gets its exact

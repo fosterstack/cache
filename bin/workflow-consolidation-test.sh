@@ -197,11 +197,11 @@ else:
         env = dict(os.environ, TAG_RE=subprocess.check_output(["python3", "-I", os.path.join(sys.argv[2], "bin/build-admit.py"), "tag-pattern"], text=True).strip())
         return subprocess.run(["jq", "-e", shape.group(1)], input=json.dumps([t]), capture_output=True, text=True, env=env).returncode == 0
     good = {"release": "v0.2.1", "variant": "production", "digest": "sha256:" + "a" * 64, "scanner": "grype"}
-    if not ok(good) or not ok(dict(good, release="v0.3.0-rc1")):
+    if not ok(good):
         bad.append("TARGET_SHAPE refuses a well-formed target")
     hostile = [dict(good, digest=good["digest"] + "$(docker run alpine:latest true)"),
                dict(good, variant="production'$(docker run alpine:latest true)'"),
-               dict(good, release="v0.2.1$(id)"), dict(good, release="v0.3.0-rc.1"), dict(good, release="v02.1.0"), dict(good, scanner="grype;id"), dict(good, digest=None),
+               dict(good, release="v0.2.1$(id)"), dict(good, release="v0.3.0-rc.1"), dict(good, release="v0.3.0-rc1"), dict(good, release="v02.1.0"), dict(good, scanner="grype;id"), dict(good, digest=None),
                dict(good, digest="sha256:" + "A" * 64), {k: v for k, v in good.items() if k != "variant"}]
     for t in hostile:
         if ok(t):

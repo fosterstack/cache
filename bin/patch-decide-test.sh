@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-009-AC1, REQ-REL-009-AC2, REQ-REL-009-AC3, REQ-REL-009-AC4, REQ-REL-009-AC8, REQ-REL-009-AC11, REQ-REL-009-AC14, REQ-REL-009-AC15, REQ-CHAIN-001-AC6
+# proves: REQ-REL-009-AC1, REQ-REL-009-AC2, REQ-REL-009-AC3, REQ-REL-009-AC4, REQ-REL-009-AC8, REQ-REL-009-AC11, REQ-REL-009-AC14, REQ-REL-009-AC15
 # Rules 61 and 65 (advisor Oct 12): there is no Dockerfile; the base inputs are the committed apko base locks, the melange lock and the archive records listed in
 # .github/policy/base-inputs.json (one list, read by the decide job and by this script); a change in them is the "base input changed" signal, fix-class.
 # The automatic patch-release decision (owner RATIFIED Oct 2; advisor read-backs 0051/0055/0056), offline: commits are
@@ -2328,50 +2328,7 @@ tn_in = "object 0123\ntype commit\ntag v0.2.2\ntagger x <x@x> 1 +0000\n\nPatch r
 r_ = subprocess.run([sys.executable, sys.argv[1], "tag-notes"], input=tn_in, capture_output=True, text=True)
 check("tag-notes: a tag with SIGNED MESSAGE notes text is not accepted as notes (exit 1, nothing printed)",
       r_.returncode == 1 and r_.stdout == "", (r_.returncode, r_.stdout))
-# --- REQ-CHAIN-001-AC6 (advisor Oct 12): the decide job refuses, naming the marker, unless .github/policy/rc-proof.json validates for the commit being tagged
 import shutil
-rp = tempfile.mkdtemp(prefix="rcproof-")
-bindir = os.path.dirname(os.path.abspath(sys.argv[1]))
-def rg(*a): return subprocess.run(["git", "-C", rp, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"] + list(a), check=True, capture_output=True, text=True).stdout.strip()
-rg("init", "-q", "-b", "main")
-for d in (".github/workflows", ".github/policy", "bin", "build/locks"): os.makedirs(os.path.join(rp, d))
-# chain-bytes-sha.py requires these build inputs in every commit it hashes
-for f in ("sealed-env.json", "archive.json", "melange.yaml", "apko.yaml", "locks/fips-module.txt"):
-    open(os.path.join(rp, "build", f), "w").write("fixed\n")
-open(os.path.join(rp, ".github/workflows/release.yml"), "w").write("name: Release\n")
-if os.path.exists(os.path.join(bindir, "chain-bytes-sha.py")): shutil.copy(os.path.join(bindir, "chain-bytes-sha.py"), os.path.join(rp, "bin/chain-bytes-sha.py"))
-else: open(os.path.join(rp, "bin/chain-bytes-sha.py"), "w").write("x\n")
-open(os.path.join(rp, ".github/policy/chain-scripts.json"), "w").write('{"scripts":[{"path":"bin/chain-bytes-sha.py"}]}\n')
-rg("add", "-A"); rg("commit", "-q", "-m", "chain"); rg("tag", "v0.3.0-rc1"); rc_commit = rg("rev-parse", "HEAD")
-bs = subprocess.run([sys.executable, os.path.join(bindir, "chain-bytes-sha.py"), "sha", "--commit", rc_commit, "--repo", rp], capture_output=True, text=True).stdout.strip() or "0" * 64
-keys = ["build", "sign", "rekor", "rebuild"] + ["%s-%s" % (n, r) for r in ("ubuntu-24.04", "ubuntu-24.04-arm") for n in ("scanners", "acceptance", "runtime")] + ["hostile_verdict"]   # the record set chain-bytes-sha.py check-marker requires
-good = {"rc_tag": "v0.3.0-rc1", "run_id": "1234567890", "chain_sha256": bs, "records": {k: "0" * 64 for k in keys}}
-marker = os.path.join(rp, ".github/policy/rc-proof.json")
-def put(m): open(marker, "w").write(m if isinstance(m, str) else json.dumps(m))
-put(good); rg("add", "-A"); rg("commit", "-q", "-m", "marker"); head = rg("rev-parse", "HEAD")
-def rcp(commit=None, mpath=None, extra=()):
-    r = subprocess.run([sys.executable, sys.argv[1], "rc-proof", "--marker", mpath or marker, "--commit", commit or head, "--repo", rp] + list(extra), capture_output=True, text=True)
-    return r.returncode, r.stdout + r.stderr
-rc, msg = rcp(); check("AC6 decide: a marker for the bytes of the commit, with an rc tag that is an ancestor, lets the decision proceed (exit 0)", rc == 0, (rc, msg))
-rc, msg = rcp(mpath=os.path.join(rp, "no-such-marker.json"))
-check("AC6 decide: a missing marker is refused (exit 1), naming the marker, never skipped", rc == 1 and "marker" in msg and "missing" in msg, (rc, msg))
-put("{not json"); rc, msg = rcp(); check("AC6 decide: an unreadable marker is refused", rc == 1 and "marker" in msg, (rc, msg)); put(good)
-open(os.path.join(rp, ".github/workflows/release.yml"), "a").write("# edited\n"); rg("add", "-A"); rg("commit", "-q", "-m", "edit"); edited = rg("rev-parse", "HEAD")
-rc, msg = rcp(edited); check("AC6 decide: a marker for other bytes (a chain file changed since the proof) is refused, naming the bytes", rc == 1 and "marker" in msg and "bytes" in msg, (rc, msg))
-rg("checkout", "-q", "-b", "side", rc_commit); rg("commit", "-q", "--allow-empty", "-m", "side"); rg("tag", "v0.3.0-rc2"); rg("checkout", "-q", "main")
-put(dict(good, rc_tag="v0.3.0-rc2")); rc, msg = rcp(head)
-check("AC6 decide: an rc tag that is not an ancestor of the commit is refused", rc == 1 and "ancestor" in msg, (rc, msg)); put(good)
-put(dict(good, rc_tag="v0.3.0")); rc, msg = rcp(head); check("AC6 decide: a final tag as the rc tag is refused", rc == 1 and "rc_tag" in msg, (rc, msg)); put(good)
-rc, msg = rcp(); check("AC6 decide: the check does not change the repository (the marker file is unchanged)", rc == 0 and json.load(open(marker)) == good, (rc, msg))
-check("AC6 decide: the subcommand refuses without a commit (usage, never a default)", subprocess.run([sys.executable, sys.argv[1], "rc-proof", "--marker", marker], capture_output=True).returncode == 2)
-# the helper runs isolated (-I): a module planted on PYTHONPATH is never imported by it
-plant = tempfile.mkdtemp(prefix="plant-"); seen_ = os.path.join(plant, "seen")
-open(os.path.join(plant, "json.py"), "w").write("import os\nopen(os.environ['PLANT_SEEN'], 'w').close()\n")
-subprocess.run([sys.executable, "-I", sys.argv[1], "rc-proof", "--marker", marker, "--commit", head, "--repo", rp],
-               capture_output=True, env=dict(os.environ, PYTHONPATH=plant, PLANT_SEEN=seen_))
-check("AC6 decide: the rc-proof helper runs isolated: a module on PYTHONPATH is not imported", not os.path.exists(seen_))
-shutil.rmtree(plant, ignore_errors=True)
-shutil.rmtree(rp, ignore_errors=True)
 # ===== REQ-REL-009-AC14 (advisor step 5, Oct 11; owner rule 5 engineering AC): the notes sources are refused outright,
 # never decoded, escaped or rewritten, when a line holds (1) '<' before a letter (any Unicode letter), '/', '!' or '?';
 # (2) a link-reference-definition shape; (3) a character reference; (4) '-----BEGIN '; and (5) two entries whose published

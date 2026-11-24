@@ -56,7 +56,7 @@ def mutate(wfs, how):
     elif how == "persona-uat-asks":
         w["persona-uat.yml"]["jobs"]["extra"] = dict(extra, environment="persona-uat")
     elif how == "live-test-asks":
-        jobs["live-test"]["env"] = dict(jobs["live-test"].get("env") or {}, RELEASE_KMS_KEY_REF="awskms:///alias/x")
+        jobs["live-test-release"]["env"] = dict(jobs["live-test-release"].get("env") or {}, RELEASE_KMS_KEY_REF="awskms:///alias/x")
     elif how == "sign-check-leaves-sign":
         jobs["sign-check"]["environment"] = "release"
     elif how == "sign-check-drops-token":
