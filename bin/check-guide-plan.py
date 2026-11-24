@@ -38,7 +38,7 @@ LOCAL = {"TAG"}     # the placeholder Check fills with a local value
 IMAGE = {"IMAGE_REF", "IMAGE_REF_FIPS"}
 repo = os.environ.get("CANDIDATE_REPOSITORY", "")
 values = {"IMAGE_REF": repo + "@" + digest if repo else "", "IMAGE_REF_FIPS": repo + "@" + digest_fips if repo else "",
-          "TAG": os.environ.get("GITHUB_REF_NAME", "")}
+          "TAG": os.environ.get("GITHUB_REF_NAME", "").removeprefix("release/")}     # on a release branch release/vX.Y.Z: the tag its name carries
 # a filled value is one plain word: ghcr.io/fosterstack/cache@sha256:ab12 yes; "a b" and "$(id)" and "v1\n" no
 SAFE = re.compile(r"[A-Za-z0-9._:/@+-]+")
 # a tag: v0.3.0 and v0.3.0-rc1 yes; v0.3.0-rc.1 and v0.3.0-rc no

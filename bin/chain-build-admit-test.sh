@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-004-AC4, REQ-CHAIN-004-AC5, REQ-CHAIN-004-AC7, REQ-CHAIN-001-AC6, REQ-REL-012-AC7, REQ-REL-009-AC6, REQ-REL-013-AC1, REQ-CHAIN-004-AC21
+# proves: REQ-CHAIN-004-AC4, REQ-CHAIN-004-AC5, REQ-CHAIN-004-AC7, REQ-REL-009-AC6
 # Two signers are admitted (REQ-REL-009-AC6): the owner's SSH key (.github/policy/allowed_signers) on any tag, method `owner-ssh`; and the one release
 # KMS key (the one ssh-rsa line of .github/policy/release_tag_signer, read from origin/main) on a patch tag vX.Y.Z with Z >= 1 only, method `kms-release`.
 # The KMS key here is a fixture RSA key made at test time; the shipped release_tag_signer is never read by this test.
 #
-# Build's first action: bin/build-admit.py keeps every check the old stage-admission.yml made, none dropped.
+# Build's first action: bin/build-admit.py.
 # Needs: bash, git >= 2.34, ssh-keygen, gpg, jq, openssl, python3 + PyYAML. Offline: the git repos, the
 # owner/attacker SSH keys and the web-flow GPG key are made at test time (nothing committed, no network); GitHub is faked by a `gh` on PATH
 # that serves JSON files, `gitsign` and `go` are fakes that log their argv. A real keyless tag is proven only
@@ -18,11 +18,8 @@
 #       The policy inputs come from `git show origin/main:<path>` (allowed_signers, github-web-flow.gpg, required-checks.json,
 #       bin/admission-tag-signer.py, bin/install-scanner.sh), NEVER from the checked-out tagged commit.
 #       GitHub data only through `gh api <PATH>` (GET: no -X/--method/-f/-F/--input), parsing the JSON itself, for PATH
-#         repos/R/commits/SHA/check-runs?filter=latest   (and the same for the merged PR's head sha)
-#         repos/R/commits/SHA/check-runs?filter=all      (every run of a bound context: AC19)
-#         repos/R/actions/runs/ID                        (the workflow run behind a bound check run: path, event, head_sha; AC19)
+#         repos/R/commits/SHA/check-runs?filter=latest
 #         repos/R/commits/SHA/status
-#         repos/R/commits/SHA/pulls
 #       the freeze file freeze/freeze.txt (the `freeze` job's result: `freeze-ok COMMIT BASE`; no Go runs
 #       here); `gitsign verify-tag` with the exact identity flags for a patch route. Exit 0: wrote
 #       admission.json. Exit 1: the first line of stderr is
@@ -37,9 +34,9 @@
 #       `build vcs.revision=<sha>` / `build vcs.modified=true` lines (internal/buildinfo/buildinfo.go:21-59 is what the server reports).
 #       Exit 0 only for module version == the tag and vcs.revision == SHA and not modified; otherwise exit 1 naming
 #       `version` / `revision` / `modified` / `devel`.
-# THE TWELVE CHECKS, in order. Their names match the steps of the old stage-admission.yml, whose names are committed in
-# bin/chain-admission-old-steps.txt. audit-approval is gate 7 (after the on-main check, before the required checks).
-CHECKS="tag-ref tag-syntax policy-from-main tag-annotated tag-signature commit-signature ancestor-of-main audit-approval required-checks baseline rc-proof admission-evidence"
+# THE ELEVEN CHECKS, in order. Their names match the steps of the old stage-admission.yml, whose names are committed in
+# bin/chain-admission-old-steps.txt. owner-decision is what is left of the old audit step (after the on-main check, before the required checks).
+CHECKS="tag-ref tag-syntax policy-from-main tag-annotated tag-signature commit-signature ancestor-of-main owner-decision required-checks baseline admission-evidence"
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 BA="$root/bin/build-admit.py"; BV="$root/bin/build-version-check.py"
@@ -60,7 +57,8 @@ MAP = [
  ("verify the annotated tag signature", ["tag-annotated", "tag-signature"]),
  ("verify the tagged commit signature", ["commit-signature"]),
  ("the tagged commit must be on main", ["ancestor-of-main"]),
- ("a passed whole-release audit", ["audit-approval"]),
+ # the owner's ruling of Nov 23 removed the record and the approval line of this step; its owner-decision hold (REQ-AUD-17-AC5) stays
+ ("a passed whole-release audit", ["owner-decision"]),
  ("every required check green", ["required-checks"]),
  ("an APPROVED, consistent requirements baseline", ["baseline"]),
  ("write canonical admission.json", ["admission-evidence"]),
@@ -97,7 +95,7 @@ r=$(cj "$W/old2.txt" "$CHECKS");
 [ "${r%%|*}" = 1 ] && grep -Fq "brand new admission rule" <<< "$r" && ok "AC5 judge: a new old-stage step with no counterpart is caught" || bad \
     "AC5 judge new step -> $r"
 r=$(cj "$root/bin/chain-admission-old-steps.txt" \
-    "tag-ref tag-syntax policy-from-main tag-annotated tag-signature commit-signature audit-approval required-checks baseline rc-proof admission-evidence");
+    "tag-ref tag-syntax policy-from-main tag-annotated tag-signature commit-signature owner-decision required-checks baseline admission-evidence");
 [ "${r%%|*}" = 1 ] && grep -Fq "ancestor-of-main" <<< "$r" && ok "AC5 judge: a check dropped from list-checks is caught" || bad \
     "AC5 judge dropped check -> $r"
 printf 'uses:actions/setup-go\n' >> "$W/old2.txt";
@@ -120,14 +118,12 @@ sys.exit(0 if got == [l.rstrip("\n") for l in open(sys.argv[2]) if l.strip()] el
 PY
 else ok "AC5 the old stage-admission.yml is gone (PR 2 removed it): the committed snapshot is the record"; fi
   got=$(python3 "$BA" list-checks 2> /dev/null | tr '\n' ' ' | sed 's/ $//' || true)
-  [ "$got" = "$CHECKS" ] && ok "AC5 build-admit.py list-checks is exactly the twelve checks in order" || bad "AC5 list-checks is '$got', wanted '$CHECKS'"
+  [ "$got" = "$CHECKS" ] && ok "AC5 build-admit.py list-checks is exactly the eleven checks in order" || bad "AC5 list-checks is '$got', wanted '$CHECKS'"
   r=$(cj "$root/bin/chain-admission-old-steps.txt" "$got");
   [ "${r%%|*}" = 0 ] && ok "AC5 every step of the old stage-admission.yml has a counterpart in list-checks" || bad "AC5 real comparison -> $r"
 # ---- the version check (REQ-CHAIN-004-AC7): a fake `go version -m` -------------------------------------------------------------
 FB="$W/fakebin"; mkdir -p "$FB"
 SHA=0123456789abcdef0123456789abcdef01234567
-# gate 7: the record commit the fake gh serves for every audit/<sha> branch, and the owner's approval line of it in a signed tag message
-REC=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; APPROVAL="Audit-approved: $REC"
 bi() { printf '%s\n' "$1: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fscache" "	mod	github.com/fosterstack/cache	$2	" \
     "	build	-ldflags=\"-s -w\"" "	build	vcs=git" "	build	vcs.revision=$3" "	build	vcs.modified=$4";
 }
@@ -300,19 +296,10 @@ mkbase() { # base fixture in $W/base: origin.git + repo with main, a signed tagg
   printf 'release@fosterstack ssh-rsa %s\n' "$(cut -d' ' -f2 "$W/keys/kms.pub")" > .github/policy/release_tag_signer
   cp "$W/keys/web.gpg" .github/policy/github-web-flow.gpg
   printf \
-      '{"required_checks":[{"context":"ci","integration_id":15368,"scope":"push"},{"context":"review","integration_id":15368,"scope":"pull_request"}],"promotion_checks":[{"context":"scan","integration_id":15368,"scope":"push"},{"context":"analyze (go)","integration_id":15368,"scope":"push"}]}\n' \
+      '{"required_checks":[{"context":"ci","integration_id":15368,"scope":"push"},{"context":"scan","integration_id":15368,"scope":"push"}]}\n' \
       > .github/policy/required-checks.json
-  printf '{"required_checks":[{"context":"allowlist-chain","integration_id":15368,"scope":"push"}]}\n' > .github/policy/release-only-checks.json
   cp "$root/bin/admission-tag-signer.py" "$root/bin/build-admit.py" bin/; printf '#!/bin/sh\nexit 0\n' > bin/install-scanner.sh
-  # gate 7: main's judge, its helper and the writers policy (build-admit.py reads them from origin/main, never from the tagged commit)
-  cp "$root/bin/audit-record.py" "$root/bin/audit-record-judge.sh" bin/; cp "$root/.github/policy/audit-writers.json" .github/policy/
-  # commit A: the chain files (release.yml, the listed script bin/chain-bytes-sha.py, the policy files) and the release candidate tag on it
-  mkdir -p .github/workflows; printf 'name: Release\n' > .github/workflows/release.yml
-  cp "$root/bin/chain-bytes-sha.py" bin/ 2> /dev/null || printf 'x\n' > bin/chain-bytes-sha.py
-  printf '{"scripts":[{"path":"bin/chain-bytes-sha.py"}]}\n' > .github/policy/chain-scripts.json
-  mkdir -p build/locks
-  for f in sealed-env.json archive.json melange.yaml apko.yaml locks/fips-module.txt; do printf 'x\n' > "build/$f"; done
-  git add -A; git commit -q -S -m "chain files"; git tag v0.3.0-rc1; C_A=$(git rev-parse HEAD)
+  cp "$root/bin/audit-record.py" bin/      # owner-decision: main's open-item logic (build-admit.py reads it from origin/main, never from the tagged commit)
   cat > requirements/requirements.yaml <<'YAML'
 requirements:
   - id: REQ-REL-004
@@ -327,38 +314,20 @@ YAML
     > requirements/releases/v0.3.0.yaml
   printf 'release_blocking_acs:\n  - {id: REQ-REL-004-AC1, method: unit, phase: candidate}\n' >> requirements/releases/v0.3.0.yaml
   printf 'module x\n' > tools/requirements/go.mod
-  # commit B: the marker, for the chain bytes of commit A (the record digests are not read by admission: they were verified when the marker was merged)
-  python3 - "$root" "$C_A" > .github/policy/rc-proof.json <<'PY'
-import json, subprocess, sys
-root, a = sys.argv[1:3]
-r = subprocess.run([sys.executable, root + "/bin/chain-bytes-sha.py", "sha", "--commit", a, "--repo", "."], capture_output=True, text=True)
-sha = r.stdout.strip() or "0" * 64
-keys = ["build", "sign", "rekor", "rebuild", "scanners-ubuntu-24.04", "acceptance-ubuntu-24.04", "runtime-ubuntu-24.04", "scanners-ubuntu-24.04-arm", "acceptance-ubuntu-24.04-arm", "runtime-ubuntu-24.04-arm", "hostile_verdict"]
-print(json.dumps({"rc_tag": "v0.3.0-rc1", "run_id": "1234567890", "chain_sha256": sha, "records": {k: "0" * 64 for k in keys}}, indent=1, sort_keys=True))
-PY
-  git add -A; git commit -q -S -m "release prep"; git push -q origin main 2> /dev/null; git push -q origin refs/tags/v0.3.0-rc1 2> /dev/null; git fetch -q origin
-  git tag -s -m "v0.3.0" -m "$APPROVAL" v0.3.0; git push -q origin refs/tags/v0.3.0 2> /dev/null
+  git add -A; git commit -q -S -m "release prep"; git push -q origin main 2> /dev/null; git fetch -q origin
+  git tag -s -m "v0.3.0" v0.3.0; git push -q origin refs/tags/v0.3.0 2> /dev/null
   cd "$root"
 }
-gh_fixtures() { # gh_fixtures DIR SHA  (all green; the merged PR is #7 with head PRHEAD)
-  mkdir -p "$1"; local sha=$2 ph=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-  python3 - "$1" "$sha" "$ph" <<'PY'
+gh_fixtures() { # gh_fixtures DIR SHA  (all green)
+  mkdir -p "$1"; local sha=$2
+  python3 - "$1" "$sha" <<'PY'
 import json, sys
-d, sha, ph = sys.argv[1:4]
-def url(rid): return "https://github.com/fosterstack/cache/actions/runs/%d/job/1" % rid
+d, sha = sys.argv[1:3]
 def w(path, obj): open(d + "/" + path.replace("/", "_") + ".json", "w").write(json.dumps(obj))
 w("repos/fosterstack/cache/commits/%s/check-runs" % sha,
   {"check_runs": [{"name": "ci", "conclusion": "success", "app": {"id": 15368}, "id": 11, "head_sha": sha},
-                  {"name": "allowlist-chain", "conclusion": "success", "app": {"id": 15368}, "id": 15, "head_sha": sha, "details_url": url(9015)},
-                  {"name": "scan", "conclusion": "success", "app": {"id": 15368}, "id": 16, "head_sha": sha, "details_url": url(9016)},
-                  {"name": "analyze (go)", "conclusion": "success", "app": {"id": 15368}, "id": 17, "head_sha": sha, "details_url": url(9017)}]})
-for rid, wf in ((9015, "full-suite.yml"), (9016, "scan.yml"), (9017, "codeql.yml")):  # the workflow runs behind the bound checks
-    w("repos/fosterstack/cache/actions/runs/%d" % rid, {"path": ".github/workflows/" + wf, "event": "schedule", "head_sha": sha})
+                  {"name": "scan", "conclusion": "success", "app": {"id": 15368}, "id": 16, "head_sha": sha}]})
 w("repos/fosterstack/cache/commits/%s/status" % sha, {"statuses": [{"context": "legacy", "state": "success", "id": 5}]})
-w("repos/fosterstack/cache/commits/%s/pulls" % sha,
-  [{"number": 7, "merge_commit_sha": sha, "base": {"ref": "main"}, "merged_at": "2026-10-01T00:00:00Z", "head": {"sha": ph}}])
-w("repos/fosterstack/cache/commits/%s/check-runs" % ph,
-  {"check_runs": [{"name": "review", "conclusion": "success", "app": {"id": 15368}, "id": 12, "head_sha": ph}]})
 PY
 }
 cat > "$FB/gh" <<'EOF'
@@ -373,29 +342,6 @@ for a in "$@"; do case "$a" in
   *) [ -n "$path" ] || path=$a;;
 esac; done
 base=${path%%\?*}
-# gate 7: the passed-audit record for ANY tagged sha, shaped by AUDIT_MODE (default good): good, missing (404), apierr (502), unverified,
-# stranger (an author who is not a writer), stale (a parent that is not the tagged commit)
-case "$base" in
-  repos/fosterstack/cache/git/ref/heads/audit/*)
-    echo "${base##*/}" > "$GH_FIXTURES/.audit-sha"
-    case "${AUDIT_MODE:-good}" in
-      missing) echo "gh: Not Found (HTTP 404)" >&2; exit 1;;
-      apierr) echo "gh: Bad Gateway (HTTP 502)" >&2; exit 1;;
-    esac
-    printf '{"ref":"refs/heads/audit/%s","object":{"sha":"%s","type":"commit"}}\n' "${base##*/}" "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"; exit 0;;
-  repos/fosterstack/cache/commits/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)
-    python3 - "$(cat "$GH_FIXTURES/.audit-sha")" "${AUDIT_MODE:-good}" <<'PY'
-import json, sys
-tagged, mode = sys.argv[1:3]
-bot = {"login": "fosterstack-automation[bot]", "id": 333151817, "type": "Bot"}
-c = {"sha": "b" * 40, "parents": [{"sha": "c" * 40 if mode == "stale" else tagged}], "files": [{"filename": "audit-record", "status": "added"}],
-     "commit": {"message": "audit record", "verification": {"verified": mode != "unverified", "reason": "valid"}},
-     "author": {"login": "someone", "id": 1, "type": "User"} if mode == "stranger" else bot,
-     "committer": {"login": "web-flow", "id": 19864447, "type": "User"}}
-print(json.dumps(c))
-PY
-    exit 0;;
-esac
 f="$GH_FIXTURES/$(printf '%s' "$base" | tr '/' '_').json"
 [ -f "$f.fail" ] && { echo "gh: Internal Server Error (HTTP 500)" >&2; exit 1; }
 [ -f "$f" ] || { echo "no fixture for $path" >&2; exit 1; }
@@ -415,7 +361,7 @@ BAPROD=$BA
 mkba() { # mkba OUT [NAME=PATH...] : the copy, with the given paths in place of the defaults;
   # every TEST-SUBST line must get one
   python3 - "$BAPROD" "$1" GIT="$(command -v git)" GH="$FB/gh" GPG="$(command -v gpg)" GPGCONF="$(command -v gpgconf)" \
-    SSH_KEYGEN="$(command -v ssh-keygen)" PYTHON3="$(command -v python3)" BASH="$(command -v bash)" "${@:2}" <<'PY'
+    SSH_KEYGEN="$(command -v ssh-keygen)" PYTHON3="$(command -v python3)" "${@:2}" <<'PY'
 import re, sys
 src, out = sys.argv[1:3]
 subst = dict(a.split("=", 1) for a in sys.argv[3:])
@@ -495,10 +441,10 @@ commit_move() { # commit_move KEYMODE MSG : a new commit on main (signed per KEY
   G push -q origin HEAD:main 2> /dev/null; G fetch -q origin 2> /dev/null; }
 retag() { # retag KIND : move v0.3.0 to HEAD. KIND owner|attacker|none (annotated unsigned)|light
   G tag -d v0.3.0 > /dev/null; case "$1" in
-    owner) G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.0 -m "$APPROVAL" v0.3.0 ;;
-    attacker) G -c user.signingkey="$W/keys/attacker" tag -s -m v0.3.0 -m "$APPROVAL" v0.3.0 ;;
-    kms) G -c user.signingkey="$W/keys/kms" tag -s -m v0.3.0 -m "$APPROVAL" v0.3.0 ;;
-    none) G tag -a -m v0.3.0 -m "$APPROVAL" v0.3.0 ;;
+    owner) G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.0 v0.3.0 ;;
+    attacker) G -c user.signingkey="$W/keys/attacker" tag -s -m v0.3.0 v0.3.0 ;;
+    kms) G -c user.signingkey="$W/keys/kms" tag -s -m v0.3.0 v0.3.0 ;;
+    none) G tag -a -m v0.3.0 v0.3.0 ;;
     light) G tag v0.3.0 ;;
   esac; }
 # ---- fixture self-checks: the inputs are what the cases claim they are (so a refusal is about the claimed cause) -----------------
@@ -538,13 +484,13 @@ if [ -f "$W/c/repo/admission.json" ]; then
       "AC4 admission.json is not canonical"
   jq -e '.tag=="v0.3.0" and .sha=="'"$SHAC"'" and (.tag_signature.method=="owner-ssh") and (.tag_signature.principal|length>0)
          and (.tag_signature.key_fingerprint|startswith("SHA256:")) and (.commit_signature=="owner-ssh")
-         and (.required_checks|length==3) and (.informational_statuses|length==1) and .baseline_version=="v0.3.0"
+         and (.required_checks|length==2) and (.informational_statuses|length==1) and .baseline_version=="v0.3.0"
          and (.baseline=="requirements/releases/v0.3.0.yaml") and (.run.id==1) and (.run.attempt==1)' "$A" > /dev/null \
     && ok \
-        "AC4 admission.json records the tag, sha, signer evidence, the three verified checks (ci, review and the release-only allowlist-chain) with their sources, the informational statuses, the baseline and the run" \
+        "AC4 admission.json records the tag, sha, signer evidence, the two verified checks (ci and scan) with their source, the informational statuses, the baseline and the run" \
         || bad "AC4 admission.json content: $(head -c 300 "$A")"
-  jq -e '[.required_checks[].source]|sort==["check-run-on-merged-pr-head","check-run-on-tagged-sha","check-run-on-tagged-sha"]' "$A" > /dev/null && ok \
-      "AC4 the three checks are recorded with their evidence source: ci and allowlist-chain on the tagged sha, review on the merged PR head" || bad "AC4 required_checks sources"
+  jq -e '[.required_checks[].source]==["check-run-on-tagged-sha","check-run-on-tagged-sha"]' "$A" > /dev/null && ok \
+      "AC4 the two checks are recorded with their evidence source: the tagged sha" || bad "AC4 required_checks sources"
   ! grep -rq SENTINEL-GH-TOKEN "$A" "$W/c/out" "$W/c/err" && ok "AC4 the GitHub token appears in no output or evidence" || bad \
       "AC4 the token leaked into output"
   cp "$A" "$W/c/first.json";
@@ -552,8 +498,8 @@ if [ -f "$W/c/repo/admission.json" ]; then
   run_admit;
   cmp -s "$W/c/first.json" "$A" && ok "AC4 admission.json is byte-identical on a second run (deterministic)" || bad \
       "AC4 admission.json differs between runs"
-  ! grep -qE 'NON-GET' "$W/c/calls.log" && [ "$(grep -c '^gh api .*repos/fosterstack/cache/commits/' "$W/c/calls.log")" -ge 4 ] && ! grep -vq '^gh api ' < <(grep '^gh ' "$W/c/calls.log") && ok \
-      "AC4 every GitHub call is a GET of the commits API (at least the four reads: checks and statuses and pulls of the tagged commit, checks of the PR head)" \
+  ! grep -qE 'NON-GET' "$W/c/calls.log" && [ "$(grep -c '^gh api .*repos/fosterstack/cache/commits/' "$W/c/calls.log")" -ge 2 ] && ! grep -vq '^gh api ' < <(grep '^gh ' "$W/c/calls.log") && ok \
+      "AC4 every GitHub call is a GET of the commits API (at least the two reads: checks and statuses of the tagged commit)" \
       || bad \
       "AC4 gh calls are not exactly GETs of the commits API (count $(grep -c '^gh api' "$W/c/calls.log")): $(grep NON-GET "$W/c/calls.log" | head -1)"
 else
@@ -563,7 +509,7 @@ else
 fi
 # fixed program paths: the real file holds absolute paths, so a `git` first on PATH is never run by it
 badpath=
-for c in GIT GH GPG GPGCONF SSH_KEYGEN PYTHON3 BASH; do
+for c in GIT GH GPG GPGCONF SSH_KEYGEN PYTHON3; do
   grep -Eq "^$c = \"/[^\"]+\" +# TEST-SUBST$" "$BAPROD" || badpath="$badpath $c"
 done
 [ -z "$badpath" ] && ok "AC4 build-admit.py holds an absolute path for every program it runs (none is found on PATH)" \
@@ -580,7 +526,7 @@ expect_refuse "AC4 the real file run with a fake git first on PATH uses the real
   && ok "AC4 the script makes no network call of its own (only gh api)" || bad \
     "AC4 build-admit.py calls the network itself"
 # ---- tag-ref, tag-syntax ---------------------------------------------------------------------------------------------------------
-fresh; run_admit GITHUB_REF=refs/heads/main;                  expect_refuse "AC4 a branch ref is refused (tag pushes only)" tag-ref
+fresh; run_admit GITHUB_REF=refs/heads/main;                  expect_refuse "AC4 a branch ref that is no release/vX.Y.Z branch is refused" tag-ref
 fresh; run_admit GITHUB_REF= GITHUB_REF_NAME=;                 expect_refuse "AC4 an empty ref is refused" tag-ref
 for t in v1.2 v1.2.3-rc V0.3.0 "v0.3.0 " \
     v0.3.0-rc.x 0.3.0 v0.3.0-rc.1-x v0.3.0-rc.1 v0.3.0-RC1 v0.3.0-rc1x v0.3.0rc1 v0.3.0-rc1-rc1 \
@@ -609,6 +555,13 @@ RC=0;
 fresh; run_admit "GH_TOKEN="
 { [ "$RC" = 2 ] && grep -q GH_TOKEN "$W/c/err" && ! grep -q Traceback "$W/c/err" && ! grep -q '^gh ' "$W/c/calls.log";
 } && ok "AC8 admission without the GH_TOKEN its step hands it is an environment error (exit 2) naming the variable, before any GitHub call" || bad "AC8 a missing GH_TOKEN was not refused as an environment error: exit $RC"
+# ---- a release branch: release/vX.Y.Z is admitted as the version vX.Y.Z; it has no tag object, so no tag signature is recorded ----------
+fresh; G branch -q -f release/v0.3.0 HEAD; run_admit GITHUB_REF=refs/heads/release/v0.3.0 GITHUB_REF_NAME=release/v0.3.0
+expect_ok "AC4 a push of the branch release/v0.3.0 at an owner-signed commit on main with green checks and an approved baseline is admitted"
+jq -e '.tag=="v0.3.0" and .sha=="'"$SHAC"'" and (has("tag_signature")|not) and (.commit_signature=="owner-ssh") and (.required_checks|length==2)
+       and .baseline_version=="v0.3.0" and (.baseline=="requirements/releases/v0.3.0.yaml")' "$W/c/repo/admission.json" > /dev/null 2>&1 \
+  && ok "AC4 admission.json of a release branch records the version in the branch name as the tag, and no tag_signature" \
+  || bad "AC4 release branch admission.json content: $(head -c 300 "$W/c/repo/admission.json" 2> /dev/null)"
 # ---- policy-from-main -------------------------------------------------------------------------------------------------------------
 fresh;
 G checkout -q -b feature v0.3.0 2> /dev/null;
@@ -632,7 +585,6 @@ rm -rf "$W/c/gh";
 mkdir -p "$W/c/gh";
 echo '{"check_runs":[]}' > "$W/c/gh/repos_fosterstack_cache_commits_${WEAK}_check-runs.json";
 echo '{"statuses":[]}' > "$W/c/gh/repos_fosterstack_cache_commits_${WEAK}_status.json";
-echo '[]' > "$W/c/gh/repos_fosterstack_cache_commits_${WEAK}_pulls.json"
 run_admit;
 expect_refuse \
     "AC4 a required-checks list weakened in the TAGGED commit does not weaken the gate (policy comes from origin/main, not the tagged commit)" \
@@ -642,7 +594,7 @@ fresh; retag light; run_admit;   expect_refuse "AC4 a lightweight tag is refused
 fresh; retag none; run_admit;    expect_refuse "AC4 an unsigned annotated tag is refused" tag-signature
 fresh; retag attacker; run_admit; expect_refuse "AC4 a tag signed by a key that is not in main's allowed signers is refused" tag-signature
 # a keyless patch tag and a keyless minor tag are refused at tag-signature, and gitsign is never run; an
-# owner-signed patch tag passes this check and meets the later ones (the rc-proof cases below)
+# owner-signed patch tag passes this check and meets the later ones
 fresh; patch_tag v0.3.1; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
 expect_refuse "AC4 a keyless patch tag is refused at tag-signature: no keyless route is left" tag-signature keyless
 grep -q 'gitsign' "$W/c/calls.log" 2> /dev/null && bad "AC4 gitsign was run for a keyless patch tag" || ok "AC4 gitsign is never run, not even to look at a keyless patch tag"
@@ -702,34 +654,9 @@ retag owner;
 gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)";
 run_admit
 expect_refuse "AC4 a tagged commit that is not an ancestor of origin/main is refused" ancestor-of-main
-# ---- audit-approval (gate 7, REQ-REL-012-AC7): a non-patch tag needs the whole-release record and the owner's Audit-approved line ------------
-# the judge is main's (policy-from-main style); a patch tag reads nothing; every other outcome of the judge is a refusal
-sig_tag() { # sig_tag NAME [MESSAGE-PARAGRAPH...] : an owner-signed annotated tag on HEAD with the given message paragraphs (none: the title only)
-  local name=$1; shift; local m=(-m "$name"); for x in "$@"; do m+=(-m "$x"); done
-  G tag -d "$name" > /dev/null 2>&1 || true; G -c user.signingkey="$W/keys/owner" tag -s "${m[@]}" "$name"; }
-audit_calls() { grep -c 'git/ref/heads/audit/' "$W/c/calls.log" || true; }
-fresh; run_admit AUDIT_MODE=good
-expect_ok "AC7 a non-patch tag with the passed-audit record and the owner's approval line naming it is admitted"
-[ "$(audit_calls)" = 1 ] && grep -Fq "gh api repos/fosterstack/cache/commits/$REC" "$W/c/calls.log" && ok \
-    "AC7 the record of the tagged commit is read through the API: the branch audit/<tagged sha>, then its commit" || bad \
-    "AC7 the record reads: $(grep audit "$W/c/calls.log" | tr '\n' ' ')"
-fresh; run_admit AUDIT_MODE=missing
-expect_refuse "AC7 a non-patch tag with no record branch is refused" audit-approval
-! grep -rq SENTINEL-GH-TOKEN "$W/c/out" "$W/c/err" && ok "AC7 the token is in no output of a refused audit check" || bad "AC7 the token leaked"
-fresh; run_admit AUDIT_MODE=apierr
-expect_refuse "AC7 a GitHub API error while reading the record is a refusal (it says so; it is never a pass)" audit-approval "API error"
-fresh; run_admit AUDIT_MODE=unverified;  expect_refuse "AC7 an unverified record commit is refused" audit-approval
-fresh; run_admit AUDIT_MODE=stranger;    expect_refuse "AC7 a record written by anyone but a named writer is refused" audit-approval
-fresh; run_admit AUDIT_MODE=stale;       expect_refuse "AC7 a record whose parent is not the tagged commit is refused" audit-approval
-fresh; sig_tag v0.3.0;                   run_admit; expect_refuse "AC7 a tag with no Audit-approved line is refused, though the record is good" audit-approval Audit-approved
-fresh; sig_tag v0.3.0 "$APPROVAL" "$APPROVAL"; run_admit
-expect_refuse "AC7 a tag with two Audit-approved lines is refused (an ambiguous approval is none)" audit-approval Audit-approved
-fresh; sig_tag v0.3.0 "Audit-approved: dddddddddddddddddddddddddddddddddddddddd"; run_admit
-expect_refuse "AC7 an approval line that names another commit than the record is refused" audit-approval
-fresh; sig_tag v0.3.0 "audit-approved: $REC"; run_admit
-expect_refuse "AC7 an approval line in the wrong case is refused" audit-approval Audit-approved
-# an owner-decision item (Critical / KEV acceptance) on main holds release authorization (REQ-AUD-17-AC5): main's judge reads
-# .auditor/accepted-items.json of the admission root, so the file must be on origin/main itself, not in the working tree
+# ---- owner-decision (REQ-AUD-17-AC5): an open owner-decision item on main holds every release, on a tag and on a release branch -----------
+# main's bin/audit-record.py (held) reads .auditor/accepted-items.json of the admission root, so the file must be on origin/main itself, not in
+# the working tree; no record and no tag message is read
 accepted_on_main() { # accepted_on_main THRESHOLD : commit the file to main, then tag and fixtures follow the new head
   mkdir -p "$W/c/repo/.auditor"
   printf '{"accepted_items":[{"cve":"CVE-2099-1","severity":"Critical","package":"p","threshold":"%s","owner_issue":1,"expiry":"2099-01-01"}]}\n' \
@@ -737,7 +664,11 @@ accepted_on_main() { # accepted_on_main THRESHOLD : commit the file to main, the
   G add .auditor/accepted-items.json; commit_move owner "accepted items"; retag owner
   gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; }
 fresh; accepted_on_main at_or_above; run_admit
-expect_refuse "REQ-AUD-17-AC5 an open owner-decision item on main refuses admission at audit-approval" audit-approval "owner-decision"
+expect_refuse "REQ-AUD-17-AC5 an open owner-decision item on main refuses admission at owner-decision" owner-decision "owner-decision"
+fresh; accepted_on_main at_or_above; G branch -q -f release/v0.3.0 HEAD
+run_admit GITHUB_REF=refs/heads/release/v0.3.0 GITHUB_REF_NAME=release/v0.3.0
+expect_refuse "REQ-AUD-17-AC5 an open owner-decision item on main refuses a push of the branch release/v0.3.0 at owner-decision" owner-decision \
+  "owner-decision"
 fresh; accepted_on_main below; run_admit
 expect_ok "REQ-AUD-17-AC5 a below-threshold item on main holds nothing: the tag is admitted"
 fresh; run_admit
@@ -750,7 +681,8 @@ if [ -n "$(G ls-tree --name-only origin/main -- .auditor/accepted-items.json)" ]
   ok "fixture: main lists the accepted-items file but its blob cannot be read"
 else bad "fixture: the accepted-items blob is still readable (or main does not list the file)"; fi
 run_admit
-expect_refuse "REQ-AUD-17-AC5 an accepted-items file that main lists but cannot be read is refused at audit-approval, naming it" audit-approval ".auditor/accepted-items.json"
+expect_refuse "REQ-AUD-17-AC5 an accepted-items file that main lists but cannot be read is refused at owner-decision, naming it" owner-decision \
+  ".auditor/accepted-items.json"
 # the hold is main's, never the tagged commit's: the tagged commit (an older commit on main) carries a copy of the file with no open
 # item, main later makes the file hold an at_or_above item without moving the tag; the tagged copy must not drop main's hold
 fresh; accepted_on_main below; TAGGED=$(G rev-parse HEAD)
@@ -765,113 +697,38 @@ if [[ "$tagged_copy" == *'"below"'* && "$tagged_copy" != *at_or_above* && "$main
   ok "fixture: the tagged commit's accepted-items copy has no open item, origin/main's (a later commit) holds an at_or_above one"
 else bad "fixture: the tagged commit's accepted-items copy and origin/main's are not as the case claims"; fi
 run_admit
-expect_refuse "REQ-AUD-17-AC5 the open owner-decision item in origin/main's accepted-items file holds the release though the tagged commit's own copy has none" audit-approval "owner-decision"
-# release candidates are held to the same rule, in the chain's -rcN form (and -rc.N is not a chain tag at all)
-fresh; sig_tag v0.3.0-rc1; run_admit GITHUB_REF=refs/tags/v0.3.0-rc1 GITHUB_REF_NAME=v0.3.0-rc1
-expect_refuse "AC7 a release candidate tag with no approval line is refused at audit-approval" audit-approval Audit-approved
-fresh; sig_tag v0.3.0-rc1 "$APPROVAL"; run_admit GITHUB_REF=refs/tags/v0.3.0-rc1 GITHUB_REF_NAME=v0.3.0-rc1 AUDIT_MODE=missing
-expect_refuse "AC7 a release candidate tag with the line but no record is refused at audit-approval" audit-approval
-fresh; sig_tag v0.3.0-rc1 "$APPROVAL"; run_admit GITHUB_REF=refs/tags/v0.3.0-rc1 GITHUB_REF_NAME=v0.3.0-rc1
-[ "$RC" = 1 ] && ! grep -q 'audit-approval' "$W/c/err" && [ "$(audit_calls)" = 1 ] && ok \
-    "AC7 a release candidate tag with record and line passes audit-approval (the record is read) and meets the later checks" || bad \
-    "AC7 rc with record and line -> exit $RC: $(head -1 "$W/c/err")"
-# patch tags (vX.Y.Z, Z >= 1) need neither: the owner-signed tag carries no line, the API would fail, and nothing is read
-for t in v0.3.1 v0.3.12; do
-  fresh; sig_tag "$t"; run_admit GITHUB_REF="refs/tags/$t" GITHUB_REF_NAME="$t" AUDIT_MODE=apierr
-  [ "$RC" = 1 ] && ! grep -q 'audit-approval' "$W/c/err" && [ "$(audit_calls)" = 0 ] && ok \
-      "AC7 the patch tag $t, with no approval line and a failing API, passes audit-approval without reading any record (it meets the later checks)" || bad \
-      "AC7 patch tag $t -> exit $RC, first line '$(head -1 "$W/c/err")', record reads $(audit_calls)"
-done
-fresh; sig_tag v0.3.0; run_admit AUDIT_MODE=good GITHUB_REF_NAME=v0.3.0
-expect_refuse "AC7 v0.3.0 is not a patch tag: with a good record and no approval line it is refused at audit-approval" audit-approval Audit-approved
-fresh; sig_tag v0.3.1 "$APPROVAL"; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
-[ "$(audit_calls)" = 0 ] && ok "AC7 a patch tag with an approval line anyway still reads no record" || bad "AC7 a patch tag read the record"
-# order: after the on-main check, before the required checks
-fresh; G checkout -q -b side v0.3.0 2> /dev/null; G -c user.signingkey="$W/keys/owner" commit -q -S --allow-empty -m side; retag owner
-gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; run_admit AUDIT_MODE=missing
-expect_refuse "AC7 order: a commit that is not on main is refused at ancestor-of-main before any record is read" ancestor-of-main
-[ "$(audit_calls)" = 0 ] && ok "AC7 order: no record was read for it" || bad "AC7 order: the record was read before the on-main check"
-fresh; edit_gh_red() { rm -f "$W/c/gh"/*check-runs.json; }; edit_gh_red; run_admit AUDIT_MODE=missing
-expect_refuse "AC7 order: with the record missing and the required checks gone, audit-approval refuses first" audit-approval
-# main's judge, never the tagged commit's: a judge planted in the tagged tree that passes everything and leaves a mark is not run
-fresh; rm -f "$W/pwned-judge"
-printf '#!/usr/bin/env bash\ntouch %s\nexit 0\n' "$W/pwned-judge" > "$W/c/repo/bin/audit-record-judge.sh"
-printf 'import sys\nsys.exit(0)\n' > "$W/c/repo/bin/audit-record.py"
-G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "planted judge"; PLANT=$(G rev-parse HEAD)
-G checkout -q "$SHAC" -- bin/audit-record-judge.sh bin/audit-record.py; G -c user.signingkey="$W/keys/owner" commit -q -S -m "judge restored on main"
+expect_refuse "REQ-AUD-17-AC5 the open owner-decision item in origin/main's accepted-items file holds the release though the tagged commit's own copy has none" \
+  owner-decision "owner-decision"
+# main's open-item logic, never the tagged commit's: an audit-record.py planted in the tagged tree that passes everything and leaves a mark
+# is not run, and main's copy still holds the release
+fresh; accepted_on_main at_or_above; rm -f "$W/pwned-held"
+printf 'import pathlib, sys\npathlib.Path("%s").touch()\nsys.exit(0)\n' "$W/pwned-held" > "$W/c/repo/bin/audit-record.py"
+G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "planted open-item logic"; PLANT=$(G rev-parse HEAD)
+G checkout -q "$SHAC" -- bin/audit-record.py; G -c user.signingkey="$W/keys/owner" commit -q -S -m "open-item logic restored on main"
 G push -q origin HEAD:main 2> /dev/null; G fetch -q origin 2> /dev/null
-G checkout -q --detach "$PLANT"; retag owner; gh_fixtures "$W/c/gh" "$PLANT"; run_admit AUDIT_MODE=missing
-[ ! -e "$W/pwned-judge" ] && ok "AC7 the tagged commit's own judge is never run" || bad "AC7 the tagged commit's judge ran"
-expect_refuse "AC7 with the judge replaced in the tagged tree, the record check is still main's: no record, refused" audit-approval
-# mutants of build-admit.py: each breaks the gate one way; the case that refuses on the real file must NOT refuse on the mutant
-mutate() { # mutate OUT OLD NEW : a copy of build-admit.py with OLD (exactly once) replaced by NEW
-  python3 - "$BA" "$1" "$2" "$3" <<'PY'
-import sys
-src, out, old, new = sys.argv[1:5]
-t = open(src).read()
-if t.count(old) != 1:
-    sys.exit("mutation anchor found %d times: %s" % (t.count(old), old))
-open(out, "w").write(t.replace(old, new))
-PY
-}
-BA_REAL=$BA
-mutant_escapes() { # mutant_escapes LABEL OLD NEW [ENV...] : the mutant admits the state the real file refuses (the current case repo, fresh already made)
-  local label=$1 old=$2 new=$3; shift 3
-  if ! mutate "$W/mutant.py" "$old" "$new" 2> "$W/mutant.err"; then bad "AC7 mutant $label: $(head -c 150 "$W/mutant.err")"; return; fi
-  BA="$W/mutant.py"; run_admit "$@"; BA=$BA_REAL
-  [ "$RC" = 0 ] && ok "AC7 mutant caught: $label (the mutant admits what the real script refuses)" || bad "AC7 mutant NOT caught: $label -> exit $RC, $(head -1 "$W/c/err")"
-}
-rm -f "$W/pwned-judge"
-mutant_escapes "the judge read from the tagged commit instead of origin/main" '    for path in AUDIT_FILES:
-        data = git_show("origin/main:" + path)' '    for path in AUDIT_FILES:
-        data = git_show(ctx.sha + ":" + path)' AUDIT_MODE=missing
-[ -e "$W/pwned-judge" ] && ok "AC7 the planted judge of the tagged tree does run in that mutant (the case above is a real probe)" || bad "AC7 the planted judge did not run in the mutant"
-fresh; mutant_escapes "the audit-approval check not called" '        check_audit_approval(ctx)
-' '' AUDIT_MODE=missing
-fresh; mutant_escapes "a judge refusal or API error swallowed" '    why = one_line(text(out) or text(err), 300)
-' '    why = one_line(text(out) or text(err), 300)
-    rc = 0
-' AUDIT_MODE=apierr
-fresh; mutant_escapes "the record never read (an approval line alone is enough)" '    judge = os.path.join(root, AUDIT_FILES[0])' '    return
-    judge = os.path.join(root, AUDIT_FILES[0])' AUDIT_MODE=missing
-fresh; edit_gh_red
-if mutate "$W/mutant.py" '        check_audit_approval(ctx)
-        check_required_checks(ctx)' '        check_required_checks(ctx)
-        check_audit_approval(ctx)' 2> "$W/mutant.err"; then
-  BA="$W/mutant.py"; run_admit AUDIT_MODE=missing; BA=$BA_REAL
-  [ "$RC" = 1 ] && ! grep -q '^admission refused at audit-approval' "$W/c/err" && ok "AC7 mutant caught: audit-approval moved after the required checks (the order case refuses elsewhere)" \
-    || bad "AC7 mutant NOT caught: order -> exit $RC, $(head -1 "$W/c/err")"
-else bad "AC7 mutant order: $(head -c 150 "$W/mutant.err")"; fi
-# main's copies must exist: a main that lacks the judge refuses (a missing judge is never a pass)
-fresh; G checkout -q main; G rm -q bin/audit-record-judge.sh; G -c user.signingkey="$W/keys/owner" commit -q -S -m "no judge on main"
+G checkout -q --detach "$PLANT"; retag owner; gh_fixtures "$W/c/gh" "$PLANT"; run_admit
+[ ! -e "$W/pwned-held" ] && ok "REQ-AUD-17-AC5 the tagged commit's own audit-record.py is never run" || bad "REQ-AUD-17-AC5 the tagged commit's audit-record.py ran"
+expect_refuse "REQ-AUD-17-AC5 with audit-record.py replaced in the tagged tree, the open item is still judged by main's copy: refused" \
+  owner-decision "owner-decision"
+# main's copy must exist: a main that lacks audit-record.py refuses (a missing judge is never a pass)
+fresh; G checkout -q main; G rm -q bin/audit-record.py; G -c user.signingkey="$W/keys/owner" commit -q -S -m "no open-item logic on main"
 G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null; retag owner; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; run_admit
-expect_refuse "AC7 a main without audit-record-judge.sh is a refusal at audit-approval, naming it" audit-approval audit-record-judge.sh
-# ---- required-checks (push scope, pull_request scope, app pin, statuses) -----------------------------------------------------------------
+expect_refuse "REQ-AUD-17-AC5 a main without bin/audit-record.py is a refusal at owner-decision, naming it" owner-decision audit-record.py
+# ---- required-checks (app pin, statuses) -----------------------------------------------------------------
 edit_gh() { python3 - "$W/c/gh" "$1" <<'PY'
 import glob, json, sys
 d, mode = sys.argv[1], sys.argv[2]
 for f in glob.glob(d + "/*"):
     j = json.load(open(f)); n = f.rsplit("/", 1)[1]
-    if mode == "no-push" and "check-runs" in n and "aaaaaaaa" not in n: j["check_runs"] = []
-    if mode == "wrong-app" and "check-runs" in n and "aaaaaaaa" not in n: j["check_runs"][0]["app"]["id"] = 99
-    if mode == "failed" and "check-runs" in n and "aaaaaaaa" not in n: j["check_runs"][0]["conclusion"] = "failure"
-    if mode == "no-pr" and n.endswith("pulls.json"): j = []
-    if mode == "pr-mismatch" and n.endswith("pulls.json"): j[0]["merge_commit_sha"] = "b" * 40
-    if mode == "pr-not-main" and n.endswith("pulls.json"): j[0]["base"]["ref"] = "other"
-    if mode == "pr-unmerged" and n.endswith("pulls.json"): j[0]["merged_at"] = None
-    if mode == "pr-red" and "aaaaaaaa" in n: j["check_runs"][0]["conclusion"] = "failure"
-    if mode == "pr-wrong-app" and "aaaaaaaa" in n: j["check_runs"][0]["app"]["id"] = 99
-    if mode == "pr-no-check" and "aaaaaaaa" in n: j["check_runs"] = []
-    if mode == "status-only" and "check-runs" in n and "aaaaaaaa" not in n: j["check_runs"] = []
+    if mode == "no-push" and "check-runs" in n: j["check_runs"] = []
+    if mode == "wrong-app" and "check-runs" in n: j["check_runs"][0]["app"]["id"] = 99
+    if mode == "failed" and "check-runs" in n: j["check_runs"][0]["conclusion"] = "failure"
+    if mode == "status-only" and "check-runs" in n: j["check_runs"] = []
     json.dump(j, open(f, "w"))
 PY
 }
 for m in "no-push|a push-scoped check missing on the tagged commit|ci" "wrong-app|a check from another app than the pinned integration|ci" \
     "failed|a failed push-scoped check|ci" \
-         "no-pr|a pull_request-scoped check with no merged pull request|review" "pr-mismatch|a pull request whose merge commit is not this commit|review" \
-         "pr-not-main|a merged pull request whose base is not main|review" "pr-unmerged|a pull request that is not merged|review" \
-         "pr-red|a pull_request-scoped check red on the PR head|review" "pr-wrong-app|a pull_request-scoped check from another app|review" \
-         "pr-no-check|a pull_request-scoped check missing on the PR head|review" \
              "status-only|only a green commit status (statuses never satisfy a pinned check)|ci";
          do
   IFS='|' read -r mode label ctx <<< "$m";
@@ -898,42 +755,38 @@ python3 - "$W/c/repo/admission.json" <<'PY' 2> /dev/null && ok "AC4 required-che
 import json, sys
 d = json.load(open(sys.argv[1])); assert d["informational_statuses"] and all(c["conclusion"] == "success" for c in d["required_checks"])
 PY
-# ---- release-only-checks.json: admission requires its contexts green too (REQ-REL-013-AC1) ---------------------------------------------
-ro_edit() { # ro_edit red|missing|wrong-app : change the allowlist-chain check-run of the tagged commit; ci stays green
-  python3 - "$W/c/gh/repos_fosterstack_cache_commits_${SHAC}_check-runs.json" "$1" <<'PY'
-import json, sys
-f, mode = sys.argv[1:3]; j = json.load(open(f))
-if mode == "missing": j["check_runs"] = [c for c in j["check_runs"] if c["name"] != "allowlist-chain"]
-for c in j["check_runs"]:
-    if c["name"] == "allowlist-chain" and mode == "red": c["conclusion"] = "failure"
-    if c["name"] == "allowlist-chain" and mode == "wrong-app": c["app"]["id"] = 99
-json.dump(j, open(f, "w"))
-PY
-}
-fresh; run_admit; expect_ok "AC1 release-only: every context of required-checks.json and of release-only-checks.json green, admission succeeds"
-for m in "red|a red release-only check" "missing|a release-only check that did not run" "wrong-app|a release-only check from another app than the pinned integration"; do
-  IFS='|' read -r mode label <<< "$m"; fresh; ro_edit "$mode"; run_admit
-  expect_refuse "AC1 release-only: $label is refused at required-checks and names the check" required-checks allowlist-chain
-done
-fresh; edit_gh failed; run_admit; expect_refuse "AC1 release-only: a red context of required-checks.json still refuses while the release-only one is green" required-checks ci
-fresh; G checkout -q main; G rm -q .github/policy/release-only-checks.json
-G -c user.signingkey="$W/keys/owner" commit -q -S -m "no release-only policy"; G push -q origin main 2> /dev/null; G fetch -q origin
-G checkout -q --detach v0.3.0; run_admit
-expect_refuse "AC1 release-only: release-only-checks.json missing on origin/main (present in the tagged commit) is refused at policy-from-main" policy-from-main release-only
 # main's policy file is what admission reads, so each case rewrites one file on main and pushes it
 set_policy() { # set_policy FILE JSON : replace .github/policy/FILE on main, signed, then go back to the tagged commit
   G checkout -q main; printf '%s\n' "$2" > "$W/c/repo/.github/policy/$1"; G add ".github/policy/$1"
   G -c user.signingkey="$W/keys/owner" commit -q -S -m "policy $1"; G push -q origin main 2> /dev/null; G fetch -q origin
   G checkout -q --detach v0.3.0; }
 EMPTY='{"required_checks":[]}'
-fresh; set_policy release-only-checks.json "$EMPTY"; run_admit
-expect_refuse "AC1 empty list: release-only-checks.json with an empty required_checks is refused and names the file" required-checks release-only-checks.json
 fresh; set_policy required-checks.json "$EMPTY"; run_admit
-expect_refuse "AC1 empty list: required-checks.json with an empty required_checks is refused although release-only-checks.json holds entries" required-checks required-checks.json
-fresh; set_policy required-checks.json "$EMPTY"; set_policy release-only-checks.json "$EMPTY"; run_admit
-expect_refuse "AC1 empty list: both files with an empty required_checks are refused" required-checks checks.json
-fresh; set_policy required-checks.json '{"required_checks":[{"context":"ci","integration_id":15368,"scope":"push"}],"promotion_checks":[{"context":"scan","integration_id":15368,"scope":"push"}]}'; run_admit
-expect_ok "AC1 empty list: a non-empty required-checks.json (one context) with a non-empty release-only-checks.json still admits"
+expect_refuse "AC4 empty list: required-checks.json with an empty required_checks is refused" required-checks required-checks.json
+fresh; set_policy required-checks.json '{"required_checks":[{"context":"ci","integration_id":15368,"scope":"push"}]}'; run_admit
+expect_ok "AC4 empty list: a non-empty required-checks.json (one context) still admits"
+fresh; G checkout -q main; G rm -q .github/policy/required-checks.json
+G -c user.signingkey="$W/keys/owner" commit -q -S -m "no required-checks policy"; G push -q origin main 2> /dev/null; G fetch -q origin
+G checkout -q --detach v0.3.0; run_admit
+expect_refuse "AC4 required-checks.json missing on origin/main (present in the tagged commit) is refused at policy-from-main" policy-from-main \
+  required-checks.json
+# ---- a release branch is refused as a tag is: the same checks, the branch name in place of the tag ---------------------------------------
+fresh; G branch -q -f release/v0.3.0-rc1 HEAD; run_admit GITHUB_REF=refs/heads/release/v0.3.0-rc1 GITHUB_REF_NAME=release/v0.3.0-rc1
+expect_refuse "AC4 the branch release/v0.3.0-rc1 is refused at tag-syntax (a release branch names a final version)" tag-syntax "release candidate"
+fresh; G branch -q -f release/v0.3.0 HEAD; G checkout -q release/v0.3.0
+G -c user.signingkey="$W/keys/owner" commit -q -S --allow-empty -m "moved after the push"; G checkout -q --detach "$SHAC"
+run_admit GITHUB_REF=refs/heads/release/v0.3.0 GITHUB_REF_NAME=release/v0.3.0
+expect_refuse "AC4 the local branch release/v0.3.0 moved off GITHUB_SHA is refused at tag-ref" tag-ref "moved"
+fresh; G branch -q -f release/v0.3.0 HEAD; run_admit GITHUB_REF=refs/heads/release/v0.3.0 GITHUB_REF_NAME=release/v0.3.1
+expect_refuse "AC4 a ref refs/heads/release/v0.3.0 with the name release/v0.3.1 is refused at tag-ref" tag-ref
+fresh; G checkout -q -b side v0.3.0 2> /dev/null; G -c user.signingkey="$W/keys/owner" commit -q -S --allow-empty -m side
+G branch -q -f release/v0.3.0 HEAD; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"
+run_admit GITHUB_REF=refs/heads/release/v0.3.0 GITHUB_REF_NAME=release/v0.3.0
+expect_refuse "AC4 the branch release/v0.3.0 at a commit that is not on main is refused at ancestor-of-main" ancestor-of-main
+fresh; edit_gh failed; G branch -q -f release/v0.3.0 HEAD; run_admit GITHUB_REF=refs/heads/release/v0.3.0 GITHUB_REF_NAME=release/v0.3.0
+expect_refuse "AC4 the branch release/v0.3.0 with a red required check is refused at required-checks and names the check" required-checks ci
+fresh; G branch -q -f feature/v0.3.0 HEAD; run_admit GITHUB_REF=refs/heads/feature/v0.3.0 GITHUB_REF_NAME=feature/v0.3.0
+expect_refuse "AC4 a branch not named release/ (feature/v0.3.0) is refused at tag-ref" tag-ref
 # ---- baseline -------------------------------------------------------------------------------------------------------------------------------
 base_edit() { # base_edit PYCODE : edit requirements/releases/v0.3.0.yaml on main, re-sign, re-tag
   (cd "$W/c/repo" && G checkout -q main && python3 - "$1" <<'PY'
@@ -1048,7 +901,28 @@ f, sha = sys.argv[1:3]
 j = json.load(open(f))
 j["check_runs"].append({"name": "ci", "conclusion": "failure", "app": {"id": 15368}, "id": 13, "head_sha": sha}); json.dump(j, open(f, "w"))
 PY
-run_admit; expect_refuse "AC4 required-checks: a duplicate check name (one success, one failure) is ambiguous and refused" required-checks ci
+run_admit; expect_refuse "AC4 required-checks: a duplicate check name (one success, one failure) is ambiguous and refused" required-checks "not green"
+fresh; python3 - "$(ckf "$SHAC")" "$SHAC" <<'PY'
+import json, sys
+f, sha = sys.argv[1:3]
+j = json.load(open(f))
+j["check_runs"].append({"name": "ci", "conclusion": "success", "app": {"id": 15368}, "id": 113, "head_sha": sha}); json.dump(j, open(f, "w"))
+PY
+run_admit; expect_ok "AC4 required-checks: a duplicate check name with every run success (two runs of ci, distinct ids) passes"
+fresh; python3 - "$(ckf "$SHAC")" "$SHAC" <<'PY'
+import json, sys
+f, sha = sys.argv[1:3]
+j = json.load(open(f))
+j["check_runs"].append({"name": "ci", "conclusion": "failure", "app": {"id": 15368}, "id": 114, "head_sha": sha}); json.dump(j, open(f, "w"))
+PY
+run_admit; expect_refuse "AC4 required-checks: a duplicate check name with one failure among its runs is refused, a green run does not hide it" required-checks "not green"
+fresh; python3 - "$(ckf "$SHAC")" "$SHAC" <<'PY'
+import json, sys
+f, sha = sys.argv[1:3]
+j = json.load(open(f))
+j["check_runs"].append({"name": "ci", "status": "in_progress", "conclusion": None, "app": {"id": 15368}, "id": 115, "head_sha": sha}); json.dump(j, open(f, "w"))
+PY
+run_admit; expect_refuse "AC4 required-checks: an unfinished extra run of ci (no conclusion) is refused" required-checks "not green"
 fresh; python3 - "$(ckf "$SHAC")" <<'PY'
 import json, sys
 f = sys.argv[1]; j = json.load(open(f)); j["check_runs"][0]["head_sha"] = "c" * 40; json.dump(j, open(f, "w"))
@@ -1085,7 +959,7 @@ rm -f "$W/pwned-signer" "$W/pwned-install"; fresh
 (cd "$W/c/repo" && G checkout -q -b side && printf '#!/usr/bin/env python3\nopen("%s","w").write("x")\n' "$W/pwned-signer" > \
     bin/admission-tag-signer.py && printf '#!/bin/sh\ntouch %s\n' "$W/pwned-install" > bin/install-scanner.sh \
   && G add -A && G -c user.signingkey="$W/keys/owner" commit -q -S -m "the tagged commit replaces the policy scripts")
-SIDE=$(G rev-parse HEAD); gh_fixtures "$W/c/gh" "$SIDE"; G tag -d v0.3.0 > /dev/null; G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.0 -m "$APPROVAL" v0.3.0; run_admit
+SIDE=$(G rev-parse HEAD); gh_fixtures "$W/c/gh" "$SIDE"; G tag -d v0.3.0 > /dev/null; G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.0 v0.3.0; run_admit
 if [ ! -e "$W/pwned-signer" ] && [ ! -e "$W/pwned-install" ];
 then ok "AC4 policy from main: the tagged commit's own bin/admission-tag-signer.py and bin/install-scanner.sh are never executed (owner route)";
 else bad "AC4 policy from main: a script of the tagged commit ran";
@@ -1111,68 +985,18 @@ patch_setup; run_patch
 expect_refuse "AC4 a patch tag with a real PKCS7 signature and an owner-approved baseline is refused at tag-signature: gitsign is out" tag-signature keyless
 grep -q 'gitsign' "$W/c/calls.log" 2> /dev/null && bad "AC4 gitsign was run for a real-PKCS7 patch tag" || ok "AC4 gitsign is not run for a real-PKCS7 patch tag either"
 [ ! -e "$W/c/repo/admission.json" ] && ok "AC4 no admission.json for a refused patch tag" || bad "AC4 admission.json exists after a patch tag was refused"
-# ---- rc-proof (REQ-CHAIN-001-AC6): a final or patch tag needs the committed marker of origin/main; an rc tag
-# is exempt
-mainfix() { # mainfix DESCRIPTION CMD : on main, run CMD in the clone (the file edit), commit it owner-signed, push, retag v0.3.0 at it, serve green checks for it
-  fresh; G checkout -q main; (cd "$W/c/repo" && eval "$2"); G add -A
-  G -c user.signingkey="$W/keys/owner" commit -q -S --allow-empty -m "$1"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
-  retag owner; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; }
-mainfix "marker removed" "git rm -q .github/policy/rc-proof.json"; run_admit
-expect_refuse "AC6 a final tag with no marker on origin/main is refused at rc-proof, naming the marker (never skipped)" rc-proof marker
-mainfix "marker for other bytes (release.yml changed after the proof)" "printf '# edited\n' >> .github/workflows/release.yml"; run_admit
-expect_refuse "AC6 a final tag whose chain files are not the bytes the marker names is refused, naming the bytes" rc-proof bytes
-mainfix "marker is not JSON" "printf '{not json' > .github/policy/rc-proof.json"; run_admit
-expect_refuse "AC6 an unreadable marker is refused" rc-proof shape
-mainfix "marker names a final tag" "sed -i.bak 's/v0.3.0-rc1/v0.3.0/' .github/policy/rc-proof.json; rm -f .github/policy/rc-proof.json.bak"; run_admit
-expect_refuse "AC6 a marker whose rc_tag is a final tag is refused" rc-proof rc_tag
-mainfix "marker names an rc tag on a side branch" "git checkout -q -b rcside HEAD~1 2> /dev/null; git -c user.signingkey=$W/keys/owner commit -q -S --allow-empty -m rcside; git tag v0.3.0-rc2; git checkout -q main; sed -i.bak 's/v0.3.0-rc1/v0.3.0-rc2/' .github/policy/rc-proof.json; rm -f .github/policy/rc-proof.json.bak"; run_admit
-expect_refuse "AC6 a marker naming an rc tag that is not an ancestor of the tagged commit is refused" rc-proof ancestor
-mainfix "marker names an rc tag that does not exist" "sed -i.bak 's/v0.3.0-rc1/v0.3.0-rc7/' .github/policy/rc-proof.json; rm -f .github/policy/rc-proof.json.bak"; run_admit
-expect_refuse "AC6 a marker naming an rc tag that does not exist is refused" rc-proof "does not exist"
-# the marker is read from origin/main, never from the tagged commit: a tagged commit that carries its own marker for its own bytes does not satisfy a main without one
-fresh; G checkout -q main; G rm -q .github/policy/rc-proof.json; G -c user.signingkey="$W/keys/owner" commit -q -S -m "marker removed"; G push -q origin main 2> /dev/null
-G fetch -q origin 2> /dev/null; G checkout -q --detach v0.3.0; run_admit
-expect_refuse "AC6 the marker is read from origin/main: v0.3.0 (whose own tree has a marker) is refused when main has none" rc-proof marker
-# an owner-signed patch tag is admitted like any owner-signed tag: the marker on main, an approved
+# an owner-signed patch tag is admitted like any owner-signed tag: an approved
 # requirements/releases/v0.3.1.yaml, green checks
 fresh; G checkout -q main
 sed 's/^version: v0.3.0$/version: v0.3.1/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.1.yaml"
 G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "patch baseline"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
 G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.1 v0.3.1; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"
 run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
-expect_ok "AC4 an owner-SSH-signed patch tag v0.3.1 with the marker, its approved baseline and green checks is admitted"
+expect_ok "AC4 an owner-SSH-signed patch tag v0.3.1 with its approved baseline and green checks is admitted"
 jq -e '.tag=="v0.3.1" and .tag_signature.method=="owner-ssh" and .commit_signature=="owner-ssh" and .baseline_version=="v0.3.1"
        and .baseline=="requirements/releases/v0.3.1.yaml"' "$W/c/repo/admission.json" > /dev/null \
   && ok "AC4 admission.json of the patch tag records owner-ssh and the baseline v0.3.1" \
   || bad "AC4 patch admission.json content: $(head -c 300 "$W/c/repo/admission.json" 2> /dev/null)"
-# an rc tag is exempt: no marker on main, an owner-signed annotated rc tag with its own baseline, every other check green
-fresh; G checkout -q main; G rm -q .github/policy/rc-proof.json
-sed 's/^version: v0.3.0$/version: v0.3.0-rc2/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.0-rc2.yaml"
-G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "rc2 baseline, no marker"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
-G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.0-rc2 -m "$APPROVAL" v0.3.0-rc2; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"
-mkfreeze
-run_admit GITHUB_REF=refs/tags/v0.3.0-rc2 GITHUB_REF_NAME=v0.3.0-rc2
-expect_ok "AC6 a release candidate tag is exempt: it is admitted with no marker on main"
-fresh; G checkout -q main; G rm -q .github/policy/rc-proof.json
-sed 's/^version: v0.3.0$/version: v0.3.0-rc2/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.0-rc2.yaml"
-G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "rc2 baseline, no marker"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
-retag owner; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; run_admit
-expect_refuse "AC6 control: the same tree with the final tag v0.3.0 is refused at rc-proof (only the tag's kind differs)" rc-proof marker
-# the same refusals for a PATCH tag (v0.3.1), not only the final tag: no marker on main, and a marker for other bytes
-fresh; G checkout -q main; G rm -q .github/policy/rc-proof.json
-sed 's/^version: v0.3.0$/version: v0.3.1/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.1.yaml"
-G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "patch baseline, no marker"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
-G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.1 v0.3.1; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"
-mkfreeze
-run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
-expect_refuse "AC6 a PATCH tag with no marker on origin/main is refused at rc-proof, naming the marker" rc-proof marker
-fresh; G checkout -q main; printf '# edited\n' >> "$W/c/repo/.github/workflows/release.yml"
-sed 's/^version: v0.3.0$/version: v0.3.1/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.1.yaml"
-G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "patch baseline, chain file edited after the proof"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
-G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.1 v0.3.1; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"
-mkfreeze
-run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
-expect_refuse "AC6 a PATCH tag whose chain files are not the bytes the marker names is refused, naming the bytes" rc-proof bytes
 # ---- the second signer: the release KMS key on a patch tag only (REQ-REL-009-AC6; fixture RSA key, never a real one)
 RELSIGNER=.github/policy/release_tag_signer
 python3 - "$BA" <<'PY' && ok "AC6 build-admit.py reads release_tag_signer from origin/main with the other policy files, and allowed_signers stays the owner's alone" || bad "AC6 POLICY_FILES lacks .github/policy/release_tag_signer"
@@ -1193,7 +1017,7 @@ refused_policy_or_sig() { # refused at tag-signature, or at policy-from-main whe
   local first; first=$(head -1 "$W/c/err" 2> /dev/null || true)
   [ "$RC" = 1 ] && [ ! -e "$W/c/repo/admission.json" ] && { [[ "$first" == "admission refused at tag-signature: "* ]] || [[ "$first" == "admission refused at policy-from-main: "* ]]; }; }
 kms_patch kms; run_kms
-expect_ok "AC6 a patch tag v0.3.1 signed by the release KMS key (release_tag_signer on main), with the marker, its baseline and green checks, is admitted"
+expect_ok "AC6 a patch tag v0.3.1 signed by the release KMS key (release_tag_signer on main), with its baseline and green checks, is admitted"
 jq -e '.tag=="v0.3.1" and .tag_signature.method=="kms-release" and (.tag_signature.principal|length>0)
        and (.tag_signature.key_fingerprint|startswith("SHA256:")) and .commit_signature=="owner-ssh" and .baseline_version=="v0.3.0" and .baseline=="requirements/releases/v0.3.0.yaml"' \
   "$W/c/repo/admission.json" > /dev/null \
@@ -1218,6 +1042,13 @@ jq -e '.tag=="v0.3.1" and .tag_signature.method=="kms-release" and .baseline_ver
   && ok "AC13 admission.json records the baseline v0.3.0 the patch used" || bad "AC13 admission.json of a KMS patch without its own baseline: $(head -c 300 "$W/c/repo/admission.json" 2> /dev/null)"
 grep -q 'baseline v0.3.0' "$W/c/out" && grep -qx "freeze-ok $(headsha) v0.3.0" "$W/c/out" \
   && ok "AC13 admission prints the baseline v0.3.0 and the freeze-ok line for it" || bad "AC13 admission printed: $(tr '\n' '|' < "$W/c/out" | head -c 300)"
+# a release branch has no tag signature: there the patch version itself chooses the line's owner-signed baseline
+fresh; G checkout -q main; G -c user.signingkey="$W/keys/owner" commit -q -S --allow-empty -m "patch, no baseline file"; G push -q origin HEAD:main 2> /dev/null
+G fetch -q origin 2> /dev/null; G branch -q -f release/v0.3.1 HEAD; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; mkfreeze
+run_admit GITHUB_REF=refs/heads/release/v0.3.1 GITHUB_REF_NAME=release/v0.3.1
+expect_ok "AC13 a push of the branch release/v0.3.1, with no requirements/releases/v0.3.1.yaml, is admitted on the line's owner-signed baseline v0.3.0"
+jq -e '.tag=="v0.3.1" and (has("tag_signature")|not) and .baseline_version=="v0.3.0" and .baseline=="requirements/releases/v0.3.0.yaml"' "$W/c/repo/admission.json" > /dev/null 2>&1 \
+  && ok "AC13 admission.json of the release branch records the baseline v0.3.0 the patch used" || bad "AC13 admission.json of a patch release branch: $(head -c 300 "$W/c/repo/admission.json" 2> /dev/null)"
 # the owner's tag of the baseline is not the owner's: an unsigned or other-key v0.3.0 supplies no baseline, whatever file the patch tag's own commit holds
 for what in none attacker; do
   kms_patch kms; G tag -d v0.3.0 > /dev/null
@@ -1267,132 +1098,25 @@ expect_refuse "AC6 the release KMS key is no commit signer: a commit signed with
 kms_patch kms; { G cat-file tag v0.3.1; printf -- '-----BEGIN SIGNED MESSAGE-----\nMIIBfake\n-----END SIGNED MESSAGE-----\n'; } > "$W/c/two.obj"
 obj=$(G mktag < "$W/c/two.obj"); G update-ref refs/tags/v0.3.1 "$obj"; run_kms
 expect_refuse "AC6 a release-key signature followed by a second (keyless) signature block is refused at tag-signature" tag-signature
-# ---- REQ-CHAIN-004-AC21: promotion and release-only contexts count only from a schedule or dispatch run of their one workflow file --------
-# runs CONTEXT FILE SPEC...: replace the check runs of CONTEXT on the tagged commit by the runs the SPECs (JSON objects) describe, and write the workflow
-# run behind each. SPEC keys: id (check-run id; its workflow run is 9000+id), conclusion (success; null = pending), event (schedule), file (FILE),
-# head (the tagged sha), url (the job url), app (15368), api (fail: the runs call fails; bad: not JSON; nostr: path is not a string)
-runs() {
-  local c=$1 f=$2; shift 2
-  python3 - "$W/c/gh" "$(G rev-parse HEAD)" "$c" "$f" "$@" <<'PY'
-import json, sys
-d, sha, ctx, wf = sys.argv[1:5]; p = d + "/repos_fosterstack_cache_commits_%s_check-runs.json" % sha
-j = json.load(open(p)); j["check_runs"] = [r for r in j["check_runs"] if r["name"] != ctx]
-for s in map(json.loads, sys.argv[5:]):
-    rid = 9000 + s["id"]; af = d + "/repos_fosterstack_cache_actions_runs_%d.json" % rid
-    j["check_runs"].append({"name": ctx, "conclusion": s.get("conclusion", "success"), "app": {"id": s.get("app", 15368)}, "id": s["id"], "head_sha": sha,
-                            "details_url": s.get("url", "https://github.com/fosterstack/cache/actions/runs/%d/job/1" % rid)})
-    api = {"path": ".github/workflows/" + s.get("file", wf), "event": s.get("event", "schedule"), "head_sha": s.get("head", sha)}
-    if s.get("api") == "fail": open(af + ".fail", "w").close()
-    elif s.get("api") == "bad": open(af, "w").write("not json")
-    else:
-        if s.get("api") == "nostr": api["path"] = 7
-        json.dump(api, open(af, "w"))
-json.dump(j, open(p, "w"))
-PY
-}
-dropruns() { # dropruns CONTEXT : no check run of CONTEXT on the tagged commit
-  python3 - "$W/c/gh/repos_fosterstack_cache_commits_$(G rev-parse HEAD)_check-runs.json" "$1" <<'PY'
-import json, sys
-f, ctx = sys.argv[1:3]; j = json.load(open(f)); j["check_runs"] = [c for c in j["check_runs"] if c["name"] != ctx]; json.dump(j, open(f, "w"))
-PY
-}
+# ---- required-checks.json on a release candidate tag: the list must be there and not empty ----------------------------------------------
 poledit() { # poledit FILE PYCODE : change a policy file of the case's repo (d is its JSON)
   (cd "$W/c/repo" && python3 - "$1" "$2" <<'PY'
 import json, sys
 p = sys.argv[1]; d = json.load(open(p)); exec(sys.argv[2]); json.dump(d, open(p, "w"))
 PY
   ); }
-RC_F=.github/policy/required-checks.json RO_F=.github/policy/release-only-checks.json
-rcfresh() { # rcfresh [FILE PYCODE] : the release candidate tag v0.3.0-rc2 (no marker needed), optionally on a main whose policy FILE is changed
-  fresh; G checkout -q main; G rm -q .github/policy/rc-proof.json; if [ "$#" -gt 0 ]; then poledit "$1" "$2"; fi
+RC_F=.github/policy/required-checks.json
+rcfresh() { # rcfresh [FILE PYCODE] : the release candidate tag v0.3.0-rc2, optionally on a main whose policy FILE is changed
+  fresh; G checkout -q main; if [ "$#" -gt 0 ]; then poledit "$1" "$2"; fi
   sed 's/^version: v0.3.0$/version: v0.3.0-rc2/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.0-rc2.yaml"
   G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "rc2 baseline"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
-  G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.0-rc2 -m "$APPROVAL" v0.3.0-rc2; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; mkfreeze; }
+  G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.0-rc2 v0.3.0-rc2; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; mkfreeze; }
 rc_admit() { run_admit GITHUB_REF=refs/tags/v0.3.0-rc2 GITHUB_REF_NAME=v0.3.0-rc2; }
-PS=allowlist-chain; FS=full-suite.yml; MISSING="schedule or dispatch run of $FS"
-# 1. the three lists must be non-empty (policy edits run on a release candidate tag: a final tag's chain bytes cover the policy files)
-rcfresh $RC_F 'del d["promotion_checks"]'; rc_admit
-expect_refuse "AC19 required-checks.json with no promotion_checks list is refused at required-checks, naming the file" required-checks required-checks.json
-rcfresh $RC_F 'd["promotion_checks"] = []'; rc_admit
-expect_refuse "AC19 required-checks.json with an empty promotion_checks list is refused at required-checks, naming the file" required-checks required-checks.json
 rcfresh $RC_F 'd["required_checks"] = []'; rc_admit
-expect_refuse "AC19 required-checks.json with an empty required_checks list is refused at required-checks, naming the file" required-checks required-checks.json
+expect_refuse "AC4 required-checks.json with an empty required_checks list is refused at required-checks, naming the file" required-checks required-checks.json
 rcfresh $RC_F 'del d["required_checks"]'; rc_admit
-expect_refuse "AC19 required-checks.json with no required_checks list is refused at required-checks, naming the file" required-checks required-checks.json
-rcfresh $RO_F 'd["required_checks"] = []'; rc_admit
-expect_refuse "AC19 release-only-checks.json with an empty required_checks list is refused at required-checks, naming the file" required-checks release-only-checks.json
-rcfresh $RO_F 'del d["required_checks"]'; rc_admit
-expect_refuse "AC19 release-only-checks.json with no required_checks list is refused at required-checks, naming the file" required-checks release-only-checks.json
-# 2. promotion checks on a release candidate tag only; the required and release-only checks on every tag
-fresh; run_admit; expect_ok "AC19 a final tag with both lists and every bound check a green schedule run is admitted"
-fresh; runs scan scan.yml '{"id":16,"conclusion":"failure"}'; dropruns "analyze (go)"; run_admit
-expect_ok "AC19 a final tag does not need the promotion checks: a red scan and no analyze (go) run do not stop it"
-rcfresh; rc_admit; expect_ok "AC19 a release candidate tag with every bound check a green schedule run is admitted"
-if [ "$RC" = 0 ]; then
-  jq -e '[.required_checks[].context] | (index("scan") != null) and (index("analyze (go)") != null) and (index("'"$PS"'") != null)' "$W/c/repo/admission.json" > /dev/null \
-    && ok "AC19 the admission of a release candidate records its promotion checks and the release-only check" \
-    || bad "AC19 rc admission.json lacks a promotion or release-only check: $(jq -c '[.required_checks[].context]' "$W/c/repo/admission.json")"
-else bad "AC19 the admission of a release candidate records its promotion checks (no admission)"; fi
-for m in "scan|scan.yml|16" "analyze (go)|codeql.yml|17"; do
-  IFS='|' read -r ctx wf id <<< "$m"
-  rcfresh; dropruns "$ctx"; rc_admit
-  expect_refuse "AC19 a release candidate tag with no '$ctx' run is refused at required-checks, naming it" required-checks "$ctx"
-  rcfresh; runs "$ctx" "$wf" '{"id":'"$id"',"conclusion":"failure"}'; rc_admit
-  expect_refuse "AC19 a release candidate tag with a red '$ctx' schedule run is refused, naming it" required-checks "$ctx"
-  rcfresh; runs "$ctx" "$wf" '{"id":'"$id"',"event":"push"}'; rc_admit
-  expect_refuse "AC19 a release candidate tag whose only '$ctx' run is a green push run is refused: a schedule or dispatch run of $wf is missing" required-checks "schedule or dispatch run of $wf"
-done
-rcfresh; runs "$PS" $FS '{"id":15,"conclusion":"failure"}'; rc_admit
-expect_refuse "AC19 a release candidate tag still needs the release-only check green: a red $PS is refused" required-checks "$PS"
-# 3. a context the table does not bind
-rcfresh $RO_F 'd["required_checks"] = [{"context": "rel-only", "integration_id": 15368, "scope": "push"}]'; runs rel-only $FS '{"id":25}'; rc_admit
-expect_refuse "AC19 a release-only context the table does not bind is refused, even with a green schedule run: no producing workflow file" required-checks "no producing workflow file"
-rcfresh $RC_F 'd["promotion_checks"].append({"context": "novel-promo", "integration_id": 15368, "scope": "push"})'; runs novel-promo $FS '{"id":26}'; rc_admit
-expect_refuse "AC19 a promotion context the table does not bind is refused on a release candidate tag: no producing workflow file" required-checks "no producing workflow file"
-rcfresh $RO_F 'd["required_checks"] = [{"context": "acceptance / smoke", "integration_id": 15368, "scope": "push"}]'; runs "acceptance / smoke" $FS '{"id":27}'; rc_admit
-expect_ok "AC19 every context that starts with 'acceptance / ' is bound to full-suite.yml"
-fresh; runs ci ci.yml '{"id":11,"event":"push"}'; run_admit
-expect_ok "AC19 a context of required_checks is never bound: a green push run of ci.yml satisfies it"
-# 4+5. the run behind a bound check: file, event, commit; the newest qualifying run alone decides
-fresh; run_admit; expect_ok "AC19 control: a green schedule run of the bound file on the tagged commit"
-if [ "$RC" = 0 ]; then
-  jq -e --arg sha "$SHAC" '.required_checks[] | select(.context == "'"$PS"'") | . == {context: "'"$PS"'", source: "check-run-on-tagged-sha", evidence_sha: $sha, id: 15, conclusion: "success"}' \
-    "$W/c/repo/admission.json" > /dev/null && ok "AC19 the evidence of a passed bound check keeps its shape: context, source check-run-on-tagged-sha, evidence_sha, id, conclusion success" \
-    || bad "AC19 bound check evidence: $(jq -c '.required_checks' "$W/c/repo/admission.json")"
-  grep -q '^gh api .*check-runs?filter=all' "$W/c/calls.log" && grep -q '^gh api .*--paginate.*check-runs?filter=all\|^gh api .*check-runs?filter=all.*--paginate' "$W/c/calls.log" \
-    && grep -q '^gh api .*repos/fosterstack/cache/actions/runs/9015' "$W/c/calls.log" \
-    && ok "AC19 every run of a bound name is read with filter=all (paginated) and the workflow run behind it from the runs API by the id in its details_url" \
-    || bad "AC19 gh calls: $(grep '^gh api' "$W/c/calls.log" | tr '\n' '|' | head -c 400)"
-else bad "AC19 bound check evidence and calls (no admission)"; fi
-fresh; runs $PS $FS '{"id":20,"event":"workflow_dispatch"}'; run_admit; expect_ok "AC19 a green workflow_dispatch run of the bound file counts"
-for m in "event push|{\"id\":20,\"event\":\"push\"}" "event pull_request|{\"id\":20,\"event\":\"pull_request\"}" "another workflow file|{\"id\":20,\"file\":\"scan.yml\"}" \
-    "another head_sha|{\"id\":20,\"head\":\"$(printf 'd%.0s' $(seq 40))\"}" "a details_url that names no run|{\"id\":20,\"url\":\"https://github.com/fosterstack/cache/runs/5\"}"; do
-  IFS='|' read -r label spec <<< "$m"
-  fresh; runs $PS $FS "$spec"; run_admit
-  expect_refuse "AC19 a green bound check whose only run has $label does not qualify: a schedule or dispatch run of the file is missing" required-checks "$MISSING"
-  fresh; runs $PS $FS '{"id":20}' "$(sed 's/"id":20/"id":21,"conclusion":"failure"/' <<< "$spec")"; run_admit
-  expect_ok "AC19 a newer red run with $label is skipped: the older green qualifying run decides"
-done
-fresh; runs $PS $FS '{"id":20}' '{"id":21,"conclusion":"failure"}'; run_admit
-expect_refuse "AC19 the newest qualifying run alone decides: older green, newest failed is refused as not green" required-checks "not green"
-fresh; runs $PS $FS '{"id":21,"conclusion":"failure"}' '{"id":20}' ; run_admit
-expect_refuse "AC19 newest first by id whatever the order of the answer: the failed id 21 listed before the green id 20 is refused" required-checks "not green"
-fresh; runs $PS $FS '{"id":20,"conclusion":"failure"}' '{"id":21}'; run_admit
-expect_ok "AC19 the newest qualifying run alone decides: older failed, newest green is admitted"
-fresh; runs $PS $FS '{"id":20}' '{"id":21,"conclusion":null}'; run_admit
-expect_refuse "AC19 a newest qualifying run with no conclusion refuses saying it is pending, whatever an older run says" required-checks "pending"
-fresh; runs $PS $FS '{"id":20,"conclusion":"cancelled"}'; run_admit
-expect_refuse "AC19 a cancelled newest qualifying run refuses saying the check is not green" required-checks "not green"
-fresh; runs $PS $FS '{"id":20}' '{"id":21,"event":"push"}' '{"id":22,"event":"push","conclusion":"failure"}'; run_admit
-expect_ok "AC19 several newer non-qualifying runs are all skipped: the older green qualifying run decides"
-# 6. a run that cannot be read is its own refusal, never skipped
-for m in "fail|the runs call fails" "bad|the runs answer is not JSON" "nostr|the runs answer has a path that is not a string"; do
-  IFS='|' read -r api label <<< "$m"
-  fresh; runs $PS $FS "{\"id\":20,\"api\":\"$api\"}"; run_admit
-  expect_refuse "AC19 a run that cannot be read ($label) is refused, naming the run id and the context" required-checks "cannot read workflow run 9020 behind required check '$PS'"
-  fresh; runs $PS $FS '{"id":19}' "{\"id\":20,\"api\":\"$api\"}"; run_admit
-  expect_refuse "AC19 an unreadable newest run ($label) is not skipped, though an older run is green" required-checks "cannot read workflow run 9020 behind required check '$PS'"
-done
+expect_refuse "AC4 required-checks.json with no required_checks list is refused at required-checks, naming the file" required-checks required-checks.json
+rcfresh; rc_admit; expect_ok "AC4 a release candidate tag with its approved baseline and every required check green is admitted"
 # ---- the committed web-flow keyring: exactly the current GitHub web-flow key, no expired key
 wf_keys=$(gpg --batch --show-keys --with-colons "$root/.github/policy/github-web-flow.gpg" 2> /dev/null | awk -F: '$1 == "pub" { print $5 ":" $2 }')
 [ "$wf_keys" = "B5690EEEBB952194:-" ] && ok "the committed github-web-flow.gpg holds only the current web-flow key B5690EEEBB952194, not expired" || bad "github-web-flow.gpg holds: ${wf_keys//$'\n'/ } (want only B5690EEEBB952194, not expired)"

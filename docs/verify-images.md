@@ -103,7 +103,7 @@ chain" below.
 From v0.3.0 the chain has five stages: Build, Sign, Rebuild, Check and Release <!-- pinned: historical -->
 (see [`RELEASING.md`](../RELEASING.md)). Each stage checks the work before it:
 
-- Rebuild, Check and Release each verify the signed records of the stages before them.
+- Release verifies the signed records of the stages before it.
 - Sign checks the records of the jobs that build things, and then signs them. It checks Build's records against the artifacts Build hands over, and Rebuild's records against Build's digest list.
 
 The records are attached to the release, so you can verify them too. They are

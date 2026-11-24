@@ -580,7 +580,7 @@ rb r_rel_noif "005-AC7 the release Witness step of Rebuild has no if (it would r
 rb r_snap_none "005-AC7 the snapshot-rapk Witness step is missing" "Witness step" \
        "$RSNAP_OWN" \
            ''
-rb r_snap_rel "005-AC7 the snapshot-rapk step runs the release script (policy and stage-start of a release)" "Witness step" \
+rb r_snap_rel "005-AC7 the snapshot-rapk step runs the release script" "Witness step" \
        'snapshot-rapk bin/build-stage-snapshot-rebuild-apk.sh' 'snapshot-rapk bin/build-stage-rebuild-apk.sh'
 rb r_snap_name "005-AC7 the snapshot-rebuild step uses a name outside the closed list" "Witness step" \
        'witnessed-local.sh snapshot-rebuild bin/build-stage-assemble.sh' \
@@ -912,10 +912,6 @@ probe assemble         "AC9 digests.json forged by a plain write after the merge
 probe assemble         "AC9 digests.json written by hand instead of by the merge"   '[l for l in L if "items-merge" not in l] + ["echo {} > digests.json"]'
 probe assemble         "AC9 the archives built after the merge (their digests would not be in digests.json)" \
        'move(ix("build-archives.py"), ix("items-merge", True) + 1)'
-probe rebuild-apk      "005-AC1 Build's record not verified FIRST (stage-start after the build)" 'L[:2] + L[3:5] + L[2:3] + L[5:]'
-probe rebuild-apk      "005-AC1 a command between the policy and stage-start"       'L[:2] + ["python3 bin/build-admit.py run"] + L[2:]'
-probe assemble "005-AC1 stage-start AFTER the Rebuild apk records are bound (Build's record must come first)" \
-       'move(ix("stage-start"), ix("chain-verify.py bind") + 1)'
 probe assemble "005-AC2 no comparison" \
        '[l for l in L if "rebuild-compare" not in l]'
 probe assemble "005-AC2 no release comparison (rapk)" \
@@ -924,10 +920,6 @@ probe assemble "005-AC7 no snapshot comparison (snapshot-rapk)" \
        '[l for l in L if "--snapshot" not in l]'
 probe assemble "005-AC2 the comparison against Rebuild's own items" \
        '[l.replace("--expected build-in/items.json", "--expected items.json") for l in L]'
-probe assemble "005-AC2 stage-start missing (Build's record is never verified)" \
-       '[l for l in L if "stage-start" not in l]'
-probe assemble "005-AC2 policy make missing" \
-       '[l for l in L if "policy make" not in l]'
 probe assemble "005-AC2 the digest list not copied to digests.json" \
        '[l for l in L if "cp build-in/digests.json" not in l]'
 probe assemble "005-AC2 Rebuild publishes (a copy of its dist)"                     'L + ["cp -r dist release"]'
@@ -950,15 +942,13 @@ probe assemble "ARM admission-baseline run for the snapshot steps too (a copy af
        '(L[:ix("chain-verify.py bind", True) + 1] + [L[ix("admission-baseline")]]
         + L[ix("chain-verify.py bind", True) + 1:])'
 probe assemble "ARM admission-baseline taken out of the apk step" '[l for l in L if "admission-baseline" not in l]'
-probe assemble "ARM stage-start run for every step (a copy before the binds)" \
-       'L[:ix("chain-verify.py bind")] + [L[ix("stage-start")]] + L[ix("chain-verify.py bind"):]'
 probe assemble "ARM a branch of an if added beside the case blocks" \
        '(L[:ix("items-merge")] + ["if [ \"$1\" = apk ]; then"] + L[ix("items-merge"):][:1] + ["fi"]
         + L[ix("items-merge") + 1:])'
 probe assemble "ARM the version of a snapshot step taken from the tag (the snapshot version replaced)" \
-       '[l.replace("0.0.0-rc.1", "${GITHUB_REF_NAME#v}") for l in L]'
+       '[l.replace("0.0.0-rc.1", "${tag#v}") for l in L]'
 probe assemble "ARM the version of a release step hard-wired to the snapshot version (the tag expression replaced)" \
-       '[l.replace("${GITHUB_REF_NAME#v}", "0.0.0-rc.1") for l in L]'
+       '[l.replace("${tag#v}", "0.0.0-rc.1") for l in L]'
 probe assemble "ARM the snapshot version taken out (the snapshot arm has no version)" \
        '[l for l in L if "0.0.0-rc.1" not in l]'
 probe assemble "ARM the version missing from the items merge" \
@@ -1511,9 +1501,9 @@ then ok "AC16 every archive/ path the stage scripts read is held by the stored a
 python3 - "$work" <<'PY'
 import sys
 w = sys.argv[1]
-G = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"
+G = "${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"
 S = "inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))"
-GV_IF = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true) }}"   # check-govulncheck has no needs: the ref guard keeps it off on main
+GV_IF = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true) }}"   # check-govulncheck has no needs: the ref guard keeps it off on main
 SIGN_IF, AFTER_IF, CHECK_IF = "${{ %s }}" % S, "${{ %s && !contains(github.ref_name, '-') }}" % S, "${{ inputs.mode != 'snapshot' }}"
 KMS = "    env:\n      AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n      AWS_REGION: us-east-1\n      RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n"
 ADMIT = {"contents": "read", "actions": "read", "checks": "read", "statuses": "read", "pull-requests": "read"}
@@ -1531,9 +1521,9 @@ text = ("name: Release\non:\n  push:\n    tags: [\"v*\"]\n  workflow_dispatch:\n
         + job("build-freeze", None, G) + job("build-apk", "build-freeze", None, ADMIT) + job("build-assemble", "build-apk")
         + job("sign", "build-assemble", SIGN_IF, SIGNP, "sign", KMS)
         + job("rebuild-apk", "build-assemble") + job("rebuild-assemble", "rebuild-apk")
-        + job("sign-rebuild", "[build-assemble, rebuild-assemble]", SIGN_IF, SIGNP, "sign", KMS)
-        + job("check-govulncheck", None, GV_IF) + job("check", "[check-govulncheck, build-assemble, sign]", CHECK_IF)
-        + job("sign-check", "[build-assemble, check]", SIGN_IF, SIGNP, "sign", KMS)
+        + job("sign-rebuild", "[build-assemble, rebuild-assemble, sign]", SIGN_IF, SIGNP, "sign", KMS)
+        + job("check-govulncheck", None, GV_IF) + job("check", "[check-govulncheck, build-assemble]", CHECK_IF)
+        + job("sign-check", "[build-assemble, check, sign]", SIGN_IF, SIGNP, "sign", KMS)
         + job("release-compare", "[check, sign, sign-rebuild, sign-check]") + job("release-verify", "release-compare")
         + job("release", "[release-verify, release-compare]", AFTER_IF, {"contents": "write", "packages": "write"}, "release",
               "    concurrency:\n      group: release-publish\n      cancel-in-progress: false\n")
@@ -1593,7 +1583,7 @@ open(w + "/release.yml", "w").write(text)
 PY
 expect ok "005-AC5 fixture: the fifteen chain jobs with their needs, ifs, permissions and environments, the sign jobs holding the KMS role; other jobs as specified" "" graph "$work/release.yml"
 gr() { replace "$work/release.yml" "$work/$1.yml" "$3" "$4" && expect caught "$2" "$5" graph "$work/$1.yml"; return 0; }
-GATE_BODY="(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true || inputs.mode == 'snapshot'"
+GATE_BODY="(github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true || inputs.mode == 'snapshot'"
 GATE="\${{ $GATE_BODY }}"
 OLDDRY="\${{ !cancelled() && (needs.admission.result == 'success' || inputs.dry-run) }}"
 TAGONLY="\${{ startsWith(github.ref, 'refs/tags/v') }}"
@@ -1601,21 +1591,22 @@ GUARD_S="inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(
 SIGNIF="\${{ $GUARD_S }}"
 PNIF="\${{ needs.decide.outputs.tag != '' }}"
 RCS=" && !contains(github.ref_name, '-')"
-# needs: each job has exactly its needs (REQ-CHAIN-005-AC5, rulings 8): Rebuild needs Build only, Check needs check-govulncheck, Build and Sign, the Release jobs follow in one line
+# needs: each job has exactly its needs (REQ-CHAIN-005-AC5, rulings 8): Rebuild needs Build only, Check needs check-govulncheck and Build, the Release jobs follow in one line
 gr n1  "005-AC5 rebuild-apk waits for sign (Rebuild needs Build only: it also runs in snapshot mode)" '  rebuild-apk:\n    needs: build-assemble' '  rebuild-apk:\n    needs: [build-assemble, sign]' "rebuild-apk must need exactly"
 gr n2  "005-AC5 rebuild-apk waits for nothing" '  rebuild-apk:\n    needs: build-assemble\n' '  rebuild-apk:\n' "rebuild-apk must need exactly"
 gr n3  "005-AC5 rebuild-assemble does not wait for rebuild-apk" '  rebuild-assemble:\n    needs: rebuild-apk' '  rebuild-assemble:\n    needs: build-assemble' "rebuild-assemble must need exactly"
-gr n4  "005-AC5 check waits for rebuild-assemble" '  check:\n    needs: [check-govulncheck, build-assemble, sign]' '  check:\n    needs: [check-govulncheck, build-assemble, sign, rebuild-assemble]' "check must need exactly"
-gr n5  "005-AC5 check starts without Sign (it would read an unsigned local record)" '  check:\n    needs: [check-govulncheck, build-assemble, sign]' '  check:\n    needs: [check-govulncheck, build-assemble]' "check must need exactly"
-gr n6  "005-AC5 check does not wait for check-govulncheck (the govulncheck binary would not exist)" '  check:\n    needs: [check-govulncheck, build-assemble, sign]' '  check:\n    needs: [build-assemble, sign]' "check must need exactly"
-gr n7  "005-AC5 check does not wait for build-assemble" '  check:\n    needs: [check-govulncheck, build-assemble, sign]' '  check:\n    needs: [check-govulncheck, sign]' "check must need exactly"
+gr n4  "005-AC5 check waits for rebuild-assemble" '  check:\n    needs: [check-govulncheck, build-assemble]' '  check:\n    needs: [check-govulncheck, build-assemble, rebuild-assemble]' "check must need exactly"
+gr n6  "005-AC5 check does not wait for check-govulncheck (the govulncheck binary would not exist)" '  check:\n    needs: [check-govulncheck, build-assemble]' '  check:\n    needs: [build-assemble]' "check must need exactly"
+gr n7  "005-AC5 check does not wait for build-assemble" '  check:\n    needs: [check-govulncheck, build-assemble]' '  check:\n    needs: [check-govulncheck]' "check must need exactly"
 gr n8  "005-AC5 check-govulncheck waits for another job" '  check-govulncheck:\n' '  check-govulncheck:\n    needs: build-freeze\n' "check-govulncheck must need exactly"
 gr n9  "005-AC5 sign does not need build-assemble" '  sign:\n    needs: build-assemble' '  sign:\n    needs: build-apk' "sign must need exactly"
 gr n10 "005-AC5 build-apk does not wait for build-freeze" '  build-apk:\n    needs: build-freeze' '  build-apk:\n    needs: []' "build-apk must need exactly"
 gr n11 "005-AC5 build-assemble does not wait for build-apk" '  build-assemble:\n    needs: build-apk' '  build-assemble:\n    needs: build-freeze' "build-assemble must need exactly"
-gr n12 "005-AC5 sign-rebuild does not wait for rebuild-assemble" '  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble]' '  sign-rebuild:\n    needs: [build-assemble]' "sign-rebuild must need exactly"
-gr n13 "005-AC5 sign-check does not wait for check" '  sign-check:\n    needs: [build-assemble, check]' '  sign-check:\n    needs: [build-assemble]' "sign-check must need exactly"
-gr n14 "005-AC5 sign-check does not wait for build-assemble" '  sign-check:\n    needs: [build-assemble, check]' '  sign-check:\n    needs: [check]' "sign-check must need exactly"
+gr n12 "005-AC5 sign-rebuild does not wait for rebuild-assemble" '  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble, sign]' '  sign-rebuild:\n    needs: [build-assemble, sign]' "sign-rebuild must need exactly"
+gr n12b "005-AC5 sign-rebuild does not wait for sign (on a tag Sign verifies Build's records first)" '  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble, sign]' '  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble]' "sign-rebuild must need exactly"
+gr n13 "005-AC5 sign-check does not wait for check" '  sign-check:\n    needs: [build-assemble, check, sign]' '  sign-check:\n    needs: [build-assemble, sign]' "sign-check must need exactly"
+gr n14 "005-AC5 sign-check does not wait for build-assemble" '  sign-check:\n    needs: [build-assemble, check, sign]' '  sign-check:\n    needs: [check, sign]' "sign-check must need exactly"
+gr n14b "005-AC5 sign-check does not wait for sign (on a tag Sign verifies Build's records first)" '  sign-check:\n    needs: [build-assemble, check, sign]' '  sign-check:\n    needs: [build-assemble, check]' "sign-check must need exactly"
 gr n15 "005-AC5 release-compare does not need sign-check" 'needs: [check, sign, sign-rebuild, sign-check]' 'needs: [check, sign, sign-rebuild]' "release-compare must need exactly"
 gr n16 "005-AC5 release-compare does not need sign-rebuild (Rebuild's signed records)" 'needs: [check, sign, sign-rebuild, sign-check]' 'needs: [check, sign, sign-check]' "release-compare must need exactly"
 gr n17 "005-AC5 release-compare does not need sign" 'needs: [check, sign, sign-rebuild, sign-check]' 'needs: [check, sign-rebuild, sign-check]' "release-compare must need exactly"
@@ -1629,8 +1620,8 @@ gr i1  "005-AC5 build-freeze without the gate G (it would run on every push and 
 gr i2  "005-AC5 build-freeze gated by always()" "  build-freeze:\n    if: $GATE\n" "  build-freeze:\n    if: always()\n" "build-freeze must carry exactly the if"
 gr i3  "005-AC5 build-freeze gated by the tag test alone (a dry run on a branch would never run)" "  build-freeze:\n    if: $GATE\n" "  build-freeze:\n    if: $TAGONLY\n" "build-freeze must carry exactly the if"
 gr i4  "005-AC5 gate G with an extra conjunct" "  build-freeze:\n    if: $GATE\n" "  build-freeze:\n    if: \${{ ($GATE_BODY) && github.actor != 'x' }}\n" "build-freeze must carry exactly the if"
-gr i5  "005-AC5 gate G without the snapshot call (the callers' snapshot build would never start)" "  build-freeze:\n    if: $GATE\n" "  build-freeze:\n    if: \${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}\n" "build-freeze must carry exactly the if"
-gr i6  "005-AC5 a manual workflow_dispatch on a v* tag cannot satisfy G: the gate widened to dispatch is refused" "  build-freeze:\n    if: $GATE\n" "  build-freeze:\n    if: \${{ (github.event_name != 'schedule' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true || inputs.mode == 'snapshot' }}\n" "build-freeze must carry exactly the if"
+gr i5  "005-AC5 gate G without the snapshot call (the callers' snapshot build would never start)" "  build-freeze:\n    if: $GATE\n" "  build-freeze:\n    if: \${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true }}\n" "build-freeze must carry exactly the if"
+gr i6  "005-AC5 a manual workflow_dispatch on a v* tag cannot satisfy G: the gate widened to dispatch is refused" "  build-freeze:\n    if: $GATE\n" "  build-freeze:\n    if: \${{ (github.event_name != 'schedule' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}\n" "build-freeze must carry exactly the if"
 gr i7  "005-AC5 the old dry-run gate with needs.admission on build-freeze (admission is gone; on a tag push everything would be skipped)" "  build-freeze:\n    if: $GATE\n" "  build-freeze:\n    if: $OLDDRY\n" "build-freeze must carry exactly the if"
 gr i8  "005-AC5 build-apk with an if (it runs after build-freeze through needs)" '  build-apk:\n    needs: build-freeze\n' '  build-apk:\n    needs: build-freeze\n    if: always()\n' "build-apk must carry no if"
 gr i9  "005-AC5 rebuild-apk with the gate G (only build-freeze carries it)" '  rebuild-apk:\n    needs: build-assemble\n' "  rebuild-apk:\n    needs: build-assemble\n    if: $GATE\n" "rebuild-apk must carry no if"
@@ -1639,26 +1630,26 @@ gr i11 "005-AC5 sign gated by the tag test alone" "  sign:\n    needs: build-ass
 gr i12 "005-AC5 sign without the push event in its if (a dispatch on a tag could sign)" "  sign:\n    needs: build-assemble\n    if: $SIGNIF\n" "  sign:\n    needs: build-assemble\n    if: \${{ inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}\n" "sign must carry exactly the if"
 gr i13 "005-AC5 sign without the snapshot exclusion (a snapshot caller's tag push could sign)" "  sign:\n    needs: build-assemble\n    if: $SIGNIF\n" "  sign:\n    needs: build-assemble\n    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}\n" "sign must carry exactly the if"
 gr i14 "005-AC5 sign without the workflow_ref test (a caller's tag push could sign: a called release.yml's token names the caller's file)" "  sign:\n    needs: build-assemble\n    if: $SIGNIF\n" "  sign:\n    needs: build-assemble\n    if: \${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}\n" "sign must carry exactly the if"
-gr i15 "005-AC5 sign-rebuild without the guard S" "  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble]\n    if: $SIGNIF\n" "  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble]\n" "sign-rebuild must carry exactly the if"
-gr i16 "005-AC5 sign-check without the guard S" "  sign-check:\n    needs: [build-assemble, check]\n    if: $SIGNIF\n" "  sign-check:\n    needs: [build-assemble, check]\n" "sign-check must carry exactly the if"
-gr i17 "005-AC5 sign-check with the candidate rule too (only the jobs after the signatures carry it)" "  sign-check:\n    needs: [build-assemble, check]\n    if: $SIGNIF\n" "  sign-check:\n    needs: [build-assemble, check]\n    if: \${{ $GUARD_S$RCS }}\n" "sign-check must carry exactly the if"
+gr i15 "005-AC5 sign-rebuild without the guard S" "  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble, sign]\n    if: $SIGNIF\n" "  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble, sign]\n" "sign-rebuild must carry exactly the if"
+gr i16 "005-AC5 sign-check without the guard S" "  sign-check:\n    needs: [build-assemble, check, sign]\n    if: $SIGNIF\n" "  sign-check:\n    needs: [build-assemble, check, sign]\n" "sign-check must carry exactly the if"
+gr i17 "005-AC5 sign-check with the candidate rule too (only the jobs after the signatures carry it)" "  sign-check:\n    needs: [build-assemble, check, sign]\n    if: $SIGNIF\n" "  sign-check:\n    needs: [build-assemble, check, sign]\n    if: \${{ $GUARD_S$RCS }}\n" "sign-check must carry exactly the if"
 gr i18 "005-AC5 release without the candidate rule (a release candidate would enter the environment release)" "  release:\n    needs: [release-verify, release-compare]\n    if: \${{ $GUARD_S$RCS }}\n" "  release:\n    needs: [release-verify, release-compare]\n    if: $SIGNIF\n" "release must carry exactly the if"
 gr i21 "005-AC5 release without the guard S (a branch run would not be refused by its own if)" "  release:\n    needs: [release-verify, release-compare]\n    if: \${{ $GUARD_S$RCS }}\n" "  release:\n    needs: [release-verify, release-compare]\n    if: \${{ !contains(github.ref_name, '-') }}\n" "release must carry exactly the if"
 gr i22 "005-AC5 release runs when a stage failed (if: always())" "  release:\n    needs: [release-verify, release-compare]\n    if: \${{ $GUARD_S$RCS }}\n" "  release:\n    needs: [release-verify, release-compare]\n    if: always()\n" "release must carry exactly the if"
 gr i23 "005-AC5 release runs when a predecessor was skipped (!cancelled())" "  release:\n    needs: [release-verify, release-compare]\n    if: \${{ $GUARD_S$RCS }}\n" "  release:\n    needs: [release-verify, release-compare]\n    if: \${{ !cancelled() }}\n" "release must carry exactly the if"
 gr i24 "005-AC5 release-compare with an if (it runs after Check and the sign jobs through needs)" '  release-compare:\n    needs: [check, sign, sign-rebuild, sign-check]\n' '  release-compare:\n    needs: [check, sign, sign-rebuild, sign-check]\n    if: always()\n' "release-compare must carry no if"
 gr i25 "005-AC5 release-verify with an if" '  release-verify:\n    needs: release-compare\n' '  release-verify:\n    needs: release-compare\n    if: ${{ !contains(github.ref_name, '"'-'"') }}\n' "release-verify must carry no if"
-gr i26 "005-AC5 check without its mode condition (it would run in a snapshot call)" "  check:\n    needs: [check-govulncheck, build-assemble, sign]\n    if: \${{ inputs.mode != 'snapshot' }}\n" "  check:\n    needs: [check-govulncheck, build-assemble, sign]\n" "check must carry exactly the if"
-gr i27 "005-AC5 check with the guard S (the Check jobs carry exactly inputs.mode != 'snapshot')" "  check:\n    needs: [check-govulncheck, build-assemble, sign]\n    if: \${{ inputs.mode != 'snapshot' }}\n" "  check:\n    needs: [check-govulncheck, build-assemble, sign]\n    if: $SIGNIF\n" "check must carry exactly the if"
-gr i28 "005-AC5 check-govulncheck without its mode condition" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true) }}\n" "  check-govulncheck:\n" "check-govulncheck must carry exactly the if"
-gr i28b "005-AC5 check-govulncheck back to the snapshot-only if (it has no needs: it would run on every push to main)" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true) }}\n" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' }}\n" "check-govulncheck must carry exactly the if"
-gr i28c "005-AC5 check-govulncheck with a guard that lets a main push through" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true) }}\n" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' && github.event_name != 'workflow_dispatch' }}\n" "check-govulncheck must carry exactly the if"
-gr i29 "005-AC5 check that survives a failed sign (if: always())" "  check:\n    needs: [check-govulncheck, build-assemble, sign]\n    if: \${{ inputs.mode != 'snapshot' }}\n" "  check:\n    needs: [check-govulncheck, build-assemble, sign]\n    if: \${{ always() }}\n" "check must carry exactly the if"
+gr i26 "005-AC5 check without its mode condition (it would run in a snapshot call)" "  check:\n    needs: [check-govulncheck, build-assemble]\n    if: \${{ inputs.mode != 'snapshot' }}\n" "  check:\n    needs: [check-govulncheck, build-assemble]\n" "check must carry exactly the if"
+gr i27 "005-AC5 check with the guard S (the Check jobs carry exactly inputs.mode != 'snapshot')" "  check:\n    needs: [check-govulncheck, build-assemble]\n    if: \${{ inputs.mode != 'snapshot' }}\n" "  check:\n    needs: [check-govulncheck, build-assemble]\n    if: $SIGNIF\n" "check must carry exactly the if"
+gr i28 "005-AC5 check-govulncheck without its mode condition" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true) }}\n" "  check-govulncheck:\n" "check-govulncheck must carry exactly the if"
+gr i28b "005-AC5 check-govulncheck back to the snapshot-only if (it has no needs: it would run on every push to main)" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true) }}\n" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' }}\n" "check-govulncheck must carry exactly the if"
+gr i28c "005-AC5 check-govulncheck with a guard that lets a main push through" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true) }}\n" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' && github.event_name != 'workflow_dispatch' }}\n" "check-govulncheck must carry exactly the if"
+gr i29 "005-AC5 check that survives a failed build (if: always())" "  check:\n    needs: [check-govulncheck, build-assemble]\n    if: \${{ inputs.mode != 'snapshot' }}\n" "  check:\n    needs: [check-govulncheck, build-assemble]\n    if: \${{ always() }}\n" "check must carry exactly the if"
 # environment and permissions (ruling 1: the three sign jobs are the only ones in the environment sign; the release job holds no KMS role and no id-token)
 AFTERIF="\${{ $GUARD_S$RCS }}"
 gr e-sign   "ruling 1 sign is in another environment than sign (the KMS role's trust names the environment sign)" "  sign:\n    needs: build-assemble\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: sign\n" "  sign:\n    needs: build-assemble\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: other\n" "sign must be in the environment sign"
-gr e-signr  "ruling 1 sign-rebuild is in another environment than sign" "  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble]\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: sign\n" "  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble]\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: other\n" "sign-rebuild must be in the environment sign"
-gr e-signc  "ruling 1 sign-check is in another environment than sign" "  sign-check:\n    needs: [build-assemble, check]\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: sign\n" "  sign-check:\n    needs: [build-assemble, check]\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: other\n" "sign-check must be in the environment sign"
+gr e-signr  "ruling 1 sign-rebuild is in another environment than sign" "  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble, sign]\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: sign\n" "  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble, sign]\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: other\n" "sign-rebuild must be in the environment sign"
+gr e-signc  "ruling 1 sign-check is in another environment than sign" "  sign-check:\n    needs: [build-assemble, check, sign]\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: sign\n" "  sign-check:\n    needs: [build-assemble, check, sign]\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: other\n" "sign-check must be in the environment sign"
 gr e1  "ruling 1 release-compare in the environment sign" '  release-compare:\n' '  release-compare:\n    environment: sign\n' "release-compare must be in no environment"
 gr e2  "ruling 1 release in the environment sign (it is in the environment release)" '    environment: release\n' '    environment: sign\n' "release must be in the environment release"
 gr e5  "ruling 1 check in the environment sign (a build or check job never reaches the KMS key)" '  check:\n' '  check:\n    environment: sign\n' "check must be in no environment"
@@ -1666,7 +1657,7 @@ gr p1  "ruling 1 the release job holds an id-token (it holds no KMS role)" '    
 gr p2  "ruling 1 the release job without packages write (it could not publish)" '      contents: write\n      packages: write\n    steps: []\n  decide:' '      contents: write\n    steps: []\n  decide:' "release must hold exactly the permissions"
 gr p7  "ruling 1 sign with contents write" '      contents: read\n      id-token: write\n    steps: []' '      contents: write\n      id-token: write\n    steps: []' "sign must hold exactly the permissions"
 gr p8  "ruling 1 sign without id-token (it could not reach the KMS key)" '      contents: read\n      id-token: write\n    steps: []' '      contents: read\n    steps: []' "sign must hold exactly the permissions"
-gr p9  "ruling 1 check holds an id-token (only the four sign jobs ask for one in the chain)" '  check:\n    needs: [check-govulncheck, build-assemble, sign]\n    if: ${{ inputs.mode != '"'snapshot'"' }}\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n' '  check:\n    needs: [check-govulncheck, build-assemble, sign]\n    if: ${{ inputs.mode != '"'snapshot'"' }}\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n      id-token: write\n' "check must hold exactly the permissions"
+gr p9  "ruling 1 check holds an id-token (only the four sign jobs ask for one in the chain)" '  check:\n    needs: [check-govulncheck, build-assemble]\n    if: ${{ inputs.mode != '"'snapshot'"' }}\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n' '  check:\n    needs: [check-govulncheck, build-assemble]\n    if: ${{ inputs.mode != '"'snapshot'"' }}\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n      id-token: write\n' "check must hold exactly the permissions"
 gr p10 "005-AC5 build-apk without the admission permissions (the required-checks check could not run)" '      checks: read\n' '' "build-apk must hold exactly the permissions"
 gr p11 "005-AC5 workflow-level permissions that write (every job would inherit them)" 'permissions: {}\njobs' 'permissions:\n  contents: write\njobs' "workflow-level permissions"
 gr p12 "005-AC5 workflow-level permissions of contents: read (the workflow-level block is empty, every job declares its own)" 'permissions: {}\njobs' 'permissions:\n  contents: read\njobs' "workflow-level permissions must be empty"
@@ -1723,7 +1714,7 @@ replace "$work/release.yml" "$work/g47.yml" "  workflow_dispatch:\n    inputs:\n
 # lj builds release.yml with the three jobs inserted before `decide`, optionally mutates ONE text in them, and runs the judge on it.
 LJ_RC_IF="\${{ inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}"
 LJ_FINAL_IF="\${{ inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc') && !inputs.dry-run }}"
-LJ_PERSONA_IF="\${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"
+LJ_PERSONA_IF="\${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v') }}"
 LJ_JOBS="  live-test:\n    needs: [check]\n    if: $LJ_RC_IF\n    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo rc\n  live-test-release:\n    needs: [release]\n    if: $LJ_FINAL_IF\n    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo final\n  persona-uat-rc:\n    needs: build-assemble\n    if: $LJ_PERSONA_IF\n    permissions:\n      contents: read\n      id-token: write\n    uses: ./.github/workflows/persona-uat.yml\n    with:\n      digests: \${{ needs.build-assemble.outputs.digests }}\n"
 lj() { # lj NAME LABEL OLD NEW ok|caught WORD   (OLD empty: no mutation)
   python3 - "$work/release.yml" "$work/lj-$1.yml" "$3" "$4" "$LJ_JOBS" <<'PY' || { bad "mutation did not apply (lj-$1): $3"; return 0; }
@@ -1786,7 +1777,7 @@ lj pu3 "REQ-UAT-001-AC1 persona-uat-rc that needs nothing" "  persona-uat-rc:\n 
 lj pu4 "REQ-UAT-001-AC1 persona-uat-rc with a write it does not need (packages)" "      id-token: write\n    uses: ./.github/workflows/persona-uat.yml" "      id-token: write\n      packages: write\n    uses: ./.github/workflows/persona-uat.yml" caught "exactly the permissions"
 lj pu5 "REQ-UAT-001-AC1 persona-uat-rc with contents write" "      contents: read\n      id-token: write\n    uses: ./.github/workflows/persona-uat.yml" "      contents: write\n      id-token: write\n    uses: ./.github/workflows/persona-uat.yml" caught "exactly the permissions"
 lj pu6 "REQ-UAT-001-AC1 persona-uat-rc without the snapshot exclusion (it would run in a snapshot call)" "inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED" "vars.PERSONA_UAT_ENABLED" caught "must carry exactly the if"
-lj pu7 "REQ-UAT-001-AC1 persona-uat-rc that also runs on final tags (no -rc conjunct)" " && contains(github.ref_name, '-rc') }}\n    permissions" " }}\n    permissions" caught "must carry exactly the if"
+lj pu7 "REQ-UAT-001-AC1 persona-uat-rc that also runs on a tag push (no release-branch conjunct)" " && startsWith(github.ref, 'refs/heads/release/v') }}\n    permissions" " }}\n    permissions" caught "must carry exactly the if"
 lj pu8 "REQ-UAT-001-AC1 persona-uat-rc without the PERSONA_UAT_ENABLED gate" "vars.PERSONA_UAT_ENABLED == 'true' && " "" caught "must carry exactly the if"
 lj pu9 "REQ-UAT-001-AC1 persona-uat-rc in an environment (the persona environment is entered by the called jobs, not by the call)" "  persona-uat-rc:\n    needs: build-assemble" "  persona-uat-rc:\n    environment: persona-uat\n    needs: build-assemble" caught "may not name an environment"
 lj pu10 "REQ-UAT-001-AC1 persona-uat-rc calls another workflow than persona-uat.yml" "    uses: ./.github/workflows/persona-uat.yml" "    uses: ./.github/workflows/ci.yml" caught "job-level uses"
@@ -2109,47 +2100,37 @@ PY
   fi
 }
 beh_rebuild_apk() { # beh_rebuild_apk TAGNAME SCRIPT MODE VERSIONTAG
-  local t=$1 s=$2 mode=$3 v=$4 d="$work/b-rba-$1-$4" rc calls ns nb
-  mk "$d" rebuild-apk "$s" "$mode" "$v"; rc=$(run_stage "$d" rebuild-apk "$mode" "$v"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-  ns=$(line_of 'verify stage-start' "$d"); nb=$(line_of '^apk ' "$d")
-  if [ "$rc" = 0 ] && [ -n "$ns" ] && [ -n "$nb" ] && [ "$ns" -lt "$nb" ] && [ "$(n_calls 'SDE=1700000000' "$d")" = 3 ] \
+  local t=$1 s=$2 mode=$3 v=$4 d="$work/b-rba-$1-$4" rc nb
+  mk "$d" rebuild-apk "$s" "$mode" "$v"; rc=$(run_stage "$d" rebuild-apk "$mode" "$v")
+  nb=$(line_of '^apk ' "$d")
+  if [ "$rc" = 0 ] && [ -n "$nb" ] && [ "$(n_calls 'SDE=1700000000' "$d")" = 3 ] \
      && [ -f "$d/out/items-apk.json" ]; then
-    ok "005-AC2 $t rebuild-apk $v: Build's record is verified FIRST, then the same builds with the same date, then the fragment"
+    ok "005-AC2 $t rebuild-apk $v: the same builds with the same date, then the fragment"
   else
-    bad "005-AC2 $t rebuild-apk $v: rc=$rc stage-start=$ns build=$nb"
+    bad "005-AC2 $t rebuild-apk $v: rc=$rc build=$nb"
   fi
   bl_check "$t rebuild-apk $v" "$d" "${v#v}"
-  if [ "$v" = v0.3.0 ]; then
-    mk "$d" rebuild-apk "$s" "$mode" "$v"; rc=$(run_stage "$d" rebuild-apk "$mode" "$v" FAKE_VERIFY_RC=1); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-    if [ "$rc" != 0 ] && ! grep -q '^apk ' <<< "$calls"; then
-      ok "005-AC2 $t rebuild-apk: a refused Build record runs no build"
-    else
-      bad "005-AC2 $t rebuild-apk: refused record -> rc=$rc"
-    fi
-  fi
 }
 beh_rebuild_assemble() { # beh_rebuild_assemble TAGNAME SCRIPT MODE VERSIONTAG
-  local t=$1 s=$2 mode=$3 v=$4 d="$work/b-rbs-$1-$4" rc calls n1 n2 n3 n4 n5 n6
+  local t=$1 s=$2 mode=$3 v=$4 d="$work/b-rbs-$1-$4" rc calls n3 n4 n5 n6
   mk "$d" rebuild-assemble "$s" "$mode" "$v"
   printf '{"image-fips":"sha256:%s","image-production":"sha256:%s"}' "$(printf f | sha256sum | cut -c1-64)" "$(printf p | sha256sum | cut -c1-64)" > "$d/build-in/digests.json"   # the digest list Build attested, not the harness' empty one
   rc=$(run_stage "$d" rebuild-assemble "$mode" "$v"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
   # REQ-CHAIN-005-AC2 (Astra R2): Rebuild's own record must carry the product file:digests.json with Build's bytes, because Release's stage-start for Rebuild compares the sha256 of Build's digest file with it
   if [ "$rc" = 0 ] && [ -f "$d/digests.json" ] && [ ! -L "$d/digests.json" ] && cmp -s "$d/digests.json" "$d/build-in/digests.json" && [ -s "$d/digests.json" ]; then
-    ok "005-AC2 $t rebuild-assemble $v: digests.json at the repository root is the verified digest list byte for byte (the product Release's stage-start asks Rebuild's record for)"
+    ok "005-AC2 $t rebuild-assemble $v: digests.json at the repository root is Build's digest list byte for byte (the product Release's stage-start asks Rebuild's record for)"
   else
     bad "005-AC2 $t rebuild-assemble $v: no byte-identical root digests.json (rc=$rc, $(ls "$d" 2> /dev/null | tr '\n' ' ' | head -c 120))"
   fi
-  n1=$(line_of 'verify stage-start' "$d")
-  n2=$(line_of 'verify policy' "$d")
   n3=$(line_of 'verify bind ' "$d")
   n4=$(line_of '^image ' "$d")
   n5=$(line_of 'verify items-merge' "$d")
   n6=$(line_of 'verify rebuild-compare' "$d")
-  if [ "$rc" = 0 ] && [ -n "$n1" ] && [ -n "$n2" ] && [ -n "$n3" ] && [ -n "$n4" ] && [ -n "$n5" ] && [ -n "$n6" ] && [ "$n2" -lt "$n1" ] \
-     && [ "$n1" -lt "$n3" ] && [ "$n3" -lt "$n4" ] && [ "$n4" -lt "$n5" ] && [ "$n5" -lt "$n6" ]; then
-    ok "005-AC2 $t rebuild-assemble $v: policy, stage-start (Build's signed record), local binds, images, merge, compare in that order"
+  if [ "$rc" = 0 ] && [ -n "$n3" ] && [ -n "$n4" ] && [ -n "$n5" ] && [ -n "$n6" ] \
+     && [ "$n3" -lt "$n4" ] && [ "$n4" -lt "$n5" ] && [ "$n5" -lt "$n6" ]; then
+    ok "005-AC2 $t rebuild-assemble $v: local binds, images, merge, compare in that order"
   else
-    bad "005-AC2 $t rebuild-assemble $v: rc=$rc order=$n1 $n2 $n3 $n4 $n5 $n6"
+    bad "005-AC2 $t rebuild-assemble $v: rc=$rc order=$n3 $n4 $n5 $n6"
   fi
   if [ "$rc" = 0 ] && jq -e '.equal == true' "$d/witness-rebuild/verdict.json" > /dev/null 2>&1; then
     ok "005-AC3 $t rebuild-assemble $v: an identical rebuild writes an equal verdict"
@@ -2431,7 +2412,7 @@ for tag in fixture real; do
     fi
   done
 done
-cases_of() { case "$1" in apk) echo 18;; assemble) echo 21;; rebuild-apk) echo 5;; rebuild-assemble) echo 9;; esac; }    # cases one kind runs for both versions
+cases_of() { case "$1" in apk) echo 18;; assemble) echo 21;; rebuild-apk) echo 4;; rebuild-assemble) echo 9;; esac; }    # cases one kind runs for both versions
 for tag in fixture real; do
   mode=oracle; [ "$tag" = real ] && mode=real
   for kind in apk assemble rebuild-apk rebuild-assemble; do
@@ -2450,14 +2431,14 @@ for tag in fixture real; do
 done
 # The one assemble script derives its version from its STEP (REQ-CHAIN-004-AC3): the tag minus v for apk and rapk,
 # 0.0.0-rc.1 for the snapshot steps
-# whatever GITHUB_REF_NAME is; a tag named v9.9.9 shows which one reaches both image builds and the archives
+# whatever GITHUB_REF_NAME is; a release branch named release/v9.9.9 (its tag is v9.9.9) shows which one reaches both image builds and the archives
 for kind in assemble rebuild-assemble snapshot-assemble snapshot-rebuild-assemble; do
   vd="$work/ver-$kind"; vtag=v9.9.9; want=9.9.9; case "$kind" in snapshot-*) vtag=$SNAP_TAG; want=0.0.0-rc.1;; esac
   mk "$vd" "$kind" "$(script_of real "$kind")" oracle "$vtag"
-  REF_NAME=v9.9.9 run_stage "$vd" "$kind" oracle "$vtag" > /dev/null
+  REF_NAME=release/v9.9.9 run_stage "$vd" "$kind" oracle "$vtag" > /dev/null
   if [ "$(n_calls "^image .*--version $want " "$vd")" = 2 ] && \
      [ "$(n_calls "^archives .*--version $want " "$vd")" = 1 ]; then
-    ok "AC3 $kind: with GITHUB_REF_NAME v9.9.9 both image builds and the archives get version $want"\
+    ok "AC3 $kind: with GITHUB_REF_NAME release/v9.9.9 both image builds and the archives get version $want"\
       " (STEP $(step_of "$kind"))"
   else
     bad "AC3 $kind: the version did not reach the images and the archives as $want: "\
@@ -2580,24 +2561,24 @@ f1 caught "a panel download by artifact id of something that is not a scanner jo
 f1 caught "a download by artifact id outside the panel job is caught" "$root/.github/workflows/main-candidate-rescan.yml" '1,/name: images/s/name: images/artifact-ids: ${{ needs.panel-grype.outputs.artifact-id }}/'
 f1 caught "a panel download by artifact id with a name beside it is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's#path: /tmp/panel/panel-scout#name: images#'
 f1 caught "a panel download by artifact id with another key (run-id) in place of the path is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's#path: /tmp/panel/panel-scout#run-id: 123#'
-# Codex A r2 blocker 1 / B4: the release-candidate tag (vX.Y.Z-rcN, advisor 0383) runs the REAL `policy make` of bin/chain-verify.py in both assemble scripts (the
-# harness no longer fakes it for an rc tag): the stage completes and the policy carries the FULL tag; the policy takes a near-miss tag as given (the grammar is judged before), and assemble stops a tag that is not the admission's
+# Codex A r2 blocker 1 / B4: the release-candidate tag (vX.Y.Z-rcN, advisor 0383) through both assemble scripts: the stage completes with no policy (Build's
+# and Rebuild's records are local), Rebuild's assemble takes its version from the tag, and Build's assemble stops a tag that is not the admission's
 for kind in assemble rebuild-assemble; do
   rd="$work/rcp-$kind"; mk "$rd" "$kind" "$(script_of real "$kind")" real v0.3.0-rc1
   rc=$(run_stage "$rd" "$kind" real v0.3.0-rc1)
   if [ "$kind" = assemble ] && [ "$rc" = 0 ] && [ ! -e "$rd/policy.json" ]; then
     ok "AC12/rc $kind: the tag v0.3.0-rc1 completes with no policy (the apk records are local; the REAL admission-baseline reads the full tag)"
-  elif [ "$kind" = rebuild-assemble ] && [ "$rc" = 0 ] && python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); sys.exit(0 if p["tag"]=="v0.3.0-rc1" and p["ref"]=="refs/tags/v0.3.0-rc1" else 1)' "$rd/policy.json" 2> /dev/null; then
-    ok "AC12/rc $kind: the tag v0.3.0-rc1 passes the REAL policy make and the policy carries the full tag"
-  else bad "AC12/rc $kind: v0.3.0-rc1 through the real policy make: rc=$rc $(head -c 160 "$rd/stage.err" 2> /dev/null | tr '\n' ' ')"; fi
+  elif [ "$kind" = rebuild-assemble ] && [ "$rc" = 0 ] && [ ! -e "$rd/policy.json" ] \
+      && [ "$(n_calls '^image .*--version 0.3.0-rc1 ' "$rd")" = 2 ]; then
+    ok "AC12/rc $kind: the tag v0.3.0-rc1 completes with no policy and both image builds get the version 0.3.0-rc1 from the tag"
+  else bad "AC12/rc $kind: v0.3.0-rc1: rc=$rc images=$(grep '^image ' "$rd/calls.log" 2> /dev/null | tr '\n' '|' | cut -c1-160)"\
+      " $(head -c 160 "$rd/stage.err" 2> /dev/null | tr '\n' ' ')"; fi
+  # the near-miss tags are stopped by the admission-baseline line, which only Build's assemble (STEP apk) runs
+  [ "$kind" = assemble ] || continue
   for nm in v0.3.0-rc.1 v0.3.0-RC1 v0.3.0-rc1x; do
     rd="$work/rcn-$kind-$nm"; mk "$rd" "$kind" "$(script_of real "$kind")" real v0.3.0-rc1
     rc=$(REF_NAME=$nm run_stage "$rd" "$kind" real v0.3.0-rc1)
-    if [ "$kind" = rebuild-assemble ]; then
-      # the policy takes the tag as given (REQ-CHAIN-004-AC20): the tag was judged before, in release-verify.sh and in Build's admission; the stage is not stopped at the policy
-      if ! grep -q "refused at policy" "$rd/stage.err" 2> /dev/null; then ok "AC12/rc $kind: the near-miss tag $nm is not refused at the real policy make (the grammar is judged before, not there)"
-      else bad "AC12/rc $kind: near-miss $nm was refused at the policy: $(head -c 120 "$rd/stage.err" | tr '\n' ' ')"; fi
-    elif [ "$rc" != 0 ] && [ "$(n_calls '^image ' "$rd")" = 0 ] && grep -q "refused at build: tag" "$rd/stage.err"; then ok "AC12/rc $kind: the near-miss tag $nm is refused at the admission's tag check (not the run's tag), before any image is built"
+    if [ "$rc" != 0 ] && [ "$(n_calls '^image ' "$rd")" = 0 ] && grep -q "refused at build: tag" "$rd/stage.err"; then ok "AC12/rc $kind: the near-miss tag $nm is refused at the admission's tag check (not the run's tag), before any image is built"
     else bad "AC12/rc $kind: near-miss $nm: rc=$rc images=$(n_calls '^image ' "$rd") $(head -c 120 "$rd/stage.err" 2> /dev/null | tr '\n' ' ')"; fi
   done
 done
@@ -2940,7 +2921,7 @@ PY
 )
 if [ -z "$absent_here" ]; then ok "base inputs: every path .github/policy/base-inputs.json lists is a file of this tree"
 else bad "base inputs: a path .github/policy/base-inputs.json lists is not a file of this tree: $(printf '%s' "$absent_here" | tr '\n' ' ')"; fi
-# the harness itself can fail: (1) a script that ignores a refused admission is visible; (2) a script without its stage-start line fails its cases and the
+# the harness itself can fail: (1) a script that ignores a refused admission is visible; (2) a script without its digest-list copy line fails its cases and the
 # summary still prints (a wrong implementation must not abort the test: every counting command above is safe under set -e)
 mk "$work/ctl" apk "$work/s-apk.sh" oracle v0.3.0
 sed -i.bak 's/^\(python3 -I bin\/build-admit\.py run\)$/\1 || true/' "$work/ctl/bin/build-stage-apk.sh"
@@ -2951,13 +2932,13 @@ if [ "$rc" = 0 ] || [ "$(n_calls '^apk ' "$work/ctl")" != 0 ]; then
 else
   bad "control: the ignoring script was NOT visible (exit $rc)"
 fi
-grep -v 'stage-start' "$work/s-assemble.sh" > "$work/ctl-ra.sh"; before_pass=$pass; before_fail=$failn
+grep -v 'cp build-in/digests.json' "$work/s-assemble.sh" > "$work/ctl-ra.sh"; before_pass=$pass; before_fail=$failn
 beh_rebuild_assemble control "$work/ctl-ra.sh" oracle v0.3.0 > /dev/null
 new_fail=$((failn - before_fail)); pass=$before_pass; failn=$before_fail
 if [ "$new_fail" -gt 0 ]; then
-  ok "control: a rebuild-assemble script without its stage-start line fails $new_fail behaviour cases and the test still reaches its summary"
+  ok "control: a rebuild-assemble script without its digest-list copy line fails $new_fail behaviour cases and the test still reaches its summary"
 else
-  bad "control: the script without stage-start passed every behaviour case"
+  bad "control: the script without the digest-list copy passed every behaviour case"
 fi
 # ---- REQ-CHAIN-004-AC14: the proof workflows call Build in snapshot mode and nothing else -------------------------------------------------------------
 # The fixture is shaped like scan.yml / main-candidate-rescan.yml after the rewire: the `build` call, a scanner job (cache's, never read by the judge) and a
@@ -3189,14 +3170,14 @@ spec = importlib.util.spec_from_file_location("shape", shape)
 S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
 seen, bad = S.ns_closure(root)
 SIX = {"bin/archive-pull.sh", "bin/archive-verify.py", "bin/install-host-bwrap.py", "bin/chain-hostile-step.sh",
-       "bin/chain-sandbox-probe.sh", "bin/loopback-get.sh", "bin/rebuild-records-digests.sh", "bin/audit-record-judge.sh"}
+       "bin/chain-sandbox-probe.sh", "bin/loopback-get.sh", "bin/rebuild-records-digests.sh"}
 py = {p for p in seen if p.endswith(".py")}
 # the files the workflows run outside the stage scripts are in the closure
 assert SIX <= set(seen), sorted(SIX - set(seen))
 for p in ("bin/chain_common.py", "bin/chain_hostile.py", "bin/chain_items.py"):
     assert p in py, p      # they reach the closure only through chain-verify.py's load_sibling literals
 PY
-then ok "nosource the closure holds the 16 Python files and the 8 shell files the workflows run, and chain_common, \
+then ok "nosource the closure holds the 16 Python files and the 7 shell files the workflows run, and chain_common, \
 chain_hostile and chain_items are found"
 else bad "nosource the closure is missing a file the workflows run"; fi
 # the bin/ scripts the run: lines of the two stage workflows start are exactly the roots of the closure

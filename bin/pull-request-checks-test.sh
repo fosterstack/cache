@@ -262,12 +262,11 @@ for name, f, edit in [
     got = judge_ac2(mutated(f, edit))
     check("AC2 mutant %s is caught" % name, bool(got), got)
 
-# AC3: the policy files, and release admission's own step against a stub of the GitHub API
+# AC3: the policy file
 POL = os.path.join(root, ".github/policy")
 req = json.load(open(os.path.join(POL, "required-checks.json")))["required_checks"]
-rel = json.load(open(os.path.join(POL, "release-only-checks.json")))["required_checks"]
 for ctx in ("requirements",):
-    ents = [c for c in req + rel if c["context"] == ctx]
+    ents = [c for c in req if c["context"] == ctx]
     check("AC3 %s is listed once, scope push, Actions app" % ctx, ents == [{"context": ctx, "integration_id": 15368, "scope": "push"}], ents)
 
 # the chain's admission is bin/build-admit.py (bin/chain-build-admit-test.sh runs it), not a step of stage-admission.yml

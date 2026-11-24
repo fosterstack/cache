@@ -310,8 +310,7 @@ spec = importlib.util.spec_from_file_location("ba", os.path.join(os.path.dirname
 BA = importlib.util.module_from_spec(spec); spec.loader.exec_module(BA)
 ORDER = ["check_tag_ref", "check_tag_syntax", "check_tag_points_at_sha", "check_policy_from_main",
          "check_tag_annotated", "check_tag_signature", "check_commit_signature", "check_ancestor_of_main",
-         "check_audit_approval", "check_required_checks", "check_baseline", "check_rc_proof",
-         "check_admission_evidence"]
+         "check_owner_decision", "check_required_checks", "check_baseline", "check_admission_evidence"]
 def admit_with(signature_check):
     """Run admit() with each check replaced by a recorder (signature_check runs in the tag-signature one)."""
     calls, refusal = [], None

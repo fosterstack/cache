@@ -40,15 +40,12 @@ import json, os, re, shlex, sys, yaml
 
 ARCHIVE, GO_ARCHIVE = "archive", "archive/go"
 KEYRING_WOLFI, MELANGE_LOCK, ASSEMBLY_PUB = "archive/keys/wolfi-signing.rsa.pub", "build/locks/melange.lock", "build/keys/assembly.rsa.pub"
-VER = '"${GITHUB_REF_NAME#v}"'          # --version is the tag minus the leading v: 0.3.0, or 0.3.0-rc.1 for a release candidate (PROPOSED, cache-3f)
+TAG_LINE = "tag=${GITHUB_REF_NAME#release/}"    # the tag: GITHUB_REF_NAME on a tag push, the name minus "release/" on a push of a release/vX.Y.Z branch
+VER = '"${tag#v}"'          # --version is the tag minus the leading v: 0.3.0, or 0.3.0-rc.1 for a release candidate (PROPOSED, cache-3f)
+TAG = '"$tag"'
 RUNNERS = [("ubuntu-24.04", "x86_64"), ("ubuntu-24.04-arm", "aarch64")]
 H = "set -euo pipefail"
-POLICY = ('python3 -I bin/chain-verify.py policy make --template .github/policy/release-policy.template.json'
-          ' --tag "$GITHUB_REF_NAME" --out policy.json')
 SDE = ['SOURCE_DATE_EPOCH="$(./bin/build-apk.sh --print-source-date-epoch --source-dir .)"', "export SOURCE_DATE_EPOCH"]
-START = ("python3 -I bin/chain-verify.py stage-start --stage rebuild --previous build --record "
-    "witness-build/build-collection.json "
-         "--digests build-in/digests.json --policy policy.json")
 
 
 # SNAPSHOT MODE (REQ-CHAIN-004-AC12): the proof workflows (scan.yml, main-candidate-rescan.yml) build with no tag, so there is no version to take from
@@ -72,6 +69,11 @@ SNAPSHOT_TAG_CHECK = ("if git tag --points-at HEAD | grep -qvx '%s'; then "
                       "echo \"::error::HEAD carries the tag $(git tag --points-at HEAD | grep -vx '%s' | head -1): not a snapshot\" >&2; exit 1; fi"
                       % (SNAPSHOT_TAG, SNAPSHOT_TAG))
 SNAPSHOT_TAG_LINES = [SNAPSHOT_TAG_GUARD, SNAPSHOT_TAG_DELETE, SNAPSHOT_TAG_LINE, SNAPSHOT_TAG_CHECK]
+# A release branch carries no tag at HEAD yet, so on one (and only there: a tag push has its tag at HEAD) the release apk scripts, Build's and Rebuild's, make
+# the tag the same way: the same guard, the other local v* tags at HEAD deleted, then the tag (job-local, never pushed).
+RELEASE_TAG_LINES = ['if [ "$tag" != "$GITHUB_REF_NAME" ]; then', "  " + SNAPSHOT_TAG_GUARD,
+                     "  for t in $(git tag --list 'v*' --points-at HEAD); do [ \"$t\" = %s ] || git tag -d \"$t\" > /dev/null; done" % TAG,
+                     "  git tag --force %s HEAD" % TAG, "fi"]
 
 
 def apk_cmd(variant, ver=VER):
@@ -104,8 +106,8 @@ def vex_attach():
 
 
 def version_check(variant):
-    return ('python3 -I bin/build-version-check.py --apk-dir "out/$(uname -m)" --variant %s --tag "$GITHUB_REF_NAME" '
-        '--sha "$GITHUB_SHA"' % variant)
+    return ('python3 -I bin/build-version-check.py --apk-dir "out/$(uname -m)" --variant %s --tag %s '
+        '--sha "$GITHUB_SHA"' % (variant, TAG))
 
 
 def archives(ver=VER):
@@ -119,7 +121,7 @@ def items_apk():
 def expected_lines(kind):
     """The exact lines (shebang, comments and blank lines aside; a trailing-backslash break is joined) of bin/build-stage-KIND.sh."""
     if kind == "apk":
-        return ([H, "python3 -I bin/build-admit.py run", "unset GH_TOKEN"] + SDE + [apk_cmd("standard"),
+        return ([H, "python3 -I bin/build-admit.py run", "unset GH_TOKEN", TAG_LINE] + RELEASE_TAG_LINES + SDE + [apk_cmd("standard"),
             apk_cmd("fips"), baselayout_cmd(),
                 version_check("standard"), version_check("fips"), items_apk(), ADMISSION_COPY])
     if kind == "assemble":     # one script for all four kinds: STEP is apk, rapk, snapshot-apk or snapshot-rapk
@@ -133,7 +135,7 @@ def expected_lines(kind):
                 + [apk_cmd("standard", SNAPSHOT_VERSION), apk_cmd("fips", SNAPSHOT_VERSION),
                    baselayout_cmd(SNAPSHOT_VERSION), items_apk()])
     if kind == "rebuild-apk":
-        return [H, POLICY, START] + SDE + [apk_cmd("standard"), apk_cmd("fips"), baselayout_cmd(), items_apk()]
+        return [H, TAG_LINE] + RELEASE_TAG_LINES + SDE + [apk_cmd("standard"), apk_cmd("fips"), baselayout_cmd(), items_apk()]
     raise KeyError(kind)
 
 
@@ -208,7 +210,7 @@ STAGE_OUTPUT = "${{ jobs.build-assemble.outputs.digests }}"
 JOB_OUTPUT = "${{ steps.digests.outputs.digests }}"
 ALWAYS = "always()"
 VERDICT_ARTIFACT = "witness-rebuild"
-# Rebuild stage-starts from Build's UNSIGNED record, witness-build, in both modes (ruling 8 of cache#921: it needs build-assemble only, so it never waits for Sign)
+# Rebuild reads Build's UNSIGNED record, witness-build, in both modes (ruling 8 of cache#921: it needs build-assemble only, so it never waits for Sign)
 WB_DOWN = "witness-build"
 MODE_RELEASE_IF = "${{ inputs.mode != 'snapshot' }}"      # a release run: any mode but snapshot (the guard step refuses a third value first); a tag push carries no mode input
 MODE_SNAPSHOT_IF = "${{ inputs.mode == 'snapshot' }}"
@@ -228,7 +230,7 @@ BASELINE_IF = "${{ inputs.mode != 'snapshot' }}"
 ADMISSION_COPY = "cp admission.json out/admission.json"
 ADMISSION_BASELINE = ('python3 -I bin/chain-verify.py admission-baseline --admission apk/ubuntu-24.04/admission.json '
     '--admission apk/ubuntu-24.04-arm/admission.json '
-                      '--tag "$GITHUB_REF_NAME" --sha "$GITHUB_SHA" --out admission-baseline.json')
+                      '--tag %s --sha "$GITHUB_SHA" --out admission-baseline.json' % TAG)
 INSTALL_GO = "bash bin/install-scanner.sh go"
 # rule 1 of the sandboxed build (ratify Oct 27): the requirements tool is Go source of the tagged commit, so its freeze
 # check runs in a job of its own, before Build's apk job:
@@ -263,9 +265,8 @@ SNAPSHOT_VERDICT = "witness-rebuild/snapshot-verdict.json"       # a snapshot Re
 SNAP = "snapshot-"
 CASE = 'case "$step" in'
 ASSEMBLE_LINES = (
-    [H, "step=$1", "dir=${step#%s}" % SNAP, "version=${GITHUB_REF_NAME#v}", CASE,
-     "  %s*) version=%s ;;" % (SNAP, SNAPSHOT_VERSION), "esac", CASE, "  rapk)", "    " + POLICY,
-     "    " + START + " ;;", "esac"]
+    [H, "step=$1", "dir=${step#%s}" % SNAP, TAG_LINE, "version=${tag#v}", CASE,
+     "  %s*) version=%s ;;" % (SNAP, SNAPSHOT_VERSION), "esac"]
     + ['python3 -I bin/chain-verify.py bind --local --step "$step" --record "rec-$dir/%s/$step-collection.local.json" '
        '--dir "$dir/%s" --as out' % (r, r) for r, a in RUNNERS]
     + [CASE, "  apk)", "    " + ADMISSION_BASELINE + " ;;", "esac", "mkdir -p melange-repo"]
@@ -278,7 +279,7 @@ ASSEMBLE_LINES = (
        '--fragment "$dir/ubuntu-24.04-arm/items-apk.json" --images out --archives dist --version "$version" '
        '--archive %s "${digests[@]}" --items items.json' % ARCHIVE,
        CASE, "  rapk)", "    cp build-in/digests.json digests.json",
-       "    python3 -I bin/chain-verify.py rebuild-compare --build-record witness-build/build-collection.json "
+       "    python3 -I bin/chain-verify.py rebuild-compare --build-record witness-build/build-collection.local.json "
        "--expected build-in/items.json --actual items.json --out witness-rebuild/verdict.json ;;",
        "  snapshot-rapk)",
        "    python3 -I bin/chain-verify.py rebuild-compare --snapshot --build-record "
@@ -318,7 +319,7 @@ JOBS = {  # (family, job id of release.yml) -> spec; every step list is EXACT an
         up=[("witness-rebuild", "witness-rebuild")]),
 }
 FAMILY_JOBS = {"build": ("build-freeze", "build-apk", "build-assemble"), "rebuild": ("rebuild-apk", "rebuild-assemble")}
-BUILD_GATE = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"      # gate G (REQ-CHAIN-005-AC5): the chain starts on a tag push, in a dry run or in a snapshot call
+BUILD_GATE = "${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"      # gate G (REQ-CHAIN-005-AC5): the chain starts on a tag push, on a push of a release/vX.Y.Z branch, in a dry run or in a snapshot call
 
 
 def stage(path, family, allowed_path=None):
@@ -1275,13 +1276,13 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
 
 # ---- release.yml --------------------------------------------------------------------------------------------------------------------
 # REQ-CHAIN-005-AC5 and the rulings of cache#921: release.yml is ONE file, each stage step its own job on its own runner. The chain jobs, each with its exact needs, permissions, environment and if.
-GATE = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"      # gate G, on build-freeze only: a tag push, a dry-run dispatch or a snapshot call
+GATE = "${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"      # gate G, on build-freeze only: a tag push, a push of a release/vX.Y.Z branch, a dry-run dispatch or a snapshot call
 GUARD_S = ("inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && "
            "startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))")      # guard S: a v* tag push of release.yml itself, never in snapshot mode or under a workflow_call
 SIGN_IF = "${{ %s }}" % GUARD_S                                                    # sign, sign-rebuild, sign-check
 AFTER_IF = "${{ %s && !contains(github.ref_name, '-') }}" % GUARD_S                # release: a release candidate publishes nothing and never enters the environment release
 # check-govulncheck has no needs: it also names the runs that start the chain, so a push to main or the daily run (the patch tag jobs only) never starts it
-GV_IF = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true) }}"
+GV_IF = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true) }}"
 CHECK_IF = "${{ inputs.mode != 'snapshot' }}"                                     # check-govulncheck and check
 PERM_READ = {"contents": "read"}
 SIGN_PERMISSIONS = {"contents": "read", "id-token": "write"}
@@ -1292,10 +1293,10 @@ CHAIN_SPEC = {   # job -> exact needs, permissions, if and environment
     "sign": dict(needs=["build-assemble"], perm=SIGN_PERMISSIONS, if_=SIGN_IF, env="sign"),
     "rebuild-apk": dict(needs=["build-assemble"], perm=PERM_READ, if_=None, env=None),
     "rebuild-assemble": dict(needs=["rebuild-apk"], perm=PERM_READ, if_=None, env=None),
-    "sign-rebuild": dict(needs=["build-assemble", "rebuild-assemble"], perm=SIGN_PERMISSIONS, if_=SIGN_IF, env="sign"),
+    "sign-rebuild": dict(needs=["build-assemble", "rebuild-assemble", "sign"], perm=SIGN_PERMISSIONS, if_=SIGN_IF, env="sign"),
     "check-govulncheck": dict(needs=[], perm=PERM_READ, if_=GV_IF, env=None),
-    "check": dict(needs=["build-assemble", "check-govulncheck", "sign"], perm=PERM_READ, if_=CHECK_IF, env=None),
-    "sign-check": dict(needs=["build-assemble", "check"], perm=SIGN_PERMISSIONS, if_=SIGN_IF, env="sign"),
+    "check": dict(needs=["build-assemble", "check-govulncheck"], perm=PERM_READ, if_=CHECK_IF, env=None),
+    "sign-check": dict(needs=["build-assemble", "check", "sign"], perm=SIGN_PERMISSIONS, if_=SIGN_IF, env="sign"),
     "release-compare": dict(needs=["check", "sign", "sign-check", "sign-rebuild"], perm=PERM_READ, if_=None, env=None),
     "release-verify": dict(needs=["release-compare"], perm=PERM_READ, if_=None, env=None),
     "release": dict(needs=["release-compare", "release-verify"], perm={"contents": "write", "packages": "write"}, if_=AFTER_IF, env="release"),      # no id-token and no KMS role: every signature it pushes was made by sign-check, and release-sign checks each one before it is used
@@ -1319,7 +1320,7 @@ TAG_DUE_IF = "${{ needs.decide.outputs.tag != '' }}"
 PATCH_NOTES_IF = TAG_DUE_IF
 LIVE_TEST_RC_IF = "${{ inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}"
 LIVE_TEST_FINAL_IF = "${{ inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc') && !inputs.dry-run }}"
-PERSONA_RC_IF = "${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"
+PERSONA_RC_IF = "${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v') }}"
 # The persona job's only secrets (REQ-UAT-001-AC1, the persona-uat environment): the model names and the federation identifiers. It holds no registry credential or write token.
 # The live-test environment's Docker Hub credentials (REQ-SCAN-012-AC1, amended on the advisor reading of Oct 17): the test user and its push token (an organization access token
 # scoped to the test repository only) and the read-only Scout token with its user; the same four in both live-test jobs, nothing else

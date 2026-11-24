@@ -19,6 +19,9 @@ sha, so an old record then names a different sha and does not apply.
       line: no such pull request, or no readable writers policy, so the record rule stands. Exit 3: a GitHub API
       error, on stderr.
       It asks GitHub through gh with the caller's token and reads commits as git objects of DIR.
+  audit-record.py held --base-root DIR      (admission, on every tag and release branch: REQ-AUD-17 AC5)
+      Exit 1 with the reason on stdout while an owner-decision item is open in DIR/.auditor/accepted-items.json or that file
+      is malformed (_open_item); exit 0 when none is open or the file is absent. It reads no record and no tag.
   verify ... --compare-json FILE --pulls-json FILE (the judge, when bump finds no Dependabot pull request)
       With --compare-json FILE (`gh api repos/R/compare/main...SHA?per_page=100`) and --pulls-json FILE (`gh api repos/R/commits/SHA/pulls`) a Dependabot pull request whose commits are Dependabot's passes without a record (bot_authored).
 
@@ -463,6 +466,8 @@ def main(argv):
     r.add_argument("--base-root", required=True)
     r.add_argument("--ref-json")
     r.add_argument("--commit-json")
+    h = sub.add_parser("held")
+    h.add_argument("--base-root", required=True)
     q = sub.add_parser("plan-release")
     q.add_argument("--head", required=True)
     q.add_argument("--cmp-json", required=True)
@@ -495,6 +500,11 @@ def main(argv):
                 else "the owner's approval matches the passed-audit record")
         print("audit-record: " + ("release %s: %s" % (a.tag, done) if ok else why))
         return 0 if ok else 1
+    if a.cmd == "held":
+        held = _open_item(_load_items(os.path.join(a.base_root, ITEMS_PATH)),
+                          datetime.datetime.now(datetime.timezone.utc).date().isoformat())
+        print("audit-record: " + (held or "no owner-decision item is open in %s" % ITEMS_PATH))
+        return 1 if held else 0
     if a.cmd == "plan-release":
         ok, why = plan_release(a.head, _load(a.cmp_json), a.actor, _load(os.path.join(a.base_root, WRITERS_PATH)))
         print("audit-record: " + ("a whole-release record may be written for %s" % a.head if ok else why))

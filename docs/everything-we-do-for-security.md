@@ -52,8 +52,8 @@ vulnerability); this page is what we do.
   ([freshness job](../.github/workflows/go-freshness.yml)).
 - **Go vulnerability analysis and code scanning.** `govulncheck` runs on every pull
   request and every push to `main`. CodeQL reads the code on every pull request,
-  every push to `main` and once a day. A release-candidate tag is accepted only
-  when a CodeQL run on that exact commit, started on a schedule or by hand, passed
+  every push to `main` and once a day. A release is accepted only
+  when the CodeQL runs on that exact commit passed
   ([CI](../.github/workflows/ci.yml), [CodeQL](../.github/workflows/codeql.yml),
   [release checks](../.github/policy/required-checks.json)).
 - **Posture is measured in public.** OpenSSF Scorecard runs weekly and its badge is
@@ -163,12 +163,10 @@ describe that chain.
 - **The release is checked as a customer would.** After promotion the public digests
   are verified and pulled anonymously, and only then is the release published
   ([release jobs](../.github/workflows/release.yml)).
-- **The full test suite runs before a release candidate.** Every test suite that
+- **The full test suite runs every night.** Every test suite that
   pull-request CI does not run, and the Gradle and Maven acceptance suites, run every
-  night and on demand, never on a pull request or a push. A release is refused unless
-  they passed on the exact tagged commit
-  ([full suite](../.github/workflows/full-suite.yml),
-  [release-only checks](../.github/policy/release-only-checks.json)).
+  night and on demand, never on a pull request or a push
+  ([full suite](../.github/workflows/full-suite.yml)).
 - **Acceptance runs against the exact artifacts.** The archives and images that ship
   run the customer scenarios first: Gradle, Maven, Kubernetes and the artifact checks
   ([check jobs](../.github/workflows/release.yml)).

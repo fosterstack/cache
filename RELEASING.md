@@ -16,12 +16,12 @@ records). The jobs that build or run workloads (Build, Rebuild and Check)
 hold no signing identity; the Sign stage signs their Witness records:
 
 ```
-Build -> Sign -> { Rebuild, Check } ; Rebuild -> Sign (second call) ; Check -> Sign (third call) ; { Check, Sign, Sign (second call), Sign (third call) } -> Release
+Build -> { Sign, Rebuild, Check } ; Rebuild -> Sign (second call) ; Check -> Sign (third call) ; { Check, Sign, Sign (second call), Sign (third call) } -> Release
 ```
 
-The chain starts on a pushed `v*` tag (or a branch dry run, which publishes
-nothing). Rebuild, Check and Release each first verify the signed records of the stages
-before them and tie their work to the digest list Build made; Sign checks
+The chain starts on a pushed `v*` tag or a push of a `release/vX.Y.Z` branch
+(or a branch dry run, which publishes nothing). Release first verifies the signed records of the stages
+before it; Rebuild and Check tie their work to the digest list Build made; Sign checks
 the building jobs' records (Build's against the artifacts it receives, Rebuild's
 against Build's digest list) and signs them. Release publishes by
 digest the exact bytes Build made and Rebuild and Check judged, and never
@@ -101,20 +101,6 @@ release, once the key exists, a person commits its public half as
 `cosign public-key --key awskms:///alias/fosterstack-release-signing`).
 
 The release APKs are signed with the same key. Until the public half is committed, the placeholder stays and the APK signing step refuses every release.
-
-Before you push the release candidate tag (`vX.Y.Z-rcN`), run the full suite,
-the CodeQL analysis and the scan on the commit you will tag, and wait until all
-three are green:
-
-```sh
-for wf in full-suite.yml codeql.yml scan.yml; do
-  gh workflow run "$wf" --ref <branch whose head is that commit>
-done
-```
-
-Admission refuses the release candidate tag unless each of those runs, made by
-a dispatch or a schedule on that exact commit, is green. The release workflow
-does not start them for you.
 
 ```sh
 git tag -s -m "..." vX.Y.Z

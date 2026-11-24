@@ -3475,7 +3475,7 @@ else failn=$((failn + 1)); echo "FAIL 001-AC1 an ordinary tracked YAML file is m
 # no secret, no identity token), which the case asserts, so a job that does hold one cannot hide behind it.
 cat > "$work/tagguard.py" <<'PY'
 import sys, yaml
-GATE = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"
+GATE = "${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"
 NO_CREDENTIAL = {"check-govulncheck"}
 d = yaml.load(open(sys.argv[1]).read(), Loader=yaml.BaseLoader); jobs = d.get("jobs") or {}
 def needs(j):
@@ -3509,7 +3509,7 @@ cp "$root/.github/workflows/release.yml" "$work/rel-nogate.yml"
 python3 - "$work/rel-nogate.yml" <<'PY'
 import sys
 t = open(sys.argv[1]).read()
-g = "if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"
+g = "if: ${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"
 assert g in t
 open(sys.argv[1], "w").write(t.replace(g, "if: ${{ inputs.dry-run == true }}", 1))
 PY
@@ -3519,7 +3519,7 @@ for how in "permissions:\n      contents: read\n      id-token: write" "environm
   python3 - "$work/rel-govuln.yml" "$how" <<'PY'
 import sys
 t = open(sys.argv[1]).read()
-GV = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true) }}"      # check-govulncheck's own if: it has no needs, so the ref guard keeps it off on main
+GV = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true) }}"      # check-govulncheck's own if: it has no needs, so the ref guard keeps it off on main
 a = "  check-govulncheck:\n    if: " + GV + "\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n"
 assert a in t
 open(sys.argv[1], "w").write(t.replace(a, "  check-govulncheck:\n    if: " + GV + "\n    runs-on: ubuntu-24.04\n    " + sys.argv[2].replace("\\n", "\n") + "\n", 1))

@@ -5,7 +5,7 @@
 #   - every job is in the environment persona-uat, behind the gate PERSONA_UAT_ENABLED, and holds only contents read and the identity token for the persona federation: never the release
 #     signing key's role, never another environment, never a write grant; the secrets it names are the persona federation's and the two model ids, nothing else;
 #   - go-freshness.yml keeps only its freshness jobs and its daily cron (judged here too, from the other side), and no other file holds a persona job: release.yml's one call of this file
-#     is a job with `uses`, judged by bin/release-workflow-wiring-test.sh (the gate and the release-candidate tag condition live on that call).
+#     is a job with `uses`, judged by bin/release-workflow-wiring-test.sh (the gate and the release-branch push condition live on that call).
 # The jobs' steps, gate and private reports (AC1 to AC3) stay as bin/persona-uat-wiring-test.sh judges them. Judged from the PARSED workflows; the real file must pass, each mutated copy must be
 # refused FOR THE REASON NAMED. Needs python3 with PyYAML. No network, no secrets.
 set -euo pipefail

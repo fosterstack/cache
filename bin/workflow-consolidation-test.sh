@@ -57,12 +57,11 @@ case_ no-dispatch             bad "d['on'].pop('workflow_dispatch')"
 # ---------------------------------------------------------------------------------------------------------------------
 # PR 2 of 4: ci.yml absorbs hygiene.yml and requirements.yml (REQ-REL-008-AC2). Every moved job
 # keeps its exact check name, top-level placement, job permissions, environment, needs and condition; ci.yml's
-# top-level permissions stay read-only and its one concurrency block is the reviewed one (judge_conc); every context admission binds to a workflow
-# file (BOUND_CONTEXTS in bin/build-admit.py) or lists in release-only-checks.json is still produced by a top-level job. This suite does not read
+# top-level permissions stay read-only and its one concurrency block is the reviewed one (judge_conc). This suite does not read
 # .github/policy/required-checks.json: only release admission reads it, and the GitHub ruleset is the only required list.
 # dependabot-auto-merge.yml does NOT move: its events (pull_request only) differ from ci.yml's (advisor, 0051 check 3).
 judge_ci() { python3 - "$1" "$root" <<'PY'
-import ast, glob, json, os, sys, yaml
+import os, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
@@ -91,40 +90,11 @@ for gone in ("hygiene.yml", "requirements.yml", "dependency-review.yml"):
         bad.append("%s still exists" % gone)
 if not os.path.exists(os.path.join(root, ".github/workflows/dependabot-auto-merge.yml")):
     bad.append("dependabot-auto-merge.yml was moved, but its events differ from ci.yml's")
-# every required or release-only check is produced by a top-level job of some workflow, on its scope's event
-names = {}
-for wf in glob.glob(os.path.join(root, ".github/workflows/*.yml")):
-    base = os.path.basename(wf)
-    w = d if base == "ci.yml" else yaml.load(open(os.environ.get("FULL_SUITE", wf) if base == "full-suite.yml" else wf), Loader=yaml.BaseLoader)
-    on = w.get("on") or {}
-    events = set(on) if isinstance(on, dict) else {on}
-    if base == "full-suite.yml" and events != {"schedule", "workflow_dispatch"}:
-        bad.append("full-suite.yml's events are not schedule and workflow_dispatch alone (REQ-CI-007-AC1): %s" % sorted(events))
-    for jid, j in (w.get("jobs") or {}).items():
-        called = j.get("uses", "")
-        if called:   # a called workflow's jobs report as "<calling job> / <job>"
-            inner = yaml.load(open(os.path.join(root, called)), Loader=yaml.BaseLoader) if called.startswith("./") else {}
-            jobs_here = [(j.get("name") or jid, i) for i in (inner.get("jobs") or {}).values()]
-        else:
-            jobs_here = [("", j)]
-        for prefix, k in jobs_here:
-            name = (prefix + " / " if prefix else "") + (k.get("name") or jid)
-            axes = ((k.get("strategy") or {}).get("matrix") or {}).values()
-            values = next(iter(axes), [])   # a matrix job is named per value of its first axis
-            for rendered in [f"{name} ({v})" for v in values] or [name]:
-                names.setdefault(rendered, set()).update(events)
-# a promotion or release-only check is made on main, nightly or by dispatch (the full suite), never only by a pull request
-admit = ast.parse(open(os.path.join(root, "bin/build-admit.py")).read())
-bound = [c for n in admit.body if isinstance(n, ast.Assign) and any(getattr(x, "id", "") == "BOUND_CONTEXTS" for x in n.targets)
-         for c, _ in ast.literal_eval(n.value) if not c.endswith("*")]
-lists = [("BOUND_CONTEXTS", [{"context": c, "integration_id": 15368} for c in bound]),
-         ("release-only-checks.json", json.load(open(os.path.join(root, ".github/policy/release-only-checks.json")))["required_checks"])]
-for where, entries in lists:
-    for rc in entries:
-        if rc["integration_id"] != 15368:
-            continue                                # the review gate's App check, published by the App, not a job
-        if not {"push", "schedule", "workflow_dispatch"} & names.get(rc["context"], set()):
-            bad.append("%s %r is no longer produced on main, nightly or by dispatch" % (where, rc["context"]))
+fs = yaml.load(open(os.environ.get("FULL_SUITE", os.path.join(root, ".github/workflows/full-suite.yml"))), Loader=yaml.BaseLoader)
+on = fs.get("on") or {}
+events = set(on) if isinstance(on, dict) else {on}
+if events != {"schedule", "workflow_dispatch"}:
+    bad.append("full-suite.yml's events are not schedule and workflow_dispatch alone (REQ-CI-007-AC1): %s" % sorted(events))
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -159,7 +129,7 @@ case_ci allowlist-if-always      bad "d['jobs']['allowlist']['if'] = 'always()'"
 case_ci merge-group-back         bad "d['on']['merge_group'] = ''"
 case_ci events-changed           bad "d['on'].pop('pull_request')"
 case_ci ruleset-check-renamed    ok  "d['jobs']['lint']['name'] = 'lint-go'"   # the ruleset is the only required list: this suite no longer reads required-checks.json
-# the release-only checks are made by full-suite.yml: the same judge over a copy edited by python (FULL_SUITE)
+# full-suite.yml's events: the same judge over a copy edited by python (FULL_SUITE)
 case_full() {
   local f="$work/full-$1.yml"
   cp "$root/.github/workflows/full-suite.yml" "$f"
@@ -175,9 +145,6 @@ PY
   else failn=$((failn+1)); echo "FAIL full:$1 → $got, want $2 ($out)"; fi
 }
 case_full real                      ok  "pass"
-case_full release-only-check-gone   bad "d['jobs']['allowlist-chain']['name'] = 'chain'"
-case_full acceptance-call-gone      bad "d['jobs'].pop('acceptance')"
-case_full acceptance-call-renamed   bad "d['jobs']['acceptance']['name'] = 'accept'"
 case_full push-added                bad "d['on']['push'] = {'branches': ['main']}"
 case_full pull-request-added        bad "d['on']['pull_request'] = ''"
 

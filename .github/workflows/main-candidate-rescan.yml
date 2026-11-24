@@ -124,16 +124,21 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_SCOUT_TOKEN: ${{ secrets.DOCKERHUB_SCOUT_TOKEN }}
         run: printf '%s' "$DOCKERHUB_SCOUT_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
-      # The rescan stays mechanical (release audit row C1): no job of this file writes to a registry, so Scout scans the candidate layouts Build uploaded, by local reference, and is given our
-      # OpenVEX file and its author. A finding no statement filters is reported as it is; the tally counts what Scout reports.
+      # The rescan stays mechanical (release audit row C1): no job of this file writes to a registry. Scout cannot read an OCI layout that holds an index with attestations, so each
+      # image's child is made into a docker-save tar (bin/layout-archive.sh), loaded into this runner's Docker and scanned there by its image id, given our OpenVEX file and its author.
+      # A finding no statement filters is reported as it is; the tally counts what Scout reports.
       - name: Docker Scout every image, given our OpenVEX file
         run: |
           set -uo pipefail
+          mkdir -p /tmp/arc
           for v in production fips; do
             for arch in amd64 arm64; do
               d="/tmp/panel/scout/${v}-${arch}"; mkdir -p "$d"
-              docker scout sbom --format json --platform "linux/${arch}" "oci-dir:///tmp/oci/${v}" > "${d}/sbom.json" \
-                && docker scout cves --format gitlab --vex-location .vex/fosterstack-cache.openvex.json --vex-author '^FosterStack LLC$' --platform "linux/${arch}" "oci-dir:///tmp/oci/${v}" > "${d}/cves.json" \
+              tag="ghcr.io/fosterstack/cache:cand-${v}-${arch}"
+              ./bin/layout-archive.sh "/tmp/oci/${v}" "${arch}" "/tmp/arc/${v}-${arch}.tar" "${tag}" > /dev/null \
+                && docker load -i "/tmp/arc/${v}-${arch}.tar" > /dev/null \
+                && docker scout sbom --format json --platform "linux/${arch}" "local://${tag}" > "${d}/sbom.json" \
+                && docker scout cves --format gitlab --vex-location .vex/fosterstack-cache.openvex.json --vex-author '^FosterStack LLC$' --platform "linux/${arch}" "local://${tag}" > "${d}/cves.json" \
                 || { rm -rf "${d}"; echo "::warning::docker scout could not scan ${v}-${arch} (the tally counts it as did not run)"; }
             done
           done
