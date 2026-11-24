@@ -2,7 +2,7 @@
 
 We build tools that help you secure your build pipeline. It made sense to start with the build cache.
 
-We built FosterStack Cache by meticulously following the security guidance that matters: NIST SP 800-204C and 800-204D, and SLSA (a framework for build integrity). The package and image build steps run with the network cut off (hermetic builds), the builds give the same bytes every time (reproducible builds), the image is distroless (no shell, no package manager, only what the server needs), and more. [Read the full list](docs/everything-we-do-for-security.md).
+We built FosterStack Cache by meticulously following the security guidance that helps our customers run our container images inside their secured boundaries. The package and image build steps run with the network cut, the builds are reproducible, the image is distroless, and more. [Read the full list](docs/everything-we-do-for-security.md).
 
 [![CI](https://github.com/fosterstack/cache/actions/workflows/ci.yml/badge.svg)](https://github.com/fosterstack/cache/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/fosterstack/cache/actions/workflows/codeql.yml/badge.svg)](https://github.com/fosterstack/cache/actions/workflows/codeql.yml)
