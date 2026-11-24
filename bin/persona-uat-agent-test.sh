@@ -1058,5 +1058,38 @@ CASE="provider: a request missing its model is refused before the SDK is touched
 prov p-nomodel '{"action":"finish","findings":[]}' '{"system":"s","messages":[]}'
 check test "$rc" -ne 0 -a ! -s "$work/p-nomodel/sdk.log"
 
+# the provider's own reason reaches the agent's stderr (the driver keeps that in the encrypted transcript only), scrubbed and clipped; the stdout stays empty
+MODEL=OWNER-MODEL-R agent provreason '[{"exit":1,"stderr":"persona-uat-provider: APIStatusError: model OWNER-MODEL-R refused key=ghp_abcdefghij0123456789ABCDEF"}]'
+CASE="a failing provider's stderr is in the agent's failure text (scrubbed of the model name and a token) and nothing is on stdout"
+check python3 - "$work/provreason" "$rc" <<'PY'
+import sys
+d, rc = sys.argv[1], sys.argv[2]
+e = open(d + "/err.txt").read()
+assert rc != "0" and open(d + "/out.json").read() == ""
+assert "the provider failed (exit 1): persona-uat-provider: APIStatusError: model [scrubbed] refused" in e, e
+assert "OWNER-MODEL-R" not in e and "ghp_abcdefghij" not in e, e
+PY
+agent provlong "[{\"exit\":1,\"stderr\":\"$(printf 'x%.0s' $(seq 9000))\"}]"
+CASE="a long provider stderr is clipped to a few KB in the failure text"
+check python3 - "$work/provlong" <<'PY'
+import sys
+e = open(sys.argv[1] + "/err.txt").read()
+assert "[truncated: " in e and len(e) < 6000, len(e)
+PY
+# the model is shown its earlier turns in the protocol's own form ({"action": ...}): a {"type": ...} turn invites a reply the provider cannot parse
+agent replay '[{"usage":{"tokens":10},"action":{"type":"shell","command":"echo hi"}},{"usage":{"tokens":10},"action":{"type":"shell","tool":"docker","args":["ps"]}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
+CASE="the replayed assistant turns use the protocol's {action: ...} form, and the provider accepts each as it stands"
+check python3 - "$work/replay" "$provider" <<'PY'
+import json, sys
+d, prov = sys.argv[1:]
+m = [json.loads(l)["req"]["messages"] for l in open(d + "/fp.log")][2]
+assert [x["role"] for x in m] == ["user", "assistant", "user", "assistant", "user"], m
+assert json.loads(m[1]["content"]) == {"action": "shell", "command": "echo hi"}, m[1]
+assert json.loads(m[3]["content"]) == {"action": "shell", "tool": "docker", "args": ["ps"]}, m[3]
+ns = {}
+exec(open(prov).read().split("def main")[0], ns)
+assert ns["parse_action"](m[1]["content"]) == {"type": "shell", "command": "echo hi"}
+PY
+
 echo "persona-uat-agent: $pass passed, $failn failed"
 test "$failn" -eq 0
