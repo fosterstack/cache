@@ -17,7 +17,7 @@ A GitHub-hosted job runs on its own virtual machine. GitHub documents it this wa
 | Release | `release-verify` | verification of every earlier stage's record | contents read only: no secret, no identity token |
 | Release | `release` | publishing, on a final release only | no identity token and no signing role; write permissions (environment `release`); the job's GitHub token, in the publish, sign and assets steps (ghcr.io and release assets); the Docker Hub secrets, in the publish and sign steps only |
 
-No build job holds a stored secret. Builds do not share a machine with the job that signs or publishes. The live-test jobs that run on release candidates hold an identity token for their own test accounts, never the signing role.
+No build job holds a stored secret. Builds do not share a machine with the job that signs or publishes. The live-test job that runs after a final release is published holds an identity token for its own test accounts, never the signing role.
 
 ## 2. How artifacts cross jobs
 

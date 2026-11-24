@@ -36,7 +36,7 @@ CHECK_JOBS = ["check-govulncheck", "check"]
 RELEASE_JOBS = ["release-compare", "release-verify", "release"]
 RELEASE_STEPS = [(x, "bin/%s.sh" % x) for x in ("release-verify", "release-apks", "release-publish", "release-sign", "release-postverify", "release-assets")]   # postverify before assets
 CHAIN = BUILD_JOBS + ["sign"] + REBUILD_JOBS + ["sign-rebuild"] + CHECK_JOBS + ["sign-check"] + RELEASE_JOBS
-OTHER_ALLOWED = {"decide", "sign-tag", "cut", "patch-notes", "patch-failed", "live-test", "live-test-release"}   # the four inline tag jobs of the automatic patch release by name (REQ-REL-009), and the hostile-* jobs; persona-uat has its own file
+OTHER_ALLOWED = {"decide", "sign-tag", "cut", "patch-notes", "patch-failed", "live-test-release"}   # the four inline tag jobs of the automatic patch release by name (REQ-REL-009), and the hostile-* jobs; persona-uat has its own file
 KMS_ENV = ["AWS_ROLE_ARN", "AWS_REGION", "RELEASE_KMS_KEY_REF"]
 NEEDS = {   # exactly, as REQ-CHAIN-005-AC5 lists them
     "build-freeze": [], "build-apk": ["build-freeze"], "rebuild-apk": ["build-assemble"], "build-assemble": ["build-apk"], "sign": ["build-assemble"],
@@ -120,7 +120,7 @@ for old in ("build", "rebuild", "check-arm64", "rapk", "rapk-arm", "apk", "assem
         bad.append("release.yml still has the stage-era job %s (the jobs are %s)" % (old, ", ".join(CHAIN)))
 for jn in jobs:
     if jn not in CHAIN and jn not in OTHER_ALLOWED and not jn.startswith("hostile-") and jobs[jn].get("uses") != "./.github/workflows/persona-uat.yml":
-        bad.append("job %s is not a chain job nor on the allowed list (decide, patch-notes, patch-failed, live-test, live-test-release, hostile-*)" % jn)
+        bad.append("job %s is not a chain job nor on the allowed list (decide, patch-notes, patch-failed, live-test-release, hostile-*)" % jn)
 for jn, want in NEEDS.items():
     if jn in jobs and sorted(needs_of(jobs[jn])) != sorted(want):
         bad.append("job %s needs %s, it must need exactly %s" % (jn, sorted(needs_of(jobs[jn])), sorted(want)))
@@ -176,8 +176,11 @@ for jn, want in TAG_NEEDS.items():
         bad.append("%s does not run only if needs.decide.outputs.tag != '' (decide named a tag)" % jn)
     if jn in jobs and sorted(needs_of(jobs[jn])) != want:
         bad.append("%s must need exactly %s: %s" % (jn, want, needs_of(jobs[jn])))
-if "patch-failed" in jobs and not set(needs_of(jobs["patch-failed"])) <= set(CHAIN):
-    bad.append("patch-failed needs a job that is not a chain job: %s" % needs_of(jobs["patch-failed"]))
+PF_WATCHED = set(CHAIN) | {"hostile-verify", "hostile-verdict"}
+if "patch-failed" in jobs and not set(needs_of(jobs["patch-failed"])) <= PF_WATCHED:
+    bad.append("patch-failed needs a job that is not a chain job nor a hostile job: %s" % needs_of(jobs["patch-failed"]))
+if "patch-failed" in jobs and not {"hostile-verify", "hostile-verdict"} <= set(needs_of(jobs["patch-failed"])):
+    bad.append("patch-failed must need hostile-verify and hostile-verdict (a failed hostile verdict on an automatic patch tag opens the issue, REQ-REL-009-AC10)")
 
 # ---- every action pinned by full digest (REQ-CHAIN-001-AC1) ---------------------------------------------------------------------------------------
 for jn, j in jobs.items():
@@ -649,14 +652,14 @@ done
 case_ release-runs-sign-subcommand bad "job release runs a signing command" "$J['release']['steps'].append({'run': 'python3 -I -B bin/chain-verify.py sign --check'})"
 case_ release-holds-id-token  bad "the release job holds an identity token" "$J['release']['permissions']['id-token'] = 'write'"
 case_ release-holds-id-token-read bad "the release job holds an identity token" "$J['release']['permissions']['id-token'] = 'read'"
-case_ live-test-names-kms     bad "names RELEASE_KMS_KEY_REF" "$J['live-test'].setdefault('env', {}); $J['live-test']['env']['RELEASE_KMS_KEY_REF'] = 'x'"
+case_ live-test-names-kms     bad "names RELEASE_KMS_KEY_REF" "$J['live-test-release'].setdefault('env', {}); $J['live-test-release']['env']['RELEASE_KMS_KEY_REF'] = 'x'"
 case_ live-test-release-env-sign bad "job live-test-release is in the environment sign" "$J['live-test-release']['environment'] = 'sign'"
 
 # the snapshot reach (REQ-CHAIN-004-AC14): a job that requests a write or an id-token must carry the snapshot guard
 case_ decide-reachable-in-snapshot bad "reachable in snapshot mode" "$J['decide'] = {'runs-on': 'ubuntu-24.04', 'permissions': {'contents': 'write'}, 'if': \"\${{ github.ref == 'refs/heads/main' }}\", 'steps': []}"
 case_ build-apk-gets-id-token bad "reachable in snapshot mode" "$J['build-apk']['permissions']['id-token'] = 'write'"
 case_ rebuild-assemble-writes bad "reachable in snapshot mode" "$J['rebuild-assemble']['permissions']['packages'] = 'write'"
-case_ live-test-writes-in-snapshot bad "reachable in snapshot mode" "$J['live-test']['permissions'] = {'id-token': 'write'}; $J['live-test'].pop('if', None)"
+case_ live-test-writes-in-snapshot bad "reachable in snapshot mode" "$J['live-test-release']['permissions'] = {'id-token': 'write'}; $J['live-test-release'].pop('if', None)"
 case_ persona-call-unguarded  bad "reachable in snapshot mode" "$J['persona-uat-rc'] = {'needs': 'build-assemble', 'uses': './.github/workflows/persona-uat.yml', 'permissions': {'contents': 'read', 'id-token': 'write'}, 'if': \"\${{ vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v') }}\"}"
 case_ persona-call-ok         ok  "" "$J['persona-uat-rc'] = {'needs': 'build-assemble', 'uses': './.github/workflows/persona-uat.yml', 'permissions': {'contents': 'read', 'id-token': 'write'}, 'if': \"\${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v') }}\"}"
 case_ persona-call-no-gate    bad "lacks the gate PERSONA_UAT_ENABLED" "$J['persona-uat-rc'] = {'needs': 'build-assemble', 'uses': './.github/workflows/persona-uat.yml', 'permissions': {'contents': 'read'}, 'if': \"\${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v') }}\"}"

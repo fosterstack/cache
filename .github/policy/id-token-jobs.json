@@ -73,11 +73,6 @@
   },
   {
    "workflow": "release.yml",
-   "job": "live-test",
-   "reason": "the rule-12 live test on a release candidate (REQ-SCAN-012): the same federation into the dedicated live-test accounts only (environment live-test), after Check; signs and publishes nothing"
-  },
-  {
-   "workflow": "release.yml",
    "job": "live-test-release",
    "reason": "the rule-12 live test right after a final release is published (REQ-SCAN-012): the same federation (environment live-test); signs and publishes nothing"
   },

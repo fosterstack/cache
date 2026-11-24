@@ -5394,7 +5394,7 @@ def step(**kw): return dict({"uses": GO, "with": {"go-version-file": "go.mod", "
 out = []
 def case(label, want_bad, got): out.append((label, bool(got) == want_bad, got[:1]))
 case("the real release.yml: no job uses setup-go and each job that needs Go has its one pinned installer line", False, findings(load()))
-for jn in NEED_GO + ("sign", "release", "live-test"):
+for jn in NEED_GO + ("sign", "release", "live-test-release"):
     case("the exact step the earlier round allowed (pinned digest, go-version-file go.mod, cache false) added to job %s is refused" % jn, True, mut(lambda d: d["jobs"][jn]["steps"].insert(1, step())))
 case("a floating tag is refused", True, mut(lambda d: d["jobs"]["build-apk"]["steps"].insert(1, {"uses": "actions/setup-go@v7"})))
 case("setup-go with another digest is refused", True, mut(lambda d: d["jobs"]["check"]["steps"].insert(1, {"uses": "actions/setup-go@" + "1" * 40 + " # v7.0.0"})))

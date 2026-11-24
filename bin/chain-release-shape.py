@@ -486,7 +486,7 @@ def others(root):
                 bad.append("job %s grants contents write: only the release job may" % n)
             if p.get("id-token") and n in ("release", "release-compare", "release-verify"):
                 bad.append("job %s holds an identity token: the release job holds no KMS role and no id-token, and neither do the jobs around it" % n)
-            if (re.search(r"DOCKERHUB_TOKEN\b|APK_RELEASE_SIGNING_KEY\b", blob) or (n not in ("live-test", "live-test-release") and re.search(r"DOCKERHUB_USERNAME\b", blob))) and n != "release":      # live-test and live-test-release are read-only probe holders (REQ-REL-011-AC3 (b)) with their own test credentials
+            if (re.search(r"DOCKERHUB_TOKEN\b|APK_RELEASE_SIGNING_KEY\b", blob) or (n != "live-test-release" and re.search(r"DOCKERHUB_USERNAME\b", blob))) and n != "release":      # live-test-release is a read-only probe holder (REQ-REL-011-AC3 (b)) with their own test credentials
                 bad.append("job %s names a release credential: only the release job holds it" % n)
             if j.get("environment") == "release" and n != "release":
                 bad.append("job %s is in the release environment: only the release job is" % n)

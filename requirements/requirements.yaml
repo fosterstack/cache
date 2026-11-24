@@ -2762,7 +2762,7 @@ requirements:
       - id: REQ-SCAN-012-AC4
         given: "the live test"
         when: "it is triggered"
-        then: "it runs on each release candidate and on any change to the guide or the VEX files, never on a schedule, with at most 50 pushes per run"
+        then: "it runs right after each final release is published and on any change to the guide or the VEX files, never on a schedule, with at most 50 pushes per run"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SCAN-012-AC5

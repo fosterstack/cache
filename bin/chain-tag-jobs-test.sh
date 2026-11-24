@@ -327,7 +327,7 @@ def errors(text):
         except Exception as ex: got = "error %s" % type(ex).__name__
         if got != want: e.append("the group of %s is %r, wanted %r" % (label, got, want))
     for jn, j in jobs.items():
-        if "concurrency" in (j or {}) and jn not in ("release", "live-test", "live-test-release"):
+        if "concurrency" in (j or {}) and jn not in ("release", "live-test-release"):
             e.append("the job %s has a concurrency group of its own, which splits the one group" % jn)
     if (jobs.get("release") or {}).get("concurrency", {}).get("group") != "release-publish": e.append("the release job must keep its own group release-publish")
     reads = [jn for jn, j in jobs.items() for st in (j.get("steps") or []) if re.search(r"git for-each-ref [^\n]*refs/tags/v\*|git tag (-l|--list)\b|ls-remote [^\n]*--tags", str(st.get("run", "")))]
