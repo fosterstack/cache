@@ -212,6 +212,21 @@ CASE="the bad version was replaced 20 days ago: the audit reads the workflow git
 check test "$rc" -eq 0; check grep -q 'history only' "$work/ranpast.out"; check grep -q 'History only' "$work/ranpast.gh.bodies"
 run hit_today "$HIT_GH" "$work/r-cur"; check test "$rc" -eq 1; check none_match 'history only' "$work/hit_today.out"
 check grep -q 'owner-decision' "$work/ranpast.gh"; check grep -q 'GHSA-aaaa-bbbb-cccc' "$work/ranpast.gh.bodies"
+# a history key that is also in use today by another road is still a hit today: the daily run exits 1 (never read off the annotations dedup leaves out)
+python3 - "$HIT_GH" "$work" "$SHA1" <<'PY'
+import json, sys
+d, work, sha1 = json.loads(sys.argv[1]), sys.argv[2], sys.argv[3]
+d["nested"] = {"actions/checkout@" + "9" * 40: [{"ref": "actions/checkout@" + sha1, "pinned": True}]}
+json.dump(d, open(work + "/hit-nested.json", "w"))
+d["nested"] = {}; d["open_prs"] = [{"number": 77, "items": ["action:actions/checkout@" + sha1]}]
+json.dump(d, open(work + "/hit-openpr.json", "w"))
+PY
+run hitnest "$(cat "$work/hit-nested.json")" "$work/r-ranpast"
+CASE="the bad version replaced 20 days ago is still called inside the pinned action of today's tree: a current hit, exit 1, never history only"
+check test "$rc" -eq 1; check none_match 'history only' "$work/hitnest.out" "$work/hitnest.gh.bodies"
+run hitopen "$(cat "$work/hit-openpr.json")" "$work/r-ranpast"
+CASE="the bad version replaced 20 days ago is put back by an open pull request: a current hit, exit 1, never history only"
+check test "$rc" -eq 1; check none_match 'history only' "$work/hitopen.out" "$work/hitopen.gh.bodies"
 run oldpast "$HIT_GH" "$work/r-oldpast"
 CASE="a bad version replaced 100 days ago is outside the 90-day window: no hit, exit 0, no issue"
 check test "$rc" -eq 0; check test "$(creates "$work/oldpast.gh")" -eq 0
@@ -391,6 +406,36 @@ PY
 run twin "$(cat "$work/twin.json")" "$work/r-twin" --exceptions "$work/no-exceptions.json"
 CASE="the same dispute on two versions of one package (0.73.0 in the history, 0.74.0 today) is ONE issue that names both versions"
 check test "$rc" -eq 1; check test "$(creates "$work/twin.gh")" -eq 1; check grep -q '0.73.0' "$work/twin.gh.bodies"; check grep -q '0.74.0' "$work/twin.gh.bodies"
+SHA3=$(printf '3%.0s' $(seq 40))
+mkrepo "$work/r-subdir" "120:$CLEANSHA"
+printf 'on: pull_request\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: o/r/sub@%s # v1.0.0\n' "$SHA3" >"$work/r-subdir/.github/workflows/sub.yml"
+git -C "$work/r-subdir" add -A; git -C "$work/r-subdir" -c user.name=t -c user.email=t@x commit -q -m "a subdirectory action"
+python3 - "$DISPUTE" "$SHA3" "$work/subdir.json" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1]); d["lists"] = {"action:o/r/sub@" + sys.argv[2]: d["lists"]["tool:trivy@0.74.0"]}; json.dump(d, open(sys.argv[3], "w"))
+PY
+run subdir "$(cat "$work/subdir.json")" "$work/r-subdir" --exceptions "$work/no-exceptions.json"
+CASE="a current owner/repo/subdir@sha with an unexcepted dispute: exit 1 and an issue, never history only"
+check test "$rc" -eq 1; check test "$(creates "$work/subdir.gh")" -eq 1; check none_match 'history only' "$work/subdir.out"
+CASE="a current nested action with no metadata file is a finding of today's tree: exit 1, never history only"
+check python3 - "$aud" "$work" "$SHA4" <<'PY'
+import contextlib, importlib.util, io, os, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+work, sha4 = sys.argv[2], sys.argv[3]
+class N(pa.FixtureNet):
+    def nested(self, item):
+        if item.name == "o/child":
+            raise pa.NoMetadata(f"{item.name}: its action metadata was not found")
+        return super().nested(item)
+pa.FixtureNet = N
+open(work + "/nometa.fx.json", "w").write('{"lists": {}, "upstream": {}, "nested": {"actions/checkout@' + "1" * 40 + '": [{"ref": "o/child@' + sha4 + '", "pinned": true}]}, "versions": {}}')
+open(work + "/nometagh", "w").write("#!/bin/sh\ncase \"$1 $2\" in 'issue list') echo '[]';; esac\nexit 0\n"); os.chmod(work + "/nometagh", 0o755)
+out = io.StringIO()
+with contextlib.redirect_stdout(out):
+    rc = pa.main(["--root", work + "/r-cur", "--fixtures", work + "/nometa.fx.json", "--now", "2026-10-05T12:00:00Z", "--gh", work + "/nometagh"])
+txt = out.getvalue()
+assert rc == 1 and "no-metadata" in txt.lower() and "history only" not in txt, (rc, txt)
+PY
 
 # --- AC6: the audit re-runs nothing; no pull request waits for a version to age (the release-age hold is removed) ---
 CASE="AC6: there is no --rerun-held mode and no --observations-out: each is an unknown argument (exit 2) and no gh call is made, not even a run rerun"

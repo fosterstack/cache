@@ -1566,6 +1566,7 @@ def main(argv=None):
                 findings += fs
                 notes += n2
         pr_actions = []
+        now_keys = set(head)  # the versions in use today: the tree, the open pull requests, the pinned actions' calls
         # daily: the pins of every OPEN pull request too (the PR job is read-only; this is how an unmerged hit reaches
         # an issue)
         if not a.base:
@@ -1586,6 +1587,7 @@ def main(argv=None):
                           f"audited")
                     incomplete = True
                 held.extend(items[:100])
+                now_keys.update(it.key for it in items[:100])
                 for it in items[:100]:
                     if it.key in seen_keys:
                         continue
@@ -1656,6 +1658,7 @@ def main(argv=None):
                             print(f"information: the moving tag {clean(ref)} inside {outer.name} could not be resolved "
                                   f"to a commit; "
                                   "checked by its literal name")
+                    now_keys.add(child.key)
                     if child.key in seen:
                         continue
                     seen.add(child.key)
@@ -1693,17 +1696,17 @@ def main(argv=None):
         report_unpinned(unpinned)
         plan, disputes, per_item, pending = [], {}, {}, []
 
-        def current(f):  # a version in today's tree, in an open pull request or inside a pinned action
-            return bool(f.via or getattr(f, "pr", None) or f.item.key in head)
+        # decided on the version's key before dedup and the dispute grouping, which rebuild items and drop annotations
+        now = {id(f) for f in findings if a.base is not None or f.item.key in now_keys}
 
         def hist_note(f):
-            return "" if current(f) else "History only: this version is not in today's tree, so the daily run stays green.\n"
+            return "" if id(f) in now else "History only: this version is not in today's tree, so the daily run stays green.\n"
         for f in findings:
             print(f"audit: {'DISPUTED' if f.disputed else 'HIT'}: {clean(f.item.key)} ({clean(', '.join(f.ids))}): "
                   f"{f.why}"
                   + (f" [inside {clean(f.via)}]" if f.via else "") + (f" [open pull request #{f.pr}]"
                                                                       if getattr(f, "pr", None) else "")
-              + ("" if current(f) else " [history only]"))
+              + ("" if id(f) in now else " [history only]"))
             if f.disputed:  # one issue per package and incident, listing every version of it (history can hold many)
                 disputes.setdefault(package_of(f.item), []).append(f)
                 continue
@@ -1746,7 +1749,7 @@ def main(argv=None):
             if not a.report_only:
                 phase("issues")
                 file_issues(gh, plan, today)
-            if any(current(f) for f in findings):
+            if now:
                 return 1
         unchecked = [i for i in audited if not net.covered(i)]
         # AC14: the log lines of ignored entries are not exceptions

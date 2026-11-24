@@ -2997,7 +2997,7 @@ requirements:
       - id: REQ-SUP-001-AC8
         given: "a hit with no clean version, or a hit whose bad version we ran in the last 90 days"
         when: "the issue is opened"
-        then: "it is labelled for a decision (every hit also carries supply-chain-hit), and the workflow never produces the runs, their environments or the secret names they could reach: not in the issue, a log or an artifact; a hit found only in that history (a version no longer in today's tree) is reported and issued as above and does not fail the daily run, because no rollback can clear it (owner rule 3 of Oct 5 2026, advisor ruling Nov 24 2026), while a hit on a version in today's tree fails the run"
+        then: "it is labelled for a decision (every hit also carries supply-chain-hit), and the workflow never produces the runs, their environments or the secret names they could reach: not in the issue, a log or an artifact; a hit found only in that history (a version no longer in today's tree) is reported and issued as above and does not fail the daily run, because no rollback can clear it, while a hit on a version in today's tree fails the run"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC9
