@@ -208,8 +208,10 @@ run noclean "$ONLYBAD" "$work/r-pr" --base HEAD~1
 CASE="no clean version exists (the only version is the affected one): the issue says to DROP the action, and is labelled owner-decision as well as supply-chain-hit (even for a PR's not-yet-run pin)"
 check grep -qF 'No clean version exists: drop it (remove its use) until one does.' "$work/noclean.gh.bodies"; check grep -q 'owner-decision' "$work/noclean.gh"; check grep -q 'supply-chain-hit' "$work/noclean.gh"
 run ranpast "$HIT_GH" "$work/r-ranpast"
-CASE="the bad version was replaced 20 days ago: the audit reads the workflow git history of the last 90 days, finds that we RAN it, and reports it with owner-decision (though today's tree is clean)"
-check test "$rc" -eq 1; check grep -q 'owner-decision' "$work/ranpast.gh"; check grep -q 'GHSA-aaaa-bbbb-cccc' "$work/ranpast.gh.bodies"
+CASE="the bad version was replaced 20 days ago: the audit reads the workflow git history of the last 90 days, finds that we RAN it, and reports it with owner-decision (though today's tree is clean); a history-only hit is reported and the run stays green (exit 0, advisor ruling Nov 24 2026), while the same hit in today's tree exits 1"
+check test "$rc" -eq 0; check grep -q 'history only' "$work/ranpast.out"; check grep -q 'History only' "$work/ranpast.gh.bodies"
+run hit_today "$HIT_GH" "$work/r-cur"; check test "$rc" -eq 1; check none_match 'history only' "$work/hit_today.out"
+check grep -q 'owner-decision' "$work/ranpast.gh"; check grep -q 'GHSA-aaaa-bbbb-cccc' "$work/ranpast.gh.bodies"
 run oldpast "$HIT_GH" "$work/r-oldpast"
 CASE="a bad version replaced 100 days ago is outside the 90-day window: no hit, exit 0, no issue"
 check test "$rc" -eq 0; check test "$(creates "$work/oldpast.gh")" -eq 0
@@ -1674,8 +1676,8 @@ BF_OLD=$(by_commit 60 "old: ci.yml unparseable, release.yml valid")
 badyaml_ci "$CLEANSHA" good; git -C "$r3" rm -q -f .github/workflows/release.yml
 BF_NEW=$(by_commit 5 "today: both files gone or clean")
 run bfhit "$HIT5" "$r3" --report-only
-CASE="unparseable file in an old revision: the valid workflow of the same revision is still judged: exit 1 and a HIT for its pin"
-check test "$rc" -eq 1
+CASE="unparseable file in an old revision: the valid workflow of the same revision is still judged: a HIT for its pin, history only, so exit 0"
+check test "$rc" -eq 0
 check grep -q "HIT" "$work/bfhit.out"
 check grep -q "GHSA-only-five-five" "$work/bfhit.out"
 run bfclean "$CLEAN" "$r3" --report-only
