@@ -1,10 +1,10 @@
 bubblewrap=0.13.1-r1
-ca-certificates-bundle=20261020-r0
-glibc-2.44-locale-posix=2.44-r24
-glibc-2.44=2.44-r24
-ld-linux-2.44=2.44-r24
+ca-certificates-bundle=20261020-r1
+glibc-2.44-locale-posix=2.44-r25
+glibc-2.44=2.44-r25
+ld-linux-2.44=2.44-r25
 libcap=2.78-r5
-libcrypt1-2.44=2.44-r24
+libcrypt1-2.44=2.44-r25
 libgcc=16.2.0-r5
 libpcre2-8-0=10.49-r4
 libselinux=3.11-r3
