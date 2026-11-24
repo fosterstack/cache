@@ -2316,10 +2316,10 @@ t "AC39" "refresh: both committed VM locks empty, the archive lacks zlib, the li
   bash -c "$(declare -f rcis nopr); work='$work'; CALLS='$CALLS'; test \"\$(cat '$work/rc')\" = 0 && test -f '$work/ar/x86_64/$ZAPK' &&
   for f in vm-host vm-guest; do grep -q '^zlib=1.3.2-r0\$' '$work/rp/build/locks/'\$f.lock || exit 1; done &&
   test \"\$(grep -c '^gh pr create' '$CALLS')\" = 1 && $GHPATHS | grep -q 'build/locks/vm-host.lock' && $GHPATHS | grep -q 'build/locks/vm-guest.lock'"
-# AC39: the committed repository files: the two VM locks are committed empty, the kernel lock holds its one row
+# AC39: the committed repository files: the two VM locks are files (empty or name=version rows, as the first refresh filled them), the kernel lock holds its one row
 realroot=$(cd "$(dirname "$RF_PROD")/.." && pwd)
-t "AC39" "the committed build/locks/vm-host.lock and vm-guest.lock are empty files" \
-  bash -c "for f in vm-host vm-guest; do test -f '$realroot/build/locks/'\$f.lock && test ! -s '$realroot/build/locks/'\$f.lock || exit 1; done"
+t "AC39" "the committed build/locks/vm-host.lock and vm-guest.lock are files whose every row is name=version" \
+  bash -c "for f in vm-host vm-guest; do test -f '$realroot/build/locks/'\$f.lock && ! grep -Evq '^[^ =]+=[^ =]+\$' '$realroot/build/locks/'\$f.lock || exit 1; done"
 t "AC39" "the committed build/locks/vm-kernel.lock holds exactly one row, linux-virt=<version> sha256:<64 hex>" \
   bash -c "test \"\$(wc -l <'$realroot/build/locks/vm-kernel.lock')\" = 1 && grep -Eq '^linux-virt=[^ ]+ sha256:[0-9a-f]{64}\$' '$realroot/build/locks/vm-kernel.lock'"
 echo "refresh-inputs-test: $pass passed, $failn failed"
