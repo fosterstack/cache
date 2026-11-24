@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # proves: REQ-REL-014-AC1, REQ-REL-014-AC2, REQ-REL-014-AC3
 # Pull requests run six checks (test, lint, govulncheck, analyze (go), fips140-only, scan with the jobs scan needs), the held check
-# marker-gate, customer-words-edited, agent-review-gate.yml and dependabot-auto-merge.yml; every other job runs on push to main, on a
+# marker-gate, customer-words-edited and dependabot-auto-merge.yml; every other job runs on push to main, on a
 # schedule or in the release chain (REQ-REL-014-AC1); suite-list, suites and allowlist-chain are in full-suite.yml, on a schedule and dispatch only. supply-chain.yml has no pull_request trigger, no pin-age job and runs only its
 # daily audit; required-checks.json has no pin-age entry (AC2) and no acceptance entry, and every check it scopes to push is produced by a
 # job that runs on push (AC3). Reads the committed workflows and required-checks.json.
@@ -89,8 +89,7 @@ def cond(f, j):   # a job's condition without a ${{ }} wrapper
 SIX = {"ci.yml:test", "ci.yml:lint", "ci.yml:govulncheck", "ci.yml:fips140-only", "codeql.yml:analyze", "scan.yml:scan"}
 SCAN_NEEDS = {"scan.yml:build", "scan.yml:scanner", "scan.yml:inspector"}
 HELD = {"ci.yml:marker-gate"}
-OTHER = {"customer-words-edited.yml:customer-words-edited", "dependabot-auto-merge.yml:auto-merge",
-         "agent-review-gate.yml:judge", "agent-review-gate.yml:publish"}
+OTHER = {"customer-words-edited.yml:customer-words-edited", "dependabot-auto-merge.yml:auto-merge"}
 ALLOWED = SIX | SCAN_NEEDS | HELD | OTHER
 on_pr = set().union(*(jobs_on(e) for e in PR_EVENTS))
 res(on_pr == ALLOWED, "AC1: the jobs that run on pull_request, merge_group or pull_request_target are exactly the allowed ones "

@@ -1098,16 +1098,16 @@ textcase duplicate-name-gate-job       bad "t = t.replace('  allowlist-chain:\\n
 textcase duplicate-top-level-key       bad "t = t.replace('\\njobs:\\n', '\\npermissions:\\n  contents: read\\njobs:\\n', 1)"
 textcase the-text-edit-itself-is-neutral ok "t = t"
 
-# the trusted gate's judge and sweep jobs are time-bounded (a hung judge must fail, not hang the required check)
+# the gate's record job is time-bounded (a hung writer must fail, not hang)
 gate_timeouts() {
   python3 - "$1" <<'PY'
 import sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
-bad = [j for j in ("judge", "sweep") if not (d["jobs"][j].get("timeout-minutes", "").isdigit() and 0 < int(d["jobs"][j]["timeout-minutes"]) <= 30)]
+bad = [j for j in ("record",) if not (d["jobs"][j].get("timeout-minutes", "").isdigit() and 0 < int(d["jobs"][j]["timeout-minutes"]) <= 30)]
 print(",".join(bad) or "ok"); sys.exit(1 if bad else 0)
 PY
 }
-if out=$(gate_timeouts "$here/.github/workflows/agent-review-gate.yml"); then pass=$((pass+1)); echo "PASS gate judge+sweep have timeout-minutes"
+if out=$(gate_timeouts "$here/.github/workflows/agent-review-gate.yml"); then pass=$((pass+1)); echo "PASS gate record job has timeout-minutes"
 else failn=$((failn+1)); echo "FAIL gate jobs without timeout-minutes: $out"; fi
 cp "$here/.github/workflows/agent-review-gate.yml" "$work/gate-mut.yml"; sed -i.bak '/^    timeout-minutes:/d' "$work/gate-mut.yml"
 if gate_timeouts "$work/gate-mut.yml" >/dev/null; then failn=$((failn+1)); echo "FAIL gate without timeouts accepted"; else pass=$((pass+1)); echo "PASS gate without timeouts → bad"; fi

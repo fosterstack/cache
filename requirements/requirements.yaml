@@ -1820,7 +1820,7 @@ requirements:
       the slow checks moved out of main's required list on Nov 12 2026 run with the full suite at promotion, not per pull request. The earlier
       rule (every required check also runs in the merge queue) was kept by checks this change deleted: nothing checks the merge queue's behaviour per
       pull request, and the part that is a property of the workflow files is checked by the full suite at promotion once that change lands.
-    source: [.github/workflows/ci.yml, .github/workflows/acceptance.yml, .github/workflows/scan.yml, .github/workflows/supply-chain.yml, .github/policy/required-checks.json, .github/workflows/agent-review-gate.yml]
+    source: [.github/workflows/ci.yml, .github/workflows/acceptance.yml, .github/workflows/scan.yml, .github/workflows/supply-chain.yml, .github/policy/required-checks.json]
     tier: community
     introduced: v0.3.0
     origin: 'owner RATIFIED Oct 22 2026, ops/docs/ratify/2026-10-22-merge-queue-checks.md (the rule this text replaces; its landing-marker exception went with it); the full suite moves to promotion by owner RATIFIED Nov 10 2026, ops/docs/ratify/2026-11-10-full-suite-at-promotion.md rules 1-2; the owner trimmed main''s required checks by hand on Nov 12 2026 (ops handoff brief ratify-2026-11-12-cache-required-checks-trimmed-by-hand.md)'
@@ -1836,12 +1836,6 @@ requirements:
         given: a check that reads the pull request (dependency review)
         when: it runs
         then: "it reads the pull request's own base and head commits and fails, never passes, when either is empty or the difference cannot be read; no step reads a queue commit, because no merge_group event reaches it. Nothing checks the queue half per pull request"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-DEP-005-AC3
-        given: the review gate (auditor-review-gate)
-        when: a pull request is opened or pushed, or the schedule fires
-        then: "its verdict for the pull request's head is decided by the default branch's copy of the gate, never by a copy from a pull request, as before; there is no queue run, no queue judge and no step that reads a queue ref, and auditor-review-gate was removed from main's required checks on Nov 12 2026 (a pull request merges after its review seats and a cleared row). Nothing checks the absence of a queue judge per pull request"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
@@ -2126,9 +2120,9 @@ requirements:
       release is main. The record is the branch audit/<head sha>: one commit whose only parent is that head, verified
       by GitHub, authored by a writer named in .github/policy/audit-writers.json of the base checkout, adding only the
       file audit-record, which is the record itself. Nothing is stored in the pull request's own files, and a new push
-      changes the head sha, so an earlier record no longer applies. The verdict is part of the existing
-      auditor-review-gate (agent-review-gate.yml): main's copy of the judge runs over the head, so a pull request
-      cannot edit or skip it, and a retarget re-runs it.
+      changes the head sha, so an earlier record no longer applies. The record is written by the record job of
+      agent-review-gate.yml, which runs only when dispatched; no pull request event runs it, and no check or status is posted
+      on a pull request for it.
       For a pull request Dependabot opened the Dependabot reviewer is the review: no record is written for it, and
       the same judge passes its head on the reviewer's success (AC9 to AC12).
     source: [.github/workflows/agent-review-gate.yml, bin/audit-record-judge.sh, bin/audit-record.py, .github/policy/audit-writers.json]
@@ -2137,8 +2131,7 @@ requirements:
     origin: release process decision of Oct 23 2026; the Dependabot exception of Nov 11 2026
     confidence: implementation-only
     notes: >
-      No new required check: auditor-review-gate is not required per pull request on main (it was taken off the
-      ruleset on Nov 12 2026), so a missing record
+      There is no pull-request check for the record (the gate's pull-request jobs were deleted on Nov 24 2026), so a missing record
       blocks the merge clearance, not GitHub's merge button. It therefore lands only after the writer (a later pull request) and the dispatch that
       calls it exist, on the landing day, together with the ruleset rule that only the writer creates branches under
       audit/**. The record commit adds one file, audit-record, because the API can only make a commit that changes
@@ -2150,8 +2143,8 @@ requirements:
     acceptance_criteria:
       - id: REQ-REL-012-AC1
         given: "a pull request whose base is main and that Dependabot did not open (AC9 to AC12 have those), and the head sha it has now"
-        when: "the verdict job of agent-review-gate.yml (and its scheduled sweep) judges it with bin/audit-record-judge.sh and bin/audit-record.py of the default branch"
-        then: "it passes only if the branch audit/<head sha> exists and holds one commit whose only parent is that head, that GitHub verified, that a writer named in .github/policy/audit-writers.json of the default branch authored (login and numeric id, a bot) and that the writer or GitHub itself committed, with the fixed message audit record, adding exactly the one file audit-record; otherwise the auditor-review-gate fails; since the owner took the gate off the ruleset (Nov 12 2026) the record no longer blocks GitHub's merge, and the box merger merges only after the review seats and the cleared row"
+        when: "the record job of agent-review-gate.yml (after it writes a record) or the box merger judges it with bin/audit-record-judge.sh and bin/audit-record.py of the default branch"
+        then: "it passes only if the branch audit/<head sha> exists and holds one commit whose only parent is that head, that GitHub verified, that a writer named in .github/policy/audit-writers.json of the default branch authored (login and numeric id, a bot) and that the writer or GitHub itself committed, with the fixed message audit record, adding exactly the one file audit-record; otherwise the judge fails; the record does not block GitHub's merge button, and the box merger merges only after the review seats and the cleared row"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-012-AC2
@@ -2166,22 +2159,10 @@ requirements:
         then: "it passes without reading any record (the release is main; a section merging into a feature branch is audited by the process, not by this gate)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
-      - id: REQ-REL-012-AC4
-        given: "the verdict job and the sweep of agent-review-gate.yml"
-        when: "the auditor matrix runs them as written with stand-ins for the checks"
-        then: "each calls the passed-audit record judge, publishes success only when it and the four other checks all exit 0, and runs main's copy of the judge and of the writers policy over the pull request's head as data (the existing rules of that workflow: a retarget re-runs it, the pull request cannot edit or skip it)"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
       - id: REQ-REL-012-AC5
         given: "a workflow dispatch of agent-review-gate.yml with a pull request number and a head sha, sent by bin/audit-record-request.sh (the ops runner's --cleared step may call it)"
         when: "the record job runs"
         then: "it takes nothing else from the pull request, writes nothing unless the actor who dispatched it is a dispatcher named in the policy file (anyone with write access can start a workflow; only a named login can vouch for a review), and re-reads the pull request and writes nothing unless it is open, into main, with exactly that head; it leaves a record that already passes alone; otherwise it makes ONE signed commit on audit/<head sha> parented on that head, with the fixed message, adding the file audit-record, through the committed signed-commit CLI with an App token that holds contents write and pull requests read and nothing else, and judges what it wrote with the review gate's own judge; the signed-commit guard allows the branch audit/<sha> only on top of that same sha and no other audit/ name"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-012-AC6
-        given: "a pull request whose review-gate verdict is an old failure (older than six hours) and whose head now has a record branch"
-        when: "the scheduled sweep runs"
-        then: "it judges the head again and publishes the verdict, like a recent failure; an old failure whose head has no record branch is left alone, as before. The sweep's existing bound applies: it reads the 200 open pull requests into main that gh lists first, as it always has, and a pull request beyond them is judged by its own run or by a later push"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-012-AC8
@@ -2192,7 +2173,7 @@ requirements:
         status: approved
       - id: REQ-REL-012-AC9
         given: "a head with no passing record that GitHub names as the head of exactly one open pull request, which Dependabot opened into main (the pull request's user is dependabot[bot], id 49699333, a bot) from a dependabot/ branch of the repository itself, and a well-formed writers policy on the default branch"
-        when: "the judge runs (main's copy, in the verdict job and the sweep, which hold the head's commits as git objects and check none of the head out)"
+        when: "the judge runs (main's copy, which holds the head's commits as git objects and checks none of the head out)"
         then: "it passes without a record on the Dependabot reviewer's success and nothing else: the newest dependabot-reviewer check run that an audit writer's App (an App whose bot account is listed under writers in .github/policy/audit-writers.json) put on the head (all runs read, not only GitHub's latest) is completed with the conclusion success and an external_id equal to the version of the reviewer's files in the checked-out main (REQ-DEP-001-AC14; a success with another external_id, or none, refuses); or the head has no such check run and is a clean merge of main into the head before it and nothing more (two parents, the first the head before it, the second a commit of the checked-out main, its tree the one git makes of merging the two), and that parent passes in the same way, at most 50 such merges back; a read of GitHub that fails, or a full page of 100 (which GitHub may have cut), is no verdict and the judge exits 3; the verdict job and the sweep hold the read scope of each endpoint the judge reads there: contents: read for the record branch and its commit, checks: read and pull-requests: read; the record job keeps contents: read, uses the App token and fails closed."
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
@@ -2204,13 +2185,13 @@ requirements:
         status: approved
       - id: REQ-REL-012-AC11
         given: "a head with no passing record that GitHub names as the head of exactly one open pull request, which Dependabot opened into main (the pull request's user is dependabot[bot], id 49699333, a bot) from a dependabot/ branch of the repository itself, and a well-formed writers policy on the default branch"
-        when: "the judge runs (main's copy, in the verdict job and the sweep, which hold the head's commits as git objects and check none of the head out)"
+        when: "the judge runs (main's copy, which holds the head's commits as git objects and checks none of the head out)"
         then: "a head that does not pass as AC9 says is refused, saying why: no verdict on the head (or, for a clean merge of main, on the head before it, and so on back), on a patch as on a major; a newest verdict that is a failure, neutral, any other conclusion, or unfinished; a verdict that cannot be read (for example a check entry with a missing or empty check name or App slug, which is the App's short name); a head that carries a commit or a change of its own after the passed head. A GitHub API error is reported as an API error, not as a refusal, and the judge exits 3."
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-012-AC12
         given: "a head with no passing record"
-        when: "the judge runs (main's copy, in the verdict job and the sweep, which hold the head's commits as git objects and check none of the head out)"
+        when: "the judge runs (main's copy, which holds the head's commits as git objects and checks none of the head out)"
         then: "the record rule stands, as for every other pull request, when another open pull request has the same head, when GitHub's page of pull requests holds an entry whose state cannot be read or an open entry whose head sha cannot be read, when Dependabot did not open it (another author, id or account type, a branch not under dependabot/, a fork, another base, closed, another head), or when the writers policy is missing or malformed; in that last case GitHub is not asked whose head it is. The judge's release mode, which stage-admission.yml runs, never asks whose head it is."
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
@@ -2304,7 +2285,7 @@ requirements:
         given: the workflows under .github/workflows on main
         when: the jobs that run on the pull_request event are listed
         then: >-
-          they are test, lint, govulncheck, analyze (go), fips140-only and scan, the jobs scan needs (build, assemble, the scanner list and the scanners), and the jobs of agent-review-gate.yml and dependabot-auto-merge.yml, which are no pull-request checks of the ruleset; no other job runs on pull_request, except the two chain-v030 checks of REQ-REL-014-AC1 (marker-gate and customer-words-edited)
+          they are test, lint, govulncheck, analyze (go), fips140-only and scan, the jobs scan needs (build, assemble, the scanner list and the scanners), and the job of dependabot-auto-merge.yml, which is no pull-request check of the ruleset; no other job runs on pull_request, except the two chain-v030 checks of REQ-REL-014-AC1 (marker-gate and customer-words-edited)
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-016-AC2
@@ -2328,7 +2309,7 @@ requirements:
       schedule or in the release chain, so release admission reads each of them on the exact tagged commit. The pin-age
       scan of pull requests is deleted; the daily pin audit is the supply-chain check. One check holds a security test
       that no release step runs, marker-gate (it verifies the release candidate run a marker pull request names), so it
-      stays on pull requests until a ruling moves it; customer-words-edited, agent-review-gate.yml and
+      stays on pull requests until a ruling moves it; customer-words-edited and
       dependabot-auto-merge.yml are no checks of this list and are left as they are.
     source: [.github/workflows/ci.yml, .github/workflows/scan.yml, .github/workflows/codeql.yml, .github/workflows/acceptance.yml, .github/workflows/supply-chain.yml, .github/policy/required-checks.json]
     tier: community
@@ -2340,7 +2321,7 @@ requirements:
         given: the workflows under .github/workflows on chain-v030
         when: the jobs that run on the pull_request or merge_group event are listed
         then: >-
-          they are test, lint, govulncheck, analyze (go), fips140-only and scan, the jobs scan needs (build and the two scanners), the held check marker-gate, customer-words-edited, and the jobs of agent-review-gate.yml and dependabot-auto-merge.yml; no other job runs on pull_request or merge_group, and acceptance.yml keeps only workflow_call
+          they are test, lint, govulncheck, analyze (go), fips140-only and scan, the jobs scan needs (build and the two scanners), the held check marker-gate, customer-words-edited, and the job of dependabot-auto-merge.yml; no other job runs on pull_request or merge_group, and acceptance.yml keeps only workflow_call
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-014-AC2
@@ -2860,32 +2841,13 @@ requirements:
     origin: accepted Oct 9; serves the hardening that pins the Inspector role and the GCP provider to these two files by job_workflow_ref; AC2 and AC3 accepted Oct 10
     confidence: implementation-only
     notes: >
-      AC3's last clause (reworded, accepted at review Oct 13; it formerly required a review record bound to the script's content) names a review that this
-      repository's gate does not judge as a record: the trusted verdict auditor-review-gate (agent-review-gate.yml,
-      always the default branch's copy) runs main's allowlist guard and this scanner
-      guard over the head as git objects and judges no review record (the record mechanism was retired with the gate
-      rewrite). The second review that a change to bin/scan-no-workflow-call-test.sh needs is enforced outside this
-      repository by the private review tooling before merge (as in REQ-AUD-018 AC3); that the main branch ruleset
-      REQUIRES the check is not checkable from the repository and is an inspection item for the release manager's
-      settings. The guard rejects a repeated mapping key and any file it cannot read as one workflow
+      The guard rejects a repeated mapping key and any file it cannot read as one workflow
       document (fail closed), because a later key would otherwise hide an earlier declaration.
     acceptance_criteria:
       - id: REQ-SCAN-015-AC1
         given: "the workflow files that carry the scanner cloud identities (scan.yml, main-candidate-rescan.yml)"
         when: "the repository's workflows are read"
         then: "neither declares on: workflow_call and no workflow references either by uses: (local ./.github/workflows/<file> or <repo>/.github/workflows/<file>@ref); a change that adds either fails the check"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-SCAN-015-AC2
-        given: "a pull request that changes .github/workflows/ci.yml"
-        when: "the trusted review gate judges its ci.yml"
-        then: "the allowlist job carries exactly the scanner guard step (named, the single run line, unconditional and unweakened) or the gate fails"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-SCAN-015-AC3
-        given: "a pull request into the default branch"
-        when: "the trusted review gate judges it"
-        then: "the review gate runs the default branch's guard over the pull request head read as git objects, so a pull request cannot weaken the guard on disk; any head the guard cannot read as one regular workflow or action file fails; and a change to bin/scan-no-workflow-call-test.sh clears the independent second review before merge, enforced outside the repository"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
@@ -3885,14 +3847,14 @@ requirements:
     title: The auditor layout and coverage gate; its second review is enforced outside the repository
     statement: >
       The auditor shall keep everything auditor-related in the auditor directory, hold its Python to the same 100% coverage gate as the Go (except the listed exclusions), and let no change to the auditor merge without the independent second review, which the private review tooling enforces before merge; this repository judges no review record.
-    source: [auditor directory bin/auditor-layout-check.py, auditor directory tests/coverage-gate.sh, .github/workflows/agent-review-gate.yml, .github/workflows/ci.yml]
+    source: [auditor directory bin/auditor-layout-check.py, auditor directory tests/coverage-gate.sh, .github/workflows/ci.yml]
     tier: community
     introduced: v0.3.0
     origin: AC1 to AC3 are the matrix page's REQ-AUD-18 rows (the auditor matrix page in the auditor directory, lines 101 to 103), release-manager-approved in #113 (commit 731f2d1, Sep 25 2026, matrix: approval REQ-AUD-14..18); the AC3 mechanism is option C (Sep 27 2026); AC1 carries one release-manager amendment: the two traceability files test-evidence/mappings.yaml and test-evidence/unmapped.yaml (Oct 2 2026). AC4 (the recorded second-seat substitute) is retired: the release manager decided on Oct 12 2026 that CI does not attest the second review ("yes drop the gate and close #302").
     confidence: implementation-only
     notes: >
       The `then` text of AC1, AC2 and AC3 is a PARAPHRASE of the agreed sentences with the literal auditor path replaced by 'the auditor directory' (the layout check forbids that literal in this file); the VERBATIM agreed sentences are quoted in the comments above the three entries in test-evidence/mappings.yaml, which is exempt from the layout check.
-      The second review that AC3 requires is enforced outside this repository, by the private review tooling, before merge. The trusted verdict auditor-review-gate (agent-review-gate.yml, always the default branch's copy) runs main's allowlist guard and scanner guard over the pull request head, read as git objects; it judges no review record and reads no substitute. That the main branch ruleset REQUIRES the checks is not checkable from the repository and is an inspection item for the repository settings.
+      The second review that AC3 requires is enforced outside this repository, by the private review tooling, before merge. No pull-request job of this repository judges a review record or reads a substitute. That the main branch ruleset REQUIRES the checks is not checkable from the repository and is an inspection item for the repository settings.
       AC1 exemptions in the layout check beyond the AC text: .github/dependabot.yml and .githooks/pre-commit (read as allowlist entries), plus mappings.yaml and unmapped.yaml (Oct 2). The coverage gate's exclusion list (coverage-exclusions.txt in the auditor directory) is not in the AC2 text, so "100% coverage" is read as zero uncovered eligible statements.
     acceptance_criteria:
       - id: REQ-AUD-018-AC1
