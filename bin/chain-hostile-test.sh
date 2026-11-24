@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-001-AC5
-# The hostile Build step (v0.3.0 rules 52a, 59), static and offline half. The runtime half is the signed
-# release-candidate (rc) tag run on main, cut after the cutover pull request has merged: it must be green and its run linked before any final
-# or patch tag is cut (REQ-CHAIN-001-AC5, accepted Oct 12); no script here can check that, and the marker of REQ-CHAIN-001-AC6 records it.
+# The hostile Build step (v0.3.0 rules 52a, 59), static and offline half. The runtime half is every final and patch tag run on GitHub,
+# which includes the hostile-* jobs and Sign (REQ-CHAIN-001-AC5); no script here can check that run.
 #
 # The shape this test assumes (the implementer matches it; anything else is a change to this header first):
 #   stage-build.yml: a step `run: bash bin/chain-hostile-step.sh`, gated by `if:` mentioning inputs.hostile, in the Build job,
@@ -15,7 +14,7 @@
 #       stated limit of the proof. The script writes only the RAW MATERIAL of each attempt (a file) under attempts/, and never
 #       writes an outcome: the words refused/accepted/outcome do not appear in its code, so it cannot grade itself.
 #   DRY-RUN REF: production `sign --check` makes the per-tag policy from the template only when
-#       GITHUB_REF is refs/tags/vX.Y.Z or refs/tags/vX.Y.Z-rcN (not refs/tags/x, not a branch): chain-verify-test.sh pins those refusals.
+#       GITHUB_REF is a pushed tag ref refs/tags/vX.Y.Z (not a branch): chain-verify-test.sh pins those refusals.
 #       The dry run is a workflow_dispatch on a BRANCH (or the throwaway hostile-proof/* ref), so `sign --check` has ONE more
 #       behaviour, chosen by the run, not by a flag the workflow can add (a workflow_dispatch on a TAG is refused outright, step-8
 #       SF-4: production tag runs come from a push): when GITHUB_EVENT_NAME is workflow_dispatch and GITHUB_REF is a branch, the policy is made for THAT ref (`policy make --ref "$GITHUB_REF"`), the written provenance carries
@@ -30,8 +29,8 @@
 #       inputs.dry-run == true }}` (the same text on sign, judged by bin/chain-build-wiring-test.sh); a v* tag push or a dry-run dispatch runs
 #       it, and `mode` is gone (stage-build.yml has no such input). Without a gate every job of a dry run would be skipped, green with no checks.
 #   release.yml: the build caller passes `hostile: ${{ github.event_name == 'push' &&
-#       startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}` (an rc-tag PUSH only: never a final tag, a branch or a
-#       dispatch; admission and Sign accept exactly vX.Y.Z-rcN, so the contains() is only the cheap gate); job
+#       startsWith(github.ref, 'refs/tags/v') }}` (a v* tag PUSH only: never a branch or a
+#       dispatch); job
 #       `hostile-verify` (needs the sign job; permissions EXACTLY {contents: read}: no id-token, nothing to write) is an ALLOWLIST
 #       of steps, in this order and no others: actions/checkout (persist-credentials: false); actions/download-artifact
 #       `hostile-attempts` into attempts (the raw material each attempt made: without it every verify would read a missing file);
@@ -79,7 +78,7 @@
 #       really obtained Sign's identity (exit 0, graded accepted). Any other token is `refused at runner: nothing usable for Sign`:
 #       another job of release.yml (another environment, or none), environment sign from another workflow, a look-alike file,
 #       repository or environment. A JWT with no job_workflow_ref claim, or no sub claim, is an error (exit 2).
-#   Dry-run gating: every hostile-* job has `if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}` exactly; every other job that needs Sign
+#   Dry-run gating: every hostile-* job has `if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}` exactly; every other job that needs Sign
 #       (transitively) has BOTH conjuncts `!inputs.dry-run` and `startsWith(github.ref, 'refs/tags/v')`; Release's policy step
 #       (stage-promote.yml) is `policy make --tag ...` and never `--ref` (the only `--ref` in the tree is hostile-verify's), and
 #       hostile-verify/hostile-verdict have no job `env`/`defaults`/`container`/`strategy`/`services`/`outputs`/`continue-on-error`,
@@ -444,8 +443,8 @@ PIN = {
 TAGCONJ = "startsWith(github.ref, 'refs/tags/v')"
 WFREF = "startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))"
 PUSHCONJ = "github.event_name == 'push'"
-# the hostile proof runs on a PUSH of a release-candidate tag only (REQ-CHAIN-001-AC5): never on a final tag, never on a branch
-RC_IF = "${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"
+# the hostile proof runs on every v* tag PUSH, where Sign runs (REQ-CHAIN-001-AC5): never on a branch, a dispatch or a snapshot call
+RC_IF = "${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}"
 def conj(cond):
     """The && conjuncts of a `${{ ... }}` condition, whitespace-normalised, or None when it has a `||` (fail closed: an or-joined
     condition proves nothing about either side). A conjunct must be EXACTLY the wanted text: `!startsWith(...)` and
@@ -650,7 +649,7 @@ else:
                 if STATUS.search(str(j.get("if", ""))): bad.append("the open job %s has a status function in its if: it would run after a failed or skipped job" % jn)
                 continue
             if jn.startswith("hostile-"):
-                if str(j.get("if", "")).strip() != RC_IF: bad.append("the job %s is a hostile-* job and must have `if: the rc-tag push condition` exactly (only an rc-tag push makes the hostile attempts: on a final tag its hostile-attempts download fails and blocks every release): %r" % (jn, j.get("if")))
+                if str(j.get("if", "")).strip() != RC_IF: bad.append("the job %s is a hostile-* job and must have `if: the tag push condition` exactly (a v* tag push, where Sign runs and its provenance is the positive control): %r" % (jn, j.get("if")))
                 if j.get("uses"): bad.append("the job %s is a hostile-* job and may not call a workflow" % jn)
                 if j.get("permissions") != {"contents": "read"}: bad.append("the job %s must have permissions exactly {contents: read}" % jn)
                 continue
@@ -798,7 +797,7 @@ jobs:
     steps:
       - run: echo sign
   hostile-verify:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: sign
     runs-on: ubuntu-24.04
     permissions: {contents: read}
@@ -845,7 +844,7 @@ EOF
       - uses: actions/upload-artifact@$sha # v7
         with: {name: hostile-results, path: hostile-results.json}
   hostile-verdict:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: hostile-verify
     runs-on: ubuntu-24.04
     permissions: {contents: read}
@@ -1001,119 +1000,119 @@ d=$(mk w9_vd_path); pymut "$(rel "$d")" "        with: {name: hostile-results, p
       - run: python3 bin/chain-verify.py hostile-verdict" "        with: {name: hostile-results, path: .}
       - run: python3 bin/chain-verify.py hostile-verdict"; wexpect caught "wiring: the verdict download goes to . (its with: is exact)" "$d"
 d=$(mk w9_hv_runner); pymut "$(rel "$d")" "  hostile-verify:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: sign
     runs-on: ubuntu-24.04" "  hostile-verify:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: sign
     runs-on: self-hosted"; wexpect caught "wiring: hostile-verify runs on self-hosted" "$d"
 d=$(mk w9_hv_runner2); pymut "$(rel "$d")" "  hostile-verify:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: sign
     runs-on: ubuntu-24.04" "  hostile-verify:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: sign
     runs-on: ubuntu-20.04"; wexpect caught "wiring: hostile-verify runs on a runner outside the closed hosted set (ubuntu-20.04)" "$d"
 d=$(mk w9_hd_runner); pymut "$(rel "$d")" "  hostile-verdict:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: hostile-verify
     runs-on: ubuntu-24.04" "  hostile-verdict:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: hostile-verify
     runs-on: self-hosted"; wexpect caught "wiring: hostile-verdict runs on self-hosted" "$d"
 d=$(mk w9_hvkey_timeoutminutes); pymut "$(rel "$d")" "  hostile-verify:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: sign
     runs-on: ubuntu-24.04" "  hostile-verify:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: sign
     runs-on: ubuntu-24.04
     timeout-minutes: 5"; wexpect caught "wiring: hostile-verify job key timeout-minutes: is outside its closed key set" "$d"
 d=$(mk w9_hvkey_name); pymut "$(rel "$d")" "  hostile-verify:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: sign
     runs-on: ubuntu-24.04" "  hostile-verify:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: sign
     runs-on: ubuntu-24.04
     name: x"; wexpect caught "wiring: hostile-verify job key name: is outside its closed key set" "$d"
 d=$(mk w9_hvkey_continueonerror); pymut "$(rel "$d")" "  hostile-verify:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: sign
     runs-on: ubuntu-24.04" "  hostile-verify:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: sign
     runs-on: ubuntu-24.04
     continue-on-error: true"; wexpect caught "wiring: hostile-verify job key continue-on-error: is outside its closed key set" "$d"
 d=$(mk w9_hvkey_env); pymut "$(rel "$d")" "  hostile-verify:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: sign
     runs-on: ubuntu-24.04" "  hostile-verify:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: sign
     runs-on: ubuntu-24.04
     env: {A: b}"; wexpect caught "wiring: hostile-verify job key env: is outside its closed key set" "$d"
 d=$(mk w9_hvkey_defaults); pymut "$(rel "$d")" "  hostile-verify:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: sign
     runs-on: ubuntu-24.04" "  hostile-verify:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: sign
     runs-on: ubuntu-24.04
     defaults: {run: {shell: sh}}"; wexpect caught "wiring: hostile-verify job key defaults: is outside its closed key set" "$d"
 d=$(mk w9_hvkey_container); pymut "$(rel "$d")" "  hostile-verify:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: sign
     runs-on: ubuntu-24.04" "  hostile-verify:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: sign
     runs-on: ubuntu-24.04
     container: alpine"; wexpect caught "wiring: hostile-verify job key container: is outside its closed key set" "$d"
 d=$(mk w9_hvkey_services); pymut "$(rel "$d")" "  hostile-verify:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: sign
     runs-on: ubuntu-24.04" "  hostile-verify:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: sign
     runs-on: ubuntu-24.04
     services: {}"; wexpect caught "wiring: hostile-verify job key services: is outside its closed key set" "$d"
 d=$(mk w9_hvkey_strategy); pymut "$(rel "$d")" "  hostile-verify:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: sign
     runs-on: ubuntu-24.04" "  hostile-verify:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: sign
     runs-on: ubuntu-24.04
     strategy: {fail-fast: false}"; wexpect caught "wiring: hostile-verify job key strategy: is outside its closed key set" "$d"
 d=$(mk w9_hvkey_outputs); pymut "$(rel "$d")" "  hostile-verify:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: sign
     runs-on: ubuntu-24.04" "  hostile-verify:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: sign
     runs-on: ubuntu-24.04
     outputs: {a: b}"; wexpect caught "wiring: hostile-verify job key outputs: is outside its closed key set" "$d"
 d=$(mk w9_hdkey_timeoutminutes); pymut "$(rel "$d")" "  hostile-verdict:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: hostile-verify
     runs-on: ubuntu-24.04" "  hostile-verdict:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: hostile-verify
     runs-on: ubuntu-24.04
     timeout-minutes: 5"; wexpect caught "wiring: hostile-verdict job key timeout-minutes: is outside its closed key set" "$d"
 d=$(mk w9_hdkey_continueonerror); pymut "$(rel "$d")" "  hostile-verdict:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: hostile-verify
     runs-on: ubuntu-24.04" "  hostile-verdict:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: hostile-verify
     runs-on: ubuntu-24.04
     continue-on-error: true"; wexpect caught "wiring: hostile-verdict job key continue-on-error: is outside its closed key set" "$d"
 d=$(mk w9_hdkey_env); pymut "$(rel "$d")" "  hostile-verdict:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: hostile-verify
     runs-on: ubuntu-24.04" "  hostile-verdict:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: hostile-verify
     runs-on: ubuntu-24.04
     env: {A: b}"; wexpect caught "wiring: hostile-verdict job key env: is outside its closed key set" "$d"
@@ -1168,37 +1167,37 @@ d=$(mk w9_costkey_if); pymut "$(rel "$d")" "      - uses: actions/checkout@$sha 
       - uses: actions/download-artifact@$sha # v8
         with: {name: hostile-attempts, path: attempts}"; wexpect caught "wiring: the checkout step carries if: (closed step key set)" "$d"
 d=$(mk w_rd_x); pymut "$(rel "$d")" "  hostile-verdict:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}" "  hostile-x:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}" "  hostile-x:
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: hostile-verify
     runs-on: ubuntu-24.04
     permissions: {contents: read}
     steps:
       - run: echo hi
   hostile-verdict:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"; wexpect caught "wiring: an extra hostile-x job (only hostile-verify and hostile-verdict are allowed; R-d)" "$d"
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}"; wexpect caught "wiring: an extra hostile-x job (only hostile-verify and hostile-verdict are allowed; R-d)" "$d"
 d=$(mk w_rd_upper); pymut "$(rel "$d")" "  hostile-verdict:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}" "  Hostile-Extra:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}" "  Hostile-Extra:
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: hostile-verify
     runs-on: ubuntu-24.04
     permissions: {contents: read}
     steps:
       - run: echo hi
   hostile-verdict:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"; wexpect caught "wiring: an extra Hostile-Extra job (case-insensitive)" "$d"
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}"; wexpect caught "wiring: an extra Hostile-Extra job (case-insensitive)" "$d"
 d=$(mk w_rd_sign2); pymut "$(rel "$d")" "  hostile-verdict:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}" "  sign-extra:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}" "  sign-extra:
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: hostile-verify
     runs-on: ubuntu-24.04
     permissions: {contents: read}
     steps:
       - run: echo hi
   hostile-verdict:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"; wexpect caught "wiring: an extra sign-extra job" "$d"
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}"; wexpect caught "wiring: an extra sign-extra job" "$d"
 d=$(mk w_rd_signrb); pymut "$(rel "$d")" "  hostile-verdict:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}" "  sign-rebuild:
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}" "  sign-rebuild:
     needs: sign
     if: \${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}
     runs-on: ubuntu-24.04
@@ -1211,43 +1210,43 @@ d=$(mk w_rd_signrb); pymut "$(rel "$d")" "  hostile-verdict:
     steps:
       - run: echo hi
   hostile-verdict:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"; wexpect ok "wiring: the jobs sign-rebuild (Sign's second call, for Rebuild's records) and sign-release (the fourth) are not refused as extra sign* jobs" "$d"
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}"; wexpect ok "wiring: the jobs sign-rebuild (Sign's second call, for Rebuild's records) and sign-release (the fourth) are not refused as extra sign* jobs" "$d"
 d=$(mk w_signrel_notag); pymut "$(rel "$d")" "  hostile-verdict:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}" "  sign-release:
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}" "  sign-release:
     needs: sign
     if: \${{ inputs.mode != 'snapshot' && github.event_name == 'push' && !contains(github.ref_name, '-') }}
     runs-on: ubuntu-24.04
     steps:
       - run: echo hi
   hostile-verdict:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"; wexpect caught "wiring: the job sign-release without the tag conjunct (a branch run could reach the fourth sign job)" "$d"
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}"; wexpect caught "wiring: the job sign-release without the tag conjunct (a branch run could reach the fourth sign job)" "$d"
 d=$(mk w_signrel_lax); pymut "$(rel "$d")" "  hostile-verdict:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}" "  sign-release:
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}" "  sign-release:
     if: \${{ startsWith(github.ref, 'refs/tags/v') || true }}
     needs: sign
     runs-on: ubuntu-24.04
     steps:
       - run: echo hi
   hostile-verdict:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"; wexpect caught "wiring: the job sign-release whose if is or-joined with true" "$d"
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}"; wexpect caught "wiring: the job sign-release whose if is or-joined with true" "$d"
 d=$(mk w_rd_signup); pymut "$(rel "$d")" "  hostile-verdict:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}" "  SIGN2:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}" "  SIGN2:
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: hostile-verify
     runs-on: ubuntu-24.04
     permissions: {contents: read}
     steps:
       - run: echo hi
   hostile-verdict:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"; wexpect caught "wiring: an extra SIGN2 job (case-insensitive)" "$d"
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}"; wexpect caught "wiring: an extra SIGN2 job (case-insensitive)" "$d"
 d=$(mk w_nogate); pymut "$(rel "$d")" "      - name: hostile step
         run: bash bin/chain-hostile-step.sh" "      - name: hostile step
         if: true
         run: bash bin/chain-hostile-step.sh"; wexpect caught "wiring: the hostile step carries an if (REQ-CHAIN-004-AC19: it runs in every build)" "$d"
 d=$(mk w_gaterc); pymut "$(rel "$d")" "      - name: hostile step
         run: bash bin/chain-hostile-step.sh" "      - name: hostile step
-        if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
-        run: bash bin/chain-hostile-step.sh"; wexpect caught "wiring: the hostile step runs on a release-candidate push only (it must run in every build)" "$d"
+        if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+        run: bash bin/chain-hostile-step.sh"; wexpect caught "wiring: the hostile step runs on a tag push only (it must run in every build)" "$d"
 d=$(mk w_gatemode); pymut "$(rel "$d")" "      - name: hostile step
         run: bash bin/chain-hostile-step.sh" "      - name: hostile step
         if: \${{ inputs.mode != 'snapshot' }}
@@ -1593,12 +1592,12 @@ d=$(mk w_topdef); pymut "$(rel "$d")" "jobs:" "defaults: {run: {shell: bash}}
 jobs:"; wexpect caught "wiring: release.yml has top-level defaults" "$d"
 d=$(mk w_hvnoif); python3 - "$(rel "$d")" <<'PY'
 import sys
-t = open(sys.argv[1]).read().replace("  hostile-verify:\n    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}\n", "  hostile-verify:\n", 1)
+t = open(sys.argv[1]).read().replace("  hostile-verify:\n    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}\n", "  hostile-verify:\n", 1)
 open(sys.argv[1], "w").write(t)
 PY
 wexpect caught "wiring: hostile-verify has no dry-run gate (a real tag run would fail its download and block the release)" "$d"
 d=$(mk w_hvor); pymut "$(rel "$d")" "  hostile-verdict:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}" "  hostile-verdict:
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}" "  hostile-verdict:
     if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') || true }}"; wexpect caught "wiring: hostile-verdict's gate is 'inputs.dry-run || true'" "$d"
 d=$(mk w_notag); pymut "$(rel "$d")" " && startsWith(github.ref, 'refs/tags/v')" ""; wexpect caught "wiring: a job after Sign (promotion) has no tag conjunct (a branch dispatch with dry-run unchecked could reach it)" "$d"
 d=$(mk w_tagor); pymut "$(rel "$d")" "!inputs.dry-run && startsWith(github.ref, 'refs/tags/v')" "!inputs.dry-run || startsWith(github.ref, 'refs/tags/v')"; wexpect caught "wiring: the tag conjunct is joined with || " "$d"
@@ -1703,42 +1702,28 @@ d=$(mk w_pmother); printf 'on: {workflow_call: {}}\njobs:\n  x:\n    runs-on: ub
 d=$(mk w_rekorstub); pymut "$(rel "$d")" "--policy policy.json 2> /tmp/positive_control.err" "--policy policy.json --rekor-stub provenance/provenance.rekor.json 2> /tmp/positive_control.err"; wexpect caught "wiring: the positive control given the Rekor stub is not the pinned three-line shape (the stub is not part of the control)" "$d"
 d=$(mk w_nowflag); pymut "$(rel "$d")" "--record attempts/forge_provenance.json --policy policy.json" "--record attempts/forge_provenance.json --policy policy.json --now \"\$NOW\""; wexpect caught "wiring: an attempt's verify line takes --now from the environment (the pinned line has none)" "$d"
 wexpect ok "the real repository's hostile wiring (RED until PR 1 implements it)" "$root"
-# AC5's runtime proof has a fixed place: the rc-tag run is
-# cut on main after the cutover pull request has merged, its green run is linked, and no final or patch tag is cut before the marker of REQ-CHAIN-001-AC6 records it;
-# the REQ-CHAIN-001 notes carry the CUTOVER CHECKLIST line so it cannot be forgotten
-python3 - "$root/requirements/requirements.yaml" <<'PY' 2>&1 && ok "001-AC5 the AC names when its GitHub proof runs (a signed rc-tag run on main after the cutover pull request, before any final or patch tag) and the notes carry the CUTOVER CHECKLIST line" || bad "001-AC5 the AC text or the CUTOVER CHECKLIST note does not place the GitHub proof"
+# AC5's runtime proof has a fixed place: every final and patch tag run, which includes the hostile-* jobs and Sign; the rc-tag run, its marker and the
+# cutover checklist are gone (owner ruling of Nov 23), and the REQ-CHAIN-001 notes say so
+python3 - "$root/requirements/requirements.yaml" <<'PY' 2>&1 && ok "001-AC5 the AC names when its GitHub proof runs (every final and patch tag run, with the hostile-* jobs and Sign) and no rc-tag run or marker is left" || bad "001-AC5 the AC text does not place the GitHub proof on every final and patch tag run"
 import sys, yaml
 reqs = {r["id"]: r for r in yaml.safe_load(open(sys.argv[1]))["requirements"]}
 r = reqs["REQ-CHAIN-001"]
-then = next(a for a in r["acceptance_criteria"] if a["id"] == "REQ-CHAIN-001-AC5")["then"]
-given = next(a for a in r["acceptance_criteria"] if a["id"] == "REQ-CHAIN-001-AC5")["given"]
-assert "a run on GitHub of the chain on a signed release-candidate tag (v0.3.0-rcN)" in given, "AC5 given does not name the signed rc-tag run"
-when = next(a for a in r["acceptance_criteria"] if a["id"] == "REQ-CHAIN-001-AC5")["when"]
-# five runtime cases; the rc-tag run is cut on main AFTER the cutover merge; the marker of AC6 gates every final or patch tag
+a5 = next(a for a in r["acceptance_criteria"] if a["id"] == "REQ-CHAIN-001-AC5")
+then, given, when = a5["then"], a5["given"], a5["when"]
+assert "a run on GitHub of the chain on a signed release tag vX.Y.Z (a final or patch tag)" in given, "AC5 given does not name the signed release tag run"
+# five runtime cases; every final and patch tag run includes the hostile-* jobs and Sign
 for words in ("as five separate cases each on its own", "and to forge provenance that Release would accept (the sixth case, getting provenance accepted from a second workflow that calls release.yml, is not a runtime case: scan.yml and main-candidate-rescan.yml call it only in snapshot mode, where every sign job is guarded off, and a called release.yml's token names the caller's file; it is judged by the guard cases of the static judge and by the offline hostile test, which is a stated limit of this proof)"):
     assert words in when, "AC5 when lacks: " + words
 assert "six separate cases" not in when and "throwaway commit" not in when, "AC5 when still has the six-case wording"
-for words in ("is cut on main after the cutover pull request has merged, must be green and its run linked before any final or patch tag is cut on main",
-              "until a recorded green rc-tag run of those same chain files (the workflows, bin/ and .github/policy/ files the chain uses, identical bytes) exists as the committed marker of REQ-CHAIN-001-AC6, no patch decision proceeds",
-              "each of the five runtime cases is judged by the verifier invocation pinned for it", "a branch dry run does not satisfy this AC",
+for words in ("every final and patch tag run includes the hostile-* jobs and Sign",
+              "the release job needs hostile-verdict, so Release publishes nothing unless the verdict is green",
+              "each of the five runtime cases is judged by the verifier invocation pinned for it", "a branch dry run do not satisfy this AC",
               "bin/chain-hostile-test.sh", "the wiring tests judge the files"):
     assert words in then, "AC5 lacks: " + words
-assert "before the cutover pull request merges chain-v030 to main" not in then and "each of the six cases" not in then, "AC5 then still has the old order or six cases"
-a6 = next(a for a in r["acceptance_criteria"] if a["id"] == "REQ-CHAIN-001-AC6")
-assert a6["given"] == "a patch tag to be decided on main", "AC6 given"
-assert a6["when"] == "the patch decision reads .github/policy/rc-proof.json (the marker)", "AC6 when"
-for words in ("it refuses (naming the marker) unless the marker names an rc tag, the run id of its green chain run, and the sha256 over the exact bytes of the chain files at the tag's commit (the same file set as AC5)",
-              "bin/chain-verify.py against the rc tag's own identities", "an rc tag that is not an ancestor of the commit, an unreadable marker, or a missing one is refused, never skipped"):
-    assert words in a6["then"], "AC6 lacks: " + words
-assert a6["verification"] == {"method": "ci-workflow", "release_blocking": True} and a6["status"] == "approved", "AC6 verification/status"
-assert "linked in the pull request before the pull request merges" not in then, "AC5 still ties the proof to this pull request"
-assert "CUTOVER CHECKLIST" in r["notes"], "REQ-CHAIN-001 notes lack the CUTOVER CHECKLIST line"
-# the cutover merge first with only KR-CUTOVER left, then the maintainers' rc tag on main, then the marker pull request, which removes KR-CUTOVER
-for words in ("CUTOVER CHECKLIST (order accepted Oct 12)", "bin/chain-known-red.py empty-except KR-CUTOVER", "it does not wait for an rc run", "the maintainers sign a release-candidate tag vX.Y.Z-rcN on main's merge commit",
-              "the marker pull request of REQ-CHAIN-001-AC6", "it removes KR-CUTOVER", "the patch decision refuses every patch tag"):
-    assert words in r["notes"], "REQ-CHAIN-001 notes lack the accepted checklist order: " + words
-assert "does not merge without a green rc-tag run of the same commit's chain files" not in r["notes"], "REQ-CHAIN-001 notes still say the cutover waits for an rc run"
-assert "GitHub dry run is green" not in r["notes"], "REQ-CHAIN-001 notes still make a branch dry run the proof"
+for words in ("rc-tag", "release-candidate", "REQ-CHAIN-001-AC6", "cutover", "marker of"):
+    assert words not in given + when + then, "AC5 still names: " + words
+assert "REQ-CHAIN-001-AC6" not in [a["id"] for a in r["acceptance_criteria"]], "AC6 (the rc-proof marker) is still a criterion"
+assert "CUTOVER CHECKLIST" not in r["notes"] and "RC TAGS GONE (ruling of Nov 23)" in r["notes"], "REQ-CHAIN-001 notes still carry the cutover checklist"
 PY
 # the key attempt is EXECUTED, not only read. The real function is cut out of the hostile step and run in a
 # controlled home and runner

@@ -2,10 +2,9 @@
 # Release, first witnessed step: checks the tag, makes the release policy for it, and verifies every earlier
 # stage's signed record in the order of the release rules. A failure stops the run and the message starts with
 # the stage. No credential is bound to this step: it has no environment block and no secret.
-# After this step a release candidate ends: every later step of stage-promote.yml skips a tag with a hyphen.
 set -euo pipefail
 python3 -I -B bin/build-admit.py tag-ok "${GITHUB_REF_NAME:-}" || \
-  { echo "refused at tag: ${GITHUB_REF_NAME:-} is not vX.Y.Z or vX.Y.Z-rcN" >&2; exit 1; }
+  { echo "refused at tag: ${GITHUB_REF_NAME:-} is not vX.Y.Z" >&2; exit 1; }
 # The signed key manifest, its signature and the offline root key must exist before anything else runs (B-F22): the
 # later steps hold credentials and publish.
 for f in release-key-manifest.json release-key-manifest.sig release-key-root.pub; do \

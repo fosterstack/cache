@@ -3,7 +3,7 @@
 
     python3 bin/build-admit.py run [--out admission.json]   run from the root of the checkout of the tagged commit, or of a release branch
     python3 bin/build-admit.py list-checks                  one check name per line, in the order they run
-    python3 bin/build-admit.py tag-ok [--final] TAG         exit 0 when TAG is a release tag (--final: and not a release candidate), else 1
+    python3 bin/build-admit.py tag-ok [--final] TAG         exit 0 when TAG is a release tag vX.Y.Z, else 1 (--final: the same, kept for its callers)
     python3 bin/build-admit.py tag-pattern                  print TAG_PATTERN, for a step that matches it itself (jq)
 
 The tag, ref and sha come ONLY from the runner environment (GITHUB_REF, GITHUB_REF_NAME, GITHUB_SHA, GITHUB_REPOSITORY, GITHUB_RUN_ID,
@@ -44,9 +44,9 @@ GPGCONF = "/usr/bin/gpgconf"    # TEST-SUBST
 SSH_KEYGEN = "/usr/bin/ssh-keygen"  # TEST-SUBST
 PYTHON3 = "/usr/bin/python3"    # TEST-SUBST
 
-# The one tag grammar: no leading zeros, an rc number of at least 1.
-# v1.2.3 and v1.2.3-rc1 match; v01.2.3 and v1.2.3-rc0 do not.
-TAG_PATTERN = r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-rc[1-9][0-9]*)?"
+# The one tag grammar: vX.Y.Z, no leading zeros.
+# v1.2.3 matches; v01.2.3 and v1.2.3-rc1 do not.
+TAG_PATTERN = r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
 TAG_SYNTAX = re.compile(TAG_PATTERN)  # fullmatch: no trailing newline slips through
 SHA_SYNTAX = re.compile(r"[0-9a-f]{40}")
 SSH_GOOD = re.compile(r'^Good "git" signature for (\S+) with .* key (SHA256:\S+)$', re.M)
@@ -148,9 +148,7 @@ def check_tag_ref(ctx):
 def check_tag_syntax(ctx):
     """The strict release-version syntax, before anything else looks at the tag."""
     if not TAG_SYNTAX.fullmatch(ctx.tag):
-        raise Refusal("tag-syntax", "tag %r does not match vMAJOR.MINOR.PATCH[-rcN]" % ctx.tag)
-    if ctx.branch and "-rc" in ctx.tag:     # the name already passed TAG_SYNTAX, so "-rc" means a release candidate
-        raise Refusal("tag-syntax", "branch %s names a release candidate: a release branch is release/vMAJOR.MINOR.PATCH" % ctx.branch)
+        raise Refusal("tag-syntax", "tag %r does not match vMAJOR.MINOR.PATCH" % ctx.tag)
 
 
 def check_tag_points_at_sha(ctx):
@@ -591,7 +589,7 @@ def main(argv):
         print(TAG_PATTERN)
         return 0
     if args.cmd == "tag-ok":
-        return 0 if TAG_SYNTAX.fullmatch(args.tag) and not (args.final and "-rc" in args.tag) else 1
+        return 0 if TAG_SYNTAX.fullmatch(args.tag) else 1
     try:
         admit(args.out)
     except Refusal as e:

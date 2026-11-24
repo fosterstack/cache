@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Scanner-panel rule 12 (REQ-SCAN-012): the live test of our VEX files and of docs/using-our-vex.md against the real
 # services. Runs only in the `live-test` environment, one run at a time (concurrency group vex-live-test), from the
-# release-candidate and post-publish jobs of release.yml, as the federated live-test identities.
+# post-publish job of release.yml, as the federated live-test identity.
 #
 #   bin/vex-live-run.sh run       sweep the test resources; every guide command block exactly as written (settings
 #                                 blocks take the test's values); our images and the pinned fixture copied by digest to
@@ -11,9 +11,9 @@
 #   bin/vex-live-run.sh cleanup   sweep again: the test repositories emptied, every live-test Inspector filter and
 #                                 every VEX note on the test repository's images deleted, and proven gone
 #
-# Inputs (env): MODE (rc|release|main), ECR and GAR (the test repositories), GITHUB_WORKSPACE, GITHUB_RUN_ID,
-# RUNNER_TEMP, GITHUB_REF_NAME (rc and release: the tag), GITHUB_REPOSITORY and GH_TOKEN (main: the releases),
-# CANDIDATE_DIR (rc: Build's artifacts), and for the Scout leg DH_REPO (the private Docker Hub test repository),
+# Inputs (env): MODE (release|main), ECR and GAR (the test repositories), GITHUB_WORKSPACE, GITHUB_RUN_ID,
+# RUNNER_TEMP, GITHUB_REF_NAME (release: the tag), GITHUB_REPOSITORY and GH_TOKEN (main: the releases),
+# and for the Scout leg DH_REPO (the private Docker Hub test repository),
 # DOCKERHUB_USERNAME, DOCKERHUB_SCOUT_TOKEN (read-only Scout login), DOCKERHUB_TEST_USERNAME, DOCKERHUB_TEST_PUSH_TOKEN.
 REGION=us-east-1
 MAX_PUSHES=50
@@ -36,8 +36,8 @@ push_copy() {   # <src> <dst>
   crane copy "$1" "$2"
 }
 
-# A release candidate publishes nothing, so each image is pushed from Build's OCI layout directory; the digest that
-# comes out must be the one Build attested, never a digest read from a registry.
+# The Scout fixture is pushed from an OCI layout directory; the digest that
+# comes out must be the one attested, never a digest read from a registry.
 copy_candidate() {   # <layout dir> <dst ref> <attested digest>
   local layout=$1 dst=$2 want=$3 got
   [[ "$want" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::the attested digest of ${dst} is malformed" >&2; return 1; }
@@ -200,16 +200,6 @@ scout_scan() {   # <registry:// or oci-dir:// reference> <out file> [author patt
   fi
 }
 
-scout_probe() {   # <layout dir> <author pattern>: INFORMATION ONLY (advisor, Oct 16): does Scout apply the attached attestation straight from Build's layout? Never fails the run.
-  local layout=$1 author=$2
-  {
-    scout_scan "oci-dir://${layout}" scout.probe.before.json \
-      && scout_scan "oci-dir://${layout}" scout.probe.after.json "$author" \
-      && python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" scout-delta --before scout.probe.before.json --after scout.probe.after.json
-  } || echo "::notice::Scout could not scan Build's layout directly (oci-dir://); information only"
-  return 0
-}
-
 check_removal_scope() {   # the page's removal block deletes every Inspector filter named fosterstack-cache-*: run it only when each such filter is a live-test one
   local out all test
   out=$(aws inspector2 list-filters --region "$REGION" --action SUPPRESS --output json) \
@@ -231,14 +221,11 @@ compare_release_files() {   # <tag> <committed openvex>
     || { echo "::error::the release's CSAF file is not the generator's output" >&2; return 1; }
 }
 
-# The release under test: MODE rc = the release candidate tag (vX.Y.Z-rcN, nothing published); MODE release = the final
+# The release under test: MODE release = the final
 # tag just published (vX.Y.Z); MODE main = the newest published release with the rule-10 files, or an announced skip.
 select_release() {
   skip=""
   case "${MODE:?}" in
-    rc)
-      [[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$ ]] || { echo "::error::MODE rc needs a tag vX.Y.Z-rcN, got '${GITHUB_REF_NAME:-}'" >&2; return 1; }
-      tag=$GITHUB_REF_NAME ;;
     release)
       [[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::MODE release needs a final tag vX.Y.Z, got '${GITHUB_REF_NAME:-}'" >&2; return 1; }
       tag=$GITHUB_REF_NAME ;;
@@ -251,7 +238,7 @@ select_release() {
         echo "::notice::live test skipped: no published release carries the rule-10 files yet (the guide and the VEX files ship with the first v0.3 release)"
         skip=yes
       fi ;;
-    *) echo "::error::MODE must be rc, release or main" >&2; return 1 ;;
+    *) echo "::error::MODE must be release or main" >&2; return 1 ;;
   esac
 }
 scout_judge() {   # <before> <after> <cve> <what>: bin/scout-selfcheck.py's verdict (the CVE in the first, gone from the second, every other finding kept); an unreadable report fails
@@ -303,19 +290,14 @@ scout_leg_run() {
   python3 "$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout scout-fixture --vex scout-fixture.vex.json >/dev/null || return 1
   fx_f=$(jq -er '.manifests[0].digest' scout-fixture/index.json) || return 1
   copy_candidate scout-fixture "${dh}:${RUN}-fixture-vex" "$fx_f" || return 1
-  # (2) our production image: the candidate from Build's layout, or the published image copied by digest
-  if [ "$MODE" = rc ]; then
-    copy_candidate "$CANDIDATE_DIR/images/production" "${dh}:${RUN}-production" "$prod" || return 1
-  else
-    push_copy "ghcr.io/fosterstack/cache@${prod}" "${dh}:${RUN}-production" || return 1
-    [ "$(crane digest "${dh}:${RUN}-production")" = "$prod" ] || { echo "::error::the production copy does not keep its digest" >&2; return 1; }
-  fi
+  # (2) our production image: the published image copied by digest
+  push_copy "ghcr.io/fosterstack/cache@${prod}" "${dh}:${RUN}-production" || return 1
+  [ "$(crane digest "${dh}:${RUN}-production")" = "$prod" ] || { echo "::error::the production copy does not keep its digest" >&2; return 1; }
   crane auth logout index.docker.io || return 1
   HUB_PUSH_IN=0
   unset DOCKERHUB_TEST_PUSH_TOKEN      # gone from the environment too: nothing that runs from here on (a scan, the page's Scout block) can see it
   HUB_SCOUT_IN=1
   printf '%s' "$DOCKERHUB_SCOUT_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin >/dev/null || return 1
-  if [ "$MODE" = rc ]; then scout_probe "$CANDIDATE_DIR/images/production" "$author"; fi
   scout_scan "registry://docker.io/${DH_REPO}@${fx_f}" scout.fixture.before.json || return 1
   scout_scan "registry://docker.io/${DH_REPO}@${fx_f}" scout.fixture.after.json "$author" || return 1
   scout_judge scout.fixture.before.json scout.fixture.after.json "$CVE" "the fixture carrying our attestation" || return 1
@@ -331,7 +313,7 @@ scout_leg_run() {
     echo "Docker Scout applies the attestation of our production image: ${target}"
   fi
   # after a publication: the published index by tag and by exact digest, as a customer scans it
-  if [ "$MODE" != rc ] && [ -n "$target" ]; then
+  if [ -n "$target" ]; then
     for ref in "ghcr.io/fosterstack/cache:${tag#v}" "ghcr.io/fosterstack/cache@${prod}"; do
       what="the published index ${ref}"
       scout_scan "registry://${ref}" scout.pub.before.json || return 1
@@ -339,10 +321,9 @@ scout_leg_run() {
       scout_judge scout.pub.before.json scout.pub.after.json "$target" "$what" || return 1
     done
   fi
-  if [ "$MODE" != rc ]; then   # the page's block is written for OUR production digest, which the Google leg replaced by the fixture's in the state
-    python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" settings --state state.env "DIGEST=${prod}" || return 1
-    guide scout || return 1
-  fi   # the page's own Scout command, as written (nothing is published on a release candidate)
+  # the page's block is written for OUR production digest, which the Google leg replaced by the fixture's in the state; the page's own Scout command runs as written
+  python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" settings --state state.env "DIGEST=${prod}" || return 1
+  guide scout || return 1
   docker logout docker.io >/dev/null || return 1
   HUB_SCOUT_IN=0
   echo "Docker Scout leg passed: ${CVE} on the fixture, ${target:-no statement of ours reported} on our production image"
@@ -375,38 +356,22 @@ select_release
 if [ "$skip" = yes ]; then exit 0; fi
 echo "release under test: ${tag} (${MODE})"
 
-# --- the guide's blocks; settings take the test's values, commands run as written (REQ-SCAN-012-AC5). A release candidate publishes nothing (v0.3), so
-#     the blocks the cannot-run list names (digest, download, verify) are left out of its plan and run in the post-publish run (MODE release) instead
-if [ "$MODE" = rc ]; then
-  python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" plan --guide "$GITHUB_WORKSPACE/docs/using-our-vex.md" --pins "$GITHUB_WORKSPACE/docs/using-our-vex.live-blocks.json" --skip-cannot-run "$GITHUB_WORKSPACE/docs/using-our-vex.cannot-run.json" --out-dir plan > plan.txt
-else
-  python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" plan --guide "$GITHUB_WORKSPACE/docs/using-our-vex.md" --pins "$GITHUB_WORKSPACE/docs/using-our-vex.live-blocks.json" --out-dir plan > plan.txt
-fi
+# --- the guide's blocks; settings take the test's values, commands run as written (REQ-SCAN-012-AC5)
+python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" plan --guide "$GITHUB_WORKSPACE/docs/using-our-vex.md" --pins "$GITHUB_WORKSPACE/docs/using-our-vex.live-blocks.json" --out-dir plan > plan.txt
 python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" settings --state state.env "VER=${tag#v}"
 echo '{}' > images.json
-if [ "$MODE" = rc ]; then
-  # the candidate: Build's artifacts (CANDIDATE_DIR holds digests.json, items.json and images/<variant>/ layouts with <variant>.digest and <variant>.manifests);
-  # the images map is made by the chain's own tool, so it is exactly what Release gives the generator
-  : "${CANDIDATE_DIR:?the candidate Build artifacts}"
-  python3 "$GITHUB_WORKSPACE/bin/release-metadata.py" images --digests "$CANDIDATE_DIR/digests.json" --images-dir "$CANDIDATE_DIR/images" \
-    --items "$CANDIDATE_DIR/items.json" --out images.json
-  cp "$GITHUB_WORKSPACE/.vex/fosterstack-cache.openvex.json" ./fosterstack-cache.openvex.json
-  python3 "$GITHUB_WORKSPACE/bin/vex-forms.py" --openvex "$GITHUB_WORKSPACE/.vex/fosterstack-cache.openvex.json" --images images.json --version "$tag" --out-dir . >/dev/null
-  prod=$(jq -r '.production.index' images.json)
-else
-  guide digest
-  guide download
-  guide verify
-  prod=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" state --state state.env DIGEST)
-  # the release's images, as the verified manifest names them, and their linux children
-  for v in production fips; do
-    d=$(jq -er --arg v "$v" '.images[] | select(.variant == $v) | .digest' release-manifest.verified.json)
-    kids=$(crane manifest "ghcr.io/fosterstack/cache@${d}" \
-      | jq -c '[.manifests[] | select(.platform.os == "linux") | {key: ("linux/" + .platform.architecture), value: .digest}] | from_entries')
-    jq --arg v "$v" --arg d "$d" --argjson k "$kids" '. + {($v): {index: $d, children: $k}}' images.json > images.tmp
-    mv images.tmp images.json
-  done
-fi
+guide digest
+guide download
+guide verify
+prod=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" state --state state.env DIGEST)
+# the release's images, as the verified manifest names them, and their linux children
+for v in production fips; do
+  d=$(jq -er --arg v "$v" '.images[] | select(.variant == $v) | .digest' release-manifest.verified.json)
+  kids=$(crane manifest "ghcr.io/fosterstack/cache@${d}" \
+    | jq -c '[.manifests[] | select(.platform.os == "linux") | {key: ("linux/" + .platform.architecture), value: .digest}] | from_entries')
+  jq --arg v "$v" --arg d "$d" --argjson k "$kids" '. + {($v): {index: $d, children: $k}}' images.json > images.tmp
+  mv images.tmp images.json
+done
 if [ "$MODE" = release ]; then   # a just-published release: the downloaded files are the generator's output for the committed file and the published images
   mkdir -p regen
   python3 "$GITHUB_WORKSPACE/bin/vex-forms.py" --openvex "$GITHUB_WORKSPACE/.vex/fosterstack-cache.openvex.json" --images images.json \
@@ -420,13 +385,8 @@ gcloud auth print-access-token | crane auth login "${GAR%%/*}" -u oauth2accessto
 gcloud auth print-access-token | docker login "${GAR%%/*}" -u oauth2accesstoken --password-stdin
 for v in production fips; do
   d=$(jq -r --arg v "$v" '.[$v].index' images.json)
-  if [ "$MODE" = rc ]; then
-    copy_candidate "$CANDIDATE_DIR/images/${v}" "${ECR}:${RUN}-${v}" "$d"
-    copy_candidate "$CANDIDATE_DIR/images/${v}" "${GAR}/cache:${RUN}-${v}" "$d"
-  else
-    push_copy "ghcr.io/fosterstack/cache@${d}" "${ECR}:${RUN}-${v}"
-    push_copy "ghcr.io/fosterstack/cache@${d}" "${GAR}/cache:${RUN}-${v}"
-  fi
+  push_copy "ghcr.io/fosterstack/cache@${d}" "${ECR}:${RUN}-${v}"
+  push_copy "ghcr.io/fosterstack/cache@${d}" "${GAR}/cache:${RUN}-${v}"
 done
 # the fixture must carry, by construction, a CVE active in two package names (docs/using-our-vex.live-fixture.json): checked on the real image, before any push of it
 python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" fixture-check --manifest "$GITHUB_WORKSPACE/docs/using-our-vex.live-fixture.json" --run "$GITHUB_WORKSPACE/bin/vex-live-run.sh"

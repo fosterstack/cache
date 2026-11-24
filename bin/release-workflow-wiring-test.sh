@@ -4,7 +4,7 @@
 # /srv/handoffs/briefs/cache-921-signer-identity-ruling.md and kvm-postponed-one-build-path.md). This suite judges that file from the PARSED workflow (never from substrings of
 # the text), once on the real file, which must pass, and on mutated copies, each of which must be refused FOR THE REASON NAMED (a refusal for another reason, or a crash, counts as a failure).
 # What it pins is what the English rows say and nothing more:
-#   REQ-CHAIN-005-AC5  the job graph: the chain jobs and their needs, the gate G on build-freeze, the guard S on sign, sign-rebuild, sign-check and (followed by && !contains(github.ref_name, '-')) release, the Check jobs'
+#   REQ-CHAIN-005-AC5  the job graph: the chain jobs and their needs, the gate G on build-freeze, the guard S on sign, sign-rebuild, sign-check and release, the Check jobs'
 #                      condition, no if on the Rebuild jobs, workflow-level permissions {}, the allowed other jobs, the dry-run input a boolean
 #   REQ-CHAIN-001-AC9  the four sign jobs: environment sign, exactly contents read and id-token write, the three KMS federation literals as job env, the only jobs that run a signing
 #                      command; the release job holds no AWS role and no id-token; no other file's job names the key role, except the one publish step of
@@ -36,14 +36,14 @@ CHECK_JOBS = ["check-govulncheck", "check"]
 RELEASE_JOBS = ["release-compare", "release-verify", "release"]
 RELEASE_STEPS = [(x, "bin/%s.sh" % x) for x in ("release-verify", "release-apks", "release-publish", "release-sign", "release-postverify", "release-assets")]   # postverify before assets
 CHAIN = BUILD_JOBS + ["sign"] + REBUILD_JOBS + ["sign-rebuild"] + CHECK_JOBS + ["sign-check"] + RELEASE_JOBS
-OTHER_ALLOWED = {"decide", "sign-tag", "cut", "patch-notes", "patch-failed", "live-test", "live-test-release"}   # the four inline tag jobs of the automatic patch release by name (REQ-REL-009), and the hostile-* jobs; persona-uat has its own file
+OTHER_ALLOWED = {"decide", "sign-tag", "cut", "patch-notes", "patch-failed", "live-test-release"}   # the four inline tag jobs of the automatic patch release by name (REQ-REL-009), and the hostile-* jobs; persona-uat has its own file
 KMS_ENV = ["AWS_ROLE_ARN", "AWS_REGION", "RELEASE_KMS_KEY_REF"]
 NEEDS = {   # exactly, as REQ-CHAIN-005-AC5 lists them
     "build-freeze": [], "build-apk": ["build-freeze"], "rebuild-apk": ["build-assemble"], "build-assemble": ["build-apk"], "sign": ["build-assemble"],
     "rebuild-assemble": ["rebuild-apk"], "sign-rebuild": ["build-assemble", "rebuild-assemble", "sign"],
     "sign-check": ["build-assemble", "check", "sign"],
     "release-compare": ["check", "sign", "sign-rebuild", "sign-check"], "release-verify": ["release-compare"],
-    "release": ["release-verify", "release-compare"],
+    "release": ["release-verify", "release-compare", "hostile-verdict"],
 }
 NEEDS_AT_LEAST = {"check": ["check-govulncheck", "build-assemble"]}
 
@@ -63,7 +63,6 @@ def norm(expr):
     return "".join(out)
 G = norm("(github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true || inputs.mode == 'snapshot'")
 S = norm("inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))")
-S_TAG = S + norm(" && !contains(github.ref_name, '-')")   # release: S, then the release-candidate rule, in the job's if
 NOT_SNAPSHOT = norm("inputs.mode != 'snapshot'")
 # check-govulncheck has no needs, so its own if keeps it off in a run on main (a push or the schedule): a tag push, a push of a release/vX.Y.Z branch or a dry run only
 GV_IF = norm("inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true)")
@@ -121,7 +120,7 @@ for old in ("build", "rebuild", "check-arm64", "rapk", "rapk-arm", "apk", "assem
         bad.append("release.yml still has the stage-era job %s (the jobs are %s)" % (old, ", ".join(CHAIN)))
 for jn in jobs:
     if jn not in CHAIN and jn not in OTHER_ALLOWED and not jn.startswith("hostile-") and jobs[jn].get("uses") != "./.github/workflows/persona-uat.yml":
-        bad.append("job %s is not a chain job nor on the allowed list (decide, patch-notes, patch-failed, live-test, live-test-release, hostile-*)" % jn)
+        bad.append("job %s is not a chain job nor on the allowed list (decide, patch-notes, patch-failed, live-test-release, hostile-*)" % jn)
 for jn, want in NEEDS.items():
     if jn in jobs and sorted(needs_of(jobs[jn])) != sorted(want):
         bad.append("job %s needs %s, it must need exactly %s" % (jn, sorted(needs_of(jobs[jn])), sorted(want)))
@@ -150,13 +149,12 @@ for jn in CHAIN:
 if "build-freeze" in jobs and norm(jobs["build-freeze"].get("if", "")) != G:
     bad.append("build-freeze does not carry the gate G exactly: %s" % jobs["build-freeze"].get("if"))
 for jn in SIGN_JOBS + ["release"]:
-    want = S_TAG if jn == "release" else S
-    if jn in jobs and norm(jobs[jn].get("if", "")) != want:
-        bad.append("guard S: %s does not carry the guard S exactly%s (it must run only on a v* tag push of release.yml itself, never in snapshot mode or under workflow_call): %s" % (jn, " followed by && !contains(github.ref_name, '-') (a release candidate never enters the environment)" if want == S_TAG else "", jobs[jn].get("if")))
+    if jn in jobs and norm(jobs[jn].get("if", "")) != S:
+        bad.append("guard S: %s does not carry the guard S exactly (it must run only on a v* tag push of release.yml itself, never in snapshot mode or under workflow_call): %s" % (jn, jobs[jn].get("if")))
 for jn in ("release",):
     for s in steps_of(jobs.get(jn) or {}):
         if "contains(github.ref_name,'-')" in norm(s.get("if", "")):
-            bad.append("candidate rule: a step of %s carries the release-candidate condition (it belongs in the job's if)" % jn)
+            bad.append("candidate rule: a step of %s carries a tag-name condition (the job's if decides for the whole job)" % jn)
 for jn in CHECK_JOBS:
     want = GV_IF if jn == "check-govulncheck" else NOT_SNAPSHOT
     if jn in jobs and norm(jobs[jn].get("if", "")) != want:
@@ -178,8 +176,11 @@ for jn, want in TAG_NEEDS.items():
         bad.append("%s does not run only if needs.decide.outputs.tag != '' (decide named a tag)" % jn)
     if jn in jobs and sorted(needs_of(jobs[jn])) != want:
         bad.append("%s must need exactly %s: %s" % (jn, want, needs_of(jobs[jn])))
-if "patch-failed" in jobs and not set(needs_of(jobs["patch-failed"])) <= set(CHAIN):
-    bad.append("patch-failed needs a job that is not a chain job: %s" % needs_of(jobs["patch-failed"]))
+PF_WATCHED = set(CHAIN) | {"hostile-verify", "hostile-verdict"}
+if "patch-failed" in jobs and not set(needs_of(jobs["patch-failed"])) <= PF_WATCHED:
+    bad.append("patch-failed needs a job that is not a chain job nor a hostile job: %s" % needs_of(jobs["patch-failed"]))
+if "patch-failed" in jobs and not {"hostile-verify", "hostile-verdict"} <= set(needs_of(jobs["patch-failed"])):
+    bad.append("patch-failed must need hostile-verify and hostile-verdict (a failed hostile verdict on an automatic patch tag opens the issue, REQ-REL-009-AC10)")
 
 # ---- every action pinned by full digest (REQ-CHAIN-001-AC1) ---------------------------------------------------------------------------------------
 for jn, j in jobs.items():
@@ -212,15 +213,15 @@ for jn in SIGN_JOBS:
         bad.append("sign job %s does not read Build's digests through needs.build-assemble.outputs.digests" % jn)
     if not SIGNING.search(runs_of(j)):
         bad.append("sign job %s runs no signing command" % jn)
-# S2: sign-check makes every signature of the release on a final tag (bin/release-signatures.sh), from Build's outputs, and hands them over as the artifact release-signed
+# S2: sign-check makes every signature of the release on every tag run (bin/release-signatures.sh), from Build's outputs, and hands them over as the artifact release-signed
 sc = jobs.get("sign-check")
 if sc:
     rs = [s for s in steps_of(sc) if (s.get("run") or "").strip() == "bash bin/release-signatures.sh"]
-    if len(rs) != 1 or norm(rs[0].get("if", "")) != norm("!contains(github.ref_name, '-')") or rs[0].get("env"):
-        bad.append("sign-check does not run `bash bin/release-signatures.sh` exactly once, on a final tag only (if: ${{ !contains(github.ref_name, '-') }}) and with no step env")
+    if len(rs) != 1 or "if" in rs[0] or rs[0].get("env"):
+        bad.append("sign-check does not run `bash bin/release-signatures.sh` exactly once, with no step if and no step env")
     ups = [s for s in steps_of(sc) if "actions/upload-artifact@" in str(s.get("uses")) and (s.get("with") or {}).get("name") == "release-signed"]
-    if len(ups) != 1 or str((ups[0].get("with") or {}).get("path", "")).rstrip("/") != "release-signed" or norm(ups[0].get("if", "")) != norm("!contains(github.ref_name, '-')"):
-        bad.append("sign-check does not upload release-signed from release-signed/ exactly once, on a final tag only")
+    if len(ups) != 1 or str((ups[0].get("with") or {}).get("path", "")).rstrip("/") != "release-signed" or "if" in ups[0]:
+        bad.append("sign-check does not upload release-signed from release-signed/ exactly once, with no step if")
     if re.search(r"\bsecrets\.|DOCKERHUB|GH_TOKEN|GITHUB_TOKEN|github\.token|packages", text_of(sc)):
         bad.append("sign-check names a secret, a registry credential (DOCKERHUB_*, GH_TOKEN), the run's token or packages write: it holds none")
 for jn in ("sign", "sign-rebuild", "sign-check"):
@@ -543,6 +544,8 @@ for pair in "build-apk:build-freeze" "build-assemble:build-apk" "sign:build-asse
 done
 case_ sign-rebuild-no-rebuild bad "job sign-rebuild needs" "$J['sign-rebuild']['needs'] = ['build-assemble']"
 case_ sign-check-no-check     bad "job sign-check needs" "$J['sign-check']['needs'] = ['build-assemble']"
+# REQ-CHAIN-001-AC5: release publishes only after the hostile verdict is green, so it needs hostile-verdict
+case_ release-no-hostile-verdict bad "job release needs" "$J['release']['needs'] = ['release-verify', 'release-compare']"
 case_ release-compare-no-sign-check bad "job release-compare needs" "$J['release-compare']['needs'] = ['check', 'sign', 'sign-rebuild']"
 case_ release-verify-no-compare bad "job release-verify needs" "$J['release-verify'].pop('needs')"
 case_ release-no-verify       bad "job release needs" "$J['release']['needs'] = ['release-compare']"
@@ -571,12 +574,12 @@ for jn in sign sign-rebuild sign-check release; do
   case_ "guard-$jn-no-workflow-ref" bad "guard S: $jn" "$J['$jn']['if'] = \"\${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}\""
   case_ "guard-$jn-always"         bad "guard S: $jn" "$J['$jn']['if'] = 'always()'"
 done
-# the release-candidate rule is in the job's if of release (guard S followed by && !contains(github.ref_name, '-')), nowhere else
+# the guard S alone is the if of release; a tag-name rule added to any sign job or to release, or to a step of release, is refused
 for jn in sign sign-rebuild sign-check; do
   case_ "guard-$jn-with-candidate-rule" bad "guard S: $jn" "$J['$jn']['if'] = $J['$jn']['if'] + \" && !contains(github.ref_name, '-')\""
 done
 for jn in release; do
-  case_ "guard-$jn-without-candidate-rule" bad "guard S: $jn" "$J['$jn']['if'] = $J['sign']['if']"
+  case_ "guard-$jn-with-candidate-rule" bad "guard S: $jn" "$J['$jn']['if'] = $J['sign']['if'] + \" && !contains(github.ref_name, '-')\""
   case_ "guard-$jn-candidate-rule-other" bad "guard S: $jn" "$J['$jn']['if'] = $J['sign']['if'] + \" && !contains(github.ref_name, '-rc')\""
   case_ "guard-$jn-candidate-rule-first" bad "guard S: $jn" "$J['$jn']['if'] = \"\${{ !contains(github.ref_name, '-') && \" + $J['sign']['if'].replace('\${{ ', '', 1)"
   case_ "guard-$jn-candidate-rule-on-step" bad "candidate rule: a step of $jn" "$J['$jn']['steps'][-1]['if'] = \"\${{ !contains(github.ref_name, '-') }}\""
@@ -636,7 +639,7 @@ case_ release-job-verify-step bad "does not run exactly release-verify, release-
 case_ release-job-assets-first bad "does not run exactly release-verify, release-apks, release-publish" "a = [i for i, s in enumerate($J['release']['steps']) if 'release-assets.sh' in (s.get('run') or '')][0]; b = [i for i, s in enumerate($J['release']['steps']) if 'release-postverify.sh' in (s.get('run') or '')][0]; $J['release']['steps'][a], $J['release']['steps'][b] = $J['release']['steps'][b], $J['release']['steps'][a]"
 case_ release-runs-signatures bad "job release runs a signing command" "$J['release']['steps'].append({'run': 'bash bin/release-signatures.sh'})"
 case_ sign-check-no-signatures bad "sign-check does not run" "$J['sign-check']['steps'] = [s for s in $J['sign-check']['steps'] if 'release-signatures.sh' not in (s.get('run') or '')]"
-case_ sign-check-signatures-on-rc bad "sign-check does not run" "hit(s.pop('if') for s in $J['sign-check']['steps'] if 'release-signatures.sh' in (s.get('run') or ''))"
+case_ sign-check-signatures-with-if bad "sign-check does not run" "hit(s.__setitem__('if', \"\${{ !contains(github.ref_name, '-') }}\") for s in $J['sign-check']['steps'] if 'release-signatures.sh' in (s.get('run') or ''))"
 case_ sign-check-no-release-signed bad "sign-check does not upload release-signed" "$J['sign-check']['steps'] = [s for s in $J['sign-check']['steps'] if (s.get('with') or {}).get('name') != 'release-signed']"
 case_ sign-check-gh-token bad "sign-check names a secret" "$J['sign-check']['steps'][-1].setdefault('env', {})['GH_TOKEN'] = \"\${{ github.token }}\""
 case_ sign-runs-no-sign-records bad "does not run chain-verify.py sign-records" "$J['sign']['steps'] = [s for s in $J['sign']['steps'] if 'sign-records' not in (s.get('run') or '')]"
@@ -649,14 +652,14 @@ done
 case_ release-runs-sign-subcommand bad "job release runs a signing command" "$J['release']['steps'].append({'run': 'python3 -I -B bin/chain-verify.py sign --check'})"
 case_ release-holds-id-token  bad "the release job holds an identity token" "$J['release']['permissions']['id-token'] = 'write'"
 case_ release-holds-id-token-read bad "the release job holds an identity token" "$J['release']['permissions']['id-token'] = 'read'"
-case_ live-test-names-kms     bad "names RELEASE_KMS_KEY_REF" "$J['live-test'].setdefault('env', {}); $J['live-test']['env']['RELEASE_KMS_KEY_REF'] = 'x'"
+case_ live-test-names-kms     bad "names RELEASE_KMS_KEY_REF" "$J['live-test-release'].setdefault('env', {}); $J['live-test-release']['env']['RELEASE_KMS_KEY_REF'] = 'x'"
 case_ live-test-release-env-sign bad "job live-test-release is in the environment sign" "$J['live-test-release']['environment'] = 'sign'"
 
 # the snapshot reach (REQ-CHAIN-004-AC14): a job that requests a write or an id-token must carry the snapshot guard
 case_ decide-reachable-in-snapshot bad "reachable in snapshot mode" "$J['decide'] = {'runs-on': 'ubuntu-24.04', 'permissions': {'contents': 'write'}, 'if': \"\${{ github.ref == 'refs/heads/main' }}\", 'steps': []}"
 case_ build-apk-gets-id-token bad "reachable in snapshot mode" "$J['build-apk']['permissions']['id-token'] = 'write'"
 case_ rebuild-assemble-writes bad "reachable in snapshot mode" "$J['rebuild-assemble']['permissions']['packages'] = 'write'"
-case_ live-test-writes-in-snapshot bad "reachable in snapshot mode" "$J['live-test']['permissions'] = {'id-token': 'write'}; $J['live-test'].pop('if', None)"
+case_ live-test-writes-in-snapshot bad "reachable in snapshot mode" "$J['live-test-release']['permissions'] = {'id-token': 'write'}; $J['live-test-release'].pop('if', None)"
 case_ persona-call-unguarded  bad "reachable in snapshot mode" "$J['persona-uat-rc'] = {'needs': 'build-assemble', 'uses': './.github/workflows/persona-uat.yml', 'permissions': {'contents': 'read', 'id-token': 'write'}, 'if': \"\${{ vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v') }}\"}"
 case_ persona-call-ok         ok  "" "$J['persona-uat-rc'] = {'needs': 'build-assemble', 'uses': './.github/workflows/persona-uat.yml', 'permissions': {'contents': 'read', 'id-token': 'write'}, 'if': \"\${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v') }}\"}"
 case_ persona-call-no-gate    bad "lacks the gate PERSONA_UAT_ENABLED" "$J['persona-uat-rc'] = {'needs': 'build-assemble', 'uses': './.github/workflows/persona-uat.yml', 'permissions': {'contents': 'read'}, 'if': \"\${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v') }}\"}"

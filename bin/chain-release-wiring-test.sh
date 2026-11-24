@@ -52,7 +52,7 @@ FED = {"AWS_ROLE_ARN": "arn:aws:iam::821302803867:role/fosterstack-cache-release
 JOBENV = "    env:\n" + "".join(f"      {k}: {v}\n" for k, v in FED.items())
 REG = {"DOCKERHUB_USERNAME": "${{ secrets.DOCKERHUB_USERNAME }}", "DOCKERHUB_TOKEN": "${{ secrets.DOCKERHUB_TOKEN }}", "GH_TOKEN": "${{ github.token }}"}
 GUARD = "inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))"
-RC_COND = "    if: ${{ " + GUARD + " && !contains(github.ref_name, '-') }}\n"
+REL_COND = "    if: ${{ " + GUARD + " }}\n"
 KMS_REF = "awskms:///alias/fosterstack-release-signing"
 COMPARE_D = (("apk-ubuntu-24.04", "apks/ubuntu-24.04"), ("apk-ubuntu-24.04-arm", "apks/ubuntu-24.04-arm"), ("rapk-ubuntu-24.04", "rapks/ubuntu-24.04"), ("rapk-ubuntu-24.04-arm", "rapks/ubuntu-24.04-arm"),
              ("signed-witness-rapk-ubuntu-24.04", "witness-rapk-ubuntu-24.04"), ("signed-witness-rapk-ubuntu-24.04-arm", "witness-rapk-ubuntu-24.04-arm"))
@@ -76,7 +76,7 @@ stage = ("name: 'Release'\non:\n  workflow_call:\npermissions: {}\njobs:\n"
          + down_list(*COMPARE_D) + "      - name: compare Build's and Rebuild's apks\n        run: bash bin/release-compare.sh\n" + up_checked("apk-compare")
          + "  release-verify:\n    needs: release-compare\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n    steps:\n" + head()
          + inst("witness") + down_list(*VER_D) + wit("release-verify", {}, "witnessed-local.sh") + renv("release-verify", True) + up_checked("witness-release-verify") + up_checked("release-policy", "policy.json")
-         + "  release:\n    needs: [release-verify, release-compare]\n" + RC_COND + "    runs-on: ubuntu-24.04\n    timeout-minutes: 60\n    concurrency:\n      group: release-publish\n      cancel-in-progress: false\n    environment: release\n"
+         + "  release:\n    needs: [release-verify, release-compare, hostile-verdict]\n" + REL_COND + "    runs-on: ubuntu-24.04\n    timeout-minutes: 60\n    concurrency:\n      group: release-publish\n      cancel-in-progress: false\n    environment: release\n"
          + "    permissions:\n      contents: write\n      packages: write\n    steps:\n" + head()
          + inst("witness") + inst("cosign") + inst("crane") + down_list(*REL_D)
          + wit("release-verify", {}) + wit("release-apks", {}) + wit("release-publish", REG) + wit("release-sign", REG) + wit("release-postverify", {}) + wit("release-assets", {"GH_TOKEN": "${{ github.token }}"})
@@ -86,20 +86,19 @@ def gjob(n, needs=None, cond=None):
     return f"  {n}:\n" + (f"    needs: {needs}\n" if needs else "") + (f"    if: {cond}\n" if cond else "") + "    runs-on: ubuntu-24.04\n    steps:\n      - run: echo hi\n"
 NOSNAP = "${{ inputs.mode != 'snapshot' }}"
 GATE_S = "${{ " + GUARD + " }}"
-rel_if = "${{ " + GUARD + " && !contains(github.ref_name, '-') }}"
 open(w + "/release.yml", "w").write("name: Release\non:\n  push:\n    tags: [\"v*\"]\npermissions: {}\njobs:\n" +
     gjob("decide") + "  sign-tag:\n    needs: decide\n    runs-on: ubuntu-24.04\n    environment: sign\n    steps:\n      - run: echo hi\n" + gjob("cut", "[decide, sign-tag]") + gjob("patch-notes", "[decide, cut]") + gjob("build-freeze") + gjob("build-apk", "build-freeze") + gjob("build-assemble", "build-apk") + gjob("sign", "build-assemble", GATE_S)
     + gjob("rebuild-apk", "build-assemble") + gjob("rebuild-assemble", "rebuild-apk") + gjob("sign-rebuild", "[build-assemble, rebuild-assemble, sign]", GATE_S)
     + gjob("check-govulncheck", None, NOSNAP) + gjob("check", "[check-govulncheck, build-assemble]", NOSNAP) + gjob("sign-check", "[build-assemble, check, sign]", GATE_S)
     + gjob("release-compare", "[check, sign, sign-rebuild, sign-check]") + gjob("release-verify", "release-compare")
-    + gjob("release", "[release-verify, release-compare]", rel_if))
+    + gjob("release", "[release-verify, release-compare, hostile-verdict]", GATE_S))
 # the other workflow files: no packages write, no secrets, no release environment; release.yml is the fixture of the stage judge
 os.makedirs(w + "/o/.github/workflows", exist_ok=True)
 for n in ("scan", "ci", "persona-uat"):
     open(f"{w}/o/.github/workflows/{n}.yml", "w").write("name: x\non:\n  workflow_call:\njobs:\n  j:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: bash bin/witnessed.sh j bin/j.sh\n")
 open(w + "/o/.github/workflows/release.yml", "w").write(stage)
 # bin/release-verify.sh: tag, policy, four stage-starts
-V = ['python3 -I -B bin/build-admit.py tag-ok "${GITHUB_REF_NAME:-}" || { echo "refused at tag: ${GITHUB_REF_NAME:-} is not vX.Y.Z or vX.Y.Z-rcN" >&2; exit 1; }',
+V = ['python3 -I -B bin/build-admit.py tag-ok "${GITHUB_REF_NAME:-}" || { echo "refused at tag: ${GITHUB_REF_NAME:-} is not vX.Y.Z" >&2; exit 1; }',
      'for f in release-key-manifest.json release-key-manifest.sig release-key-root.pub; do [ -f ".github/policy/$f" ] && [ ! -L ".github/policy/$f" ] || { echo "release-verify: .github/policy/$f is missing: the release is refused before any credential step" >&2; exit 1; }; done',
      'python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag "$GITHUB_REF_NAME" --out policy.json',
      "python3 -I -B bin/chain-verify.py stage-start --stage release --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json",
@@ -267,11 +266,11 @@ m s_venv     '=  release-verify:\n    needs: release-compare\n    runs-on: ubunt
 m s_vcos     '=install witness\n        run: bash bin/install-scanner.sh witness\n      - uses' 'install witness\n        run: bash bin/install-scanner.sh witness\n      - name: install cosign\n        run: bash bin/install-scanner.sh cosign\n      - uses' 'verify' "AC1 (Astra R6) the verify job installs a tool it does not need"
 m s_vnorv    'release-verify bin/release-verify.sh'            'release-apks bin/release-apks.sh'                                      'verify'  "AC1 (Astra R6) the verify job's Witness step is not release-verify"
 m s_vgone    '(?s)  release-verify:\n.*?(?=  release:\n)'              ''                                                                      'verify'  "AC1 (Astra R6) there is no verify job (the credentials job would verify only in itself)"
-m s_rnoneeds '=  release:\n    needs: [release-verify, release-compare]\n' '  release:\n'                                          'needs'   "AC1 (Astra R6) the release job does not need verify"
-m s_rneedsot '=needs: [release-verify, release-compare]'                       'needs: build'                                                          'needs'   "AC1 (Astra R6) the release job needs another job than verify"
-m s_rnoif    '(  release:\n    needs: \[release-verify, release-compare\]\n)    if: [^\n]*\n' '\1'                                                   'job'     "AC1 (Astra R6) the release job is not skipped for a release candidate (it would enter the environment for an rc)"
+m s_rnoneeds '=  release:\n    needs: [release-verify, release-compare, hostile-verdict]\n' '  release:\n'                                          'needs'   "AC1 (Astra R6) the release job does not need verify"
+m s_rneedsot '=needs: [release-verify, release-compare, hostile-verdict]'                       'needs: build'                                                          'needs'   "AC1 (Astra R6) the release job needs another job than verify"
+m s_rnoif    '(  release:\n    needs: \[release-verify, release-compare, hostile-verdict\]\n)    if: [^\n]*\n' '\1'                                                   'job'     "AC1 (Astra R6) the release job has no if (it would run outside a v* tag push of release.yml)"
 for jn in release; do
-  m "s_${jn}_nrc" "(  ${jn}:\n.*?)&& !contains\(github\.ref_name, .-.\) \}\}" '\1}}' 'carry exactly the job-level if' "AC14 the job $jn has no release-candidate rule in its if (guard S alone would run it for an rc)"
+  m "s_${jn}_xrc" "(  ${jn}:\n    needs: \[release-verify, release-compare, hostile-verdict\]\n    if: [^\n]*?) \}\}\n" '\1 && !contains(github.ref_name, "-") }}\n' 'carry exactly the job-level if' "AC14 the job $jn carries a tag-name rule after guard S (its if is guard S exactly)"
   m "s_${jn}_npush" "(  ${jn}:\n.*?)github\.event_name == .push. && " '\1' 'carry exactly the job-level if' "AC14 the job $jn is not guarded by a push in its if (guard S is cut)"
 done
 
@@ -358,7 +357,7 @@ m s_order   'release-apks bin/release-apks.sh'              'release-sign bin/re
 m s_miss    '=      - name: release-assets\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-assets bin/release-assets.sh\n' '' 'exactly' "AC1 a witnessed step missing from release-evidence"
 m s_nopv    '=      - name: release-postverify\n        run: bash bin/witnessed.sh release-postverify bin/release-postverify.sh\n' '' 'exactly' "AC1 (rule 79) the post-publish verification step missing from release-evidence"
 m s_pvfirst 'release-postverify bin/release-postverify.sh'  'release-apks bin/release-apks.sh'                       'exactly'            "AC1 (rule 79) the post-publish step is not a witnessed step of its own (release-apks twice)"
-m s_ifver   '=      - name: release-verify\n' '      - name: release-verify\n        if: ${{ !contains(github.ref_name, '\''-'\'') }}\n' 'no if' "AC14 a witnessed step with its own if (the job-level if alone ends a release candidate; a step condition could skip the tag rule)"
+m s_ifver   '=      - name: release-verify\n' '      - name: release-verify\n        if: ${{ !contains(github.ref_name, '\''-'\'') }}\n' 'no if' "AC14 a witnessed step with its own if (the job-level if decides for the whole job; a step condition could skip the tag rule)"
 m s_seven   '=      - name: release-postverify\n        run: bash bin/witnessed.sh release-postverify bin/release-postverify.sh\n' '      - name: release-postverify\n        run: bash bin/witnessed.sh release-postverify bin/release-postverify.sh\n      - name: release-extra\n        run: bash bin/witnessed.sh release-extra bin/release-extra.sh\n' 'exactly' "AC1 (rule 79) a witnessed step after the post-publish one is refused: release-evidence has exactly two"
 m s_pvmid   'run: bash bin/witnessed.sh release-assets bin/release-assets.sh' 'run: bash bin/witnessed.sh release-postverify bin/release-postverify.sh' 'exactly' "AC1 (rule 79) the post-publish step before the assets step is refused: it is the last"
 m s_extra '(  release:\n.*?)run: bash bin/witnessed.sh release-verify bin/release-verify.sh' '\1run: bash bin/witnessed.sh release-verify bin/release-verify.sh && echo done' 'none of checkout' "AC1 an extra command in a witnessed step"
@@ -460,8 +459,9 @@ gm g_extra   "$RC_NEEDS"  '  release-compare:\n    needs: [check, sign, sign-reb
 gm g_relbld  "$RC_NEEDS"  '  release-compare:\n    needs: [build-assemble, check, sign, sign-rebuild, sign-check]'           'release-compare must need exactly' "AC11 release-compare also lists build-assemble (not exactly the set: build is reached through check)"
 gm g_relrb   "$RC_NEEDS"  '  release-compare:\n    needs: [check, rebuild-assemble, sign, sign-rebuild, sign-check]'         'release-compare must need exactly' "AC11 release-compare also lists rebuild-assemble (its signed record is what Release needs)"
 gm g_rvneed  '=  release-verify:\n    needs: release-compare\n'            '  release-verify:\n    needs: [release-compare, check]\n'                               'release-verify must need exactly'  "AC11 release-verify waits for another job than release-compare"
-gm g_rnone   '=    needs: [release-verify, release-compare]'     '    needs: [release-verify]'                                         'release must need exactly'         "AC11 release does not need release-compare"
-gm g_rnoneed '=    needs: [release-verify, release-compare]'     '    needs: [release-compare]'                                        'release must need exactly'         "AC11 release does not need release-verify"
+gm g_rnone   '=    needs: [release-verify, release-compare, hostile-verdict]'     '    needs: [release-verify, hostile-verdict]'                                         'release must need exactly'         "AC11 release does not need release-compare"
+gm g_rnoneed '=    needs: [release-verify, release-compare, hostile-verdict]'     '    needs: [release-compare, hostile-verdict]'                                        'release must need exactly'         "AC11 release does not need release-verify"
+gm g_rnohv   '=    needs: [release-verify, release-compare, hostile-verdict]'     '    needs: [release-verify, release-compare]'                        'release must need exactly'         "REQ-CHAIN-001-AC5 the release job does not need hostile-verdict (it would publish with a red hostile verdict)"
 gm g_scnochk '=  sign-check:\n    needs: [build-assemble, check, sign]'      '  sign-check:\n    needs: [build-assemble, sign]'                                          'sign-check must need exactly'      "REL-011 sign-check does not wait for check"
 gm g_scnobld '=  sign-check:\n    needs: [build-assemble, check, sign]'      '  sign-check:\n    needs: [check, sign]'                                                   'sign-check must need exactly'      "REL-011 sign-check does not wait for build-assemble"
 gm g_scextra '=  sign-check:\n    needs: [build-assemble, check, sign]'      '  sign-check:\n    needs: [build-assemble, check, sign, rebuild-assemble]'                 'sign-check must need exactly'      "REL-011 sign-check also waits for rebuild-assemble"
@@ -472,8 +472,8 @@ gm g_srnoreb '=  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble, si
 gm g_srnosgn '=  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble, sign]' '  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble]'                        'sign-rebuild must need exactly'    "AC11 sign-rebuild does not wait for sign (Sign verifies Build's records first)"
 gm g_cknogv  '=  check:\n    needs: [check-govulncheck, build-assemble]' '  check:\n    needs: [build-assemble]'                                           'check must need exactly'           "AC11 (ruling 8) check does not wait for check-govulncheck"
 gm g_always  '=  rebuild-apk:\n    needs: build-assemble\n'                  "  rebuild-apk:\n    needs: build-assemble\n    if: \${{ always() }}\n"                   'status function'                   "AC11 rebuild-apk runs even when build failed"
-gm g_prom    '(  release:\n    needs: \[release-verify, release-compare\]\n    if: )[^\n]*\n' '\1${{ !cancelled() }}\n'                                                         'must carry exactly the if'         "AC11 release runs when a predecessor was skipped"
-gm g_noif    '(  release:\n    needs: \[release-verify, release-compare\]\n)    if: [^\n]*\n' '\1'                                                                       'must carry exactly the if'         "AC11 release carries no guard (a branch run would not be refused by its own if)"
+gm g_prom    '(  release:\n    needs: \[release-verify, release-compare, hostile-verdict\]\n    if: )[^\n]*\n' '\1${{ !cancelled() }}\n'                                                         'must carry exactly the if'         "AC11 release runs when a predecessor was skipped"
+gm g_noif    '(  release:\n    needs: \[release-verify, release-compare, hostile-verdict\]\n)    if: [^\n]*\n' '\1'                                                                       'must carry exactly the if'         "AC11 release carries no guard (a branch run would not be refused by its own if)"
 gm g_rvif    '=  release-verify:\n    needs: release-compare\n'            "  release-verify:\n    needs: release-compare\n    if: \${{ always() }}\n"                'must carry no if'                  "AC11 release-verify has an if (a failed compare job would not stop it)"
 gm g_coe     '=  sign:\n    needs: build-assemble'                        '  sign:\n    continue-on-error: true\n    needs: build-assemble'                    'continue-on-error'                 "AC11 sign may fail without stopping release"
 gm g_sec     '=  check:\n    needs: [check-govulncheck, build-assemble]\n' '  check:\n    secrets: inherit\n    needs: [check-govulncheck, build-assemble]\n' 'secrets'                          "AC11 check inherits secrets"
@@ -702,7 +702,7 @@ expect caught "G1 the policy make line after the first signature" "must come aft
 expect ok "the real release.yml: release-compare, release-verify and release are the Release stage (the release job holds no key, no AWS name and no identity token: sign-check makes every signature)" "" stage "$root/.github/workflows/release.yml"
 expect ok "the real credentials reach only the steps that need them" "" credentials "$root/.github/workflows/release.yml"
 expect ok "nothing outside the release job holds packages write or a registry credential, and the release job holds no id-token" "" others "$root"
-expect ok "the real release.yml: release-compare needs check, sign, sign-rebuild and sign-check, release-verify needs release-compare, release needs release-verify and release-compare; no skip, no tag" "" graph "$root/.github/workflows/release.yml"
+expect ok "the real release.yml: release-compare needs check, sign, sign-rebuild and sign-check, release-verify needs release-compare, release needs release-verify, release-compare and hostile-verdict; no skip, no tag" "" graph "$root/.github/workflows/release.yml"
 expect ok "the real bin/release-verify.sh verifies in rule 69's order" "" verify "$root/bin/release-verify.sh"
 # ROW 2, the real files: both jobs download both signed apk records; release-verify.sh passes them to apk-compare
 python3 - "$root/.github/workflows/release.yml" "$root/bin/release-verify.sh" <<'PY' && ok "ROW2 the real release-verify and release jobs download Build's two signed apk records, and release-verify.sh passes them as --build-apk" || bad "ROW2 the real files miss a signed apk record download or the --build-apk arguments"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-004-AC17, REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC14, REQ-CHAIN-005-AC7, REQ-CHAIN-004-AC1, REQ-CHAIN-004-AC2, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC6, REQ-CHAIN-004-AC8, REQ-CHAIN-004-AC9, REQ-CHAIN-004-AC10, REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC1, REQ-CHAIN-005-AC2, REQ-CHAIN-005-AC4, REQ-CHAIN-005-AC5, REQ-CHAIN-005-AC6, REQ-CHAIN-001-AC6, REQ-REL-010-AC1, REQ-REL-010-AC2, REQ-REL-010-AC3, REQ-REL-010-AC4, REQ-CHAIN-004-AC16 — the flags; PR 1's verify cases cover the identity
+# proves: REQ-CHAIN-004-AC17, REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC14, REQ-CHAIN-005-AC7, REQ-CHAIN-004-AC1, REQ-CHAIN-004-AC2, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC6, REQ-CHAIN-004-AC8, REQ-CHAIN-004-AC9, REQ-CHAIN-004-AC10, REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC1, REQ-CHAIN-005-AC2, REQ-CHAIN-005-AC4, REQ-CHAIN-005-AC5, REQ-CHAIN-005-AC6, REQ-REL-010-AC1, REQ-REL-010-AC2, REQ-REL-010-AC3, REQ-REL-010-AC4, REQ-CHAIN-004-AC16 — the flags; PR 1's verify cases cover the identity
 # proves: REQ-CHAIN-004-AC18
 # proves: REQ-CHAIN-008-AC6
 # Build and Rebuild: the shape of the two stage files, the four stage scripts, the one Witness helper, the job
@@ -1497,14 +1497,14 @@ PY
 then ok "AC16 every archive/ path the stage scripts read is held by the stored archive"; else bad "AC16 every archive/ path the stage scripts read is held by the stored archive"; fi
 # ---- the job graph of release.yml (REQ-CHAIN-005-AC5) -----------------------------------------------------------------------------------------
 # The known-good graph, written out from the rulings of cache#921 (not read from the shape file): fifteen chain jobs in one file, each with its needs, its if (gate G on build-freeze, guard S on the sign jobs,
-# S and the candidate rule on release, `inputs.mode != 'snapshot'` on the Check jobs), its permissions and its environment; the KMS role as the job env of the three sign jobs only.
+# and on release, `inputs.mode != 'snapshot'` on the Check jobs), its permissions and its environment; the KMS role as the job env of the three sign jobs only.
 python3 - "$work" <<'PY'
 import sys
 w = sys.argv[1]
 G = "${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"
 S = "inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))"
 GV_IF = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true) }}"   # check-govulncheck has no needs: the ref guard keeps it off on main
-SIGN_IF, AFTER_IF, CHECK_IF = "${{ %s }}" % S, "${{ %s && !contains(github.ref_name, '-') }}" % S, "${{ inputs.mode != 'snapshot' }}"
+SIGN_IF, AFTER_IF, CHECK_IF = "${{ %s }}" % S, "${{ %s }}" % S, "${{ inputs.mode != 'snapshot' }}"
 KMS = "    env:\n      AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n      AWS_REGION: us-east-1\n      RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n"
 ADMIT = {"contents": "read", "actions": "read", "checks": "read", "statuses": "read", "pull-requests": "read"}
 def job(name, needs=None, if_=None, perm=None, env=None, extra=""):
@@ -1525,7 +1525,7 @@ text = ("name: Release\non:\n  push:\n    tags: [\"v*\"]\n  workflow_dispatch:\n
         + job("check-govulncheck", None, GV_IF) + job("check", "[check-govulncheck, build-assemble]", CHECK_IF)
         + job("sign-check", "[build-assemble, check, sign]", SIGN_IF, SIGNP, "sign", KMS)
         + job("release-compare", "[check, sign, sign-rebuild, sign-check]") + job("release-verify", "release-compare")
-        + job("release", "[release-verify, release-compare]", AFTER_IF, {"contents": "write", "packages": "write"}, "release",
+        + job("release", "[release-verify, release-compare, hostile-verdict]", AFTER_IF, {"contents": "write", "packages": "write"}, "release",
               "    concurrency:\n      group: release-publish\n      cancel-in-progress: false\n")
         + """  decide:
     if: ${{ inputs.mode != 'snapshot' && github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}
@@ -1565,7 +1565,7 @@ text = ("name: Release\non:\n  push:\n    tags: [\"v*\"]\n  workflow_dispatch:\n
     steps:
       - run: echo ${{ secrets.AUDITOR_APP_ID }}
   patch-failed:
-    needs: [build-freeze, build-apk, build-assemble, sign, rebuild-apk, rebuild-assemble, sign-rebuild, check-govulncheck, check, sign-check, release-compare, release-verify, release]
+    needs: [build-freeze, build-apk, build-assemble, sign, rebuild-apk, rebuild-assemble, sign-rebuild, check-govulncheck, check, sign-check, release-compare, release-verify, hostile-verify, hostile-verdict, release]
     if: ${{ inputs.mode != 'snapshot' && always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
     runs-on: ubuntu-latest
     permissions:
@@ -1590,7 +1590,7 @@ TAGONLY="\${{ startsWith(github.ref, 'refs/tags/v') }}"
 GUARD_S="inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))"
 SIGNIF="\${{ $GUARD_S }}"
 PNIF="\${{ needs.decide.outputs.tag != '' }}"
-RCS=" && !contains(github.ref_name, '-')"
+RCS=" && !contains(github.ref_name, '-')"   # a tag-name rule no job of the chain carries: each case that adds it must be refused
 # needs: each job has exactly its needs (REQ-CHAIN-005-AC5, rulings 8): Rebuild needs Build only, Check needs check-govulncheck and Build, the Release jobs follow in one line
 gr n1  "005-AC5 rebuild-apk waits for sign (Rebuild needs Build only: it also runs in snapshot mode)" '  rebuild-apk:\n    needs: build-assemble' '  rebuild-apk:\n    needs: [build-assemble, sign]' "rebuild-apk must need exactly"
 gr n2  "005-AC5 rebuild-apk waits for nothing" '  rebuild-apk:\n    needs: build-assemble\n' '  rebuild-apk:\n' "rebuild-apk must need exactly"
@@ -1613,9 +1613,10 @@ gr n17 "005-AC5 release-compare does not need sign" 'needs: [check, sign, sign-r
 gr n18 "005-AC5 release-compare does not need check" 'needs: [check, sign, sign-rebuild, sign-check]' 'needs: [sign, sign-rebuild, sign-check]' "release-compare must need exactly"
 gr n19 "005-AC5 release-compare also lists build-assemble (build is reached through check)" 'needs: [check, sign, sign-rebuild, sign-check]' 'needs: [build-assemble, check, sign, sign-rebuild, sign-check]' "release-compare must need exactly"
 gr n20 "005-AC5 release-verify does not need release-compare" '  release-verify:\n    needs: release-compare' '  release-verify:\n    needs: check' "release-verify must need exactly"
-gr n21 "005-AC5 release does not need release-verify" 'needs: [release-verify, release-compare]' 'needs: [release-compare]' "release must need exactly"
-gr n22 "005-AC5 release does not need release-compare" 'needs: [release-verify, release-compare]' 'needs: [release-verify]' "release must need exactly"
-# if: gate G on build-freeze only, guard S on the sign jobs, S and the candidate rule on release (REQ-CHAIN-005-AC5, REQ-CHAIN-007-AC14), `inputs.mode != 'snapshot'` on the Check jobs, none elsewhere
+gr n21 "005-AC5 release does not need release-verify" 'needs: [release-verify, release-compare, hostile-verdict]' 'needs: [release-compare, hostile-verdict]' "release must need exactly"
+gr n22 "005-AC5 release does not need release-compare" 'needs: [release-verify, release-compare, hostile-verdict]' 'needs: [release-verify, hostile-verdict]' "release must need exactly"
+gr n23 "005-AC5 release does not need hostile-verdict (it would publish with a red hostile verdict)" 'needs: [release-verify, release-compare, hostile-verdict]' 'needs: [release-verify, release-compare]' "release must need exactly"
+# if: gate G on build-freeze only, guard S on the sign jobs and on release (REQ-CHAIN-005-AC5, REQ-CHAIN-007-AC14), `inputs.mode != 'snapshot'` on the Check jobs, none elsewhere
 gr i1  "005-AC5 build-freeze without the gate G (it would run on every push and the daily cron)" "  build-freeze:\n    if: $GATE\n" "  build-freeze:\n" "build-freeze must carry exactly the if"
 gr i2  "005-AC5 build-freeze gated by always()" "  build-freeze:\n    if: $GATE\n" "  build-freeze:\n    if: always()\n" "build-freeze must carry exactly the if"
 gr i3  "005-AC5 build-freeze gated by the tag test alone (a dry run on a branch would never run)" "  build-freeze:\n    if: $GATE\n" "  build-freeze:\n    if: $TAGONLY\n" "build-freeze must carry exactly the if"
@@ -1633,10 +1634,10 @@ gr i14 "005-AC5 sign without the workflow_ref test (a caller's tag push could si
 gr i15 "005-AC5 sign-rebuild without the guard S" "  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble, sign]\n    if: $SIGNIF\n" "  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble, sign]\n" "sign-rebuild must carry exactly the if"
 gr i16 "005-AC5 sign-check without the guard S" "  sign-check:\n    needs: [build-assemble, check, sign]\n    if: $SIGNIF\n" "  sign-check:\n    needs: [build-assemble, check, sign]\n" "sign-check must carry exactly the if"
 gr i17 "005-AC5 sign-check with the candidate rule too (only the jobs after the signatures carry it)" "  sign-check:\n    needs: [build-assemble, check, sign]\n    if: $SIGNIF\n" "  sign-check:\n    needs: [build-assemble, check, sign]\n    if: \${{ $GUARD_S$RCS }}\n" "sign-check must carry exactly the if"
-gr i18 "005-AC5 release without the candidate rule (a release candidate would enter the environment release)" "  release:\n    needs: [release-verify, release-compare]\n    if: \${{ $GUARD_S$RCS }}\n" "  release:\n    needs: [release-verify, release-compare]\n    if: $SIGNIF\n" "release must carry exactly the if"
-gr i21 "005-AC5 release without the guard S (a branch run would not be refused by its own if)" "  release:\n    needs: [release-verify, release-compare]\n    if: \${{ $GUARD_S$RCS }}\n" "  release:\n    needs: [release-verify, release-compare]\n    if: \${{ !contains(github.ref_name, '-') }}\n" "release must carry exactly the if"
-gr i22 "005-AC5 release runs when a stage failed (if: always())" "  release:\n    needs: [release-verify, release-compare]\n    if: \${{ $GUARD_S$RCS }}\n" "  release:\n    needs: [release-verify, release-compare]\n    if: always()\n" "release must carry exactly the if"
-gr i23 "005-AC5 release runs when a predecessor was skipped (!cancelled())" "  release:\n    needs: [release-verify, release-compare]\n    if: \${{ $GUARD_S$RCS }}\n" "  release:\n    needs: [release-verify, release-compare]\n    if: \${{ !cancelled() }}\n" "release must carry exactly the if"
+gr i18 "005-AC5 release with the candidate rule too (its if is the guard S exactly)" "  release:\n    needs: [release-verify, release-compare, hostile-verdict]\n    if: $SIGNIF\n" "  release:\n    needs: [release-verify, release-compare, hostile-verdict]\n    if: \${{ $GUARD_S$RCS }}\n" "release must carry exactly the if"
+gr i21 "005-AC5 release without the guard S (a branch run would not be refused by its own if)" "  release:\n    needs: [release-verify, release-compare, hostile-verdict]\n    if: $SIGNIF\n" "  release:\n    needs: [release-verify, release-compare, hostile-verdict]\n    if: \${{ !contains(github.ref_name, '-') }}\n" "release must carry exactly the if"
+gr i22 "005-AC5 release runs when a stage failed (if: always())" "  release:\n    needs: [release-verify, release-compare, hostile-verdict]\n    if: $SIGNIF\n" "  release:\n    needs: [release-verify, release-compare, hostile-verdict]\n    if: always()\n" "release must carry exactly the if"
+gr i23 "005-AC5 release runs when a predecessor was skipped (!cancelled())" "  release:\n    needs: [release-verify, release-compare, hostile-verdict]\n    if: $SIGNIF\n" "  release:\n    needs: [release-verify, release-compare, hostile-verdict]\n    if: \${{ !cancelled() }}\n" "release must carry exactly the if"
 gr i24 "005-AC5 release-compare with an if (it runs after Check and the sign jobs through needs)" '  release-compare:\n    needs: [check, sign, sign-rebuild, sign-check]\n' '  release-compare:\n    needs: [check, sign, sign-rebuild, sign-check]\n    if: always()\n' "release-compare must carry no if"
 gr i25 "005-AC5 release-verify with an if" '  release-verify:\n    needs: release-compare\n' '  release-verify:\n    needs: release-compare\n    if: ${{ !contains(github.ref_name, '"'-'"') }}\n' "release-verify must carry no if"
 gr i26 "005-AC5 check without its mode condition (it would run in a snapshot call)" "  check:\n    needs: [check-govulncheck, build-assemble]\n    if: \${{ inputs.mode != 'snapshot' }}\n" "  check:\n    needs: [check-govulncheck, build-assemble]\n" "check must carry exactly the if"
@@ -1646,7 +1647,7 @@ gr i28b "005-AC5 check-govulncheck back to the snapshot-only if (it has no needs
 gr i28c "005-AC5 check-govulncheck with a guard that lets a main push through" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true) }}\n" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' && github.event_name != 'workflow_dispatch' }}\n" "check-govulncheck must carry exactly the if"
 gr i29 "005-AC5 check that survives a failed build (if: always())" "  check:\n    needs: [check-govulncheck, build-assemble]\n    if: \${{ inputs.mode != 'snapshot' }}\n" "  check:\n    needs: [check-govulncheck, build-assemble]\n    if: \${{ always() }}\n" "check must carry exactly the if"
 # environment and permissions (ruling 1: the three sign jobs are the only ones in the environment sign; the release job holds no KMS role and no id-token)
-AFTERIF="\${{ $GUARD_S$RCS }}"
+AFTERIF="$SIGNIF"
 gr e-sign   "ruling 1 sign is in another environment than sign (the KMS role's trust names the environment sign)" "  sign:\n    needs: build-assemble\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: sign\n" "  sign:\n    needs: build-assemble\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: other\n" "sign must be in the environment sign"
 gr e-signr  "ruling 1 sign-rebuild is in another environment than sign" "  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble, sign]\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: sign\n" "  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble, sign]\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: other\n" "sign-rebuild must be in the environment sign"
 gr e-signc  "ruling 1 sign-check is in another environment than sign" "  sign-check:\n    needs: [build-assemble, check, sign]\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: sign\n" "  sign-check:\n    needs: [build-assemble, check, sign]\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: other\n" "sign-check must be in the environment sign"
@@ -1680,7 +1681,7 @@ PF_IF="\${{ inputs.mode != 'snapshot' && always() && (contains(needs.*.result, '
 PF_OLD="\${{ failure() && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}"
 gr r3a "R3 audit: patch-failed with the old failure()-only if (a cancelled/replaced pending release would open no issue)" "if: $PF_IF" "if: $PF_OLD" "patch-failed must carry exactly the if"
 gr r3b "R3 audit: patch-failed without any if" "    if: $PF_IF\n    runs-on: ubuntu-latest" "    runs-on: ubuntu-latest" "patch-failed must carry exactly the if"
-gr g44 "005-AC5 patch-failed that needs only build-freeze (it would open an issue for a stage it does not watch)" "    needs: [build-freeze, build-apk, build-assemble, sign, rebuild-apk, rebuild-assemble, sign-rebuild, check-govulncheck, check, sign-check, release-compare, release-verify, release]" "    needs: [build-freeze]" "patch-failed must need exactly"
+gr g44 "005-AC5 patch-failed that needs only build-freeze (it would open an issue for a stage it does not watch)" "    needs: [build-freeze, build-apk, build-assemble, sign, rebuild-apk, rebuild-assemble, sign-rebuild, check-govulncheck, check, sign-check, release-compare, release-verify, hostile-verify, hostile-verdict, release]" "    needs: [build-freeze]" "patch-failed must need exactly"
 FAST='  release-fast:\n    needs: [build-assemble, sign]\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n    steps:\n      - run: gh release create v1\n  decide:'
 EARLY='  publish-early:\n    needs: [build-assemble, sign]\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n'
 EARLY="$EARLY"'    steps:\n      - run: gh release create v1 dist/*\n  decide:'
@@ -1709,13 +1710,12 @@ gr g46 "005-AC5 the dry-run dispatch input has no type (the default is string)" 
        "      dry-run:\n        default: false" "must be type: boolean"
 replace "$work/release.yml" "$work/g47.yml" "  workflow_dispatch:\n    inputs:\n      dry-run:\n        type: boolean\n        default: false\n" "" \
   && expect ok "005-AC5 a release.yml with no dispatch input is judged on its jobs alone" "" graph "$work/g47.yml"
-# REQ-SCAN-012 (the rule-12 live tests of our VEX files): release.yml holds the two jobs that federate into the dedicated live-test accounts (they stay in release.yml, guarded off in snapshot mode and under workflow_call, in their own
-# environment, with the identity token for their own federation only) and the one call of persona-uat.yml (the release candidate's persona run, REQ-UAT-001-AC1: needs build-assemble only, release mode only, publishes nothing).
-# lj builds release.yml with the three jobs inserted before `decide`, optionally mutates ONE text in them, and runs the judge on it.
-LJ_RC_IF="\${{ inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}"
+# REQ-SCAN-012 (the rule-12 live tests of our VEX files): release.yml holds the one job that federates into the dedicated live-test accounts (it stays in release.yml, guarded off in snapshot mode and under workflow_call, in their own
+# environment, with the identity token for their own federation only) and the one call of persona-uat.yml (the release branch's persona run, REQ-UAT-001-AC1: needs build-assemble only, release mode only, publishes nothing).
+# lj builds release.yml with the two jobs inserted before `decide`, optionally mutates ONE text in them, and runs the judge on it.
 LJ_FINAL_IF="\${{ inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc') && !inputs.dry-run }}"
 LJ_PERSONA_IF="\${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v') }}"
-LJ_JOBS="  live-test:\n    needs: [check]\n    if: $LJ_RC_IF\n    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo rc\n  live-test-release:\n    needs: [release]\n    if: $LJ_FINAL_IF\n    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo final\n  persona-uat-rc:\n    needs: build-assemble\n    if: $LJ_PERSONA_IF\n    permissions:\n      contents: read\n      id-token: write\n    uses: ./.github/workflows/persona-uat.yml\n    with:\n      digests: \${{ needs.build-assemble.outputs.digests }}\n"
+LJ_JOBS="  live-test-release:\n    needs: [release]\n    if: $LJ_FINAL_IF\n    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo final\n  persona-uat-rc:\n    needs: build-assemble\n    if: $LJ_PERSONA_IF\n    permissions:\n      contents: read\n      id-token: write\n    uses: ./.github/workflows/persona-uat.yml\n    with:\n      digests: \${{ needs.build-assemble.outputs.digests }}\n"
 lj() { # lj NAME LABEL OLD NEW ok|caught WORD   (OLD empty: no mutation)
   python3 - "$work/release.yml" "$work/lj-$1.yml" "$3" "$4" "$LJ_JOBS" <<'PY' || { bad "mutation did not apply (lj-$1): $3"; return 0; }
 import sys
@@ -1732,44 +1732,40 @@ open(dst, "w").write(text.replace("  decide:", jobs + "  decide:", 1))
 PY
   expect "$5" "$2" "$6" graph "$work/lj-$1.yml"
 }
-lj ok  "REQ-SCAN-012 the two exact live-test jobs (rc after check, final after release; environment live-test; id-token write) and the one persona-uat.yml call pass" "" "" ok ""
-lj p1  "REQ-SCAN-012 live-test with a write it does not need (packages)" "      id-token: write\n    steps:\n      - run: echo rc" "      id-token: write\n      packages: write\n    steps:\n      - run: echo rc" caught "exactly the permissions"
-lj p2  "REQ-SCAN-012 live-test with no id-token (less than it needs: refused)" "      contents: read\n      id-token: write\n    steps:\n      - run: echo rc" "      contents: read\n    steps:\n      - run: echo rc" caught "exactly the permissions"
-lj e1  "REQ-SCAN-012 live-test in the agent environment (the App secrets live there)" "  live-test:\n    needs: [check]\n    if: $LJ_RC_IF\n    runs-on: ubuntu-latest\n    environment: live-test" "  live-test:\n    needs: [check]\n    if: $LJ_RC_IF\n    runs-on: ubuntu-latest\n    environment: agent" caught "environment: live-test"
+lj ok  "REQ-SCAN-012 the exact live-test-release job (final after release; environment live-test; id-token write) and the one persona-uat.yml call pass" "" "" ok ""
+lj p1  "REQ-SCAN-012 live-test-release with a write it does not need (packages)" "      id-token: write\n    steps:\n      - run: echo final" "      id-token: write\n      packages: write\n    steps:\n      - run: echo final" caught "exactly the permissions"
+lj p2  "REQ-SCAN-012 live-test-release with no id-token (less than it needs: refused)" "      contents: read\n      id-token: write\n    steps:\n      - run: echo final" "      contents: read\n    steps:\n      - run: echo final" caught "exactly the permissions"
+lj e1  "REQ-SCAN-012 live-test-release in the agent environment (the App secrets live there)" "  live-test-release:\n    needs: [release]\n    if: $LJ_FINAL_IF\n    runs-on: ubuntu-latest\n    environment: live-test" "  live-test-release:\n    needs: [release]\n    if: $LJ_FINAL_IF\n    runs-on: ubuntu-latest\n    environment: agent" caught "environment: live-test"
 lj e2  "REQ-SCAN-012 live-test-release in the release environment (the publish credentials)" "    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo final" "    runs-on: ubuntu-latest\n    environment: release\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo final" caught "environment: live-test"
-lj e3  "REQ-SCAN-012 live-test without an environment" "    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo rc" "    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo rc" caught "environment: live-test"
-lj n1  "REQ-SCAN-012 live-test that needs only build-assemble (it would run before Check)" "  live-test:\n    needs: [check]" "  live-test:\n    needs: [build-assemble]" caught "live-test must need exactly"
-lj n2  "REQ-SCAN-012 live-test that also needs sign" "  live-test:\n    needs: [check]" "  live-test:\n    needs: [check, sign]" caught "live-test must need exactly"
+lj e3  "REQ-SCAN-012 live-test-release without an environment" "    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo final" "    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo final" caught "environment: live-test"
 lj n3  "REQ-SCAN-012 live-test-release that needs check (it would run before the release is published)" "  live-test-release:\n    needs: [release]" "  live-test-release:\n    needs: [check]" caught "live-test-release must need exactly"
-lj i1  "REQ-SCAN-012 live-test with no dry-run guard in its if (a valid condition missing only that guard)" " && !inputs.dry-run }}\n    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo rc" " }}\n    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo rc" caught "must carry exactly the if"
+lj i1  "REQ-SCAN-012 live-test-release with no dry-run guard in its if (a valid condition missing only that guard)" " && !inputs.dry-run }}\n    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo final" " }}\n    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo final" caught "must carry exactly the if"
 lj i2  "REQ-SCAN-012 live-test-release that also runs on a release candidate (no -rc exclusion)" " && !contains(github.ref_name, '-rc') && !inputs.dry-run }}" " && !inputs.dry-run }}" caught "must carry exactly the if"
-lj i3  "REQ-SCAN-012 live-test that is always() (it would run on any ref, a schedule included)" "if: $LJ_RC_IF" "if: always()" caught "must carry exactly the if"
-lj i4  "ruling 8 live-test without the snapshot exclusion (it would run in a snapshot call)" "inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run" "startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run" caught "must carry exactly the if"
+lj i3  "REQ-SCAN-012 live-test-release that is always() (it would run on any ref, a schedule included)" "if: $LJ_FINAL_IF" "if: always()" caught "must carry exactly the if"
 lj i5  "ruling 8 live-test-release without the snapshot exclusion" "inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc') && !inputs.dry-run" "startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc') && !inputs.dry-run" caught "must carry exactly the if"
-lj u1  "REQ-SCAN-012 live-test given a job-level uses" "  live-test:\n    needs: [check]" "  live-test:\n    uses: ./.github/workflows/ci.yml\n    needs: [check]" caught "job-level uses"
-lj s1  "REQ-SCAN-012 live-test using a secret (the App's secrets and the publish credentials are not for it)" "      - run: echo rc" "      - run: echo \${{ secrets.GH_APP_KEY }}" caught "may not use secrets."
+lj u1  "REQ-SCAN-012 live-test-release given a job-level uses" "  live-test-release:\n    needs: [release]" "  live-test-release:\n    uses: ./.github/workflows/ci.yml\n    needs: [release]" caught "job-level uses"
+lj s1  "REQ-SCAN-012 live-test-release using a secret (the App's secrets and the publish credentials are not for it)" "      - run: echo final" "      - run: echo \${{ secrets.GH_APP_KEY }}" caught "may not use secrets."
 lj x1  "REQ-SCAN-012 a third job of the same kind (live-test-fast) beside the two permitted ones is not allowed" "  live-test-release:\n    needs: [release]" "  live-test-fast:\n    needs: [release]\n    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo fast\n  live-test-release:\n    needs: [release]" caught "live-test-fast"
-lj s2  "REQ-SCAN-012 live-test reading the secrets context by index (a bracket expression)" "      - run: echo rc" "      - run: echo \${{ secrets['AUDIT_SENTINEL'] }}" caught "may not use secrets"
-lj s3  "REQ-SCAN-012 live-test passing the whole secrets context (toJSON)" "      - run: echo rc" "      - run: echo \${{ toJSON(secrets) }}" caught "may not use secrets"
+lj x2  "REQ-SCAN-012 a live-test job on release candidates (it is gone: rc tags end) is not allowed" "  live-test-release:\n    needs: [release]" "  live-test:\n    needs: [check]\n    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo rc\n  live-test-release:\n    needs: [release]" caught "job live-test is not"
+lj s2  "REQ-SCAN-012 live-test-release reading the secrets context by index (a bracket expression)" "      - run: echo final" "      - run: echo \${{ secrets['AUDIT_SENTINEL'] }}" caught "may not use secrets"
+lj s3  "REQ-SCAN-012 live-test-release passing the whole secrets context (toJSON)" "      - run: echo final" "      - run: echo \${{ toJSON(secrets) }}" caught "may not use secrets"
 lj s4  "REQ-SCAN-012 live-test-release reading the secrets context in an env value" "      - run: echo final" "      - run: echo final\n        env:\n          X: \${{ secrets ['K'] }}" caught "may not use secrets"
-lj s5  "REQ-SCAN-012 live-test with the secrets reference split over lines inside the expression" "      - run: echo rc" "      - run: |-\n          echo \${{\n          secrets.AUDIT_SENTINEL\n          }}" caught "may not use secrets"
+lj s5  "REQ-SCAN-012 live-test-release with the secrets reference split over lines inside the expression" "      - run: echo final" "      - run: |-\n          echo \${{\n          secrets.AUDIT_SENTINEL\n          }}" caught "may not use secrets"
 lj s6  "REQ-SCAN-012 live-test-release with a tab before the secrets reference" "      - run: echo final" "      - run: \"echo \${{\\tsecrets.K }}\"" caught "may not use secrets"
-lj s7  "REQ-SCAN-012 live-test with the context spelled in capitals (contexts are case-insensitive)" "      - run: echo rc" "      - run: echo \${{ SECRETS.K }}" caught "may not use secrets"
+lj s7  "REQ-SCAN-012 live-test-release with the context spelled in capitals (contexts are case-insensitive)" "      - run: echo final" "      - run: echo \${{ SECRETS.K }}" caught "may not use secrets"
 # a duplicated mapping key is refused before any spec is read (a YAML loader keeps the LAST of two equal keys, so a first, wider definition would be hidden)
-lj d1  "REQ-SCAN-012 two definitions of live-test (the first in the release environment with a write) are refused" "  live-test:\n    needs: [check]" "  live-test:\n    needs: [check]\n    environment: release\n    permissions:\n      contents: write\n    steps:\n      - run: first\n  live-test:\n    needs: [check]" caught "duplicate"
-lj d2  "REQ-SCAN-012 a key given twice inside a job is refused" "  live-test:\n    needs: [check]" "  live-test:\n    needs: [check]\n    needs: [check]" caught "duplicate"
+lj d1  "REQ-SCAN-012 two definitions of live-test-release (the first in the release environment with a write) are refused" "  live-test-release:\n    needs: [release]" "  live-test-release:\n    needs: [release]\n    environment: release\n    permissions:\n      contents: write\n    steps:\n      - run: first\n  live-test-release:\n    needs: [release]" caught "duplicate"
+lj d2  "REQ-SCAN-012 a key given twice inside a job is refused" "  live-test-release:\n    needs: [release]" "  live-test-release:\n    needs: [release]\n    needs: [release]" caught "duplicate"
 # REQ-SCAN-012-AC1 (amended, advisor reading Oct 17): the live-test environment holds the Docker Hub test user, its push token and the read-only Scout token with its user; those four
-# names, in the dotted form, are the only secrets the two live-test jobs may use (the same four in each job), nothing else and no other spelling
+# names, in the dotted form, are the only secrets the live-test-release job may use, nothing else and no other spelling
 for sec in DOCKERHUB_USERNAME DOCKERHUB_TEST_USERNAME DOCKERHUB_TEST_PUSH_TOKEN DOCKERHUB_SCOUT_TOKEN; do
-  lj "da-$sec" "REQ-SCAN-012-AC1 live-test may use secrets.$sec (a Docker Hub test credential of the live-test environment)" "      - run: echo rc" "      - run: echo rc\n        env:\n          X: \${{ secrets.$sec }}" ok ""
   lj "db-$sec" "REQ-SCAN-012-AC1 live-test-release may use secrets.$sec" "      - run: echo final" "      - run: echo final\n        env:\n          X: \${{ secrets.$sec }}" ok ""
 done
 for sec in DOCKERHUB_TOKEN DOCKERHUB_TEST_TOKEN DOCKERHUB_USERNAME2 DOCKERHUB_SCOUT_TOKEN_X RELEASE_KMS_KEY_REF GH_TOKEN AUDITOR_APP_PRIVATE_KEY; do
-  lj "dc-$sec" "REQ-SCAN-012-AC1 live-test may not use secrets.$sec (the publish credentials and every other name stay refused)" "      - run: echo rc" "      - run: echo rc\n        env:\n          X: \${{ secrets.$sec }}" caught "may not use secrets"
   lj "dd-$sec" "REQ-SCAN-012-AC1 live-test-release may not use secrets.$sec" "      - run: echo final" "      - run: echo final\n        env:\n          X: \${{ secrets.$sec }}" caught "may not use secrets"
 done
-lj de "REQ-SCAN-012-AC1 live-test using an allowed secret and, beside it, the whole secrets context (toJSON)" "      - run: echo rc" "      - run: echo \${{ secrets.DOCKERHUB_USERNAME }} \${{ toJSON(secrets) }}" caught "may not use secrets"
-lj df "REQ-SCAN-012-AC1 live-test reading an allowed name by index (secrets['DOCKERHUB_USERNAME']) is the bracket form: refused" "      - run: echo rc" "      - run: echo \${{ secrets['DOCKERHUB_USERNAME'] }}" caught "may not use secrets"
+lj de "REQ-SCAN-012-AC1 live-test-release using an allowed secret and, beside it, the whole secrets context (toJSON)" "      - run: echo final" "      - run: echo \${{ secrets.DOCKERHUB_USERNAME }} \${{ toJSON(secrets) }}" caught "may not use secrets"
+lj df "REQ-SCAN-012-AC1 live-test-release reading an allowed name by index (secrets['DOCKERHUB_USERNAME']) is the bracket form: refused" "      - run: echo final" "      - run: echo \${{ secrets['DOCKERHUB_USERNAME'] }}" caught "may not use secrets"
 # REQ-UAT-001-AC1 and ruling 8: persona-uat-rc is the ONE job-level call of persona-uat.yml, in release mode only, after build-assemble only, with the identity token for the persona federation and nothing else
 lj pu1 "REQ-UAT-001-AC1 persona-uat-rc that also needs check (it would wait for the scanners)" "  persona-uat-rc:\n    needs: build-assemble" "  persona-uat-rc:\n    needs: [build-assemble, check]" caught "persona-uat-rc must need exactly"
 lj pu2 "REQ-UAT-001-AC1 persona-uat-rc that needs release (it would run after publishing)" "  persona-uat-rc:\n    needs: build-assemble" "  persona-uat-rc:\n    needs: [release]" caught "persona-uat-rc must need exactly"
@@ -2412,7 +2408,7 @@ for tag in fixture real; do
     fi
   done
 done
-cases_of() { case "$1" in apk) echo 18;; assemble) echo 21;; rebuild-apk) echo 4;; rebuild-assemble) echo 9;; esac; }    # cases one kind runs for both versions
+cases_of() { case "$1" in apk) echo 12;; assemble) echo 14;; rebuild-apk) echo 2;; rebuild-assemble) echo 6;; esac; }    # cases one kind runs for the version v0.3.0 (the rc version was deleted with rc tags)
 for tag in fixture real; do
   mode=oracle; [ "$tag" = real ] && mode=real
   for kind in apk assemble rebuild-apk rebuild-assemble; do
@@ -2425,7 +2421,7 @@ for tag in fixture real; do
       continue
     fi
     before=$((pass + failn))
-    for version in v0.3.0 v0.3.0-rc1; do "beh_$(tr - _ <<< "$kind")" "$tag" "$(script_of "$tag" "$kind")" "$mode" "$version"; done
+    for version in v0.3.0; do "beh_$(tr - _ <<< "$kind")" "$tag" "$(script_of "$tag" "$kind")" "$mode" "$version"; done
     [ $((pass + failn - before)) = "$n" ] || bad "the $kind behaviour cases ran $((pass + failn - before)) cases, cases_of says $n"
   done
 done
@@ -2561,20 +2557,9 @@ f1 caught "a panel download by artifact id of something that is not a scanner jo
 f1 caught "a download by artifact id outside the panel job is caught" "$root/.github/workflows/main-candidate-rescan.yml" '1,/name: images/s/name: images/artifact-ids: ${{ needs.panel-grype.outputs.artifact-id }}/'
 f1 caught "a panel download by artifact id with a name beside it is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's#path: /tmp/panel/panel-scout#name: images#'
 f1 caught "a panel download by artifact id with another key (run-id) in place of the path is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's#path: /tmp/panel/panel-scout#run-id: 123#'
-# Codex A r2 blocker 1 / B4: the release-candidate tag (vX.Y.Z-rcN, advisor 0383) through both assemble scripts: the stage completes with no policy (Build's
-# and Rebuild's records are local), Rebuild's assemble takes its version from the tag, and Build's assemble stops a tag that is not the admission's
-for kind in assemble rebuild-assemble; do
-  rd="$work/rcp-$kind"; mk "$rd" "$kind" "$(script_of real "$kind")" real v0.3.0-rc1
-  rc=$(run_stage "$rd" "$kind" real v0.3.0-rc1)
-  if [ "$kind" = assemble ] && [ "$rc" = 0 ] && [ ! -e "$rd/policy.json" ]; then
-    ok "AC12/rc $kind: the tag v0.3.0-rc1 completes with no policy (the apk records are local; the REAL admission-baseline reads the full tag)"
-  elif [ "$kind" = rebuild-assemble ] && [ "$rc" = 0 ] && [ ! -e "$rd/policy.json" ] \
-      && [ "$(n_calls '^image .*--version 0.3.0-rc1 ' "$rd")" = 2 ]; then
-    ok "AC12/rc $kind: the tag v0.3.0-rc1 completes with no policy and both image builds get the version 0.3.0-rc1 from the tag"
-  else bad "AC12/rc $kind: v0.3.0-rc1: rc=$rc images=$(grep '^image ' "$rd/calls.log" 2> /dev/null | tr '\n' '|' | cut -c1-160)"\
-      " $(head -c 160 "$rd/stage.err" 2> /dev/null | tr '\n' ' ')"; fi
-  # the near-miss tags are stopped by the admission-baseline line, which only Build's assemble (STEP apk) runs
-  [ "$kind" = assemble ] || continue
+# Codex A r2 blocker 1 / B4: Build's assemble stops a tag that is not the admission's (the near-miss tags are stopped by the admission-baseline line,
+# which only Build's assemble, STEP apk, runs); the release-candidate tag's own run through both assemble scripts was deleted with rc tags (Nov 23)
+for kind in assemble; do
   for nm in v0.3.0-rc.1 v0.3.0-RC1 v0.3.0-rc1x; do
     rd="$work/rcn-$kind-$nm"; mk "$rd" "$kind" "$(script_of real "$kind")" real v0.3.0-rc1
     rc=$(REF_NAME=$nm run_stage "$rd" "$kind" real v0.3.0-rc1)
@@ -2582,20 +2567,20 @@ for kind in assemble rebuild-assemble; do
     else bad "AC12/rc $kind: near-miss $nm: rc=$rc images=$(n_calls '^image ' "$rd") $(head -c 120 "$rd/stage.err" 2> /dev/null | tr '\n' ' ')"; fi
   done
 done
-# Release candidates (advisor 0383/0386, REQ-CHAIN-007-AC14, ruling 2 of cache#921): an rc tag runs the chain as a final tag does and ends after release-verify: release-verify (its own job, no if) runs on it,
-# and the job after it, release, carries guard S followed by `&& !contains(github.ref_name, '-')` as their job if, so a candidate publishes nothing, signs nothing and attaches nothing.
+# REQ-CHAIN-007-AC14, ruling 2 of cache#921: release-verify (its own job, no if) judges the tag, and the job after it, release, carries exactly guard S as its job if
+# (release candidates as rc tags are gone, Nov 23: no tag-name rule is left in any job's if).
 cat > "$work/rcgate.py" <<'PY'
 import sys, yaml
 d = yaml.load(open(sys.argv[1]).read(), Loader=yaml.BaseLoader); jobs = d.get("jobs") or {}
 bad = []
 S = ("inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && "
      "startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))")
-AFTER = "${{ " + S + " && !contains(github.ref_name, '-') }}"
+AFTER = "${{ " + S + " }}"
 if "rc-refusal" in jobs: bad.append("an rc-refusal job is still there: the candidate rule in the job if replaces it (an rc tag must reach release-verify)")
 if "if" in (jobs.get("release-verify") or {}): bad.append("release-verify has an if (%r): it runs on a release candidate too" % jobs["release-verify"]["if"])
 for n in ("release",):
     c = str((jobs.get(n) or {}).get("if", "")).strip()
-    if c != AFTER: bad.append("the job %s must carry exactly guard S followed by && !contains(github.ref_name, '-') (a release candidate publishes, signs and attaches nothing), got %r" % (n, c))
+    if c != AFTER: bad.append("the job %s must carry exactly guard S, got %r" % (n, c))
 print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
 PY
 rcg() { # rcg ok|caught LABEL [sed-expr]
@@ -2604,11 +2589,11 @@ rcg() { # rcg ok|caught LABEL [sed-expr]
   if [ -n "${3:-}" ] && cmp -s "$f" "$root/.github/workflows/release.yml"; then bad "AC12/rc $2 -> the mutation did not change the file"; return 0; fi
   out=$(python3 "$work/rcgate.py" "$f") || rc=$?
   if { [ "$1" = ok ] && [ "$rc" = 0 ]; } || { [ "$1" = caught ] && [ "$rc" != 0 ]; }; then ok "AC12/rc $2${out:+ ($out)}"; else bad "AC12/rc $2 -> $out"; fi; }
-rcg ok "the real release.yml has no rc-refusal job, release-verify runs on an rc tag, and the release job ends it (guard S and the candidate rule)"
+rcg ok "the real release.yml has no rc-refusal job, release-verify has no if, and the release job carries exactly guard S"
 for jn in release; do
-  rcg caught "the job $jn without the candidate rule is caught (a release candidate would enter it)" "/^  $jn:/,/^  [a-z]/ s/ \&\& !contains(github.ref_name, '-') }}/ }}/"
+  rcg caught "the job $jn with a tag-name rule added is caught" "/^  $jn:/,/^  [a-z]/ s/github.repository)) }}/github.repository)) \&\& !contains(github.ref_name, '-') }}/"
   rcg caught "the job $jn that runs always() (it would run after a failed Check) is caught" "/^  $jn:/,/^  [a-z]/ s/^    if: .*/    if: \${{ always() }}/"
-  rcg caught "the job $jn that spells the candidate rule another way is caught" "/^  $jn:/,/^  [a-z]/ s/ \&\& !contains(github.ref_name, '-') }}/ \&\& !contains(github.ref_name, '-rc') }}/"
+  rcg caught "the job $jn with the rule spelled another way is caught" "/^  $jn:/,/^  [a-z]/ s/github.repository)) }}/github.repository)) \&\& !contains(github.ref_name, '-rc') }}/"
   rcg caught "the job $jn without the push event is caught" "/^  $jn:/,/^  [a-z]/ s/ \&\& github.event_name == 'push'//"
 done
 rcg caught "release-verify with the candidate rule (a release candidate would not be verified) is caught" "/^  release-verify:/,/^  [a-z]/ s/^    needs: release-compare/    needs: release-compare\n    if: \${{ !contains(github.ref_name, '-') }}/"
@@ -2677,17 +2662,6 @@ krx 1 "empty (the marker PR) still fails while KR-CUTOVER alone is listed: the l
 krx 2 "empty-except with no entry id is a usage error" "$work/kr/only-cutover.json" empty-except
 krx 2 "empty-except with two ids is a usage error" "$work/kr/only-cutover.json" empty-except KR-CUTOVER KR-OTHER
 krx 1 "an unreadable list fails closed under empty-except" "$work/kr/does-not-exist.json" empty-except KR-CUTOVER
-python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red cutover prep: KR-CUTOVER carries the accepted reason (every OTHER entry gone, this entry alone stays, removed by the marker PR)" || bad "known-red cutover prep: KR-CUTOVER's reason is not the accepted text"
-import json, sys
-ents = {x["id"]: x for x in json.load(open(sys.argv[1]))["entries"]}
-if "KR-CUTOVER" not in ents:        # the marker PR removes the entry (the list is then empty): that completed state is the one this case allows
-    sys.exit(0 if not ents else 1)
-e = ents["KR-CUTOVER"]
-want = ("the cutover pull request (chain-v030 to main) needs every other entry of this list gone AND every hosted check green on hosted runners, not only the suite cases: "
-        "build and apk (both legs), scan, reproducibility, allowlist (including every step it skips), pin-age and coverage; this entry alone stays after the cutover and means "
-        "'rc proof pending': it is removed by the pull request that commits the marker of REQ-CHAIN-001-AC6, which changes exactly the marker file and the removal of this one entry, and until then no final or patch tag runs the chain")
-sys.exit(0 if e["reason"] == want and e["case"].startswith("KNOWN-RED cutover:") else 1)
-PY
 # REQ-CHAIN-004-AC3, REQ-CHAIN-005-AC1 and REQ-CHAIN-004-AC11 say what the stage files do (advisor T62 text, Oct 12; Codex 4b-3 r1): the installs, and the one apko exception
 python3 - "$root/requirements/requirements.yaml" <<'PY' && ok "004-AC3/AC11, 005-AC1 text: each job installs only its tool by the pinned installer line, and AC11's names-apko clause carries exactly that exception" || bad "004-AC3/AC11, 005-AC1 text: the installer wording or AC11's exception is missing"
 import sys, yaml
@@ -2891,9 +2865,6 @@ print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
 GUARDTXT
 out=$(python3 "$work/tmpguard.py" --selftest 2>&1) && ok "no fixed /tmp path: the guard catches redirections, file commands and open() on /tmp and leaves fixture text alone" || bad "no fixed /tmp path: the guard itself is wrong: $out"
 out=$(cd "$root" && python3 "$work/tmpguard.py" bin/chain-*-test.sh bin/install-scanner-test.sh 2>&1) && ok "no fixed /tmp path: no chain suite reads or writes a literal /tmp path (every file lives in its own mktemp -d)" || bad "no fixed /tmp path: $out"
-# the cutover condition, itself expected red until the list is empty (KR-CUTOVER lists this case)
-rc=0; python3 "$KR" empty --list "$root/test-evidence/known-red.json" > /dev/null 2>&1 || rc=$?
-[ "$rc" = 0 ] && ok "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case" || bad "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case (still has entries)"
 # rules 61 and 62 (advisor Oct 12; REQ-REL-009, the base-input-changed signal): every base input
 # .github/policy/base-inputs.json names is a file of origin/main. A ref that cannot be read
 # counts every path as absent (never a pass).

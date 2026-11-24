@@ -169,8 +169,8 @@ sign_check = {"needs": ["build-assemble", "check", "sign"], "runs-on": "ubuntu-2
                        + [dl("apk-" + r, "apks/" + r) for r in RUNNERS] + [dl("check-results-ubuntu-24.04", "check-results/ubuntu-24.04")]
                        + [{"run": "bash bin/install-scanner.sh aws-cli"}, {"run": "printf '%s' \"$DIGESTS\" > digests.json"}, {"run": " ".join(sr)}]
                        + [{"run": "bash bin/witness-sign-staged.sh staged/%s signed/%s" % (r, r)} for r in RUNNERS]
-                       + [{"if": "${{ !contains(github.ref_name, '-') }}", "run": "bash bin/release-signatures.sh"}]
-                       + [ul("signed-witness-check-" + r, "signed/" + r) for r in RUNNERS] + [dict(ul("release-signed", "release-signed"), **{"if": "${{ !contains(github.ref_name, '-') }}"})]}
+                       + [{"run": "bash bin/release-signatures.sh"}]
+                       + [ul("signed-witness-check-" + r, "signed/" + r) for r in RUNNERS] + [ul("release-signed", "release-signed")]}
 import json
 open(w + "/signcheck.json", "w").write(json.dumps({"jobs": {"sign-check": sign_check}}))
 os.makedirs(w + "/old/.github/workflows", exist_ok=True)
@@ -423,7 +423,7 @@ scm sc_noenv   'del j["environment"]'                                           
 scm sc_noid    'j["permissions"] = {"contents": "read"}'                                                        'permissions'           "AC1 sign-check without the identity token (it cannot reach the KMS key)"
 scm sc_pkgs    'j["permissions"]["packages"] = "write"'                                                         'permissions'           "AC1 sign-check holding packages: write"
 scm sc_nosigs  'j["steps"] = [s for s in j["steps"] if "release-signatures" not in s.get("run", "")]'          'release-signatures.sh' "S2 sign-check does not run bin/release-signatures.sh"
-scm sc_sigsif  'j["steps"] = [dict(s, **{"if": "${{ always() }}"}) if "release-signatures" in s.get("run", "") else s for s in j["steps"]]' 'release-signatures.sh' "S2 the release signing step runs on a release candidate"
+scm sc_sigsif  'j["steps"] = [dict(s, **{"if": "${{ always() }}"}) if "release-signatures" in s.get("run", "") else s for s in j["steps"]]' 'release-signatures.sh' "S2 the release signing step carries an if (the job-level guard S decides)"
 scm sc_nosigd  'j["steps"] = [s for s in j["steps"] if s.get("with", {}).get("name") != "release-signed"]'      'must upload exactly'   "S2 sign-check does not upload release-signed"
 scm sc_noimg   'j["steps"] = [s for s in j["steps"] if s.get("with", {}).get("name") != "images"]'              'must download exactly' "S2 sign-check does not download Build's images"
 scm sc_needs   'j["needs"] = ["check"]'                                                                         'must need exactly'     "AC1 sign-check without build-assemble (Build's digest list is its anchor)"

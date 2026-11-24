@@ -13,7 +13,7 @@ Images are published to `ghcr.io/fosterstack/cache` and mirrored, with the same 
 | `:X.Y` | A floating tag for the X.Y line; it can move. Pin `:X.Y.Z` or a digest. |
 | `:X` and `:latest` | Move only when the release is the highest released version. |
 
-A release candidate (a tag like `vX.Y.Z-rcN`) runs the release chain and then stops: nothing is pushed, no release is created and no floating tag moves. A candidate never shows up as an image tag.
+A release is built and checked first on its `release/vX.Y.Z` branch: that run pushes nothing, creates no release and moves no floating tag. Only the tag `vX.Y.Z` publishes, so a branch build never shows up as an image tag.
 
 ## Pin a version
 

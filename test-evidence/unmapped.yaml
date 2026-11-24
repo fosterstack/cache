@@ -24,7 +24,7 @@ unmapped:
     reason: "no test proves it yet: the automatic VEX patch release is decided in release.yml decide, which the section 1 fix removes; section 3 amends the AC to what remains and the test for that text is credited then"
 
   - ac: REQ-REL-010-AC6
-    reason: "a live check: Docker Scout scans an attested index by tag and by exact digest with our author and applies our VEX. On main it is proven by the daily rescan's Scout self-check on an attested fixture and its scan of the four attested candidates; on our real published image it can run only after the first release candidate with the attestation children exists, and the customer guide's Scout claim waits for that"
+    reason: "a live check: Docker Scout scans an attested index by tag and by exact digest with our author and applies our VEX. On main it is proven by the daily rescan's Scout self-check on an attested fixture and its scan of the four attested candidates; on our real published image it can run only after the first release with the attestation children exists, and the customer guide's Scout claim waits for that"
 # The -debug clauses of REQ-PLAT-002-AC1 and REQ-PLAT-003-AC1 have no subject - owner Oct 9: drop debug; AC text is in the owner wording batch.
 # They cannot be listed above: the validator refuses a residual that is also mapped, and both ACs are mapped for production and -fips (Check, PR 3).
   - ac: REQ-GUIDE-001-AC8

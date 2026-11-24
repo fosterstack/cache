@@ -5,7 +5,7 @@
 # of the two images, have the same file names, so each is staged under its architecture's or variant's name.
 set -euo pipefail
 shopt -s nullglob
-python3 -I -B bin/build-admit.py tag-ok --final "${GITHUB_REF_NAME:-}" || { echo "release-stage: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never reaches this step)" >&2; exit 1; }
+python3 -I -B bin/build-admit.py tag-ok --final "${GITHUB_REF_NAME:-}" || { echo "release-stage: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z" >&2; exit 1; }
 rel="$GITHUB_REF_NAME"
 # Everything is staged under its release name in release-upload/. The apks of the two architectures, and the SBOMs and lock files of the two images,
 # have the same file names, so each is staged under its architecture's or variant's name.

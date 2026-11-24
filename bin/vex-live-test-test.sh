@@ -4,7 +4,7 @@
 # guide's command blocks byte for byte (only its settings blocks take test values); the test copy of the Inspector file
 # differs from the generator's output only in the live-test tag and the test name prefix (plus exactly the fixture's
 # own filters); the fixture CVE is one every service reports; at most 50 pushes; the release under test; the wiring
-# (rc tags after promotion and final releases — never a schedule, never a PR — in
+# (final releases only — never a schedule, never a PR — in
 # the live-test environment, federated, literal regions, pinned actions, cleanup always).
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -285,7 +285,8 @@ check("the 51st push fails the run", out.returncode == 0, (out.returncode, out.s
 # --- AC1/AC3/AC4: the wiring
 wf = lambda n: yaml.load(open(os.path.join(root, ".github/workflows", n)), Loader=yaml.BaseLoader)
 rel = wf("release.yml")
-for name, d, job in (("release.yml rc job", rel, rel["jobs"].get("live-test") or {}), ("release.yml post-publish job", rel, rel["jobs"].get("live-test-release") or {})):
+check("release.yml has no live-test job on release candidates (rc tags end: the release branch replaces them)", "live-test" not in rel["jobs"], sorted(rel["jobs"]))
+for name, d, job in (("release.yml post-publish job", rel, rel["jobs"].get("live-test-release") or {}),):
     steps = job.get("steps") or []
     text = json.dumps(steps)
     check("%s: a live-test job in the live-test environment" % name, job.get("environment") == "live-test", job.get("environment"))
@@ -306,18 +307,12 @@ for name, d, job in (("release.yml rc job", rel, rel["jobs"].get("live-test") or
           len(gc) == 1 and re.fullmatch(r"\d+\.\d+\.\d+", (gc[0].get("with") or {}).get("version", "")) is not None, gc)
     check("%s: cleanup runs always" % name, len(clean) == 1 and clean[0].get("if") == "always()", [s.get("name") for s in steps])
     check("%s: runs the committed orchestration" % name, "bin/vex-live-run.sh" in text)
-RJ, PJ = rel["jobs"]["live-test"], rel["jobs"]["live-test-release"]
-check("release.yml: the rc job runs after Check, on release-candidate tags (vX.Y.Z-rcN) only, never in the dry run",
-      RJ.get("needs") in ("check", ["check"]) and RJ.get("if") == "${{ inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}",
-      (RJ.get("needs"), RJ.get("if")))
-rtext = json.dumps(RJ.get("steps"))
-check("release.yml: the rc job downloads the candidate's digests, items and images from Build's artifacts and runs in rc mode",
-      all(('"name": "%s"' % n) in rtext for n in ("digests", "items", "images")) and "download-artifact" in rtext and '"MODE": "rc"' in rtext and "CANDIDATE_DIR" in rtext)
+PJ = rel["jobs"]["live-test-release"]
 check("release.yml: the post-publish job runs after Release, on final tags only, in release mode, never in the dry run",
       PJ.get("needs") in ("release", ["release"]) and PJ.get("if") == "${{ inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc') && !inputs.dry-run }}"
       and '"MODE": "release"' in json.dumps(PJ.get("steps")), (PJ.get("needs"), PJ.get("if")))
-# release.yml has a daily schedule for its decide job (REQ-REL-009); the live-test jobs must still never run on it: both need a v tag ref, which a scheduled run never has
-check("release.yml: the live-test jobs never run on the schedule (both require a v tag ref)", all("startsWith(github.ref, 'refs/tags/v')" in j.get("if", "") for j in (RJ, PJ)))
+# release.yml has a daily schedule for its decide job (REQ-REL-009); the live-test job must still never run on it: it needs a v tag ref, which a scheduled run never has
+check("release.yml: the live-test job never runs on the schedule (it requires a v tag ref)", "startsWith(github.ref, 'refs/tags/v')" in PJ.get("if", ""))
 # --- Codex #169 r1
 # SEC-169-04: a settings line is a plain value; anything else is a command the plan must run (or refuse)
 for bad_line in ("VER=X.Y.Z; false", "VER=$(false)", "VER=X.Y.Z && false", "IMAGE=x`false`", "VER=X.Y.Z\nfalse"):
@@ -696,7 +691,7 @@ rc, out = sh("MODE=main; select_release; echo tag=${tag:-none} skip=${skip:-no}"
 check("SEC-170-02 main mode with no release is an announced skip", rc == 0 and "::notice::" in out and "skip=yes" in out, (rc, out[-300:]))
 rc, out = sh("MODE=main; select_release; echo tag=${tag:-none} skip=${skip:-no}", {"gh": "echo '{\"tagName\":\"v0.3.0\",\"isDraft\":false,\"assets\":[\"fosterstack-cache.openvex.json\",\"fosterstack-cache-v0.3.0.inspector-filters.json\",\"fosterstack-cache-v0.3.0.csaf.json\"]}'"}, {"GITHUB_REPOSITORY": "fosterstack/cache"})
 check("SEC-170-02 main mode with a published release tests it", rc == 0 and "tag=v0.3.0" in out and "skip=no" in out, (rc, out[-300:]))
-for mode, ref, ok in [("rc", "v0.3.0-rc1", True), ("rc", "v0.3.0", False), ("rc", "v0.3.0-rc.1", False), ("rc", "v0.3.0-rc1-x", False),
+for mode, ref, ok in [("rc", "v0.3.0-rc1", False), ("rc", "v0.3.0", False),
                       ("release", "v0.3.0", True), ("release", "v0.3.0-rc1", False), ("release", "v0.3", False), ("release", "main", False)]:
     rc, out = sh("MODE=%s; select_release; echo tag=$tag" % mode, {}, {"GITHUB_REF_NAME": ref})
     check("SEC-170-02 %s mode on %s is %s" % (mode, ref, "accepted" if ok else "refused"), (rc == 0) == ok and (not ok or "tag=%s" % ref in out), (rc, out[-200:]))
@@ -715,7 +710,7 @@ check("SEC-170-01 a candidate push is journaled before it starts, so a failed pu
 # SEC-169-07: one live test at a time, across both workflows, never cancelled midway
 # read typed: BaseLoader gives every scalar as text, so it cannot tell the boolean `false` from a quoted 'false' (a string)
 rel_typed = yaml.safe_load(open(os.path.join(root, ".github/workflows/release.yml")))
-for name, key in (("release.yml rc", "live-test"), ("release.yml post-publish", "live-test-release")):
+for name, key in (("release.yml post-publish", "live-test-release"),):
     conc = rel_typed["jobs"][key].get("concurrency")
     check("SEC-169-07 %s: the live-test job is serialized with every other live test, and cancel-in-progress is the boolean false" % name,
           isinstance(conc, dict) and conc.get("group") == "vex-live-test" and conc.get("cancel-in-progress") is False and len(conc) == 2, conc)
@@ -1041,7 +1036,7 @@ with tempfile.TemporaryDirectory() as t:
 SCOUT_RUN_ENV = {"DH_REPO": "${{ vars.LIVE_TEST_DOCKERHUB_REPOSITORY }}", "DOCKERHUB_USERNAME": "${{ secrets.DOCKERHUB_USERNAME }}",
                  "DOCKERHUB_TEST_USERNAME": "${{ secrets.DOCKERHUB_TEST_USERNAME }}", "DOCKERHUB_TEST_PUSH_TOKEN": "${{ secrets.DOCKERHUB_TEST_PUSH_TOKEN }}", "DOCKERHUB_SCOUT_TOKEN": "${{ secrets.DOCKERHUB_SCOUT_TOKEN }}"}
 SCOUT_CLEAN_ENV = {k: SCOUT_RUN_ENV[k] for k in ("DH_REPO", "DOCKERHUB_TEST_USERNAME", "DOCKERHUB_TEST_PUSH_TOKEN")}
-for name, job in (("release.yml rc job", RJ), ("release.yml post-publish job", PJ)):
+for name, job in (("release.yml post-publish job", PJ),):
     steps = job.get("steps") or []
     run_step = [s for s in steps if "bin/vex-live-run.sh run" in (s.get("run") or "")]
     clean_step = [s for s in steps if "bin/vex-live-run.sh cleanup" in (s.get("run") or "")]
@@ -1146,14 +1141,6 @@ for ref in ("local://x", "image://x", "ghcr.io/fosterstack/cache:1", "registry:/
 rc, out = sh('scout_scan registry://x/y@sha256:%s "$RUNNER_TEMP/o.json"' % ("a" * 64), {"docker": "exit 3"})
 check("scout_scan fails when docker scout fails", rc != 0, (rc, out[-200:]))
 
-# the informational probe of the Build layout: never fails, says what Scout did
-rc, out = sh('printf %s \'' + gl_report("CVE-1", "CVE-2") + '\' > "$RUNNER_TEMP/scout-before.json"; printf %s \'' + gl_report("CVE-2") + '\' > "$RUNNER_TEMP/scout-after.json"; '
-             'scout_probe "$RUNNER_TEMP/layout" \'^FosterStack LLC$\'', {"docker": DOCKER_LOG})
-check("scout_probe: scans the Build layout (oci-dir://) with Docker's authors and with ours, and prints the delta", rc == 0 and "::notice::" in out and "CVE-1" in out
-      and "oci-dir://" in open(os.path.join(root, "bin/vex-live-run.sh")).read(), (rc, out[-300:]))
-rc, out = sh('scout_probe "$RUNNER_TEMP/layout" \'^FosterStack LLC$\'; echo rc=$?', {"docker": "exit 9"})
-check("scout_probe: a failing Scout is information, never a failure of the run", rc == 0 and "rc=0" in out, (rc, out[-300:]))
-
 # the sweep of the Docker Hub repository joins the sweep only when the repository is configured
 rc, out = sh("hub_sweep() { echo HUB-SWEPT; }; sweep_dockerhub", {}, {})
 check("sweep_dockerhub: without a configured repository it does nothing", rc == 0 and "HUB-SWEPT" not in out, (rc, out[-200:]))
@@ -1213,24 +1200,26 @@ case "$*" in
     def hub_py(answer):
         call = ('case "$*" in *hub-private*) echo "hub-private-call $*" >> "$RUNNER_TEMP/events.log"; ' + ('exit 1' if answer is None else 'exit 0') + ' ;; esac; ')
         return call + 'exec /usr/bin/python3 "$@"'
-    def leg(reports, env=None, mode="rc", extra="", hub=HUB_PRIVATE, py=None):
+    def leg(reports, env=None, mode="release", extra="", hub=HUB_PRIVATE, py=None):
+        reports = reports + 2 * [gl_report("CVE-B", OURS_CVE), gl_report("CVE-B")]   # the published index by tag and by digest, scanned after the production image when a target of ours is found
         files = "".join("printf %%s '%s' > \"$RUNNER_TEMP/scout-%d.json\"; " % (r, i + 1) for i, r in enumerate(reports))
-        body = (files + 'export PUSHED_LOG="$RUNNER_TEMP/p"; : > "$PUSHED_LOG"; MODE=%s; tag=v0.3.0-rc1; ' % mode
+        body = (files + 'export PUSHED_LOG="$RUNNER_TEMP/p"; : > "$PUSHED_LOG"; MODE=%s; tag=v0.3.0; ' % mode
                 + 'FIXTURE_SRC=docker.io/library/debian@%s; FIX=%s; RUN=live-1-1; CVE=%s; ' % (fx_man, fx_man, LEG_CVE)
                 + "echo '{\"production\": {\"index\": \"%s\", \"children\": {\"linux/amd64\": \"sha256:%s\", \"linux/arm64\": \"sha256:%s\"}}}' > images.json; " % (prod_man, "2" * 64, "3" * 64)
+                + 'python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" settings --state state.env "DIGEST=sha256:%s"; guide() { echo "guide $1: $(cat state.env)" >> "$RUNNER_TEMP/guide.log"; }; ' % FX_DIGEST_STALE
                 + extra + "scout_leg && echo leg-rc=0 || echo leg-rc=$?; echo \"push-tok-after=${DOCKERHUB_TEST_PUSH_TOKEN-UNSET} scout-tok-after=${DOCKERHUB_SCOUT_TOKEN-UNSET}\"; cat \"$RUNNER_TEMP/crane.log\" \"$RUNNER_TEMP/docker.log\" \"$PUSHED_LOG\" \"$RUNNER_TEMP/guide.log\" 2>/dev/null || true; echo =EVENTS=; cat \"$RUNNER_TEMP/events.log\"")
-        e = dict(ENV_OK, FIXTURE_LAYOUT_SRC=fx_src, CANDIDATE_DIR=os.path.join(lt, "cand"))
+        e = dict(ENV_OK, FIXTURE_LAYOUT_SRC=fx_src)
         e.update(env or {})
         return sh(body, {"crane": CRANE, "docker": SCOUT, "python3": py or hub_py(None if hub is None else hub)}, e)
     OK_FIX = [gl_report(LEG_CVE, "CVE-A", OURS_CVE), gl_report("CVE-A", OURS_CVE)]
     OK_PROD = [gl_report("CVE-B", OURS_CVE), gl_report("CVE-B")]
-    rc, out = leg(["{}", "{}"] + OK_FIX + OK_PROD)    # the first two answers belong to the informational probe of the Build layout (an unreadable report there is information)
+    rc, out = leg(OK_FIX + OK_PROD)
     sc = [l for l in out.split("\n") if l.startswith("scout cves")]
-    check("scout leg (rc): passes when the fixture's finding shows with Docker's authors only and is gone with ours, and the same for our production image", "leg-rc=0" in out, (rc, out[-500:]))
-    check("scout leg (rc): the Build layout is probed first (oci-dir://, information), then the Docker Hub test repository by digest",
-          sc and sc[0].startswith("scout cves --format gitlab oci-dir://") and any("registry://docker.io/fosterstack-live/cache-live-test@sha256:" in l for l in sc[2:]), sc)
-    check("scout leg (rc): each registry image is scanned twice, first with Docker's authors, then naming ours as one argument",
-          [("--vex-author ^FosterStack LLC$ " in l) for l in sc[2:]] == [False, True, False, True], sc)
+    check("scout leg: passes when the fixture's finding shows with Docker's authors only and is gone with ours, and the same for our production image", "leg-rc=0" in out, (rc, out[-500:]))
+    check("scout leg: the Docker Hub test repository is scanned by digest, never a Build layout (oci-dir://)",
+          sc and all("registry://docker.io/fosterstack-live/cache-live-test@sha256:" in l for l in sc[:4]) and not any("oci-dir://" in l for l in sc), sc)
+    check("scout leg: each registry image is scanned twice, first with Docker's authors, then naming ours as one argument",
+          [("--vex-author ^FosterStack LLC$ " in l) for l in sc[:4]] == [False, True, False, True], sc)
     ev = out.split("=EVENTS=\n", 1)[1].split("\n") if "=EVENTS=" in out else []
     def cat_of(l):
         if "PUSH-LOGIN-OK" in l: return 1
@@ -1241,70 +1230,67 @@ case "$*" in
         if "SCOUT-LOGOUT" in l: return 6
         return 0
     cats = [c for c in map(cat_of, ev) if c]
-    check("scout leg (rc): the push token is on the machine only for the pushes (login, pushes, logout), then the Scout token only for the scans (login, scans, logout); neither is ever on a command line",
+    check("scout leg: the push token is on the machine only for the pushes (login, pushes, logout), then the Scout token only for the scans (login, scans, logout); neither is ever on a command line",
           cats == sorted(cats) and {1, 2, 3, 4, 5, 6} <= set(cats) and "BAD-" not in out and "push-tok" not in "\n".join(ev) and "scout-tok" not in "\n".join(ev), (cats, out[-500:]))
-    check("scout leg (rc): the user names are the only secret-backed values on a command line (public Docker Hub account names): the push login uses the test user, the Scout login the Scout user",
+    check("scout leg: the user names are the only secret-backed values on a command line (public Docker Hub account names): the push login uses the test user, the Scout login the Scout user",
           all("hubtest-user" in l and "hubuser-secret" not in l for l in ev if "auth login" in l)
           and all("hubuser-secret" in l and "hubtest-user" not in l for l in ev if l.startswith("docker login"))
           and not any("hubuser-secret" in l or "hubtest-user" in l for l in ev if "scout cves" in l or " push " in l or " copy " in l))
-    check("scout leg (rc): the push token is gone from the environment once it is logged out (a Scout scan or the page's Scout block never sees it)",
+    check("scout leg: the push token is gone from the environment once it is logged out (a Scout scan or the page's Scout block never sees it)",
           "SCAN-ENV push-env=\n" in out and "SCAN-ENV push-env=set" not in out, out[-300:])
     for why, call in (("copy_candidate", 'copy_candidate "$RUNNER_TEMP/layout" dst/cache:x sha256:%s' % ("a" * 64)), ("push_copy", "push_copy a b")):
         rc, out2 = sh('export PUSHED_LOG=/dev/null/not-a-directory; { %s && echo rc=0; } || echo rc=1; echo crane-calls=$(cat "$RUNNER_TEMP/crane.log" 2>/dev/null | wc -l)' % call,
                       {"crane": 'echo "$*" >> "$RUNNER_TEMP/crane.log"; case "$1" in digest) echo sha256:%s ;; esac' % ("a" * 64)})
         check("%s: a journal that cannot be written stops the push before crane runs (a push nobody journaled would escape the sweep's record)" % why,
               "rc=1" in out2 and "crane-calls=0" in out2.replace(" ", ""), (rc, out2[-200:]))
-    rc, out2 = leg(["{}", "{}"] + OK_FIX + OK_PROD, extra='export PUSHED_LOG=/dev/null/not-a-directory; ')
-    check("scout leg (rc): an unwritable journal fails the leg with no crane push or copy", "leg-rc=0" not in out2 and "crane push" not in out2 and "crane copy" not in out2, out2[-300:])
+    rc, out2 = leg(OK_FIX + OK_PROD, extra='export PUSHED_LOG=/dev/null/not-a-directory; ')
+    check("scout leg: an unwritable journal fails the leg with no crane push or copy", "leg-rc=0" not in out2 and "crane push" not in out2 and "crane copy" not in out2, out2[-300:])
     for why, reports, env in (("the fixture's finding still shown with our author", [OK_FIX[0], OK_FIX[0]] + OK_PROD, {}),
                               ("the fixture's finding not shown without our author", [gl_report("CVE-A"), gl_report("CVE-A")] + OK_PROD, {}),
                               ("another fixture finding lost with our author", [OK_FIX[0], gl_report(OURS_CVE)] + OK_PROD, {}),
                               ("our production image keeping the finding our statement covers", OK_FIX + [gl_report("CVE-B", OURS_CVE), gl_report("CVE-B", OURS_CVE)], {}),
                               ("a candidate that comes out of the registry at another digest", OK_FIX + OK_PROD, {"CRANE_DIGEST_OVERRIDE": "sha256:" + "0" * 64}),
                               ("an unreadable report for the fixture", ["{}", "{}", "not json", "not json"] + OK_PROD, {})):
-        rc, out = leg(["{}", "{}"] + reports, env)
-        check("scout leg (rc) fails on %s" % why, "leg-rc=0" not in out and "leg-rc=" in out, (rc, out[-300:]))
-    rc, out = leg(["{}", "{}"] + OK_FIX + [gl_report("CVE-B"), gl_report("CVE-B")])
-    check("scout leg (rc): none of our statements reported by Scout on the production image is a warning that AC6 is not shown, not a failure",
+        rc, out = leg(reports, env)
+        check("scout leg fails on %s" % why, "leg-rc=0" not in out and "leg-rc=" in out, (rc, out[-300:]))
+    rc, out = leg(OK_FIX + [gl_report("CVE-B"), gl_report("CVE-B")])
+    check("scout leg: none of our statements reported by Scout on the production image is a warning that AC6 is not shown, not a failure",
           "leg-rc=0" in out and "::warning::" in out and "REQ-REL-010-AC6" in out, (rc, out[-400:]))
     for why, reports in (("a malformed production 'before' report", OK_FIX + ['{"vulnerabilities": {}}', gl_report("CVE-B")]),
                          ("a production 'before' report that is not JSON", OK_FIX + ["not json", gl_report("CVE-B")]),
                          ("a malformed production 'after' report although no target of ours was found", OK_FIX + [gl_report("CVE-B"), '{"vulnerabilities": ""}']),
                          ("a missing production 'after' report", OK_FIX + [gl_report("CVE-B"), ""])):
-        rc, out = leg(["{}", "{}"] + reports)
-        check("scout leg (rc) fails on %s, never the warning path" % why, "leg-rc=0" not in out and "Docker Scout leg passed" not in out, (rc, out[-300:]))
+        rc, out = leg(reports)
+        check("scout leg fails on %s, never the warning path" % why, "leg-rc=0" not in out and "Docker Scout leg passed" not in out, (rc, out[-300:]))
     for missing in ENV_OK:
         rc, out = leg(["{}"], {missing: ""})
         check("scout leg fails closed without %s, before any crane or docker call" % missing, "leg-rc=0" not in out and "crane" not in out.replace("crane.log", "") and "auth login" not in out, (rc, out[-300:]))
-    rc, out = leg(["{}"] * 2 + OK_FIX + OK_PROD, extra='PUSHES=49; ')
+    rc, out = leg(OK_FIX + OK_PROD, extra='PUSHES=49; ')
     check("scout leg: the leg's pushes count against the 50 of the run (a second push beyond 50 fails it)", "leg-rc=0" not in out and "more than 50 pushes" in out, (rc, out[-300:]))
     check("scout leg: a push that fails after the push login still logs the push token out and unsets it (it never stays in the job's Docker config)",
           "PUSH-LOGIN-OK" in out and "PUSH-LOGOUT" in out and "leg-rc=0" not in out and out.index("PUSH-LOGIN-OK") < out.index("PUSH-LOGOUT"), (rc, out[-400:]))
     check("…and the push token is gone from the environment too", "push-tok-after=UNSET" in out, (rc, out[-400:]))
     BAD_DIGEST = 'crane() { if [ "$1" = digest ] && [[ "$2" == *-production ]]; then echo sha256:' + "0" * 64 + '; else command crane "$@"; fi; }; '
     for md in ("release", "main"):
-        rc, out = leg(["{}"] * 2 + OK_FIX + OK_PROD, mode=md, extra=BAD_DIGEST)
+        rc, out = leg(OK_FIX + OK_PROD, mode=md, extra=BAD_DIGEST)
         check("scout leg (%s): a production copy that does not keep its digest fails the leg, and the push token is logged out and unset first" % md,
               "leg-rc=0" not in out and "does not keep its digest" in out and "PUSH-LOGOUT" in out and "push-tok-after=UNSET" in out, (rc, out[-400:]))
-    rc, out = leg(["{}", "{}"] + OK_FIX + ['{"vulnerabilities": {}}', gl_report("CVE-B")])
-    check("scout leg (rc): a failure after the Scout login logs the Scout token out and unsets it (it never stays in the job's Docker config)",
+    rc, out = leg(OK_FIX + ['{"vulnerabilities": {}}', gl_report("CVE-B")])
+    check("scout leg: a failure after the Scout login logs the Scout token out and unsets it (it never stays in the job's Docker config)",
           "SCOUT-LOGIN-OK" in out and "SCOUT-LOGOUT" in out and "leg-rc=0" not in out and "scout-tok-after=UNSET" in out, (rc, out[-400:]))
-    rc, out = leg(["{}", "{}"] + OK_FIX + OK_PROD)
-    check("scout leg (rc): on success both tokens are also gone from the environment, with one login and one logout of each (no extra cleanup call)",
+    rc, out = leg(OK_FIX + OK_PROD)
+    check("scout leg: on success both tokens are also gone from the environment, with one login and one logout of each (no extra cleanup call)",
           "leg-rc=0" in out and "push-tok-after=UNSET scout-tok-after=UNSET" in out and out.count("PUSH-LOGOUT") == 1 and out.count("SCOUT-LOGOUT") == 1, (rc, out[-400:]))
-    rc, out = leg(OK_FIX + OK_PROD + OK_FIX[:0] + [gl_report("CVE-B", OURS_CVE), gl_report("CVE-B"), gl_report("CVE-B", OURS_CVE), gl_report("CVE-B")], mode="release",
-                  extra='tag=v0.3.0; python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" settings --state state.env "DIGEST=sha256:%s"; guide() { echo "guide $1: $(cat state.env)" >> "$RUNNER_TEMP/guide.log"; }; ' % FX_DIGEST_STALE)
-    check("scout leg (release): the page's own Scout block runs as written (section scout); a release candidate never runs it", "guide scout" in out, out[-300:])
-    check("scout leg (release): the page's Scout block gets OUR production digest (the Google leg leaves the fixture's in the state)", "guide scout: " in out and ("DIGEST='%s'" % prod_man) in out, out[-400:])
-    rc2, out2 = leg(["{}", "{}"] + OK_FIX + OK_PROD)
-    check("scout leg (rc): the page's Scout block is not run (nothing is published)", "guide scout" not in out2 and "leg-rc=0" in out2, out2[-300:])
+    rc, out = leg(OK_FIX + OK_PROD)
+    check("scout leg: the page's own Scout block runs as written (section scout)", "guide scout" in out, out[-300:])
+    check("scout leg: the page's Scout block gets OUR production digest (the Google leg leaves the fixture's in the state)", "guide scout: " in out and ("DIGEST='%s'" % prod_man) in out, out[-400:])
     sc = [l for l in out.split("\n") if l.startswith("scout cves")]
-    check("scout leg (release): the published index is also scanned by tag and by exact digest, with Docker's authors and with ours",
+    check("scout leg: the published index is also scanned by tag and by exact digest, with Docker's authors and with ours",
           "leg-rc=0" in out and any("registry://ghcr.io/fosterstack/cache:0.3.0" in l for l in sc) and any("registry://ghcr.io/fosterstack/cache@" + prod_man in l for l in sc)
           and not any(l.startswith("scout cves --format gitlab oci-dir://") for l in sc), (rc, sc, out[-300:]))
 
     # the Docker Hub repository must be proven private by the hub-private command before the first push (PANEL:94)
-    rc, out = leg(["{}", "{}"] + OK_FIX + OK_PROD)
+    rc, out = leg(OK_FIX + OK_PROD)
     ev = out.split("=EVENTS=\n", 1)[1].split("\n") if "=EVENTS=" in out else []
     first_push = next((i for i, l in enumerate(ev) if l.startswith(("crane push", "crane copy"))), None)
     seen_hub = [i for i, l in enumerate(ev) if l.startswith("hub-private-call")]
@@ -1316,7 +1302,7 @@ case "$*" in
     check("scout leg: the hub-private call has --repository as its only option",
           len(seen_hub) == 1 and [w for w in ev[seen_hub[0]].split() if w.startswith("--")] == ["--repository"]
           and ev[seen_hub[0]].split()[-3:-1] == ["hub-private", "--repository"], [ev[i] for i in seen_hub])
-    rc, out = leg(["{}", "{}"] + OK_FIX + OK_PROD, hub=None)
+    rc, out = leg(OK_FIX + OK_PROD, hub=None)
     check("scout leg refuses to push when the hub-private command fails: non-zero, and no crane push, copy or journal line",
           "leg-rc=0" not in out and "leg-rc=" in out and "crane push" not in out and "crane copy" not in out and "live-1-1" not in out and "hub-private-call" in out, (rc, out[-300:]))
 
@@ -1335,7 +1321,7 @@ def run_script(args, env, stubs, body=None):   # body: sourced with the stubs on
         return r.returncode, r.stdout + r.stderr, calls
 TOOLS = ["docker", "curl", "crane", "aws", "gcloud", "gh", "python3x"]
 LIVE_ENV = {"ECR": "1.dkr.ecr.us-east-1.amazonaws.com/x", "GAR": "r-docker.pkg.dev/p/r", "GITHUB_RUN_ID": "1", "GITHUB_WORKSPACE": root,
-            "RUNNER_TEMP": "/nonexistent-live-test-temp", "MODE": "rc", **ENV_OK}   # no VEX_LIVE_TEST_LIB: the hook is `return` alone
+            "RUNNER_TEMP": "/nonexistent-live-test-temp", "MODE": "release", **ENV_OK}   # no VEX_LIVE_TEST_LIB: the hook is `return` alone
 for args in ([], ["run"], ["cleanup"]):
     rc, out, calls = run_script(args, LIVE_ENV, TOOLS, 'set -euo pipefail; source "$0" "$@"; echo SOURCED-OK')
     check("sourcing bin/vex-live-run.sh with %r runs nothing: it returns, and no docker, curl or other tool is called" % args,

@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-001-AC6
 # The marker-only pull request gate (slice 4b-6; orchestrator ruling Oct 13: AC6 "whose CI verifies"). bin/marker-pr-gate.py judges a pull request that commits the rc-proof
 # marker: it must change exactly the marker file and test-evidence/known-red.json, and the second must differ from the base only by the removal of the one KR-CUTOVER
 # entry; the run the marker names must be this repository's release.yml, a push of the marker's rc tag, at that tag's commit, completed with success; its artifacts are
@@ -121,10 +120,6 @@ gate "a pull request that does not touch the marker passes without reading anyth
 [ "$(nlog gh)" = 0 ] && [ "$(nlog verify)" = 0 ] && ok "not applicable: no API call and no verifier run" || bad "not applicable: the gate read something ($(cat "$work/log" | head -c 100))"
 # ---- the file set ----
 files $MARK $KRF
-gate "the marker plus the removal of KR-CUTOVER, with a verifying run, passes" 0 ""
-[ "$(nlog verify)" = 1 ] && grep -q "^verify rc-proof " "$work/log" && grep -F -q -- "--marker $work/head/$MARK" "$work/log" && grep -F -q -- "--repository $REPO" "$work/log" \
-  && ok "the verifier ran once, as rc-proof, on the head's marker" || bad "the verifier call is not the one rc-proof call on the head's marker: $(grep '^verify' "$work/log" | head -c 300)"
-grep -F -q "$work/base/bin/chain-verify.py" "$work/log" || true
 files $MARK $KRF .github/workflows/ci.yml
 gate "the marker plus the removal plus an edit of ci.yml is refused, naming the file" 1 ".github/workflows/ci.yml"
 files $MARK $KRF bin/chain-verify.py
@@ -176,31 +171,9 @@ b"; gate "a file name with a newline in it is refused as an extra file" 1 "a"
 printf '%s\n%s\n' ".github/policy/rc-proof.json" '"test-evidence/known-red.json"' > "$work/files.txt"
 gate "a file list line that is not a JSON string is refused" 1 "not a JSON string"
 files $MARK $KRF
-# ---- the run the marker names ----
-runmut() { python3 - "$work/run.json" "$work/run-bad.json" "$1" "$2" <<'PY'
-import json, sys
-src, dst, key, val = sys.argv[1:5]
-d = json.load(open(src))
-if key == "repository": d["repository"] = {"full_name": val}
-else: d[key] = None if val == "NONE" else val
-json.dump(d, open(dst, "w"))
-PY
-}
-for spec in "repository:evil/cache:repository" "event:workflow_dispatch:event" "head_branch:v0.3.0-rc2:head_branch" "head_sha:$(printf 'c%.0s' $(seq 40)):head_sha" "conclusion:failure:conclusion" "status:in_progress:status" "path:.github/workflows/ci.yml:path"; do
-  k=${spec%%:*}; r=${spec#*:}; v=${r%:*}; w=${r##*:}
-  runmut "$k" "$v"; MG_RUN_FILE="$work/run-bad.json" gate "a run whose $k is $v is refused" 1 "$w"
-done
-unset MG_RUN_FILE
-gate "an API read that fails is refused" 1 "run" MG_API_FAIL=1
-for art in witness-build digests items provenance witness-rebuild witness-check-ubuntu-24.04 witness-check-ubuntu-24.04-arm hostile-results; do
-  gate "a missing artifact ($art) is refused and the verifier is not run" 1 "$art" MG_DL_FAIL=$art
-  [ "$(nlog verify)" = 0 ] || bad "the verifier ran although $art could not be downloaded"
-done
-gate "a verifier that refuses gives the gate's exit status (never swallowed)" 1 "rc-proof" MG_VERIFY_RC=1
-# ---- which code runs ----
-grep -q "^verify" "$work/log" || true
-: > "$work/log"; gate "the head's own bin/chain-verify.py is never the one that runs (the base's copy is)" 0 ""
-if grep -q "^verify" "$work/log"; then ok "the base's verifier stub logged the call (the head's copy exits 0 silently and logs nothing)"; else bad "the verifier call was not made by the base's copy"; fi
+# The cases of the run the marker names, its artifacts, the verifier call and which copy of the verifier runs were deleted on Nov 23: the one tag
+# grammar of bin/build-admit.py admits no rc tag since release candidates as rc tags were removed, so read_marker refuses every marker before any of
+# those checks is reached; what is left here is judged before the marker is read, or is the marker's own refusal.
 printf '{not json' > "$work/head/$MARK"; files $MARK $KRF
 gate "an unreadable marker is refused" 1 "marker"
 rungood "$work/run.json" "$HEADSHA"
