@@ -11,7 +11,8 @@ the advisory id and the rollback; it is also labelled owner-decision when no cle
 ran in the last 90 days. A disputed hit (the two lists disagree about the same incident) is reported without
 rolling back
 unless a checked-in exception applies.
-Exit 0: clean (or only excepted disputes); 1: a hit or an unexcepted disputed hit; 2: it could not do its job.
+Exit 0: clean (or only excepted disputes, or hits found only in the history walk: reported and issued, no rollback can
+clear them); 1: a hit or an unexcepted disputed hit on a version in today's tree; 2: it could not do its job.
 Only public facts go in an issue: versions, advisory ids, dates. It never produces run, environment or secret names.
 """
 import argparse
@@ -1565,6 +1566,7 @@ def main(argv=None):
                 findings += fs
                 notes += n2
         pr_actions = []
+        now_keys = set(head)  # the versions in use today: the tree, the open pull requests, the pinned actions' calls
         # daily: the pins of every OPEN pull request too (the PR job is read-only; this is how an unmerged hit reaches
         # an issue)
         if not a.base:
@@ -1585,6 +1587,7 @@ def main(argv=None):
                           f"audited")
                     incomplete = True
                 held.extend(items[:100])
+                now_keys.update(it.key for it in items[:100])
                 for it in items[:100]:
                     if it.key in seen_keys:
                         continue
@@ -1655,6 +1658,7 @@ def main(argv=None):
                             print(f"information: the moving tag {clean(ref)} inside {outer.name} could not be resolved "
                                   f"to a commit; "
                                   "checked by its literal name")
+                    now_keys.add(child.key)
                     if child.key in seen:
                         continue
                     seen.add(child.key)
@@ -1691,11 +1695,18 @@ def main(argv=None):
         unpinned = [] if a.base else unpinned_go_tools(head)
         report_unpinned(unpinned)
         plan, disputes, per_item, pending = [], {}, {}, []
+
+        # decided on the version's key before dedup and the dispute grouping, which rebuild items and drop annotations
+        now = {id(f) for f in findings if a.base is not None or f.item.key in now_keys}
+
+        def hist_note(f):
+            return "" if id(f) in now else "History only: this version is not in today's tree, so the daily run stays green.\n"
         for f in findings:
             print(f"audit: {'DISPUTED' if f.disputed else 'HIT'}: {clean(f.item.key)} ({clean(', '.join(f.ids))}): "
                   f"{f.why}"
                   + (f" [inside {clean(f.via)}]" if f.via else "") + (f" [open pull request #{f.pr}]"
-                                                                      if getattr(f, "pr", None) else ""))
+                                                                      if getattr(f, "pr", None) else "")
+              + ("" if id(f) in now else " [history only]"))
             if f.disputed:  # one issue per package and incident, listing every version of it (history can hold many)
                 disputes.setdefault(package_of(f.item), []).append(f)
                 continue
@@ -1714,13 +1725,13 @@ def main(argv=None):
             t = title_of(f)
             if t[0] in by_prefix:        # same identity (e.g. two commits both labelled v4): one issue carrying both
                 e = by_prefix[t[0]]
-                e["body"] += "\n---\nAlso, at commit `%s`:\n\n%s" % (_safe(f.item.version, 80),
-                                                                     body_of(f, rb, owner, ran, today))
+                e["body"] += "\n---\nAlso, at commit `%s`:\n\n%s" % (_safe(f.item.version, 80), body_of(f, rb, owner, ran, today)
+                                                                     + hist_note(f))
                 e["owner"] = e["owner"] or owner
                 e["ids"] = sorted(set(e["ids"]) | set(f.ids))
                 e["title"] = (t[0], "%s (%s)" % (t[0], ", ".join(_safe(i) for i in e["ids"])))
                 continue
-            e = {"finding": f, "title": t, "body": body_of(f, rb, owner, ran, today), "owner": owner,
+            e = {"finding": f, "title": t, "body": body_of(f, rb, owner, ran, today) + hist_note(f), "owner": owner,
                  "ids": list(f.ids)}
             by_prefix[t[0]] = e
             plan.append(e)
@@ -1738,7 +1749,8 @@ def main(argv=None):
             if not a.report_only:
                 phase("issues")
                 file_issues(gh, plan, today)
-            return 1
+            if now:
+                return 1
         unchecked = [i for i in audited if not net.covered(i)]
         # AC14: the log lines of ignored entries are not exceptions
         excepted_n = len([n for n in notes if not n.startswith(IGNORED_NOTE)])
@@ -1748,6 +1760,9 @@ def main(argv=None):
             return 1
         if lapsed or dead or unpinned:
             return 1
+        if plan:
+            print(f"audit: only history hits, none in today's tree (reported above): exit 0")
+            return 0
         print(f"audit: no known-compromised versions as of {today}"
               + (f" ({excepted_n} disputed hit(s) covered by a checked-in exception)" if excepted_n else "")
               + (f"; {len(dormant)} dormant exception ruling(s) wait for their pin: "
