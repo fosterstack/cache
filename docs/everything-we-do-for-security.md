@@ -19,9 +19,6 @@ vulnerability); this page is what we do.
 - **Release tags are protected.** Creating a release tag is restricted by a
   repository rule, and a published release tag cannot be moved, updated or deleted
   ([the repository's rules](https://github.com/fosterstack/cache/rules)).
-- **The merge gate runs from `main`.** The check that judges a pull request is the
-  copy on `main`, not the copy in the pull request, so a change cannot edit the rule
-  that judges it ([review gate](../.github/workflows/agent-review-gate.yml)).
 - **CI runs a fork's code without secrets.** The CI workflow runs on
   `pull_request`, never `pull_request_target`, so a fork's code runs with GitHub's
   no-secrets treatment ([CI](../.github/workflows/ci.yml)).

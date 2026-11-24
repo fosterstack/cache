@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SCAN-015-AC1, REQ-SCAN-015-AC3
+# proves: REQ-SCAN-015-AC1
 # The two workflow files that carry the scanner cloud identities (scan.yml, main-candidate-rescan.yml) can never be
 # called as reusable workflows: neither declares `on: workflow_call`, and no workflow or composite action names either
 # one in a `uses:`. The cloud trust is pinned to the FILE (job_workflow_ref), not to its caller, so a callable file

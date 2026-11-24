@@ -1,6 +1,6 @@
 name: Agent review gate
 
-# REQ-REL-012 (release process rule 6): the writer of the whole-release passed-audit record. It runs only when dispatched;
+# REQ-REL-012: the writer of the whole-release passed-audit record. It runs only when dispatched;
 # no pull request event, check or status starts or posts from it.
 
 on:
