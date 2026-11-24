@@ -1,10 +1,10 @@
 {
  "schema": 1,
- "artifact": "ghcr.io/fosterstack/cache-archive@sha256:94004ce9bf190bd535f1c2eceb62b1c6ea346349eb43b92cb00672be3aac9b19",
+ "artifact": "ghcr.io/fosterstack/cache-archive@sha256:04921445171e8c49fd965d9e3943d81c7b5ec4d0a7a0ba3da8630b867de8fbfe",
  "files": [
   {
    "name": "aarch64/APKINDEX.tar.gz",
-   "sha256": "154637f2f0bbc0460d514c52ebe2303f84aa051f6dc72b17e81d0f7704cf28e0"
+   "sha256": "0e9167ba51bada9b21b0dd6ab0d09bcf49e34abed427a4d1d63b3d81781dca39"
   },
   {
    "name": "aarch64/bubblewrap-0.13.1-r0.apk",
@@ -19,6 +19,10 @@
    "sha256": "c1add921f52eb8d25bc4f451c0fd6c1f38708fdd87f03015e429886b23ddbdfd"
   },
   {
+   "name": "aarch64/busybox-1.38.0-r4.apk",
+   "sha256": "6b04978be540b00faffdb21d4aa1370565c4f543df36684b86eba32c9ff7ae57"
+  },
+  {
    "name": "aarch64/ca-certificates-bundle-20260909-r2.apk",
    "sha256": "1df0297183deabef6759a48a21a02bb18d87e8189c6b5d139f9dd5c52398ed19"
   },
@@ -29,6 +33,10 @@
   {
    "name": "aarch64/ca-certificates-bundle-20261020-r0.apk",
    "sha256": "d2a458ae71b3f6f65302a8dd61c35f75f3eef87aeb5583a3f97523e99698cf49"
+  },
+  {
+   "name": "aarch64/ca-certificates-bundle-20261020-r1.apk",
+   "sha256": "f3ca8f43057063936a502f55bd78a25639303331e01179519b077f531373ee9f"
   },
   {
    "name": "aarch64/cyrus-sasl-heimdal-libs-2.1.28-r58.apk",
@@ -107,6 +115,10 @@
    "sha256": "ffe6290f14c0f931aedc6f1bcb1183bc72dd30b1da90975a71e46af6314ca2b8"
   },
   {
+   "name": "aarch64/glibc-2.44-2.44-r25.apk",
+   "sha256": "83e4c4cccfc1f01448ad07dc02df5aa77d8b4388d012ba66afdabfa855b81b69"
+  },
+  {
    "name": "aarch64/glibc-2.44-2.44-r8.apk",
    "sha256": "596770ccfb1da12b33f99ae32a6f8df2758f3f45b65f4a4dbc008b226831f755"
   },
@@ -147,6 +159,10 @@
    "sha256": "9b524279ff69d22210062ab26eb05e7eabd16de6557fbea121ff1905cbfc0b15"
   },
   {
+   "name": "aarch64/glibc-2.44-locale-posix-2.44-r25.apk",
+   "sha256": "5a153ff4ee87446f36d5ac16cc40038128e3c05670ce274476a05936a3847a93"
+  },
+  {
    "name": "aarch64/glibc-2.44-locale-posix-2.44-r8.apk",
    "sha256": "4afead29830d9d30249421446a9eda776799a587c5c40320fc90480774cde7eb"
   },
@@ -173,6 +189,10 @@
   {
    "name": "aarch64/index/APKINDEX-030b0fd3996d176458507ca9e3db4614b39658b26e431dff88e0a7017175caeb.tar.gz",
    "sha256": "030b0fd3996d176458507ca9e3db4614b39658b26e431dff88e0a7017175caeb"
+  },
+  {
+   "name": "aarch64/index/APKINDEX-0e9167ba51bada9b21b0dd6ab0d09bcf49e34abed427a4d1d63b3d81781dca39.tar.gz",
+   "sha256": "0e9167ba51bada9b21b0dd6ab0d09bcf49e34abed427a4d1d63b3d81781dca39"
   },
   {
    "name": "aarch64/index/APKINDEX-12d1ea12b3327b34864fa48577fbb01ff716a1e55da605aa9aa6e3668be52ac9.tar.gz",
@@ -293,6 +313,10 @@
   {
    "name": "aarch64/ld-linux-2.44-2.44-r24.apk",
    "sha256": "3c971a99e30c6610baedcbe3b321c95c13be4b72c4217eeaaba83b71a2641782"
+  },
+  {
+   "name": "aarch64/ld-linux-2.44-2.44-r25.apk",
+   "sha256": "a897fe4fc942044a28bf01e0db9305d736475021b80551570c82b6e941b87c7f"
   },
   {
    "name": "aarch64/ld-linux-2.44-2.44-r8.apk",
@@ -431,6 +455,10 @@
    "sha256": "d270c3cde00c5af58932ba5c86d855041293b1205624b9a22aa2ae21305cba78"
   },
   {
+   "name": "aarch64/libcrypt1-2.44-2.44-r25.apk",
+   "sha256": "d64c14480290f19d9f514f785eabcb37d2ca117644db21d28c68e353d6b4b3cf"
+  },
+  {
    "name": "aarch64/libcrypt1-2.44-2.44-r8.apk",
    "sha256": "2b97c6d01bd90161ccd72f35c32cd6b34c2d08eeb5a1567f7b3157b7b7bbfe75"
   },
@@ -465,6 +493,10 @@
   {
    "name": "aarch64/libexpat1-2.10.0-r1.apk",
    "sha256": "02bc04772beeacccce3263dd2918e2c97deeb5b1427e28f1b4c62844ff969f54"
+  },
+  {
+   "name": "aarch64/libexpat1-2.11.0-r0.apk",
+   "sha256": "b5b21c3bb7ca0ddbf4b7228c64c2e95ef32b042c93d9e3d06385ad07780c07e7"
   },
   {
    "name": "aarch64/libexpat1-2.9.0-r0.apk",
@@ -529,6 +561,10 @@
   {
    "name": "aarch64/libnghttp2-14-1.71.0-r1.apk",
    "sha256": "5dedd8ae308eeb229355c483a6f2f10f8af61050e715dcd9a8031efd8f4e9c0a"
+  },
+  {
+   "name": "aarch64/libnghttp2-14-1.71.0-r2.apk",
+   "sha256": "b9cfbfa0d42bcd15d9c81ed15c841de9be1aa2aa1be776519682cc808318aa33"
   },
   {
    "name": "aarch64/libpcre2-8-0-10.49-r1.apk",
@@ -759,6 +795,10 @@
    "sha256": "22313fca19b8143db5d239bd14c5251416a2e35ba7418b23b64ece7701bc9785"
   },
   {
+   "name": "aarch64/openssl-provider-legacy-allowed-4.1.0-r1.apk",
+   "sha256": "93a715d39ebdf956b8ca59b465f2ff0a737b7fa8ca26ce34133f1a96e23b6367"
+  },
+  {
    "name": "aarch64/readline-8.3-r3.apk",
    "sha256": "8d4ae6286e3fdc2b50fdd911fe1aa474c771c5708184e721e2255283ec6d7e4e"
   },
@@ -856,7 +896,7 @@
   },
   {
    "name": "x86_64/APKINDEX.tar.gz",
-   "sha256": "95f9a38c661391f98cce15b9510ba5cac1c79cf0fe9545ddbac27aaf07e2388f"
+   "sha256": "bf3b5be37530f50524e27a975d99c5ab7174993f44c045e744d8975820009bd2"
   },
   {
    "name": "x86_64/agetty-2.42.4-r3.apk",
@@ -879,8 +919,16 @@
    "sha256": "eeb563b77b93f040ed255a56b014a9c8f882a5651744f908577e1a3bc5ea9b3a"
   },
   {
+   "name": "x86_64/busybox-1.38.0-r4.apk",
+   "sha256": "36d26a6481835ba75b24c88038fc06d500838a154c9f820eb5e70027478e9f39"
+  },
+  {
    "name": "x86_64/ca-certificates-20261020-r0.apk",
    "sha256": "574c1cc6b0f6ccb9e33d0418a1453838eb0b6d479c5cbbc483a3477a9525cbc0"
+  },
+  {
+   "name": "x86_64/ca-certificates-20261020-r1.apk",
+   "sha256": "e5e8f6cf1d2ad9d1014c24d0ac676ece0cbde373eb15616aa6854f9d1e50a2c3"
   },
   {
    "name": "x86_64/ca-certificates-bundle-20260909-r2.apk",
@@ -895,8 +943,16 @@
    "sha256": "f0bee352ca8f87c2c3ec1bdd459836f2afbb4874703e3a21888846ee08a96f71"
   },
   {
+   "name": "x86_64/ca-certificates-bundle-20261020-r1.apk",
+   "sha256": "6d73f3949c5f9b417e9314784b8ebc0501c9ea6bf6265d668ba588825603899d"
+  },
+  {
    "name": "x86_64/cryptsetup-2.8.8-r4.apk",
    "sha256": "97de3f5f4cbc80a28e8799f357aa935619698d5a24896bd4dc502a083f1df6b5"
+  },
+  {
+   "name": "x86_64/cryptsetup-2.8.9-r0.apk",
+   "sha256": "1a48b9377ee136bb483d10ffc187ac85ebe621f46753ff3532f782227138cbfd"
   },
   {
    "name": "x86_64/curl-8.23.0-r4.apk",
@@ -1007,6 +1063,10 @@
    "sha256": "dd0f1389a0d7819d33a37ec867fff199f47a3ca4415bed32771cec098dbfab60"
   },
   {
+   "name": "x86_64/glibc-2.44-2.44-r25.apk",
+   "sha256": "f1e3a34455c26e68b1952366754bdc4c3ffade9586e588980ee11a89ee6b0cc0"
+  },
+  {
    "name": "x86_64/glibc-2.44-2.44-r8.apk",
    "sha256": "e38603061dbeea4a647b2d46d454c954e8af89a495f9b2c07b51b590995a7da0"
   },
@@ -1045,6 +1105,10 @@
   {
    "name": "x86_64/glibc-2.44-locale-posix-2.44-r24.apk",
    "sha256": "7505fda8436c56dc0bccfb7500987441f7f4a60119e9869b9012fbfb0479e37f"
+  },
+  {
+   "name": "x86_64/glibc-2.44-locale-posix-2.44-r25.apk",
+   "sha256": "0fde2954a23c2ba84df536b105761663001f25a15715d3d7777785ce00315f03"
   },
   {
    "name": "x86_64/glibc-2.44-locale-posix-2.44-r8.apk",
@@ -1135,6 +1199,10 @@
    "sha256": "b9683b01a58b1e3eb00e1e2252c69b61ceb9cfa8d857e808d33d542142591b76"
   },
   {
+   "name": "x86_64/index/APKINDEX-bf3b5be37530f50524e27a975d99c5ab7174993f44c045e744d8975820009bd2.tar.gz",
+   "sha256": "bf3b5be37530f50524e27a975d99c5ab7174993f44c045e744d8975820009bd2"
+  },
+  {
    "name": "x86_64/index/APKINDEX-c83f31e585b41f3a0391364034071016c4763f4b7b7c3cff8d6fe9adc7c1cd8b.tar.gz",
    "sha256": "c83f31e585b41f3a0391364034071016c4763f4b7b7c3cff8d6fe9adc7c1cd8b"
   },
@@ -1187,8 +1255,16 @@
    "sha256": "1c1f794663e1fd2bab28d8855dfceff9f9574e129b85d4f81ff11f68766508c3"
   },
   {
+   "name": "x86_64/kmod-34.4-r0.apk",
+   "sha256": "2a990a4d44f3d74b1349648b93b02ec5bcd37747e4796a162659d43ce033ca42"
+  },
+  {
    "name": "x86_64/kmod-libs-34.3-r1.apk",
    "sha256": "ef8f5e4c7031310e61458901940eb4aad54b0c76526cbf10ec4f5b469b0a8787"
+  },
+  {
+   "name": "x86_64/kmod-libs-34.4-r0.apk",
+   "sha256": "eec261fecfe2f56a5ccd2e5c205259c354f34f0447061e5648893fcbbac3e548"
   },
   {
    "name": "x86_64/krb5-conf-1.0-r10.apk",
@@ -1241,6 +1317,10 @@
   {
    "name": "x86_64/ld-linux-2.44-2.44-r24.apk",
    "sha256": "1ab4e8de0d2cb90e836732f7b92d485bf27cbe6e27a51e4e8a2c0800e5aa56cd"
+  },
+  {
+   "name": "x86_64/ld-linux-2.44-2.44-r25.apk",
+   "sha256": "6eddbd1879ca33e546ce25e2b0d97602d6a19dcac0571a38e318a3a3edd27f65"
   },
   {
    "name": "x86_64/ld-linux-2.44-2.44-r8.apk",
@@ -1415,6 +1495,10 @@
    "sha256": "605831770e19adbf99bc79c49ed9fce4330fe5e30897d17e1219927e33e31b77"
   },
   {
+   "name": "x86_64/libcrypt1-2.44-2.44-r25.apk",
+   "sha256": "d6faaba3116f66c09484a3868062a5671c7a153d499302075bb2cf74ef3ff480"
+  },
+  {
    "name": "x86_64/libcrypt1-2.44-2.44-r8.apk",
    "sha256": "553ebdf51c301926dcb62e43396a550a5bfa8f7f5ce0544d59efc91356149695"
   },
@@ -1453,6 +1537,10 @@
   {
    "name": "x86_64/libexpat1-2.10.0-r1.apk",
    "sha256": "c2e5e062faaa066ef15752a4fb55fdae07c8c16e98b251d0b49651041ed6965f"
+  },
+  {
+   "name": "x86_64/libexpat1-2.11.0-r0.apk",
+   "sha256": "0a87d75ca3924135a664ab40f7ef20e190c79bb776e8d0cc92dd5a90790f9a94"
   },
   {
    "name": "x86_64/libexpat1-2.9.0-r0.apk",
@@ -1545,6 +1633,10 @@
   {
    "name": "x86_64/libnghttp2-14-1.71.0-r1.apk",
    "sha256": "6d09bcb3f5c1f2b30afe6f75f6d310143721b1eb4c2d7b545b17bececdf828f3"
+  },
+  {
+   "name": "x86_64/libnghttp2-14-1.71.0-r2.apk",
+   "sha256": "a111e0d0b2dac83e0d190ad74e79b35241ec42d8dfeaa1fdb34c86905e986a71"
   },
   {
    "name": "x86_64/libpcre2-8-0-10.49-r1.apk",
@@ -1681,6 +1773,10 @@
   {
    "name": "x86_64/libzstd1-1.5.7-r15.apk",
    "sha256": "cbd1852947becd56f8bed449ab7d89d27c80a007e2f69c18be1a0165734b4b3c"
+  },
+  {
+   "name": "x86_64/libzstd1-1.6.0-r0.apk",
+   "sha256": "9ab570f55e0ec6f78a5bfd7200825ead94a225c2a7b19b6131b860e5b6522903"
   },
   {
    "name": "x86_64/linux-pam-1.7.3-r1.apk",
@@ -1875,6 +1971,10 @@
    "sha256": "ffd0efe415279f8814a6ace7db4841789bf7c91085b90202b7236c6cf70e988e"
   },
   {
+   "name": "x86_64/openssl-provider-legacy-allowed-4.1.0-r1.apk",
+   "sha256": "31a08aac592d1d2f1a847dcc0c06345423d9e793d399da15cff06b03fa1bd66a"
+  },
+  {
    "name": "x86_64/p11-kit-0.26.6-r0.apk",
    "sha256": "0703a352a431405592a13a563c8a6804622e4ef458fa56ca085add77d7340d00"
   },
@@ -2049,6 +2149,10 @@
   {
    "name": "x86_64/zstd-1.5.7-r15.apk",
    "sha256": "6a9cdfdcb9835f5127eb9ef61e9a9c7c0815d1f2602a7347e660c5b7136ed4d5"
+  },
+  {
+   "name": "x86_64/zstd-1.6.0-r0.apk",
+   "sha256": "b1f4c798067969205fd05913d7f5526a90f9a199db38f8c8cc4a2ad6c04cf5d5"
   }
  ]
 }
