@@ -135,7 +135,7 @@ def judge(r):
         bad.append("decide must have the job output `tag` (the tag due, vX.Y.Z, or empty)")
     rt = run_text(d)
     for needle, what in (("patch-decide.py decide", "the fix-only decision"),
-                         ("admission-tag-signer.py baseline", "the ACs baseline pre-check"), ("patch-decide.py ready", "the required checks of the tagged commit"),
+                         ("patch-decide.py ready", "the required checks of the tagged commit"),
                          ("patch-decide.py notes", "the generated notes")):
         if needle not in rt:
             bad.append("decide does not run %s (%s)" % (needle, what))

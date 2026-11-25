@@ -22,10 +22,6 @@ step = [s for s in d["jobs"]["manifests"]["steps"] if s.get("id") == "collect"][
 run = step["run"].replace('"/tmp/m-', '"$RUNNER_TEMP/m-')
 assert '"$RUNNER_TEMP/m-${tag}.json"' in run, "collect no longer downloads to a manifest path under /tmp or RUNNER_TEMP"
 open(sys.argv[2], "w").write(run)
-# the pattern step (REQ-CHAIN-004-AC20): its own step before collect; absent today means the file is not written
-pat = [s for s in d["jobs"]["manifests"]["steps"] if s.get("id") == "pattern"]
-if pat:
-    open(sys.argv[2].replace("collect.sh", "pattern.sh"), "w").write(pat[0].get("run", ""))
 PY
 
 mkdir -p "$work/bin"
@@ -66,27 +62,14 @@ setup() {
   FIX="$work/fix"; export FIX; rm -rf "$FIX" "$work/repo" "$work/rt"
   mkdir -p "$FIX" "$work/repo/.github/policy" "$work/rt"
   cp "$root/.github/policy/scanners.json" "$root/.github/policy/legacy-releases.json" "$work/repo/.github/policy/"
-  mkdir -p "$work/repo/bin"; cp "$root/bin/build-admit.py" "$work/repo/bin/"
   echo "$1" > "$FIX/list.json"; shift
   local n=1; for t in "$@"; do manifest "$t" "$n"; n=$((n+1)); done
   : > "$FIX/calls.log"; : > "$work/out"
 }
-# the real grammar, for a harness whose workflow has no pattern step yet (then only the new pattern cases are red)
-real_re=$(python3 -I "$root/bin/build-admit.py" tag-pattern)
-# run the pattern step as the workflow would (no token, bash -e, cwd = the repo); sets prc, pmsg, and tag_re from its `re=` output
-pattern_step() {
-  prc=0; : > "$work/pout"
-  if [ -f "$work/pattern.sh" ]; then
-    pmsg=$(cd "$work/repo" && env -i PATH="$work/bin:$PATH" HOME="$work" GITHUB_OUTPUT="$work/pout" RUNNER_TEMP="$work/rt" bash -e -c "$(cat "$work/pattern.sh")" 2>&1) || prc=$?
-    tag_re=$(sed -n 's/^re=//p' "$work/pout")
-  else pmsg=""; tag_re="$real_re"; fi
-}
-# run the collect step with the pattern step's output as TAG_RE; sets rc, msg; outputs in $work/out. TAGRE_OVERRIDE (set, even empty) replaces TAG_RE; TAGRE_UNSET=1 leaves it out.
+# run the collect step; sets rc, msg; outputs in $work/out
 run() {
-  rc=0; [ "${SKIP_PATTERN:-0}" = 1 ] || pattern_step   # SKIP_PATTERN=1: judge the collect step alone (TAGRE_OVERRIDE gives its TAG_RE)
-  local tre="$tag_re"; [ -z "${TAGRE_OVERRIDE+x}" ] || tre="$TAGRE_OVERRIDE"
-  local -a tenv=(); [ "${TAGRE_UNSET:-0}" = 1 ] || tenv=(TAG_RE="$tre")
-  msg=$(cd "$work/repo" && env "${tenv[@]}" PATH="$work/bin:$PATH" GITHUB_OUTPUT="$work/out" RUNNER_TEMP="$work/rt" GH_TOKEN=x \
+  rc=0
+  msg=$(cd "$work/repo" && PATH="$work/bin:$PATH" GITHUB_OUTPUT="$work/out" RUNNER_TEMP="$work/rt" GH_TOKEN=x \
         bash -c "$(cat "$work/collect.sh")" 2>&1) || rc=$?
 }
 targets() { sed -n 's/^targets=//p' "$work/out"; }
@@ -194,12 +177,6 @@ run; t=$(targets)
 if [ "$rc" -eq 0 ] && [ "$(jq -c '[.[].release] | unique' <<<"${t:-[]}")" = '["v1.0.0"]' ]; then ok "R4: 150 releases, the oldest-created current release is still found"
 else bad "R4 >100 releases" "rc=$rc targets=${t:0:200} msg=${msg:0:200}"; fi
 
-# 14. R3: a tag with leading zeros is not a version (v0.02.9 would equal v0.2.9 and outrank v0.2.0)
-setup '[{"tagName":"v0.02.9","isDraft":false,"isPrerelease":false},{"tagName":"v0.2.0","isDraft":false,"isPrerelease":false}]' v0.02.9 v0.2.0
-run; t=$(targets)
-if [ "$rc" -eq 0 ] && [ "$(jq -c '[.[].release] | unique' <<<"${t:-[]}")" = '["v0.2.0"]' ] && ! grep -q 'v0\.02\.9\|v0.02.9' <(grep 'release \(view\|download\)' "$FIX/calls.log"); then ok "R3: a leading-zero tag is never current and never inspected"
-else bad "R3 leading zeros" "rc=$rc targets=${t:0:200}"; fi
-
 # 15. truncation: a list that reaches the limit may hide the current release - fail closed, never a wrong or empty day
 LIMMSG='release list reached the limit of 1000: the current release may be hidden'
 for spec in 'exactly 1000 entries, current oldest|[range(1;1000) | {tagName:("v0.0."+tostring),isDraft:false,isPrerelease:false}] + [{tagName:"v1.0.0",isDraft:false,isPrerelease:false}]' \
@@ -247,78 +224,6 @@ setup "$CURL"; jq '.releases += [{"version":"v0.2.2","images":[]}]' "$root/.gith
 chk "zero targets for the current release (legacy images:[])" 'produced no rescan targets'
 setup "$CURL" v0.2.2; echo '{"scanners":[]}' > "$work/repo/.github/policy/scanners.json"; run
 chk "zero targets for the current release (scanners=[])" 'produced no rescan targets'
-
-# 18. REQ-CHAIN-004-AC20: the tag pattern is computed by its own tokenless step; collect (which holds GH_TOKEN) only receives it
-python3 - "$wf" > "$work/struct.out" <<'PY'
-import re, sys, json, yaml
-d = yaml.safe_load(open(sys.argv[1])); TOK = re.compile(r"GH_TOKEN|GITHUB_TOKEN|github\.token|secrets\.", re.I)
-def dump(x): return json.dumps(x, sort_keys=True)
-res = {}
-for jn, job in d["jobs"].items():
-    for i, st in enumerate(job.get("steps", [])):
-        held = TOK.search(dump(st.get("env", {})) + dump(st.get("with", {})) + str(st.get("run", "")) + dump(job.get("env", {})) + dump(d.get("env", {})))
-        if held and re.search(r"build[-_]admit", dump(st)): res["tokenholder-" + jn + "-" + str(i)] = "a step with a token mentions build-admit"
-steps = d["jobs"]["manifests"]["steps"]
-ids = [s.get("id") for s in steps]
-if "pattern" not in ids: res["nopattern"] = "no step with id: pattern in job manifests"
-else:
-    p = steps[ids.index("pattern")]; c = steps[ids.index("collect")]
-    if ids.index("pattern") > ids.index("collect"): res["order"] = "pattern step is not before collect"
-    if TOK.search(dump(p.get("env", {})) + dump(p.get("with", {})) + str(p.get("run", "")) + dump(d["jobs"]["manifests"].get("env", {})) + dump(d.get("env", {}))): res["tokenpattern"] = "pattern step holds a token"
-    if "tag-pattern" not in p.get("run", "") or "build-admit.py" not in p.get("run", ""): res["nocall"] = "pattern step does not call build-admit.py tag-pattern"
-    if "GITHUB_OUTPUT" not in p.get("run", "") or not re.search(r"\bre=", p.get("run", "")): res["nooutput"] = "pattern step does not write re= to GITHUB_OUTPUT"
-    if (c.get("env") or {}).get("TAG_RE") != "${{ steps.pattern.outputs.re }}": res["tagre"] = "collect env TAG_RE is %r" % (c.get("env") or {}).get("TAG_RE")
-if re.search(r"build[-_]admit", str(next(s for s in steps if s.get("id") == "collect").get("run", "")) + dump(next(s for s in steps if s.get("id") == "collect").get("env", {}))): res["collect"] = "collect mentions build-admit"
-print(json.dumps(res))
-PY
-sres=$(cat "$work/struct.out")
-for spec in 'tokenholder|no step that holds a token (any job of main-candidate-rescan.yml) mentions build-admit.py' 'collect|the collect step does not mention build-admit' \
-            'nopattern|the pattern step exists (id: pattern)' 'order|the pattern step comes before collect' 'tokenpattern|the pattern step holds no token' \
-            'nocall|the pattern step calls build-admit.py tag-pattern' 'nooutput|the pattern step writes re= to GITHUB_OUTPUT' 'tagre|collect receives TAG_RE from steps.pattern.outputs.re'; do
-  k=${spec%%|*}; n=${spec#*|}
-  if [ "$(jq --arg k "$k" '[keys[] | select(startswith($k))] | length' <<<"$sres")" -eq 0 ]; then ok "structure: $n"
-  else bad "structure: $n" "$(jq -c . <<<"$sres" | head -c 250)"; fi
-done
-
-# 19. collect checks TAG_RE before use: unset or empty is an error, never "no published release" with any=false
-setup "$REL" v0.2.2
-TAGRE_OVERRIDE="" run
-if [ "$rc" -ne 0 ] && grep -q '::error::' <<<"$msg" && ! grep -q 'any=' "$work/out" && ! grep -qi 'no published release' <<<"$msg"; then ok "collect with an empty TAG_RE fails with ::error:: and emits no any="
-else bad "collect with an empty TAG_RE fails closed" "rc=$rc out=$(head -c 100 "$work/out") msg=${msg:0:200}"; fi
-setup "$REL" v0.2.2
-TAGRE_UNSET=1 run
-if [ "$rc" -ne 0 ] && grep -q '::error::' <<<"$msg" && ! grep -q 'any=' "$work/out" && ! grep -qi 'no published release' <<<"$msg"; then ok "collect with TAG_RE unset fails with ::error:: and emits no any="
-else bad "collect with TAG_RE unset fails closed" "rc=$rc out=$(head -c 100 "$work/out") msg=${msg:0:200}"; fi
-unset TAGRE_OVERRIDE TAGRE_UNSET
-
-# 20. collect uses the TAG_RE it is given, and never runs build-admit.py itself
-setup '[{"tagName":"v0.2.10","isDraft":false,"isPrerelease":false},{"tagName":"v0.2.2","isDraft":false,"isPrerelease":false}]' v0.2.2 v0.2.10
-TAGRE_OVERRIDE='v0\.2\.2' run; t=$(targets)
-if [ "$rc" -eq 0 ] && [ "$(jq -c '[.[].release] | unique' <<<"${t:-[]}")" = '["v0.2.2"]' ]; then ok "collect picks the current release and checks the shape with the TAG_RE it was given"
-else bad "collect uses the given TAG_RE" "rc=$rc targets=${t:0:200} msg=${msg:0:200}"; fi
-unset TAGRE_OVERRIDE
-setup "$REL" v0.2.2; printf 'open("%s/admit-ran", "w").close()\nprint("x")\n' "$work" > "$work/repo/bin/build-admit.py"; rm -f "$work/admit-ran"
-SKIP_PATTERN=1 TAGRE_OVERRIDE="$real_re" run
-if [ ! -e "$work/admit-ran" ] && [ "$rc" -eq 0 ]; then ok "collect never runs bin/build-admit.py (a planted one is not executed)"
-else bad "collect never runs build-admit.py" "ran=$([ -e "$work/admit-ran" ] && echo yes || echo no) rc=$rc msg=${msg:0:200}"; fi
-unset TAGRE_OVERRIDE
-
-# 21. the pattern step fails, and writes no empty re, when tag-pattern fails or prints nothing
-pcase() { # <label> <stub build-admit.py body>
-  setup "$REL" v0.2.2; printf '%s\n' "$2" > "$work/repo/bin/build-admit.py"; pattern_step
-  if [ -f "$work/pattern.sh" ] && [ "$prc" -ne 0 ] && ! grep -q '^re=' "$work/pout"; then ok "pattern step: $1 fails the step and writes no re"
-  else bad "pattern step: $1" "have_step=$([ -f "$work/pattern.sh" ] && echo yes || echo no) rc=$prc out=$(head -c 80 "$work/pout") msg=${pmsg:0:150}"; fi
-}
-pcase "a failing tag-pattern" 'import sys; sys.exit(1)'
-pcase "a tag-pattern that prints nothing" 'import sys; sys.exit(0)'
-pcase "a tag-pattern that prints only a newline" 'print()'
-setup "$REL" v0.2.2; pattern_step
-if [ -f "$work/pattern.sh" ] && [ "$prc" -eq 0 ] && [ "$(sed -n 's/^re=//p' "$work/pout")" = "$real_re" ] && [ -n "$real_re" ]; then ok "pattern step: with the real build-admit.py it writes re=<the grammar's pattern>"
-else bad "pattern step writes the real pattern" "rc=$prc out=$(head -c 120 "$work/pout") msg=${pmsg:0:150}"; fi
-# the whole chain: a failing tag-pattern must never reach "no published release / any=false / exit 0" through collect
-setup "$REL" v0.2.2; printf 'import sys; sys.exit(1)\n' > "$work/repo/bin/build-admit.py"; run
-if [ -f "$work/pattern.sh" ] && [ "$prc" -ne 0 ] && ! grep -q 'any=false' "$work/out" && { [ "$rc" -ne 0 ] || [ "$prc" -ne 0 ]; }; then ok "a failing tag-pattern ends in a red pattern step and never in any=false"
-else bad "a failing tag-pattern is never a quiet day" "prc=$prc rc=$rc out=$(head -c 80 "$work/out")"; fi
 
 echo "passed: $pass failed: $failn"
 [ "$failn" -eq 0 ]

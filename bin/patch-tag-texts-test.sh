@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-009-AC5, REQ-REL-009-AC6, REQ-REL-009-AC13, REQ-REL-009-AC8
+# proves: REQ-REL-009-AC5, REQ-REL-009-AC8
 # The words that say who signs an automatic patch tag (ops docs/ratify/2026-10-02-automatic-patch-releases.md and 2026-10-28-kms-signing-key-and-one-step-build.md):
-# the CI deciding job creates, signs and pushes no tag; the one release KMS key signs the patch tag in the sign-tag job; the cut job alone pushes it; source admission
-# accepts the owner's SSH signature on any tag and the release key's on a patch tag only; nothing keyless. This suite reads requirements/requirements.yaml (REQ-REL-009),
+# the CI deciding job creates, signs and pushes no tag; the one release KMS key signs the patch tag in the sign-tag job; the cut job alone pushes it; nothing keyless. This suite reads requirements/requirements.yaml (REQ-REL-009),
 # docs/patch-releases.md and the shape of .github/policy/release_tag_signer. It never requires the shipped release_tag_signer to hold a real key: that file waits for a human
 # to commit the real public key (REQ-BUILDAPK-001-AC8); when it exists it must be exactly one ssh-rsa line of allowed-signers format.
 # Needs: bash, python3 + PyYAML.
@@ -38,22 +37,14 @@ src = r9.get("source") or []
 check(".github/workflows/release.yml" in src and not any("stage-sign" in x for x in src),
       "REQ-REL-009's source names release.yml (the decide, sign-tag, cut and patch-notes jobs are inline jobs of it) and no stage-sign.yml")
 check("stage-sign" not in yaml.safe_dump(r9), "REQ-REL-009 names no stage-sign.yml anywhere (the file does not exist: there is no stage split)")
-check(not any("stage-admission" in x for x in src), "REQ-REL-009's source no longer names stage-admission.yml (the file is gone: bin/build-admit.py admits)")
+check(not any("stage-admission" in x for x in src), "REQ-REL-009's source no longer names stage-admission.yml (the file is gone)")
 a5 = " ".join(text(ac["REQ-REL-009-AC5"]).split())
 check(re.search(r"creates, signs and pushes no tag", a5) is not None, "AC5: the deciding job creates, signs and pushes no tag")
 check("sign-tag" in a5 and re.search(r"\bcut\b", a5) is not None, "AC5 names the jobs by their names in release.yml: decide (deciding), sign-tag (signing) and cut (pushing)")
 check("`tagged` is false" not in a5 and "until a signer" not in a5, "AC5 no longer says the output `tagged` is false until a signer exists (a signer exists: the release KMS key)")
-check(KMS.search(a5) is not None and re.search(r"\bcut\b|\bcuts\b", a5) is not None and "admission" in a5,
-      "AC5 says the release KMS key signs the tag, the cut job pushes it and source admission accepts it")
+check(KMS.search(a5) is not None and re.search(r"\bcut\b|\bcuts\b", a5) is not None,
+      "AC5 says the release KMS key signs the tag and the cut job pushes it")
 check("keyless" in a5 and "unsigned" in a5, "AC5 keeps the refusals: no keyless signing tool, an unsigned tag is never cut")
-a6 = " ".join(text(ac["REQ-REL-009-AC6"]).split())
-check(re.search(r"SSH", a6) is not None and KMS.search(a6) is not None and "patch" in a6,
-      "AC6 names both signers: the owner's SSH signature and the release KMS key, and says the key signs patch tags")
-check(re.search(r"any tag", a6) is not None, "AC6 says the owner's SSH signature is accepted for any tag")
-check("keyless" in a6 and re.search(r"refused", a6) is not None, "AC6 says any other signer, a keyless identity included, is refused")
-check("accepts only the maintainer's SSH signature" not in a6, "AC6 no longer says the owner's SSH signature is the only one accepted")
-a13 = text(ac["REQ-REL-009-AC13"])
-check("CI-signed" in a13, "AC13 speaks of a CI-signed patch tag")
 check("gitsign" not in " ".join(str(r9.get("notes", "")).split()), "REQ-REL-009's notes name no gitsign signature (a generated patch tag's last signature is the SSH one)")
 doc = open(os.path.join(root, "docs/patch-releases.md")).read().split("\n")
 line3 = doc[2]

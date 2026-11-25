@@ -886,13 +886,6 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/patch-decide-test.sh" }
       - { type: shell-test, ref: "bin/chain-tag-jobs-test.sh" }
-  - ac: REQ-REL-009-AC6
-    evidence:
-      - { type: shell-test, ref: "bin/admission-tag-signer-test.sh" }
-      - { type: shell-test, ref: "bin/chain-build-admit-test.sh" }
-      - { type: shell-test, ref: "bin/tag-sign-test.sh" }
-      - { type: shell-test, ref: "bin/chain-tag-jobs-test.sh" }
-      - { type: shell-test, ref: "bin/patch-tag-texts-test.sh" }
   - ac: REQ-REL-009-AC5
     evidence:
       - { type: shell-test, ref: "bin/chain-tag-jobs-test.sh" }
@@ -900,10 +893,6 @@ mappings:
       - { type: shell-test, ref: "bin/chain-no-keyless-tag-test.sh" }
       - { type: shell-test, ref: "bin/patch-tag-texts-test.sh" }
       - { type: shell-test, ref: "bin/tag-sign-test.sh" }
-  - ac: REQ-REL-009-AC13
-    evidence:
-      - { type: shell-test, ref: "bin/admission-tag-signer-test.sh" }
-      - { type: shell-test, ref: "bin/patch-tag-texts-test.sh" }
   - ac: REQ-REL-010-AC1
     evidence:
       - { type: shell-test, ref: "bin/vex-index-test.sh" }
@@ -1210,18 +1199,12 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
       - { type: shell-test, ref: "bin/chain-bind-test.sh" }
-  - ac: REQ-CHAIN-004-AC4
-    evidence:
-      - { type: shell-test, ref: "bin/chain-build-admit-test.sh" }
-  - ac: REQ-CHAIN-004-AC5
-    evidence:
-      - { type: shell-test, ref: "bin/chain-build-admit-test.sh" }
   - ac: REQ-CHAIN-004-AC6
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
   - ac: REQ-CHAIN-004-AC7
     evidence:
-      - { type: shell-test, ref: "bin/chain-build-admit-test.sh" }
+      - { type: shell-test, ref: "bin/build-version-check-test.sh" }
   - ac: REQ-CHAIN-004-AC8
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
@@ -1567,11 +1550,6 @@ mappings:
   - ac: REQ-CHAIN-007-AC18
     evidence:
       - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
-  - ac: REQ-CHAIN-007-AC19
-    evidence:
-      - { type: shell-test, ref: "bin/chain-release-metadata-test.sh" }
-      - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
-      - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
   - ac: REQ-CHAIN-007-AC21
     evidence:
       - { type: shell-test, ref: "bin/chain-release-metadata-test.sh" }

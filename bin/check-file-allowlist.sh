@@ -113,8 +113,6 @@ ALLOW_PATTERNS=(
   '^bin/acceptance-maven-413-test\.sh$'
   '^bin/acceptance-gradle-test\.sh$'
   '^bin/acceptance-k8s-manifests-test\.sh$'
-  '^bin/admission-tag-signer\.py$'
-  '^bin/admission-tag-signer-test\.sh$'
   '^bin/panel-test\.sh$'
   '^bin/panel-wiring-test\.sh$'
   '^bin/persona-uat(-agent|-provider)?\.py$'
@@ -154,8 +152,8 @@ ALLOW_PATTERNS=(
   '^\.github/policy/fulcio-chain\.pem$'
   '^test-evidence/witness-real/(build|apk|scanners)-collection\.real\.txt$'
   '^results/\.gitkeep$'
-  # The v0.3.0 release chain, Build and Rebuild (PR 2): the Witness wrapper, the per-job stage scripts and their snapshot variants, the admission
-  # script (the former stage-admission.yml), the items and archive helpers, the list of the old admission steps the comparison test reads, and the
+  # The v0.3.0 release chain, Build and Rebuild (PR 2): the Witness wrapper, the per-job stage scripts and their snapshot variants, the version
+  # script, the items and archive helpers, and the
   # suites with their two test helpers
   '^bin/witnessed\.sh$'
   '^bin/install-scanner-test-lib\.sh$'
@@ -164,11 +162,12 @@ ALLOW_PATTERNS=(
   '^bin/witness-kms-test\.sh$'
   '^bin/rebuild-records-digests\.sh$'
   '^bin/build-stage-(apk|assemble|rebuild-apk|snapshot-apk|snapshot-rebuild-apk|refuse-mode)\.sh$'
-  '^bin/build-(admit|archives|version-check)\.py$'
+  '^bin/build-(archives|version-check)\.py$'
+  '^bin/release-version(-test)?\.sh$'
+  '^bin/build-version-check-test\.sh$'
   '^bin/chain_items\.py$'
-  '^bin/chain-admission-old-steps\.txt$'
   '^bin/chain-(sign-wiring|check-scripts)-fixtures\.txt$'
-  '^bin/chain-(bind|build-admit|build-wiring|install-witness|pull-request-checks|rebuild|snapshot)-test\.sh$'
+  '^bin/chain-(bind|build-wiring|install-witness|pull-request-checks|rebuild|snapshot)-test\.sh$'
   '^bin/chain-(test-(harness|shape)|known-red)\.py$'
   '^test-evidence/known-red\.json$'
   # The v0.3.0 release chain, Check (PR 3): the check scripts and their two helpers, the shared acceptance suites (and the two helpers of the Kubernetes
@@ -316,7 +315,6 @@ ALLOW_PATTERNS=(
   # Build-chain scripts: build-apk, assemble-image, apko-lock, install-build-tools, release-sign-apks,
   # sealed-proof, lock-proof, refresh-inputs (.sh); apk-tool, gen-recipes, go-module-sbom, refresh-inputs (.py).
   '^bin/(build-apk|assemble-image|apko-lock|install-build-tools|release-sign-apks|sealed-proof|lock-proof|refresh-inputs)\.sh$'
-  '^bin/build-freeze\.sh$'
   # The wrapper that hands the release role and its token file to a release step as AWS variables.
   '^bin/with-aws-token\.sh$'
   '^bin/(apk-tool|gen-recipes|go-module-sbom|install-host-bwrap|refresh-inputs)\.py$'

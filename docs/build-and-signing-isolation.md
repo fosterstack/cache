@@ -8,7 +8,7 @@ A GitHub-hosted job runs on its own virtual machine. GitHub documents it this wa
 
 | Stage | Job | What runs there | Secrets and tokens it holds |
 |---|---|---|---|
-| Build ([release.yml](../.github/workflows/release.yml)) | `build-apk`, one job per architecture | the apk build | no stored secret, no identity token; a read-only job token for admission |
+| Build ([release.yml](../.github/workflows/release.yml)) | `build-apk`, one job per architecture | the apk build | no stored secret, no identity token |
 | Build | `build-assemble` | the image assembly | no stored secret, no identity token |
 | Rebuild (release.yml) | `rebuild-apk` (one job per architecture), `rebuild-assemble` | the same two steps, rebuilt from the same commit (the apk on each architecture, then the image assembly) | no stored secret, no identity token |
 | Sign (release.yml) | `sign`, `sign-rebuild`, `sign-check` | the signatures on the records of Build, Rebuild and Check (`sign` also signs the provenance; on a final release `sign-check` also signs the images, the apks and the release files) | an identity token in each job, used only to reach the release key in AWS KMS; builds nothing |

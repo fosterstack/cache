@@ -1101,8 +1101,7 @@ def tag_notes(raw):
         return None
     body, sig = body[:cut], body[cut + len(SIG_DELIM):]
     # only the release workflow's own patch tag: its tagger and the release key's SSH signature (an x509 or PGP block
-    # is no generated tag) and never carries notes, whatever its message (Sonnet #159 r2, BLOCKER-1); admission verified
-    # the signature
+    # is no generated tag) and never carries notes, whatever its message (Sonnet #159 r2, BLOCKER-1)
     if not tagger.startswith(RELEASE_TAGGER + " ") or not sig.startswith("SSH SIGNATURE-----"):
         return None
     # the generated heading ends in LF and nothing else: CR, CRLF, VT, FF, FS, GS, RS, NEL, LS or PS after it is refused
@@ -1208,21 +1207,20 @@ def decide(event, commits, tags, cut_today, removed, base_inputs=None, since=Non
 
 
 def _scope(req):
-    """admission reads `.scope // "push"`: absent, null or false is push (Codex #159 pin pass, B01)."""
+    """absent, null or false is push (Codex #159 pin pass, B01)."""
     s = req.get("scope")
     return "push" if s is None or s is False else s      # identity, not ==: scope 0 is not push (Codex #159 r2, B6)
 
 
 def ready(required, check_runs):
-    """(verdict, why) for the tagged commit's required checks, judged as source admission judges them: a check counts
+    """(verdict, why) for the tagged commit's required checks: a check counts
     only as a success from its pinned app. "ready": every one has one. "wait": none is red with nothing left to run (a
     run is missing, queued or in progress). "no": a check finished without success and no run of it is still pending.
-    `required` is main's required-checks.json; a policy admission refuses (no required_checks list, an entry without a
+    `required` is main's required-checks.json; a policy it refuses (no required_checks list, an entry without a
     context or integration_id, a scope other than push) is "no", never a lower requirement. `check_runs` is the latest
     run of each name: more than one latest run of a name and app is "no", as ambiguous."""
     waiting, red = [], []
     reqs = required.get("required_checks") if isinstance(required, dict) else None
-    # a policy admission would reject is never ready (Codex #159 r1, B6): admission fails on these
     if not isinstance(reqs, list) or not reqs:
         return "no", "policy error: no required_checks list"
     for req in reqs:

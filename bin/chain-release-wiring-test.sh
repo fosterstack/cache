@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-007-AC1, REQ-CHAIN-007-AC2, REQ-CHAIN-007-AC3, REQ-CHAIN-007-AC4, REQ-CHAIN-007-AC6, REQ-CHAIN-007-AC7, REQ-CHAIN-007-AC8, REQ-CHAIN-007-AC9, REQ-CHAIN-007-AC10, REQ-CHAIN-007-AC11, REQ-CHAIN-007-AC12, REQ-CHAIN-007-AC13, REQ-CHAIN-007-AC14, REQ-CHAIN-007-AC16, REQ-CHAIN-007-AC19, REQ-CHAIN-005-AC4, REQ-REL-009-AC5
+# proves: REQ-CHAIN-007-AC1, REQ-CHAIN-007-AC2, REQ-CHAIN-007-AC3, REQ-CHAIN-007-AC4, REQ-CHAIN-007-AC6, REQ-CHAIN-007-AC7, REQ-CHAIN-007-AC8, REQ-CHAIN-007-AC9, REQ-CHAIN-007-AC10, REQ-CHAIN-007-AC11, REQ-CHAIN-007-AC12, REQ-CHAIN-007-AC13, REQ-CHAIN-007-AC14, REQ-CHAIN-007-AC16, REQ-CHAIN-005-AC4, REQ-REL-009-AC5
 #
 # Release, static half. Runs on ubuntu-24.04 or macOS with: bash, python3 + PyYAML (apt: python3-yaml). No
 # network, no secrets, no keys.
@@ -57,7 +57,7 @@ KMS_REF = "awskms:///alias/fosterstack-release-signing"
 COMPARE_D = (("apk-ubuntu-24.04", "apks/ubuntu-24.04"), ("apk-ubuntu-24.04-arm", "apks/ubuntu-24.04-arm"), ("rapk-ubuntu-24.04", "rapks/ubuntu-24.04"), ("rapk-ubuntu-24.04-arm", "rapks/ubuntu-24.04-arm"),
              ("signed-witness-rapk-ubuntu-24.04", "witness-rapk-ubuntu-24.04"), ("signed-witness-rapk-ubuntu-24.04-arm", "witness-rapk-ubuntu-24.04-arm"))
 def down_list(*pairs): return "".join(dn(n, p) for n, p in pairs)
-BUILD_D = (("signed-witness-build", "witness-build"), ("digests", "witness-build"), ("items", "witness-build"), ("admission-baseline", "witness-build"), ("signed-witness-rebuild", "witness-rebuild"))
+BUILD_D = (("signed-witness-build", "witness-build"), ("digests", "witness-build"), ("items", "witness-build"), ("signed-witness-rebuild", "witness-rebuild"))
 CHECK_D = (("signed-witness-check-ubuntu-24.04", "witness-check/ubuntu-24.04"), ("signed-witness-check-ubuntu-24.04-arm", "witness-check/ubuntu-24.04-arm"),
            ("check-results-ubuntu-24.04", "check-results/ubuntu-24.04"), ("check-results-ubuntu-24.04-arm", "check-results/ubuntu-24.04-arm"))
 APK_D = (("apk-ubuntu-24.04", "apks/ubuntu-24.04"), ("apk-ubuntu-24.04-arm", "apks/ubuntu-24.04-arm"))
@@ -87,7 +87,7 @@ def gjob(n, needs=None, cond=None):
 NOSNAP = "${{ inputs.mode != 'snapshot' }}"
 GATE_S = "${{ " + GUARD + " }}"
 open(w + "/release.yml", "w").write("name: Release\non:\n  push:\n    tags: [\"v*\"]\npermissions: {}\njobs:\n" +
-    gjob("decide") + "  sign-tag:\n    needs: decide\n    runs-on: ubuntu-24.04\n    environment: sign\n    steps:\n      - run: echo hi\n" + gjob("cut", "[decide, sign-tag]") + gjob("patch-notes", "[decide, cut]") + gjob("build-freeze") + gjob("build-apk", "build-freeze") + gjob("build-assemble", "build-apk") + gjob("sign", "build-assemble", GATE_S)
+    gjob("decide") + "  sign-tag:\n    needs: decide\n    runs-on: ubuntu-24.04\n    environment: sign\n    steps:\n      - run: echo hi\n" + gjob("cut", "[decide, sign-tag]") + gjob("patch-notes", "[decide, cut]") + gjob("build-apk") + gjob("build-assemble", "build-apk") + gjob("sign", "build-assemble", GATE_S)
     + gjob("rebuild-apk", "build-assemble") + gjob("rebuild-assemble", "rebuild-apk") + gjob("sign-rebuild", "[build-assemble, rebuild-assemble, sign]", GATE_S)
     + gjob("check-govulncheck", None, NOSNAP) + gjob("check", "[check-govulncheck, build-assemble]", NOSNAP) + gjob("sign-check", "[build-assemble, check, sign]", GATE_S)
     + gjob("release-compare", "[check, sign, sign-rebuild, sign-check]") + gjob("release-verify", "release-compare")
@@ -98,12 +98,10 @@ for n in ("scan", "ci", "persona-uat"):
     open(f"{w}/o/.github/workflows/{n}.yml", "w").write("name: x\non:\n  workflow_call:\njobs:\n  j:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: bash bin/witnessed.sh j bin/j.sh\n")
 open(w + "/o/.github/workflows/release.yml", "w").write(stage)
 # bin/release-verify.sh: tag, policy, four stage-starts
-V = ['python3 -I -B bin/build-admit.py tag-ok "${GITHUB_REF_NAME:-}" || { echo "refused at tag: ${GITHUB_REF_NAME:-} is not vX.Y.Z" >&2; exit 1; }',
-     'for f in release-key-manifest.json release-key-manifest.sig release-key-root.pub; do [ -f ".github/policy/$f" ] && [ ! -L ".github/policy/$f" ] || { echo "release-verify: .github/policy/$f is missing: the release is refused before any credential step" >&2; exit 1; }; done',
+V = ['for f in release-key-manifest.json release-key-manifest.sig release-key-root.pub; do [ -f ".github/policy/$f" ] && [ ! -L ".github/policy/$f" ] || { echo "release-verify: .github/policy/$f is missing: the release is refused before any credential step" >&2; exit 1; }; done',
      'python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag "$GITHUB_REF_NAME" --out policy.json',
      "python3 -I -B bin/chain-verify.py stage-start --stage release --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json",
      "python3 -I -B bin/chain-verify.py bind-items --policy policy.json --record witness-build/build-collection.json --items witness-build/items.json",
-     "python3 -I -B bin/chain-verify.py bind-items --policy policy.json --record witness-build/build-collection.json --items witness-build/admission-baseline.json --product admission-baseline.json",
      "python3 -I -B bin/chain-verify.py stage-start --stage release --previous sign --record provenance/provenance.json --digests witness-build/digests.json --policy policy.json --rekor-entries provenance/provenance.rekor.json",
      "python3 -I -B bin/chain-verify.py stage-start --stage release --previous rebuild --record witness-rebuild/rebuild-collection.json --digests witness-build/digests.json --policy policy.json",
      "python3 -I -B bin/chain-verify.py apk-compare --policy policy.json --record witness-rebuild/rebuild-collection.json --file apk-compare/apk-compare.json --digests witness-build/digests.json"
@@ -129,11 +127,11 @@ BODY = {
  "release-postverify": 'set -euo pipefail\nbash bin/release-stage.sh\npython3 -I bin/release-postverify.py\n',
  "release-assets": 'set -euo pipefail\ngh release create "$GITHUB_REF_NAME" --verify-tag\ngh release upload "$GITHUB_REF_NAME" release-upload/*.json\ngh release download "$GITHUB_REF_NAME" -D release-published\npython3 -I -B bin/release-gate.py --dir release-published --same-as release-upload\n',
 }
-ROWS = {"release-verify": (["python3"], False, ["bin/build-admit.py", "bin/chain-verify.py"]), "release-compare": (["python3"], False, ["bin/apk-tool.py", "bin/release-compare.py"]), "release-apks": (["bash", "jq", "python3"], False, ["bin/apk-tool.py", "bin/build-admit.py", "bin/release-postverify.py", "bin/release-sign-apks.sh"]),
+ROWS = {"release-verify": (["python3"], False, ["bin/chain-verify.py"]), "release-compare": (["python3"], False, ["bin/apk-tool.py", "bin/release-compare.py"]), "release-apks": (["bash", "jq", "python3"], False, ["bin/apk-tool.py", "bin/release-postverify.py", "bin/release-sign-apks.sh"]),
         "release-publish": (["bash", "crane", "jq", "python3", "trap"], False, ["bin/release-layout.py", "bin/release-sign-verify.sh"]), "release-sign": (["bash", "cosign", "crane", "git", "jq", "python3", "sha256sum", "trap"], False, ["bin/chain-verify.py", "bin/release-sign-verify.sh"]),
         "release-sign-verify": (["jq", "python3", "sha256sum", "trap"], False, ["bin/chain-verify.py"]),
-        "release-signatures": (["bash", "git", "jq", "python3", "sha256sum", "trap"], "other", ["bin/apk-tool.py", "bin/build-admit.py", "bin/chain-verify.py", "bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py", "bin/with-aws-token.sh"]),
-        "release-assets": (["gh", "jq", "python3"], False, ["bin/release-gate.py"]), "release-stage": (["git", "python3"], False, ["bin/build-admit.py", "bin/patch-decide.py", "bin/release-gate.py", "bin/release-metadata.py"]),
+        "release-signatures": (["bash", "git", "jq", "python3", "sha256sum", "trap"], "other", ["bin/apk-tool.py", "bin/chain-verify.py", "bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py", "bin/with-aws-token.sh"]),
+        "release-assets": (["gh", "jq", "python3"], False, ["bin/release-gate.py"]), "release-stage": (["git", "python3"], False, ["bin/patch-decide.py", "bin/release-gate.py", "bin/release-metadata.py"]),
         "release-postverify": (["bash", "python3"], False, ["bin/release-postverify.py", "bin/release-stage.sh"])}
 rows = []
 for n, b in BODY.items():
@@ -141,7 +139,7 @@ for n, b in BODY.items():
     t, s, r = ROWS[n]
     rows.append({"path": f"bin/{n}.sh", "tools": t, "signs": s, "runs": r, "reason": "fixture"})
 open(w + "/s/bin/release-postverify.py", "w").write("import subprocess\n")
-rows.append({"path": "bin/release-postverify.py", "tools": ["at", "command", "cosign", "exec", "gh", "jq", "just"], "signs": False, "runs": ["bin/build-admit.py", "bin/chain-verify.py", "bin/guide_plan_judge.py"], "reason": "fixture"})
+rows.append({"path": "bin/release-postverify.py", "tools": ["at", "command", "cosign", "exec", "gh", "jq", "just"], "signs": False, "runs": ["bin/chain-verify.py", "bin/guide_plan_judge.py"], "reason": "fixture"})
 open(w + "/s/bin/release-compare.py", "w").write("import sys\n")
 rows.append({"path": "bin/release-compare.py", "tools": ["make"], "signs": False, "runs": ["bin/apk-tool.py", "bin/chain-verify.py"], "reason": "fixture"})
 open(w + "/s/bin/release-layout.py", "w").write("import sys\n")
@@ -495,14 +493,12 @@ gm g_tj_gone1  '=  sign-tag:\n    needs: decide\n    runs-on: ubuntu-24.04\n    
 gm g_tj_gone2  '=  cut:\n    needs: [decide, sign-tag]\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo hi\n' '' 'has no job cut' "AC11 release.yml without the job cut"
 gm g_tj_gone3  '=  patch-notes:\n    needs: [decide, cut]\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo hi\n' '' 'has no job patch-notes' "AC11 release.yml without the job patch-notes"
 gm g_tj_gone4  '=  decide:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo hi\n' '' 'has no job decide' "AC11 release.yml without the job decide"
-gm g_tj_chain  '=  build-apk:\n    needs: build-freeze\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo hi' '  build-apk:\n    needs: build-freeze\n    runs-on: ubuntu-24.04\n    steps:\n      - run: git push origin refs/tags/v9.9.9' 'creates a tag' "AC11 a chain job (build-apk) pushes a tag: only cut may"
+gm g_tj_chain  '=  build-apk:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo hi' '  build-apk:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: git push origin refs/tags/v9.9.9' 'creates a tag' "AC11 a chain job (build-apk) pushes a tag: only cut may"
 gm g_tj_chain2 '=  sign:\n    needs: build-assemble'          '  sign:\n    needs: build-assemble\n    env:\n      X: gh release create v9.9.9' 'creates a tag' "AC11 the Sign job makes a release"
 gm g_tj_stag   '=  sign-tag:\n    needs: decide\n    runs-on: ubuntu-24.04\n    environment: sign\n    steps:\n      - run: echo hi' '  sign-tag:\n    needs: decide\n    runs-on: ubuntu-24.04\n    environment: sign\n    steps:\n      - run: git tag v9.9.9' 'creates a tag' "AC11 sign-tag makes a tag itself: only cut pushes one"
 gm g_tj_pntag  '=  patch-notes:\n    needs: [decide, cut]\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo hi' '  patch-notes:\n    needs: [decide, cut]\n    runs-on: ubuntu-24.04\n    steps:\n      - run: gh release create v9.9.9' 'creates a tag' "AC11 patch-notes creates a release"
 # ---- AC4: the order of bin/release-verify.sh ------------------------------------------------------------------------------------
 vm() { if mutate "$work/verify.sh" "$work/$1.sh" "$2" "$3"; then expect caught "$5" "$4" verify "$work/$1.sh"; fi; }
-vm v_notag   'python3 -I -B bin/build-admit\.py tag-ok[^\n]*\n' ''                                                       'commands'           "AC4 the tag check dropped"
-vm v_wide    'tag-ok "'                                      'tag-ok --final "'                                       'not the pinned form' "AC4 the tag rule narrowed to final tags only"
 vm v_nopol   'python3 -I -B bin/chain-verify.py policy make[^\n]*\n' ''                                                     'commands'           "AC4 the release policy is not made for the tag"
 vm v_ref     '--tag "\$GITHUB_REF_NAME"'                     '--ref "$GITHUB_REF"'                                    'not the pinned form' "AC4 the policy made for a ref, not the tag"
 vm v_nobuild 'python3 -I -B bin/chain-verify.py stage-start --stage release --previous build[^\n]*\n' ''                     'commands'           "AC4 Build's record is not verified"
@@ -537,9 +533,6 @@ vm v_bapk_twice "$BB" "$BA" 'not the pinned form' \
   "ROW2 --build-apk names the amd64 record twice"
 vm v_nobind  'python3 -I -B bin/chain-verify.py bind-items[^\n]*\n' ''                                                      'commands'           "AC16 items.json is not bound to Build's record"
 vm v_noitems '--items witness-build/items.json'              ''                                                       'not the pinned form' "AC16 bind-items without the items file"
-vm v_noadm   'python3 -I -B bin/chain-verify.py bind-items[^\n]*admission-baseline[^\n]*\n' ''                                    'commands'           "AC19 admission's baseline file is not bound to Build's record"
-vm v_adm_prod ' --product admission-baseline.json'            ''                                                       'not the pinned form' "AC19 the baseline file bound as items.json (no --product: it would never match the items product)"
-vm v_adm_other '--items witness-build/admission-baseline.json' '--items witness-build/items.json'                      'not the pinned form' "AC19 the baseline bind names another file than admission-baseline.json"
 vm v_norek   ' --rekor-entries provenance/provenance.rekor.json' ''                                                      'not the pinned form' "AC4 Sign's provenance without its Rekor entry"
 vm v_order   'python3 -I -B bin/chain-verify.py stage-start --stage release --previous sign[^\n]*\n(python3 -I -B bin/chain-verify.py stage-start --stage release --previous rebuild[^\n]*\n)' '\1python3 -I -B bin/chain-verify.py stage-start --stage release --previous sign --record provenance/provenance.json --digests witness-build/digests.json --policy policy.json --rekor-entries provenance/provenance.rekor.json\n' 'not the pinned form' "AC4 the records verified in another order"
 vm v_dig     '--digests witness-build/digests.json --policy policy.json\npython3 -I -B bin/chain-verify.py bind-items' '--policy policy.json\npython3 -I -B bin/chain-verify.py bind-items' 'not the pinned form' "AC4 a record verified without the digest list"
@@ -604,24 +597,18 @@ lm l_sv_gone    x 'd["scripts"] = [r for r in d["scripts"] if r["path"] != "bin/
 lm l_sv_tools   x 'rows["bin/release-sign-verify.sh"]["tools"].append("curl")'                                    'exactly the tools' "AC10 row 2 the row of release-sign-verify.sh gains a tool"
 lm l_sv_tools2  x 'rows["bin/release-sign-verify.sh"]["tools"].remove("sha256sum")'                               'exactly the tools' "AC10 row 2 the row of release-sign-verify.sh loses a tool"
 lm l_sv_signs   x 'rows["bin/release-sign-verify.sh"]["signs"] = "other"'                                         'signs:'       "AC10 row 2 release-sign-verify.sh listed as a signer"
-lm l_sv_runs    x 'rows["bin/release-sign-verify.sh"]["runs"].append("bin/build-admit.py")'                       'may start'    "AC10 row 2 the row of release-sign-verify.sh lists bin/build-admit.py in its runs"
 lm l_pub_noverify x 'rows["bin/release-publish.sh"]["runs"].remove("bin/release-sign-verify.sh")'                 'may start'    "AC10 row 2 the row of release-publish.sh no longer lists bin/release-sign-verify.sh in its runs"
 lm l_sign_noverify x 'rows["bin/release-sign.sh"]["runs"].remove("bin/release-sign-verify.sh")'                   'may start'    "AC10 row 2 the row of release-sign.sh no longer lists bin/release-sign-verify.sh in its runs"
 lm l_pub_nobash x 'rows["bin/release-publish.sh"]["tools"].remove("bash")'                                        'exactly the tools' "AC10 row 2 the row of release-publish.sh loses bash (it starts release-sign-verify.sh with it)"
 lm l_sign_nobash x 'rows["bin/release-sign.sh"]["tools"].remove("bash")'                                          'exactly the tools' "AC10 row 2 the row of release-sign.sh loses bash (it starts release-sign-verify.sh with it)"
 lm l_sigruns   x 'rows["bin/release-signatures.sh"]["runs"].remove("bin/chain-verify.py")'                       'may start'    "G2 the row of release-signatures.sh loses chain-verify.py from its runs (policy make needs it)"
 lm l_sigtools  x 'rows["bin/release-signatures.sh"]["tools"].append("curl")'                                 'exactly the tools' "G2 the row of release-signatures.sh gains a tool"
-# REQ-CHAIN-004-AC20: the coverage gate is bin/release-gate.py, listed with no tools and no runs; release-assets.sh (a secret holder) runs it and nothing else; release-stage.sh keeps its own tag-ok call
+# REQ-CHAIN-004-AC20: the coverage gate is bin/release-gate.py, listed with no tools and no runs; release-assets.sh (a secret holder) runs it and nothing else
 lm l_gate_gone   x 'd["scripts"] = [r for r in d["scripts"] if r["path"] != "bin/release-gate.py"]'              'not listed'   "AC20 the bin/release-gate.py row is dropped from chain-scripts.json"
 lm l_gate_tools  x 'rows["bin/release-gate.py"]["tools"].append("curl")'                                       'exactly the tools' "AC20 the row of release-gate.py gains a tool"
-lm l_gate_runs   x 'rows["bin/release-gate.py"]["runs"].append("bin/build-admit.py")'                          'may start'    "AC20 the row of release-gate.py lists bin/build-admit.py in its runs"
-lm l_ass_admit   x 'rows["bin/release-assets.sh"]["runs"].append("bin/build-admit.py")'                        'may start'    "AC20 the row of release-assets.sh lists bin/build-admit.py in its runs (a secret holder loading the tag grammar)"
-lm l_ass_meta    x 'rows["bin/release-assets.sh"]["runs"].append("bin/release-metadata.py")'                   'may start'    "AC20 the row of release-assets.sh lists bin/release-metadata.py (which loads bin/build-admit.py) in its runs"
+lm l_ass_meta    x 'rows["bin/release-assets.sh"]["runs"].append("bin/release-metadata.py")'                   'may start'    "AC20 the row of release-assets.sh lists bin/release-metadata.py in its runs"
 lm l_ass_nogate  x 'rows["bin/release-assets.sh"]["runs"].remove("bin/release-gate.py")'                       'may start'    "AC20 the row of release-assets.sh no longer lists bin/release-gate.py"
-lm l_sign_admit  x 'rows["bin/release-sign.sh"]["runs"].append("bin/build-admit.py")'                          'may start'    "AC20 the row of release-sign.sh lists bin/build-admit.py in its runs"
-lm l_pub_admit   x 'rows["bin/release-publish.sh"]["runs"].append("bin/build-admit.py")'                       'may start'    "AC20 the row of release-publish.sh lists bin/build-admit.py in its runs"
 lm l_stage_nogate x 'rows["bin/release-stage.sh"]["runs"].remove("bin/release-gate.py")'                       'may start'    "AC20 the row of release-stage.sh no longer lists bin/release-gate.py"
-lm l_stage_noadm x 'rows["bin/release-stage.sh"]["runs"].remove("bin/build-admit.py")'                         'may start'    "AC20 the row of release-stage.sh (no secret) keeps bin/build-admit.py: its own tag-ok call"
 rm -rf "$work/l_gone"; cp -r "$work/s" "$work/l_gone"; rm "$work/l_gone/bin/release-assets.sh"
 expect caught "AC10 a listed script that does not exist" "missing" listed "$work/l_gone/.github/policy/chain-scripts.json" "$work/l_gone"
 # ---- AC12: the Witness record -------------------------------------------------------------------------------------------------
@@ -650,8 +637,8 @@ sg m_novex   'python3 -I -B bin/vex-forms\.py [^\n]*\n'                         
 sg m_noitems 'images --digests witness-build/digests.json --images-dir images --items witness-build/items.json' 'images --digests witness-build/digests.json --images-dir images' 'must carry --items' "AC13 the vex-forms input is not checked against Build's verified items"
 sg m_nomitem 'manifest --digests witness-build/digests.json --images-dir images --items witness-build/items.json' 'manifest --digests witness-build/digests.json --images-dir images' 'must carry --items' "AC13 the manifest is not checked against Build's verified items"
 sg m_novdir  ' --vex-dir [^ ]+'                                                                  ''                              'must carry --vex-dir' "AC13 the manifest does not record the VEX files' sha256"
-sg m_nobase  'baseline=\$\(python3 -I -B bin/release-metadata\.py baseline [^\n]*\n'              ''                              'no baseline step'   "AC19 the baseline is not read from Build's verified admission-baseline.json"
-sg m_basetag 'baseline --admission witness-build/admission-baseline.json --tag "\$GITHUB_REF_NAME"'    'baseline --admission witness-build/admission-baseline.json --tag v0.3.0' 'must carry --tag' "AC19 the baseline check is not made for this run's tag"
+sg m_nobase  'baseline=\$\(python3 -I -B bin/release-metadata\.py baseline [^\n]*\n'              ''                              'no baseline step'   "AC19 the baseline is not read"
+sg m_basetag 'baseline --tag "\$GITHUB_REF_NAME"'    'baseline --tag v0.3.0' 'must carry --tag' "AC19 the baseline check is not made for this run's tag"
 sg m_ownbase ' --baseline-version "\$baseline"'                                                       ' --baseline-version "$GITHUB_REF_NAME"' 'must carry --baseline-version' "AC19 the manifest takes the tag's own name as the baseline (a CI patch tag has no such file)"
 sg m_nolist  'python3 -I -B bin/release-metadata\.py list [^\n]*\n'                                 ''                              'no list step'       "AC13 release-files.sha256 is not made"
 sg m_early   '(python3 -I -B bin/release-metadata\.py images [^\n]*\n)'                            'bash bin/with-aws-token.sh kms-sign --aws "$RUNNER_TEMP/aws-cli/aws" --key-ref "$RELEASE_KMS_KEY_REF" --signing-config "$cfg" --public-key "$pub" --digest 0 --out x --bundle y\n\1' 'must come before' "AC13 a signature (the first kms-sign call) before the metadata exists"
@@ -676,13 +663,11 @@ python3 - "$root/bin/release-signatures.sh" "$work" "$POLICY_LINE" <<'PY'
 import sys
 src, w, line = open(sys.argv[1]).read(), sys.argv[2], sys.argv[3]
 key = "python3 -I -B bin/chain-verify.py key-ref-check || exit $?\n"
-tag = "tag=${GITHUB_REF_NAME:-}\n"
 if line not in src:
     src = src.replace(key, key + line + "\n", 1)
 open(w + "/sigs_good.sh", "w").write(src)
 without = src.replace(line + "\n", "", 1)
 open(w + "/p_before_key.sh", "w").write(without.replace(key, line + "\n" + key, 1))
-open(w + "/p_before_tag.sh", "w").write(without.replace(tag, tag + line + "\n", 1))
 sign = "sign_file policy.json "
 open(w + "/p_after_sign.sh", "w").write(without.replace(sign, line + "\n" + sign, 1))
 PY
@@ -696,7 +681,6 @@ pg p_tag   '=--tag "$GITHUB_REF_NAME" --out policy.json'      '--tag v0.3.0 --ou
 pg p_tmpl  '=release-policy.template.json --tag'              'other.template.json --tag'                               'exactly once' "G1 the policy made from another template"
 pg p_out   '=--out policy.json'                               '--out release-signed/policy.json'                        'exactly once' "G1 the policy written to another path than ./policy.json"
 expect caught "G1 the policy make line before the key-reference check" "must come after" metadata "$work/p_before_key.sh"
-expect caught "G1 the policy make line before the tag check" "must come after" metadata "$work/p_before_tag.sh"
 expect caught "G1 the policy make line after the first signature" "must come after" metadata "$work/p_after_sign.sh"
 # ---- the real repository ---------------------------------------------------------------------
 expect ok "the real release.yml: release-compare, release-verify and release are the Release stage (the release job holds no key, no AWS name and no identity token: sign-check makes every signature)" "" stage "$root/.github/workflows/release.yml"

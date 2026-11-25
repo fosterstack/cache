@@ -5,9 +5,7 @@
 # that make git sign with an X.509 certificate (gpg.format=x509, gpg.x509.program). No tracked file that is code, a
 # workflow or policy names one (the two detectors below excepted): not an installer entry, a pinned version, a
 # workflow step, a policy row, a verifier route or a tool list. Tests and documents may still say the words (this
-# test, the tests that prove a keyless signature is refused, the history in docs/). Admission refuses a keyless
-# signature on every tag, accepts the owner's SSH signature on every tag and the one release KMS key's SSH signature on a
-# patch tag only (bin/admission-tag-signer-test.sh, bin/chain-build-admit-test.sh). Who creates, signs and pushes a tag is the
+# test, the tests that prove a keyless signature is refused, the history in docs/). Who creates, signs and pushes a tag is the
 # release judges' job (bin/chain-release-shape.py, bin/chain-tag-jobs-test.sh); here: the deciding job names no signing tool,
 # and the one job that signs a tag (sign-tag, a job of release.yml: there is no stage-sign.yml) names no keyless one.
 set -euo pipefail

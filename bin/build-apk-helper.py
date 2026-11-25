@@ -179,8 +179,8 @@ def sealed_call(call, expected_env=None):
 PREFIX = "build-apk.sh: "
 VALUE_OPTIONS = ("--variant", "--arch", "--version", "--source-dir", "--repo", "--keyring", "--go-archive",
                  "--melange-lock", "--out", "--render-dir", "--apk-cache-dir")
-EXCLUDE_PATHS = ("/archive/", "/host-tools/", "/out/", "/witness-apk/", "/admission.json", "/build-in/",
-                 "/witness-build/", "/witness-rapk/", "/policy.json", "/freeze/")
+EXCLUDE_PATHS = ("/archive/", "/host-tools/", "/out/", "/witness-apk/", "/build-in/",
+                 "/witness-build/", "/witness-rapk/", "/policy.json")
 PROXY_NAMES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
 VERSION_GRAMMAR = r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc[1-9][0-9]*)?"   # X.Y.Z or X.Y.Z-rcN
 

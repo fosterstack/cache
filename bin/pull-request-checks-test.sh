@@ -8,8 +8,7 @@
 #        only by full-suite.yml, which has no pull_request or push trigger; supply-chain.yml has no job on a pull request or a push.
 #   AC2  supply-chain.yml (the daily audit) has no push, pull_request, pull_request_target or workflow_run trigger: the
 #        pin-age pull-request scan was deleted. The chain has no dependency-review job.
-#   AC3  required-checks.json scopes requirements to push and lists each of the six; the chain's release admission is
-#        bin/build-admit.py (its own test), so no stage-admission.yml step is run here.
+#   AC3  required-checks.json scopes requirements to push and lists each of the six.
 # On the chain: scan needs build, the scanner and the inspector; marker-gate and customer-words-edited are its own
 # pull-request jobs outside the six (marker-gate has no push run).
 # The real files must pass and each mutated copy must be caught.
@@ -268,7 +267,6 @@ for ctx in ("requirements",):
     ents = [c for c in req if c["context"] == ctx]
     check("AC3 %s is listed once, scope push, Actions app" % ctx, ents == [{"context": ctx, "integration_id": 15368, "scope": "push"}], ents)
 
-# the chain's admission is bin/build-admit.py (bin/chain-build-admit-test.sh runs it), not a step of stage-admission.yml
 listed = {c["context"] for c in req}
 check("AC3 each of the six has its check name on required-checks.json", SIX_NAMES <= listed, sorted(SIX_NAMES - listed))
 

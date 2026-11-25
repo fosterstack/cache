@@ -60,7 +60,7 @@ R_REC_CHECK = r"env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUES
 RUNNERS = ("ubuntu-24.04", "ubuntu-24.04-arm")
 EXPECT_STEPS = {
     "sign": [("checkout",), ("download", "witness-build", "witness-build")]
-            + [("download", n, "witness-build") for n in ("digests", "items", "admission-baseline")]
+            + [("download", n, "witness-build") for n in ("digests", "items")]
             + [("download", "witness-apk-" + r, "witness-apk-" + r) for r in RUNNERS]
             + [("download", "images", "artifacts/witness-build/out"), ("download", "dist", "artifacts/witness-build/dist")]
             + [("download", "apk-" + r, "artifacts/witness-apk-" + r + "/out") for r in RUNNERS]
@@ -78,7 +78,7 @@ EXPECT_STEPS = {
             + [("download", "witness-check-" + r, "rec-check/" + r) for r in RUNNERS]
             + [("download", "check-results-" + r, "artifacts/check-results-" + r) for r in RUNNERS]
             + [("download", "check-records-" + r, "rec-digests/" + r) for r in RUNNERS]
-            + [("download", n, "witness-build") for n in ("digests", "items", "admission-baseline")]
+            + [("download", n, "witness-build") for n in ("digests", "items")]
             + [("download", "images", "images"), ("download", "dist", "dist")]
             + [("download", "apk-" + r, "apks/" + r) for r in RUNNERS]
             + [("download", "check-results-ubuntu-24.04", "check-results/ubuntu-24.04")]
@@ -194,9 +194,6 @@ def judge_sign(path):
     return bad
 
 SIGN_JOBS = ("sign", "sign-rebuild", "sign-check")
-APK_RUN = "bash bin/witnessed-local.sh apk bin/build-stage-apk.sh"
-APK_STEP = "apk under Witness"
-APK_JOB = "build-apk"
 # release runs no signing tool: its secrets and GH_TOKEN are governed by REQ-REL-011-AC3 and REQ-CHAIN-001, not judged here (the environment sign is still refused to them)
 NOT_SIGNING_JOBS = ("release",)
 
@@ -222,15 +219,9 @@ def judge_build(path):
         for s in steps:
             if re.search(r"GITHUB_ENV", str(s.get("run") or "")) and re.search(r"secrets\.|github\.token|toJSON|ACTIONS_ID_TOKEN|\$\{\{", str(s.get("run") or "") + yaml.dump(s.get("env") or {}, width=10**6)):
                 bad.append("002-AC4: job %s writes a secret or token into GITHUB_ENV in a job that signs" % jn)
-        named_once = [x.get("name") for x in steps].count(APK_STEP) == 1
         for s in signs:
             nm = s.get("name") or s.get("uses")
-            # the one binding 002-AC4 allows: the run's own read-only token, on job build-apk's apk step only:
-            # the step name occurs once in the job and its run command is the one in stage-build.yml
             env = dict(s.get("env") or {})
-            is_apk_step = jn == APK_JOB and nm == APK_STEP and named_once
-            if is_apk_step and str(s.get("run")).strip() == APK_RUN and env.get("GH_TOKEN") == "${{ github.token }}":
-                del env["GH_TOKEN"]
             blob = yaml.dump({**s, "env": env}, width=10**6)
             if re.search(r"secrets\.|secrets\[|github\.token|toJSON|secrets\b", blob) or "GH_TOKEN" in env:
                 bad.append("002-AC4: signing step %r takes a secret or the job token" % nm)
@@ -676,10 +667,6 @@ jobs:
           path: witness-build
       - uses: actions/download-artifact@$sha # v8
         with:
-          name: admission-baseline
-          path: witness-build
-      - uses: actions/download-artifact@$sha # v8
-        with:
           name: witness-apk-ubuntu-24.04
           path: witness-apk-ubuntu-24.04
       - uses: actions/download-artifact@$sha # v8
@@ -831,10 +818,6 @@ jobs:
       - uses: actions/download-artifact@$sha # v8
         with:
           name: items
-          path: witness-build
-      - uses: actions/download-artifact@$sha # v8
-        with:
-          name: admission-baseline
           path: witness-build
       - uses: actions/download-artifact@$sha # v8
         with:
@@ -1132,7 +1115,7 @@ for j in release build-apk persona-uat-rc; do
   printf '%s\n' "jobs:" "  $j:" "    runs-on: ubuntu-24.04" "    environment: sign" "    steps:" "$SIGNSTEP" > "$work/build-notsign-$j.yml"
   expect caught "002-AC4 the $j job signs in the environment sign (only Sign's three jobs may)" build "$work/build-notsign-$j.yml"
 done
-# 002-AC4: the one binding a signing step may take: GH_TOKEN with the run token, on job build-apk's apk step
+# 002-AC4: no signing step may take GH_TOKEN
 bfix() {  # bfix FILE JOB STEP-NAME ENV-LINE... : one job whose one step runs bin/witnessed-local.sh with that env
   local f=$1 job=$2 step=$3; shift 3
   printf '%s\n' "jobs:" "  $job:" "    runs-on: ubuntu-24.04" "    steps:" "      - name: $step" "        env:" > "$f"
@@ -1141,7 +1124,6 @@ bfix() {  # bfix FILE JOB STEP-NAME ENV-LINE... : one job whose one step runs bi
 }
 TOK='GH_TOKEN: ${{ github.token }}'
 bfix "$work/tok-ok.yml" build-apk "apk under Witness" "$TOK"
-expect ok "002-AC4 the one allowed binding, on the apk step of job build-apk" build "$work/tok-ok.yml"
 bfix "$work/tok-name.yml" build-apk "apk under Witness" 'OTHER: ${{ github.token }}'
 expect caught "002-AC4 the job token under another env name" build "$work/tok-name.yml"
 bfix "$work/tok-secret.yml" build-apk "apk under Witness" 'GH_TOKEN: ${{ secrets.X }}'
@@ -3405,7 +3387,7 @@ probe stale     "scorecard.yml job analysis" "a listed job that no longer holds 
 # (the shadowed module must be one bin/chain-verify.py imports: it was fractions until the certificate and timestamp code went, and a control that shadows an unimported module proves nothing)
 # the isolation really works: with a bin/shutil.py that prints a marker on import, `python3 -I bin/chain-verify.py --help` runs the
 # real module (no marker, usage printed) while plain `python3 bin/chain-verify.py --help` is shadowed (the control: the probe bites)
-iso="$work/iso"; rm -rf "$iso"; mkdir -p "$iso/bin" "$iso/.github/policy"; cp "$root"/bin/chain-verify.py "$root"/bin/chain_common.py "$root"/bin/chain_hostile.py "$root"/bin/chain_items.py "$root"/bin/build-admit.py "$iso/bin/"
+iso="$work/iso"; rm -rf "$iso"; mkdir -p "$iso/bin" "$iso/.github/policy"; cp "$root"/bin/chain-verify.py "$root"/bin/chain_common.py "$root"/bin/chain_hostile.py "$root"/bin/chain_items.py "$iso/bin/"
 cp "$root/.github/policy/chain-scripts.json" "$iso/.github/policy/"
 printf 'print("SHADOW-MARKER-%s")\nfrom shutil import *\n' "$$" > "$iso/bin/shutil.py"
 rc=0; out=$(cd "$iso" && python3 -I bin/chain-verify.py --help 2>&1) || rc=$?
@@ -3457,57 +3439,56 @@ mkdir -p "$g/docs"; printf 'key: value\n' > "$g/docs/ordinary.yaml"; ( cd "$g" &
 if [ -f "$(tracked_copy ordinary "$g")/docs/ordinary.yaml" ]; then
   pass=$((pass + 1)); echo "ok   001-AC1 an ordinary tracked YAML file is in the tracked copy"
 else failn=$((failn + 1)); echo "FAIL 001-AC1 an ordinary tracked YAML file is missing from the tracked copy"; fi
-# (Codex #249 r6 R8; PR 2: admission is the first step of Build's first job, so the tag guard is that job's own gate G) every release.yml job after build-freeze up to release that
-# is not dry-run-only (if: exactly ${{ inputs.dry-run }}) depends on build-freeze, which carries the gate G (a v* tag PUSH, a dry run, or the snapshot mode), directly or through
+# (Codex #249 r6 R8) every release.yml job after build-apk up to release that
+# is not dry-run-only (if: exactly ${{ inputs.dry-run }}) depends on build-apk, which carries the gate G (a v* tag PUSH, a dry run, or the snapshot mode), directly or through
 # its needs. check-govulncheck builds govulncheck from the committed module for the Check job: it needs nothing of Build, and it holds no credential (contents read only, no environment,
 # no secret, no identity token), which the case asserts, so a job that does hold one cannot hide behind it.
 cat > "$work/tagguard.py" <<'PY'
 import sys, yaml
-GATE = "${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"
+GATE = "${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"
 NO_CREDENTIAL = {"check-govulncheck"}
 d = yaml.load(open(sys.argv[1]).read(), Loader=yaml.BaseLoader); jobs = d.get("jobs") or {}
 def needs(j):
     n = (jobs.get(j) or {}).get("needs") or []
     return [n] if isinstance(n, str) else list(n)
 def reaches(j, seen=()):
-    return any(x == "build-freeze" or (x not in seen and reaches(x, seen + (j,))) for x in needs(j))
-order = list(jobs); chain = order[order.index("build-freeze") + 1:order.index("release") + 1]
+    return any(x == "build-apk" or (x not in seen and reaches(x, seen + (j,))) for x in needs(j))
+order = list(jobs); chain = order[order.index("build-apk") + 1:order.index("release") + 1]
 bad = [j for j in chain if str(jobs[j].get("if", "")).strip() != "${{ inputs.dry-run }}" and j not in NO_CREDENTIAL and not reaches(j)]
 for j in NO_CREDENTIAL:
     jb = jobs.get(j) or {}
     if jb.get("permissions") != {"contents": "read"} or jb.get("environment") or jb.get("secrets") or "secrets." in str(jb) or "id-token" in str(jb):
         bad.append("%s is exempt from the gate and holds a credential, an environment or a permission beyond contents: read" % j)
-if "admission" in jobs: bad.append("an admission job is back (admission is Build's first step)")
-if "build" in jobs: bad.append("a job named build is back (Build is build-freeze, build-apk and build-assemble)")
-if str(jobs["build-freeze"].get("if", "")).strip() != GATE: bad.append("build-freeze is not tag-guarded by the gate G")
+if "build" in jobs: bad.append("a job named build is back (Build is build-apk and build-assemble)")
+if str(jobs["build-apk"].get("if", "")).strip() != GATE: bad.append("build-apk is not tag-guarded by the gate G")
 print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
 PY
 tg() { local rc=0 out; out=$(python3 "$work/tagguard.py" "$2") || rc=$?
   if { [ "$1" = ok ] && [ "$rc" = 0 ]; } || { [ "$1" = caught ] && [ "$rc" != 0 ]; }; then pass=$((pass + 1)); echo "ok   $3${out:+ ($out)}"; else failn=$((failn + 1)); echo "FAIL $3 -> $out"; fi; }
-tg ok "$root/.github/workflows/release.yml" "R8 release.yml: build-freeze carries the tag gate and every job from build-apk to release that is not dry-run-only depends on build-freeze through needs"
+tg ok "$root/.github/workflows/release.yml" "R8 release.yml: build-apk carries the tag gate and every job from build-assemble to release that is not dry-run-only depends on build-apk through needs"
 cp "$root/.github/workflows/release.yml" "$work/rel-noadm.yml"
 python3 - "$work/rel-noadm.yml" <<'PY'
 import sys
 t = open(sys.argv[1]).read()
-assert "  build-apk:\n    needs: build-freeze\n" in t
-open(sys.argv[1], "w").write(t.replace("  build-apk:\n    needs: build-freeze\n", "  build-apk:\n    needs: []\n", 1))
+assert "  build-assemble:\n    needs: build-apk\n" in t
+open(sys.argv[1], "w").write(t.replace("  build-assemble:\n    needs: build-apk\n", "  build-assemble:\n    needs: []\n", 1))
 PY
-tg caught "$work/rel-noadm.yml" "R8 mutation: with build-freeze removed from build-apk's needs, the jobs after it no longer reach the tag gate and are caught"
+tg caught "$work/rel-noadm.yml" "R8 mutation: with build-apk removed from build-assemble's needs, the jobs after it no longer reach the tag gate and are caught"
 cp "$root/.github/workflows/release.yml" "$work/rel-nogate.yml"
 python3 - "$work/rel-nogate.yml" <<'PY'
 import sys
 t = open(sys.argv[1]).read()
-g = "if: ${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"
+g = "if: ${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"
 assert g in t
 open(sys.argv[1], "w").write(t.replace(g, "if: ${{ inputs.dry-run == true }}", 1))
 PY
-tg caught "$work/rel-nogate.yml" "R8 mutation: a build-freeze without the tag gate is caught"
+tg caught "$work/rel-nogate.yml" "R8 mutation: a build-apk without the tag gate is caught"
 for how in "permissions:\n      contents: read\n      id-token: write" "environment: release\n    permissions:\n      contents: read"; do
   cp "$root/.github/workflows/release.yml" "$work/rel-govuln.yml"
   python3 - "$work/rel-govuln.yml" "$how" <<'PY'
 import sys
 t = open(sys.argv[1]).read()
-GV = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true) }}"      # check-govulncheck's own if: it has no needs, so the ref guard keeps it off on main
+GV = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true) }}"      # check-govulncheck's own if: it has no needs, so the ref guard keeps it off on main
 a = "  check-govulncheck:\n    if: " + GV + "\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n"
 assert a in t
 open(sys.argv[1], "w").write(t.replace(a, "  check-govulncheck:\n    if: " + GV + "\n    runs-on: ubuntu-24.04\n    " + sys.argv[2].replace("\\n", "\n") + "\n", 1))
@@ -3590,35 +3571,35 @@ d=$(wfix x_sname 'echo bin/helper.py\n'); edit_spec "$d" 'rows["bin/witnessed.sh
 d=$(wfix x_sname2 'echo bin/helper.py\n'); expm caught "$d" 'helper.py' "exception: the same named script without the exception is refused"
 d=$(wfix x_env 'echo "${PATH:=/x}"\n'); edit_spec "$d" "$DEF"'rows["bin/witnessed.sh"]["exceptions"].append(D("echo \"${PATH:=/x}\""))'; expm caught "$d" 'PATH' "exception: no exception rule waives an env-setting finding (env_mentions is the only way)"
 # (B) ambient env names
-afix() { # afix NAME : witnessed.sh + a stage script that runs bin/build-admit.py (reads GH_TOKEN from its own environment) + a step that passes GH_TOKEN
+afix() { # afix NAME : witnessed.sh + a stage script that runs bin/read-token.py (reads GH_TOKEN from its own environment) + a step that passes GH_TOKEN
   local d; d=$(wfix "$1" 'unset GH_TOKEN\n')
-  printf '#!/usr/bin/env bash\nset -euo pipefail\npython3 bin/build-admit.py run\nunset GH_TOKEN\n' > "$d/bin/stage-apk.sh"
-  printf '#!/usr/bin/env python3\nimport os\ntok = os.environ.get("GH_TOKEN", "")\n' > "$d/bin/build-admit.py"
-  edit_spec "$d" 'rows["bin/stage-apk.sh"]={"path":"bin/stage-apk.sh","tools":["python3"],"signs":False,"runs":["bin/build-admit.py"],"reads_env":["GH_TOKEN"]}; rows["bin/witnessed.sh"]["reads_env"]=["GH_TOKEN"]; rows["bin/build-admit.py"]={"path":"bin/build-admit.py","tools":[],"signs":False,"runs":[],"reads_env":["GH_TOKEN"]}'
-  printf '[{"name":"GH_TOKEN","script":"bin/build-admit.py","why":"REQ-CHAIN-004-AC8"},{"name":"GH_TOKEN","script":"bin/witnessed.sh","why":"REQ-CHAIN-004-AC8"},{"name":"GH_TOKEN","script":"bin/stage-apk.sh","why":"REQ-CHAIN-004-AC8"}]' > "$d/.ambient.json"
+  printf '#!/usr/bin/env bash\nset -euo pipefail\npython3 bin/read-token.py run\nunset GH_TOKEN\n' > "$d/bin/stage-apk.sh"
+  printf '#!/usr/bin/env python3\nimport os\ntok = os.environ.get("GH_TOKEN", "")\n' > "$d/bin/read-token.py"
+  edit_spec "$d" 'rows["bin/stage-apk.sh"]={"path":"bin/stage-apk.sh","tools":["python3"],"signs":False,"runs":["bin/read-token.py"],"reads_env":["GH_TOKEN"]}; rows["bin/witnessed.sh"]["reads_env"]=["GH_TOKEN"]; rows["bin/read-token.py"]={"path":"bin/read-token.py","tools":[],"signs":False,"runs":[],"reads_env":["GH_TOKEN"]}'
+  printf '[{"name":"GH_TOKEN","script":"bin/read-token.py","why":"REQ-CHAIN-004-AC8"},{"name":"GH_TOKEN","script":"bin/witnessed.sh","why":"REQ-CHAIN-004-AC8"},{"name":"GH_TOKEN","script":"bin/stage-apk.sh","why":"REQ-CHAIN-004-AC8"}]' > "$d/.ambient.json"
   printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh apk bin/stage-apk.sh\n' > "$d/.github/workflows/stage-verify.yml"
   gen "$d"; echo "$d"
 }
-d=$(afix y_ok); expm ok "$d" - "REQ-CHAIN-004-AC8 ambient: GH_TOKEN passed to the Witness step, listed ambient for bin/build-admit.py that the step reaches through bin/stage-apk.sh"
+d=$(afix y_ok); expm ok "$d" - "REQ-CHAIN-004-AC8 ambient: GH_TOKEN passed to the Witness step, listed ambient for bin/read-token.py that the step reaches through bin/stage-apk.sh"
 d=$(afix y_none); rm "$d/.ambient.json"; gen "$d"; expm caught "$d" 'GH_TOKEN' "ambient: the same step without the ambient entry is refused"
 d=$(afix y_empty); printf '[]' > "$d/.ambient.json"; gen "$d"; expm caught "$d" 'GH_TOKEN' "ambient: an empty ambient_env list is the same as none"
 d=$(afix y_wrongscript); printf '#!/usr/bin/env python3\nimport os\ntok = os.environ.get("GH_TOKEN", "")\n' > "$d/bin/other.py"; printf '[{"name":"GH_TOKEN","script":"bin/other.py","why":"REQ-CHAIN-004-AC8"}]' > "$d/.ambient.json"; edit_spec "$d" 'rows["bin/other.py"]={"path":"bin/other.py","tools":[],"signs":False,"runs":[],"reads_env":["GH_TOKEN"]}'; expm caught "$d" 'ambient only for' "ambient: an entry whose script is not one the step runs (or reaches) is refused"
-d=$(afix y_noreads); edit_spec "$d" 'del rows["bin/build-admit.py"]["reads_env"]'; expm caught "$d" 'reads_env' "ambient: the script's row without reads_env is refused"
-d=$(afix y_noreads2); edit_spec "$d" 'rows["bin/build-admit.py"]["reads_env"]=["OTHER"]'; expm caught "$d" 'reads_env' "ambient: reads_env that does not list the name is refused"
-d=$(afix y_noreads3); edit_spec "$d" 'rows["bin/build-admit.py"]["reads_env"]="GH_TOKEN"'; expm caught "$d" 'reads_env' "ambient: reads_env that is not a list is refused"
-d=$(afix y_stalereads); printf '#!/usr/bin/env python3\nimport os\n' > "$d/bin/build-admit.py"; gen "$d"; expm caught "$d" 'reads_env' "ambient: reads_env naming a variable the script never mentions is refused"
-d=$(afix y_nowhy); printf '[{"name":"GH_TOKEN","script":"bin/build-admit.py","why":""}]' > "$d/.ambient.json"; gen "$d"; expm caught "$d" 'ambient_env' "ambient: an empty why is an error"
-d=$(afix y_extra); printf '[{"name":"GH_TOKEN","script":"bin/build-admit.py","why":"x","also":"y"}]' > "$d/.ambient.json"; gen "$d"; expm caught "$d" 'ambient_env' "ambient: an entry with another key is an error"
+d=$(afix y_noreads); edit_spec "$d" 'del rows["bin/read-token.py"]["reads_env"]'; expm caught "$d" 'reads_env' "ambient: the script's row without reads_env is refused"
+d=$(afix y_noreads2); edit_spec "$d" 'rows["bin/read-token.py"]["reads_env"]=["OTHER"]'; expm caught "$d" 'reads_env' "ambient: reads_env that does not list the name is refused"
+d=$(afix y_noreads3); edit_spec "$d" 'rows["bin/read-token.py"]["reads_env"]="GH_TOKEN"'; expm caught "$d" 'reads_env' "ambient: reads_env that is not a list is refused"
+d=$(afix y_stalereads); printf '#!/usr/bin/env python3\nimport os\n' > "$d/bin/read-token.py"; gen "$d"; expm caught "$d" 'reads_env' "ambient: reads_env naming a variable the script never mentions is refused"
+d=$(afix y_nowhy); printf '[{"name":"GH_TOKEN","script":"bin/read-token.py","why":""}]' > "$d/.ambient.json"; gen "$d"; expm caught "$d" 'ambient_env' "ambient: an empty why is an error"
+d=$(afix y_extra); printf '[{"name":"GH_TOKEN","script":"bin/read-token.py","why":"x","also":"y"}]' > "$d/.ambient.json"; gen "$d"; expm caught "$d" 'ambient_env' "ambient: an entry with another key is an error"
 d=$(afix y_notlist); printf '{"name":"GH_TOKEN"}' > "$d/.ambient.json"; gen "$d"; expm caught "$d" 'ambient_env' "ambient: ambient_env that is not a list is an error"
-d=$(afix y_dup); printf '[{"name":"GH_TOKEN","script":"bin/build-admit.py","why":"a"},{"name":"GH_TOKEN","script":"bin/build-admit.py","why":"b"}]' > "$d/.ambient.json"; gen "$d"; expm caught "$d" 'ambient_env' "ambient: a duplicate entry is an error"
+d=$(afix y_dup); printf '[{"name":"GH_TOKEN","script":"bin/read-token.py","why":"a"},{"name":"GH_TOKEN","script":"bin/read-token.py","why":"b"}]' > "$d/.ambient.json"; gen "$d"; expm caught "$d" 'ambient_env' "ambient: a duplicate entry is an error"
 d=$(afix y_unlisted); printf '[{"name":"GH_TOKEN","script":"bin/nowhere.py","why":"x"}]' > "$d/.ambient.json"; gen "$d"; expm caught "$d" 'ambient_env' "ambient: a script that is not a listed row is an error"
 for nm in PATH BASH_ENV GITHUB_TOKEN LD_PRELOAD PYTHONPATH NODE_OPTIONS; do
-  d=$(afix "y_forbid_$nm"); printf '[{"name":"%s","script":"bin/build-admit.py","why":"x"}]' "$nm" > "$d/.ambient.json"
-  edit_spec "$d" 'rows["bin/build-admit.py"]["reads_env"]=["'"$nm"'"]'
+  d=$(afix "y_forbid_$nm"); printf '[{"name":"%s","script":"bin/read-token.py","why":"x"}]' "$nm" > "$d/.ambient.json"
+  edit_spec "$d" 'rows["bin/read-token.py"]["reads_env"]=["'"$nm"'"]'
   printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          %s: x\n        run: bash bin/witnessed.sh apk bin/stage-apk.sh\n' "$nm" > "$d/.github/workflows/stage-verify.yml"
   expm caught "$d" "$nm" "ambient: the forbidden name $nm listed ambient (with reads_env) is still refused"
 done
-d=$(afix y_otherstep); printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh apk bin/stage-apk.sh\n      - name: other\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/build-stage.sh apk\n' > "$d/.github/workflows/stage-verify.yml"; expm caught "$d" 'GH_TOKEN' "ambient: the name declared in a second step that runs a different script (not reaching bin/build-admit.py) is refused"
+d=$(afix y_otherstep); printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh apk bin/stage-apk.sh\n      - name: other\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/build-stage.sh apk\n' > "$d/.github/workflows/stage-verify.yml"; expm caught "$d" 'GH_TOKEN' "ambient: the name declared in a second step that runs a different script (not reaching bin/read-token.py) is refused"
 d=$(afix y_secret); printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ secrets.GH_PAT }}\n        run: bash bin/witnessed.sh apk bin/stage-apk.sh\n' > "$d/.github/workflows/stage-verify.yml"; expm caught "$d" 'GH_TOKEN' "ambient: an ambient name whose value is a secret is refused"
 d=$(afix y_glue); printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ github.token }}x\n        run: bash bin/witnessed.sh apk bin/stage-apk.sh\n' > "$d/.github/workflows/stage-verify.yml"; expm caught "$d" 'GH_TOKEN' "ambient: an ambient name whose value is an expression glued to text is refused"
 d=$(afix y_cmd); printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: $(id)\n        run: bash bin/witnessed.sh apk bin/stage-apk.sh\n' > "$d/.github/workflows/stage-verify.yml"; expm caught "$d" 'GH_TOKEN' "ambient: an ambient name whose value is a command substitution is refused"
@@ -3895,7 +3876,7 @@ d=$(afix z_ord); printf 'jobs:\n  j:\n    steps:\n      - name: other\n        e
 for nm in GITHUB_1 RUNNER_2 NODE_3 GITHUB_ RUNNER_x path Path ld_preload LD_PRELOAD1 PYTHON3 PYTHONPATH_ BASH_FUNC_x github_token bash_env Env ps4 NODE_OPTIONS2 GIT_DIR1 lc_all; do
   d=$(afix "f_$nm"); printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          %s: x\n        run: bash bin/witnessed.sh apk bin/stage-apk.sh "$%s"\n' "$nm" "$nm" > "$d/.github/workflows/stage-verify.yml"
   expm caught "$d" 'never allowed' "round-1 (2): the env name $nm is forbidden in an ordinary step env"
-  d=$(afix "g_$nm"); printf '[{"name":"%s","script":"bin/build-admit.py","why":"x"}]' "$nm" > "$d/.ambient.json"; edit_spec "$d" 'rows["bin/build-admit.py"]["reads_env"]=["'"$nm"'"]'
+  d=$(afix "g_$nm"); printf '[{"name":"%s","script":"bin/read-token.py","why":"x"}]' "$nm" > "$d/.ambient.json"; edit_spec "$d" 'rows["bin/read-token.py"]["reads_env"]=["'"$nm"'"]'
   printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          %s: x\n        run: bash bin/witnessed.sh apk bin/stage-apk.sh\n' "$nm" > "$d/.github/workflows/stage-verify.yml"
   expm caught "$d" 'ambient_env' "round-1 (2): the env name $nm is refused as an ambient_env entry (and in the step)"
 done
@@ -4052,7 +4033,7 @@ for nm in GITASKPASS GITHUBTOKEN GITHUB RUNNERX RUNNER NODERUNTIME NODE GIT1 PYT
   d=$(mk "o_$nm"); printf '["DIGESTS","%s"]' "$nm" > "$d/.envnames.json"; gen "$d"; expm caught "$d" 'env_names' "round-2 (3): $nm in env_names is refused"
 done
 for nm in GITASKPASS GITHUBTOKEN RUNNERX NODERUNTIME PYTHON3 HTTPS_PROXY GOFLAGS SSL_CERT_FILE COSIGN_EXPERIMENTAL TUF_ROOT; do
-  d=$(afix "p_$nm"); printf '[{"name":"%s","script":"bin/build-admit.py","why":"x"}]' "$nm" > "$d/.ambient.json"; edit_spec "$d" 'rows["bin/build-admit.py"]["reads_env"]=["'"$nm"'"]'; expm caught "$d" 'ambient_env' "round-2 (3): $nm is refused as an ambient_env entry"
+  d=$(afix "p_$nm"); printf '[{"name":"%s","script":"bin/read-token.py","why":"x"}]' "$nm" > "$d/.ambient.json"; edit_spec "$d" 'rows["bin/read-token.py"]["reads_env"]=["'"$nm"'"]'; expm caught "$d" 'ambient_env' "round-2 (3): $nm is refused as an ambient_env entry"
 done
 d=$(mk q_digests); printf 'jobs:\n  j:\n    steps:\n      - name: a\n        env:\n          DIGESTS: x\n        run: bash bin/build-stage.sh apk "$DIGESTS"\n' > "$d/.github/workflows/stage-verify.yml"; expm ok "$d" - "round-2 (3): control: DIGESTS stays an allowed env name"
 d=$(afix q_ghtoken); expm ok "$d" - "round-2 (3): control: GH_TOKEN stays an allowed ambient name"
@@ -4061,7 +4042,7 @@ awfix() { local d; d=$(afix "$1"); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg
 aw() { # aw NAME 'run text' ok|caught FRAG
   local d; d=$(awfix "$1"); printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: %s\n' "$2" > "$d/.github/workflows/stage-verify.yml"; expm "$3" "$d" "$4" "round-2 (4): $2"; }
 aw u_ok 'bash bin/witnessed.sh apk bin/stage-apk.sh' ok -
-aw u_ok2 'bash bin/witnessed.sh build bin/stage-apk.sh bin/build-admit.py' ok -
+aw u_ok2 'bash bin/witnessed.sh build bin/stage-apk.sh bin/read-token.py' ok -
 aw u_evil 'bash bin/witnessed.sh apk bin/evil.sh' caught 'evil.sh'
 aw u_tmp 'bash bin/witnessed.sh apk /tmp/evil.sh' caught 'evil.sh'
 aw u_bogus 'bash bin/witnessed.sh bogus bin/stage-apk.sh' caught 'arg_words'
@@ -4108,8 +4089,8 @@ d=$(wfix t6_d 'exec bash "$@"\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["too
 for v in "' \${{ github.token }}'" "'\${{ github.token }} '" '"\t${{ github.token }}"' '"${{ github.token }}\n"' '"${{ github.token }}\r"'; do
   d=$(afix "v7_$RANDOM"); printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: %s\n        run: bash bin/witnessed.sh apk bin/stage-apk.sh\n' "$v" > "$d/.github/workflows/stage-verify.yml"; expm caught "$d" 'plain expression' "round-2 (7): the ambient value $v (surrounding whitespace) is not a plain expression"
 done
-d=$(afix w7_a); printf '[{"name":"GH_TOKEN","script":"bin/build-admit.py","why":"x"}]' > "$d/.ambient.json"; gen "$d"; expm caught "$d" 'not authorized' "round-2 (7): GH_TOKEN authorized only for bin/build-admit.py is refused when the step also runs a wrapper (bin/witnessed.sh) and a stage script"
-d=$(afix w7_b); printf '[{"name":"GH_TOKEN","script":"bin/build-admit.py","why":"x"},{"name":"GH_TOKEN","script":"bin/witnessed.sh","why":"x"}]' > "$d/.ambient.json"; gen "$d"; expm caught "$d" 'not authorized' "round-2 (7): the stage script bin/stage-apk.sh named as an argument must be authorized too"
+d=$(afix w7_a); printf '[{"name":"GH_TOKEN","script":"bin/read-token.py","why":"x"}]' > "$d/.ambient.json"; gen "$d"; expm caught "$d" 'not authorized' "round-2 (7): GH_TOKEN authorized only for bin/read-token.py is refused when the step also runs a wrapper (bin/witnessed.sh) and a stage script"
+d=$(afix w7_b); printf '[{"name":"GH_TOKEN","script":"bin/read-token.py","why":"x"},{"name":"GH_TOKEN","script":"bin/witnessed.sh","why":"x"}]' > "$d/.ambient.json"; gen "$d"; expm caught "$d" 'not authorized' "round-2 (7): the stage script bin/stage-apk.sh named as an argument must be authorized too"
 d=$(afix w7_c); expm ok "$d" - "round-2 (7): authorized for the wrapper, the stage script and the reader is admitted"
 # (8) closed-list gaps
 kc s8_a 'install --strip-program dist/sed a b' 'by a path'
@@ -4169,8 +4150,8 @@ done
 aw t1a_x 'bash bin/witnessed.sh apk "$X"' caught '$X'
 aw t1b_x 'bash bin/witnessed.sh apk bin/stage-apk.sh "$X"' caught '$X'
 aw t1c_x 'bash bin/witnessed.sh "$X" bin/stage-apk.sh' caught 'arg_words'
-d=$(awfix t1_reach); printf '[{"name":"GH_TOKEN","script":"bin/witnessed.sh","why":"x"},{"name":"GH_TOKEN","script":"bin/build-admit.py","why":"x"}]' > "$d/.ambient.json"; printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh apk "bin/stage-apk.sh"\n' > "$d/.github/workflows/stage-verify.yml"; gen "$d"; expm caught "$d" 'not authorized' "round-3 (1): a double-quoted listed stage script is in the reach set (and so must be authorized for the ambient name)"
-d=$(awfix t1_reach2); printf '[{"name":"GH_TOKEN","script":"bin/witnessed.sh","why":"x"},{"name":"GH_TOKEN","script":"bin/build-admit.py","why":"x"}]' > "$d/.ambient.json"; printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh apk '"'"'bin/stage-apk.sh'"'"'\n' > "$d/.github/workflows/stage-verify.yml"; gen "$d"; expm caught "$d" 'not authorized' "round-3 (1): a single-quoted listed stage script is in the reach set"
+d=$(awfix t1_reach); printf '[{"name":"GH_TOKEN","script":"bin/witnessed.sh","why":"x"},{"name":"GH_TOKEN","script":"bin/read-token.py","why":"x"}]' > "$d/.ambient.json"; printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh apk "bin/stage-apk.sh"\n' > "$d/.github/workflows/stage-verify.yml"; gen "$d"; expm caught "$d" 'not authorized' "round-3 (1): a double-quoted listed stage script is in the reach set (and so must be authorized for the ambient name)"
+d=$(awfix t1_reach2); printf '[{"name":"GH_TOKEN","script":"bin/witnessed.sh","why":"x"},{"name":"GH_TOKEN","script":"bin/read-token.py","why":"x"}]' > "$d/.ambient.json"; printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh apk '"'"'bin/stage-apk.sh'"'"'\n' > "$d/.github/workflows/stage-verify.yml"; gen "$d"; expm caught "$d" 'not authorized' "round-3 (1): a single-quoted listed stage script is in the reach set"
 # (2) arg_map binds each STEP to its one target and requires exactly two arguments
 amfix() { local d; d=$(afix "$1"); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_map"]={"apk":"bin/stage-apk.sh","build":"bin/build-apk.sh"}'; echo "$d"; }
 am() { local d; d=$(amfix "$1"); printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: %s\n' "$2" > "$d/.github/workflows/stage-verify.yml"; expm "$3" "$d" "$4" "round-3 (2): $2"; }
@@ -4339,15 +4320,15 @@ for e in a:
 json.dump(a, open(d + "/.ambient.json", "w"))
 PY
   gen "$d"; echo "$d"; }
-d=$(hl h_ok 'python3 bin/build-admit.py run\nunset GH_TOKEN' '"unset GH_TOKEN"'); expm ok "$d" - "round-4 (B): the handoff line present once is admitted"
-d=$(hl h_miss 'python3 bin/build-admit.py run' '"unset GH_TOKEN"'); expm caught "$d" 'handoff_line' "round-4 (B): a required line that is missing is an error"
-d=$(hl h_cmt 'python3 bin/build-admit.py run\n# unset GH_TOKEN' '"unset GH_TOKEN"'); expm caught "$d" 'handoff_line' "round-4 (B): a required line present only in a comment is an error"
-d=$(hl h_cmt2 'python3 bin/build-admit.py run\necho a # unset GH_TOKEN' '"unset GH_TOKEN"'); expm caught "$d" 'handoff_line' "round-4 (B): a trailing comment is not the line"
-d=$(hl h_twice 'unset GH_TOKEN\npython3 bin/build-admit.py run\nunset GH_TOKEN' '"unset GH_TOKEN"'); expm caught "$d" 'handoff_line' "round-4 (B): a required line present twice is an error"
+d=$(hl h_ok 'python3 bin/read-token.py run\nunset GH_TOKEN' '"unset GH_TOKEN"'); expm ok "$d" - "round-4 (B): the handoff line present once is admitted"
+d=$(hl h_miss 'python3 bin/read-token.py run' '"unset GH_TOKEN"'); expm caught "$d" 'handoff_line' "round-4 (B): a required line that is missing is an error"
+d=$(hl h_cmt 'python3 bin/read-token.py run\n# unset GH_TOKEN' '"unset GH_TOKEN"'); expm caught "$d" 'handoff_line' "round-4 (B): a required line present only in a comment is an error"
+d=$(hl h_cmt2 'python3 bin/read-token.py run\necho a # unset GH_TOKEN' '"unset GH_TOKEN"'); expm caught "$d" 'handoff_line' "round-4 (B): a trailing comment is not the line"
+d=$(hl h_twice 'unset GH_TOKEN\npython3 bin/read-token.py run\nunset GH_TOKEN' '"unset GH_TOKEN"'); expm caught "$d" 'handoff_line' "round-4 (B): a required line present twice is an error"
 d=$(hl h_num 'unset GH_TOKEN' '5'); expm caught "$d" 'ambient_env' "round-4 (B): a handoff_line that is not a string is an error"
 d=$(hl h_nl 'unset GH_TOKEN' '"unset GH_TOKEN\nx"'); expm caught "$d" 'ambient_env' "round-4 (B): a multi-line handoff_line is an error"
 d=$(hl h_ctl 'unset GH_TOKEN' '"unset\u0001GH_TOKEN"'); expm caught "$d" 'ambient_env' "round-4 (B): a handoff_line with a control character is an error"
-d=$(hl h_blank 'python3 bin/build-admit.py run\nunset GH_TOKEN\nunset GH_TOKEN' '""'); expm ok "$d" - "round-4 (B): a blank handoff_line is no requirement"
+d=$(hl h_blank 'python3 bin/read-token.py run\nunset GH_TOKEN\nunset GH_TOKEN' '""'); expm ok "$d" - "round-4 (B): a blank handoff_line is no requirement"
 # (6) the wrapper tuple needs bash
 am g6_ok 'bash bin/witnessed.sh apk bin/stage-apk.sh' ok -
 am g6_py 'python3 -I bin/witnessed.sh apk bin/stage-apk.sh' caught 'witnessed.sh'
@@ -5252,19 +5233,16 @@ PY
 d=$(crf cr_e '#!/usr/bin/env bash\necho a\r\n'); out=$(python3 "$work/loadcr.py" "$d" 2>&1) && { failn=$((failn + 1)); echo "FAIL line-bound: load_scripts (the records judge's path) accepts a script with a CR"; } || { grep -q 'carriage return' <<< "$out" && { pass=$((pass + 1)); echo "ok   line-bound: load_scripts alone rejects a script with a CR (caught: ${out:0:100})"; } || { failn=$((failn + 1)); echo "FAIL line-bound: load_scripts CR -> ${out:0:200}"; }; }
 
 # ---- the named secrets of Release (rule 56: only Release holds a stored secret; advisor 0386 J, the corrected binding list) ----------------------------
-# ONE closed list: (1) GH_TOKEN, the run's own token, Build job apk, admission only (witnessed-local.sh -> build-stage-apk.sh), job permissions exactly contents/checks/statuses/
-# pull-requests read; in release.yml job release (contents/packages write): (2) DOCKERHUB_USERNAME and (3) DOCKERHUB_TOKEN -> release-publish.sh and release-sign.sh, (4) GH_TOKEN (the run's own) -> release-publish.sh,
+# ONE closed list: in release.yml job release (contents/packages write): (1) DOCKERHUB_USERNAME and (2) DOCKERHUB_TOKEN -> release-publish.sh and release-sign.sh, (3) GH_TOKEN (the run's own) -> release-publish.sh,
 # release-sign.sh and release-assets.sh (release-postverify.sh holds no token), all through bin/witnessed.sh. The sign jobs hold no row at all: no secret, no GH_TOKEN, no DOCKERHUB_*,
 # and exactly contents read and id-token write (REQ-REL-011-AC3, REQ-CHAIN-007-AC18). Every other name, place or script is refused.
 jrepl() { python3 -c 'import re,sys;p,j,a,b=sys.argv[1:5];a=a.replace("\\n","\n");b=b.replace("\\n","\n");s=open(p).read();m=re.search(r"\n  "+re.escape(j)+r":\n(?:(?!  \S).*\n)*",s);assert m,"jrepl: no job "+j;seg=m.group(0);assert a in seg,"jrepl: not found in "+j+": "+a;open(p,"w").write(s[:m.start()]+seg.replace(a,b,1)+s[m.end():])' "$@"; }
 repl() { python3 -c 'import sys;p,a,b=sys.argv[1:4];a=a.replace("\\n","\n");t=open(p).read();assert a in t,"not found: "+a;open(p,"w").write(t.replace(a,b.replace("\\n","\n"),1))' "$@"; }
 probe sec_release_extra "stored secret outside the named env entries" "a stored secret (secrets.X_KEY) in a step env of an added job of release.yml" "printf '  extra:\n    runs-on: ubuntu-24.04\n    steps:\n      - name: x\n        env:\n          X_KEY: \${{ secrets.X_KEY }}\n        run: bash bin/install-scanner.sh cosign\n' >> .github/workflows/release.yml"
-probe gh_build_other "GH_TOKEN is allowed only" "the run's token on a Build step other than the admission step" \
+probe gh_build_other "GH_TOKEN is allowed only" "the run's token on a Build step" \
   "repl .github/workflows/release.yml '      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness' '      - name: install Witness (pinned by checksum)\n        env:\n          GH_TOKEN: \${{ github.token }}\n        run: bash bin/install-scanner.sh witness'"
 probe gh_check "GH_TOKEN is allowed only" "the run's token in Check" \
   "repl .github/workflows/release.yml '      - name: install grype (pinned by checksum)\n        run: bash bin/install-scanner.sh grype' '      - name: install grype (pinned by checksum)\n        env:\n          GH_TOKEN: \${{ github.token }}\n        run: bash bin/install-scanner.sh grype'"
-probe perm_apk "must hold exactly the permissions" "a write permission (packages) on Build's apk job" \
-  "repl .github/workflows/release.yml '      pull-requests: read\n' '      pull-requests: read\n      packages: write\n'"
 probe perm_gh_release "must hold exactly the permissions" "the run's token with another permission (attestations: write) in Release" \
   "repl .github/workflows/release.yml '      contents: write\n      packages: write\n    steps:' '      contents: write\n      packages: write\n      attestations: write\n    steps:'"
 probe sixth_name "not in the closed secret list" "a sixth secret name (FIFTH_KEY) in a Release step" \
@@ -5279,8 +5257,6 @@ probe sixth_row "not in the closed secret list" "a sixth row: SIXTH_SECRET bound
   "python3 -c 'import json;p=\".github/policy/chain-scripts.json\";d=json.load(open(p));d[\"ambient_env\"].append({\"name\":\"SIXTH_SECRET\",\"script\":\"bin/release-sign.sh\",\"why\":\"x\",\"file\":\".github/workflows/release.yml\",\"job\":\"release\"});json.dump(d,open(p,\"w\"))'"
 probe value_glued "must be exactly" "DOCKERHUB_TOKEN with a glued value" \
   "repl .github/workflows/release.yml 'DOCKERHUB_TOKEN: \${{ secrets.DOCKERHUB_TOKEN }}' 'DOCKERHUB_TOKEN: \${{ secrets.DOCKERHUB_TOKEN }}x'"
-probe value_gh_secret "must be exactly" "GH_TOKEN read from a stored secret instead of the run's own token" \
-  "jrepl .github/workflows/release.yml build-apk 'GH_TOKEN: \${{ github.token }}' 'GH_TOKEN: \${{ secrets.GH_TOKEN }}'"
 probe value_swapped "must be exactly" "DOCKERHUB_USERNAME given the token's secret" \
   "repl .github/workflows/release.yml 'DOCKERHUB_USERNAME: \${{ secrets.DOCKERHUB_USERNAME }}' 'DOCKERHUB_USERNAME: \${{ secrets.DOCKERHUB_TOKEN }}'"
 # jobenv FILE JOB TEXT: puts TEXT (a job-level env block, \n for newlines) before the steps of job JOB in the copy
@@ -5302,24 +5278,10 @@ probe sg_any_secret "stored secret outside the named env entries" "a stored secr
   "jstep $REL sign-check '      - name: x\n        env:\n          X_KEY: \${{ secrets.X_KEY }}\n        run: bash bin/install-scanner.sh cosign\n'"
 probe secret_in_if "stored secret outside" "a stored secret read in a step condition of Release" \
   "repl .github/workflows/release.yml '      - name: release-publish under Witness\n' '      - name: release-publish under Witness\n        if: \${{ secrets.DOCKERHUB_TOKEN != \"\" }}\n'"
-# REQ-CHAIN-004-AC20 (ruling (B)): nothing that holds a secret loads bin/build-admit.py, directly or through a script it runs. rowruns SCRIPT ADD...: appends to the `runs` of SCRIPT's row in the copy.
 rowruns() { python3 -c 'import json,sys; p=".github/policy/chain-scripts.json"; d=json.load(open(p))
 for r in d["scripts"]:
     if r["path"] == sys.argv[1]: r["runs"] = r["runs"] + [x for x in sys.argv[2:] if x not in r["runs"]]
 json.dump(d, open(p,"w"), indent=1)' "$@"; }
-expect ok "REQ-CHAIN-004-AC20 control: the unmodified real tree passes the judge (no secret holder lists bin/build-admit.py in its runs, directly or through a script it runs)" tree "$REAL"
-for hold in release-sign release-publish release-assets; do
-  probe "ba_direct_$hold" "GH_TOKEN" "bin/$hold.sh (a secret holder of the release job) listing bin/build-admit.py in its runs" "rowruns bin/$hold.sh bin/build-admit.py"
-done
-probe ba_via_verify "GH_TOKEN" "bin/release-sign.sh running bin/chain-verify.py whose row lists bin/build-admit.py in its runs (a load through a script it runs)" \
-  "rowruns bin/chain-verify.py bin/build-admit.py"
-probe ba_via_layout "GH_TOKEN" "bin/release-publish.sh running bin/release-layout.py whose row lists bin/build-admit.py in its runs" \
-  "rowruns bin/release-layout.py bin/build-admit.py"
-probe ba_via_layout_assets "GH_TOKEN" "bin/release-assets.sh listing bin/release-layout.py, whose row lists bin/build-admit.py in its runs" \
-  "rowruns bin/release-layout.py bin/build-admit.py; rowruns bin/release-assets.sh bin/release-layout.py"
-probe ba_via_items "GH_TOKEN" "bin/release-sign.sh running bin/chain-verify.py, which loads bin/chain_items.py, whose row lists bin/build-admit.py in its runs" \
-  "rowruns bin/chain_items.py bin/build-admit.py; rowruns bin/chain-verify.py bin/chain_items.py"
-
 # ---- the sign jobs' federation env (REQ-CHAIN-001-AC1 job keys, REQ-CHAIN-001-AC9): in release.yml the three jobs sign, sign-rebuild and sign-check, and no other job of any
 # workflow file, carry a job-level env of exactly three non-secret literals (AWS_ROLE_ARN, AWS_REGION, RELEASE_KMS_KEY_REF); no step of them repeats the literals; the release job and every
 # other job hold none; workflow-level env stays refused.
@@ -5360,7 +5322,7 @@ for sj in sign sign-check; do
   probe "pje_empty_val_$sj" "env" "the $sj job env whose region is empty" "jrepl $REL $sj 'AWS_REGION: us-east-1' 'AWS_REGION: \"\"'"
 done
 # 2. any job env on any other job of release.yml, the release job included, is refused (job key env not allowed there), even the three federation entries
-for oj in build-freeze build-apk build-assemble rebuild-apk rebuild-assemble check-govulncheck check release-compare release-verify release; do
+for oj in build-apk build-assemble rebuild-apk rebuild-assemble check-govulncheck check release-compare release-verify release; do
   probe "pje_other_$oj" "job key" "a job env on the $oj job of release.yml" "jobenv $REL $oj '    env:\n      X1: y\n'"
   probe "pje_other_fed_$oj" "job key" "the three federation entries as the job env of the $oj job of release.yml" "jobenv $REL $oj '    env:\n$FED3'"
 done
@@ -5369,13 +5331,13 @@ probe pje_wf_release "env" "a workflow-level env in release.yml" "wfenv $REL 'en
 probe pje_wf_release_fed "env" "the three federation entries as a workflow-level env of release.yml" "wfenv $REL 'env:\n  AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n  AWS_REGION: us-east-1\n  RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n'"
 
 # ---- Codex A r2 blocker 4 / r3 F4 (advisor): NO actions/setup-go anywhere; Go comes from the checksum-pinned `bash bin/install-scanner.sh go` line -------------
-# release.yml is the one file that holds the jobs that build: no job of it uses actions/setup-go, and the jobs that need Go (build-freeze, build-apk, rebuild-apk, check-govulncheck, check)
+# release.yml is the one file that holds the jobs that build: no job of it uses actions/setup-go, and the jobs that need Go (build-apk, rebuild-apk, check-govulncheck, check)
 # install it with the pinned installer line, as one step of their own
 cat > "$work/setupgo.py" <<'PY'
 import copy, os, sys, yaml
 root = os.environ["CHAIN_ROOT"]
 GO = "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0"      # the digest an earlier round allowed: now refused like any other action
-NEED_GO = ("build-freeze", "build-apk", "rebuild-apk", "check-govulncheck", "check")
+NEED_GO = ("build-apk", "rebuild-apk", "check-govulncheck", "check")
 def load(): return yaml.load(open(os.path.join(root, ".github/workflows/release.yml")).read(), Loader=yaml.BaseLoader)
 def findings(d):
     bad = []

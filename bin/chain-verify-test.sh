@@ -32,8 +32,7 @@
 #       T.json {"repository":"owner/repo","stages":["build","sign","rebuild","check","release"]}. The key manifest in D (default: the template's
 #       directory) is checked FIRST, with the root key in D (see bin/chain-manifest-test.sh): `refused at manifest: ...` on any failure.
 #       POLICY.json {"tag","ref","repository","release_key":{"key_id","public_key"},"stages":[...]} and "dry_run": true for a branch ref.
-#       --tag T and --ref refs/tags/T make the same policy; T is taken as given (chain-verify.py holds no tag grammar: the tag is judged before, in
-#       release-verify.sh and in Build's admission, REQ-CHAIN-004-AC20); a branch ref refs/heads/<name> (the dry run's) makes a dry_run policy;
+#       --tag T and --ref refs/tags/T make the same policy; T is taken as given (chain-verify.py holds no tag grammar, REQ-CHAIN-004-AC20); a branch ref refs/heads/<name> (the dry run's) makes a dry_run policy;
 #       a ref that is not refs/tags/<non-empty> or refs/heads/<non-empty> (refs/tags/, refs/pull/N/merge) and the snapshot version v0.0.0 exit 1 ("tag" / "snapshot").
 #   chain-verify.py verify --policy POLICY.json --stage NAME --record REC.json
 #       Checks, any failure exit 1 with the cause on stderr as `refused at <stage>: <reason>`: the envelope (one signature, no certificate
@@ -395,7 +394,7 @@ _nowf = slsa_ok(T); del _nowf["buildDefinition"]["externalParameters"]["workflow
 add("sign_nowf", PROV, D, predicate=_nowf, raw_predicate=True)
 _noref = slsa_ok(T); del _noref["buildDefinition"]["externalParameters"]["ref"]
 add("sign_noref", PROV, D, predicate=_noref, raw_predicate=True)
-add("sign_brrel", PROV, D, ref="refs/heads/release/v0.3.0")
+add("sign_brrel", PROV, D, ref="refs/heads/release/v0.3")
 add("sign_otherdigests", PROV, dict(D, apk="sha256:" + "d" * 64))
 add("sign_coll", COLL, D, stmt="v0.1")
 # the key: a record is accepted only when the manifest's key signed it
@@ -759,13 +758,6 @@ add("bi_dup", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json
 add("bi_material", COLL, None, stmt="v0.1", payload=_coll("build", [_prods("items.json")[0], {"name": MAT + "items.json", "digest": {"sha256": _fsha("items.json")}}]))
 add("bi_otherkey", COLL, None, stmt="v0.1", key="other", payload=_coll("build", _prods("items.json")))
 add("bi_unsigned", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")), signed=False)
-# REQ-CHAIN-007-AC19 (advisor ruling B): admission-baseline.json is a second product of Build's record, bound by `bind-items --product admission-baseline.json`
-dj("admission-baseline.json", {"baseline": "requirements/releases/v0.3.0.yaml", "baseline_version": "v0.3.0", "sha": "c" * 40, "tag": "v0.3.1"})
-dj("admission-baseline-other.json", {"baseline": "requirements/releases/v0.2.0.yaml", "baseline_version": "v0.2.0", "sha": "c" * 40, "tag": "v0.3.1"})
-_PADM = {"name": PRD + "admission-baseline.json", "digest": {"sha256": _fsha("admission-baseline.json")}}
-add("bi_adm", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [_PADM]))
-add("bi_adm_dup", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [_PADM, dict(_PADM, digest={"sha256": _fsha("admission-baseline-other.json")})]))
-add("bi_adm_material", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [dict(_PADM, name=MAT + "admission-baseline.json")]))
 CK_RUNNERS = ("ubuntu-24.04", "ubuntu-24.04-arm")
 CK_STEPS = ("scanners", "acceptance", "runtime")
 def _chk(name, step, key="rel", digests="digests.json", signed=True, subj=None, ref=T, runner="", mats=None):
@@ -874,12 +866,7 @@ _gv("gv_nomat", mats=[]); _gv("gv_otherkey", key="other"); _gv("gv_unsigned", si
 # ---- cutover prep (advisor Oct 12; REQ-CHAIN-001-AC6): the rc run's records, laid out like Release's own directories ----
 # Every record is made for the release-candidate tag v0.3.0-rc1 (the identities of the policy made with --tag v0.3.0-rc1): Build's collection (digests.json and
 # items.json products), Sign's provenance with its Rekor stub, Rebuild's collection, the four Check records, and the hostile verdict's results file.
-dj("admission-baseline-rc.json", {"baseline": "requirements/releases/v0.3.0-rc1.yaml", "baseline_version": "v0.3.0-rc1", "sha": "c" * 40, "tag": "v0.3.0-rc1"})
-dj("admission-baseline-final.json", {"baseline": "requirements/releases/v0.3.0.yaml", "baseline_version": "v0.3.0", "sha": "c" * 40, "tag": "v0.3.0"})
-def _padm(n): return dict(_PADM, digest={"sha256": _fsha(n)})
-add("rc_build", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [_padm("admission-baseline-rc.json")], TRC))
-add("rc_build_final", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [_padm("admission-baseline-final.json")], TRC))     # Q2a: Build's record of the run for the FINAL tag
-add("rc_build_noadm", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json"), TRC))
+add("rc_build", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json"), TRC))
 _RCC = os.environ.get("RC_COMMIT") or ("f" * 40)
 def _src(commit): return {"buildDefinition": dict(slsa_ok(TRC)["buildDefinition"], resolvedDependencies=[{"uri": "git+https://github.com/fosterstack/cache@" + TRC, "digest": {"gitCommit": commit}}])}
 add("rc_sign", PROV, D, ref=TRC, predicate=_src(_RCC))
@@ -909,9 +896,9 @@ _DC = "digest list differs from the digests Build attested (its digest does not 
 dj("rc-hostile-digestcause.json", {"attempts": [_hrow(a, reason=_DC) if a == "hand_sign_code" else _hrow(a)
                                               for a in _HF] + [_CTL]})   # refused at the attestation check, not the format check
 dj("rc-hostile-reworded.json", {"attempts": [_hrow(a, reason=_HF[a][1] + " ") for a in _HF] + [_CTL]})      # still a green verdict, other bytes
-def rcdir(name, build="rc_build", sign="rc_sign", rebuild="rc_rebuild", hostile="rc-hostile", check=None, digests="digests.json", adm="admission-baseline-rc"):
+def rcdir(name, build="rc_build", sign="rc_sign", rebuild="rc_rebuild", hostile="rc-hostile", check=None, digests="digests.json"):
     d = p(name)
-    files = [("witness-build/build-collection.json", build + ".json"), ("witness-build/digests.json", digests), ("witness-build/items.json", "items.json"), ("witness-build/admission-baseline.json", adm + ".json"),
+    files = [("witness-build/build-collection.json", build + ".json"), ("witness-build/digests.json", digests), ("witness-build/items.json", "items.json"),
              ("provenance/provenance.json", sign + ".json"), ("provenance/provenance.rekor.json", sign + ".rekor.json"),
              ("witness-rebuild/rebuild-collection.json", rebuild + ".json"), ("hostile-results/hostile-results.json", hostile + ".json")]
     chk = {(r, s): "rc_c_%s_%s" % (r, s) for r in CK_RUNNERS for s in CK_STEPS}
@@ -928,12 +915,10 @@ rcdir("rc_norekor_check"); os.remove(p("rc_norekor_check/witness-check/ubuntu-24
 rcdir("rc_badsign", sign="sign_othertag")
 rcdir("rc_othersrc", sign="rc_sign_othersrc")
 rcdir("rc_nosrc", sign="rc_sign_nosrc")
-rcdir("rc_build_final", build="rc_build_final", adm="admission-baseline-final")
-rcdir("rc_noadm", build="rc_build_noadm")
 rcdir("rc_check_missing", check={(ARM, "runtime"): None})
 rcdir("rc_check_otherkey", check={(AMD, "scanners"): "rc_c_scanners_otherkey"})
 _chk("rc_c_scanners_tag", "scanners", ref=T, runner=ARM)          # a Check record made at the FINAL tag, offered under the rc tag's policy
-add("rc_build_finalref", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [_padm("admission-baseline-rc.json")], T))
+add("rc_build_finalref", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json"), T))
 rcdir("rc_check_finaltag", check={(ARM, "scanners"): "rc_c_scanners_tag"})
 rcdir("rc_build_finalref", build="rc_build_finalref")
 rcdir("rc_norekor")
@@ -1200,7 +1185,7 @@ expect_refuse "002-AC2 the provenance of another tag (v0.3.1) is refused: the re
 expect_refuse "002-AC2 a tag that only starts like the tag (v0.3.0-rc1) is refused" "ref|v0.3.0-rc1" verify $(V) --stage sign $(rec sign_rc)
 expect_refuse "002-AC2 a branch is refused" "ref|refs/heads/main" verify $(V) --stage sign $(rec sign_branch)
 expect_refuse "002-AC2 round 5 B2a: a BRANCH named like the tag (refs/heads/v0.3.0) is refused (the ref is compared whole, not by its last segment)" "ref|refs/heads/v0.3.0" verify $(V) --stage sign $(rec sign_brtag)
-expect_refuse "002-AC2 round 5 B2a: refs/heads/release/v0.3.0 is refused" "ref|refs/heads/release/v0.3.0" verify $(V) --stage sign $(rec sign_brrel)
+expect_refuse "002-AC2 round 5 B2a: refs/heads/release/v0.3 is refused" "ref|refs/heads/release/v0.3" verify $(V) --stage sign $(rec sign_brrel)
 
 # ---- the key binds every record: the signature, by the release key of the manifest, over the PAE --------------------
 expect_ok     "KEY a Build collection signed by the release key is accepted" verify $(V) --stage build $(rec build_coll)
@@ -1498,7 +1483,7 @@ rc=0; run policy make --template "$work/template.json" --ref refs/tags/v0.3.0 --
 expect_ok     "002-AC2 the dry-run policy accepts Sign's record at the dry-run ref (the positive control passes)" verify --policy "$work/policy-br.json" --stage sign $(rec sign_br)
 expect_refuse "002-AC2 RELEASE'S TAG-PINNED POLICY REFUSES a Sign record whose SAN ref is a branch: a dry run can never be accepted" "refs/heads/hostile-proof/x" verify $(V) --stage sign $(rec sign_br)
 expect_refuse "002-AC2 round 5 B2a: a BRANCH named like the tag (refs/heads/v0.3.0) is refused by the tag policy (the ref is compared whole, not by its last segment)" "refs/heads/v0.3.0" verify $(V) --stage sign $(rec sign_brtag)
-expect_refuse "002-AC2 round 5 B2a: refs/heads/release/v0.3.0 is refused" "refs/heads/release/v0.3.0" verify $(V) --stage sign $(rec sign_brrel)
+expect_refuse "002-AC2 round 5 B2a: refs/heads/release/v0.3 is refused" "refs/heads/release/v0.3" verify $(V) --stage sign $(rec sign_brrel)
 expect_refuse "Q2b 002-AC2 round 5 B2a: the run's ref is the tag but the calling workflow's ref is the BRANCH refs/heads/v0.3.0: refused" "workflow|refs/heads/v0.3.0" verify $(V) --stage sign $(rec sign_cfg_brtag)
 expect_refuse "Q2b a provenance with no calling workflow is refused (the field the policy compares must be there)" "workflow" verify $(V) --stage sign $(rec sign_nowf)
 for _k in evil cachex prerelease xrelease otherref nosite; do
@@ -1992,18 +1977,6 @@ expect_refuse "PR4 bind-items: a record with no items.json product is refused" "
 expect_refuse "PR4 bind-items: two items.json products (one right, one wrong) are refused" "build|items.json" $(BI bi_dup)
 expect_refuse "PR4 bind-items: a material subject of the same name does not count as the product" "build|items.json" $(BI bi_material)
 expect_refuse "PR4 bind-items: an unsigned record is refused" "build|signature" $(BI bi_unsigned)
-# REQ-CHAIN-007-AC19 (advisor ruling B, Oct 12): the same binding for a second product of Build's record, named by --product (default items.json)
-BP() { echo bind-items --policy "$work/policy.json" --record "$work/$1.json" --items "$work/${2:-admission-baseline}.json" --product "${3:-admission-baseline.json}"; }
-expect_ok     "AB bind-items --product: admission-baseline.json equal to its product of Build's verified record is accepted" $(BP bi_adm)
-expect_refuse "AB bind-items --product: a baseline file that is not the one Build's record holds is refused" "build|admission-baseline.json|digest" $(BP bi_adm admission-baseline-other)
-expect_refuse "AB bind-items --product: a record with no admission-baseline.json product (items.json only) is refused" "build|admission-baseline.json" $(BP bi_ok)
-expect_refuse "AB bind-items --product: two products of that name are refused" "build|admission-baseline.json" $(BP bi_adm_dup)
-expect_refuse "AB bind-items --product: a material subject of that name does not count as the product" "build|admission-baseline.json" $(BP bi_adm_material)
-expect_refuse "AB bind-items --product: items.json is still bound under its own name (the default product)" "build|items.json|digest" $(BI bi_adm items-other)
-expect_refuse "AB bind-items --product: a product name with a slash is refused" "build|product" $(BP bi_adm admission-baseline ../items.json)
-expect_ok     "AB bind-items --product '': an empty name is the default product, items.json" $(BI bi_ok) --product ""
-expect_refuse "AB bind-items --product '': ...and is judged as items.json" "build|items.json|digest" \
-  $(BI bi_ok items-other) --product ""
 CLS() { echo check-list --policy "$work/policy.json" --digests "$work/${2:-digests}.json" --dir "$work/$1"; }
 expect_ok     "PR4 check-list: scanners, acceptance and runtime of both runners, each verified, each for Build's digests, is accepted" $(CLS cl_ok)
 expect_refuse "PR4 check-list: a missing record (the arm runner's runtime) is refused, naming Check, the runner and the record" "check|ubuntu-24.04-arm|runtime|missing" $(CLS cl_missing)
@@ -2263,8 +2236,6 @@ expect_refuse "AC6 rc-proof: a final tag in the marker is refused" "marker|rc_ta
 expect_refuse "AC6 rc-proof: Sign's provenance whose built commit is not the rc tag's commit (a moved or recreated tag) is refused naming the commit" "marker|built|commit" $(RCP rc_othersrc)
 expect_refuse "AC6 rc-proof: Sign's provenance that names no built commit is refused" "marker|built|commit" $(RCP rc_nosrc)
 expect_refuse "AC6 rc-proof: Sign's provenance made for another tag is refused (the rc tag's identity)" "sign|v0.3.1" $(RCP rc_badsign)
-expect_refuse "Q2a AC6 rc-proof: Build's record of the run for the FINAL tag (its signed admission baseline names v0.3.0) is refused under the rc tag's policy" "build|tag|v0.3.0" $(RCP rc_build_final)
-expect_refuse "Q2a AC6 rc-proof: a Build record that holds no admission-baseline.json product is refused (nothing signed names the tag)" "build|admission-baseline.json" $(RCP rc_noadm)
 expect_refuse "AC6 rc-proof: a missing Check record (the arm runner's runtime) is refused" "check|ubuntu-24.04-arm|runtime|missing" $(RCP rc_check_missing)
 expect_refuse "AC6 rc-proof: Rebuild's record about other digests is refused" "rebuild|digest" $(RCP rc_rebuild_other)
 expect_refuse "AC6 rc-proof: a hostile verdict in which an attempt was accepted is refused" "mint_sign_cert" $(RCP rc_hostile_accepted)
@@ -2444,7 +2415,6 @@ expect_refuse "003-AC1 wrong tag through stage-start" "build|ref" $(ST rebuild b
 expect_refuse "003-AC1 a branch through stage-start" "build|ref" $(ST rebuild build) $(rec build_coll_branchref) --digests "$work/digests.json"
 expect_refuse "PR4 bind-items: a record of another tag is refused" "build|ref" $(BI bi_othertag)
 expect_refuse "PR4 bind-items: a record made on a branch is refused" "build|ref" $(BI bi_branch)
-expect_refuse "AB bind-items --product: a record made for another tag is refused for the baseline file too" "build|ref" $(BP bi_othertag)
 expect_refuse "PR4 check-list: a record of another tag is refused" "check|ref" $(CLS cl_tag2)
 expect_refuse "PR4 check-list: a record made on a branch is refused" "check|ref" $(CLS cl_branch)
 expect_refuse "G bind-check: a record of another tag is refused" "check|ref" $(BC gv_tag2)

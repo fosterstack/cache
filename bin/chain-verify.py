@@ -898,21 +898,16 @@ def _release_policy(a, stage):
 def cmd_bind_items(a):
     """items.json is a product of Build's VERIFIED record with the same sha256: its children, locks and SBOMs are then not a side channel."""
     pol = _release_policy(a, "build")
-    # REQ-CHAIN-007-AC19: a second product of Build's record, admission-baseline.json, is bound the same way
-    product = a.product or "items.json"
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", product):
-        refuse("build", "product: %r is not a plain file name" % product)
-    want = ITEMS_PRODUCT if product == "items.json" else "https://witness.dev/attestations/product/v0.1/file:" + product
-    have = _sha256_bytes_of(a.items, "build", product)
+    have = _sha256_bytes_of(a.items, "build", "items.json")
     with tempfile.TemporaryDirectory() as tmp:
         stmt, _payload, dsse = verify_record(pol, "build", a.record, tmp)
     if dsse["payloadType"] == POLT:
         refuse("build", "predicate: a signed release policy is not Build's record")
-    hits = [s for s in typed_subjects("build", stmt) if s["name"] == want]
+    hits = [s for s in typed_subjects("build", stmt) if s["name"] == ITEMS_PRODUCT]
     if len(hits) != 1:
-        refuse("build", "%s: Build's record holds %d product subjects named file:%s, exactly one is required" % (product, len(hits), product))
+        refuse("build", "items.json: Build's record holds %d product subjects named file:items.json, exactly one is required" % len(hits))
     if hits[0]["digest"].get("sha256") != have:
-        refuse("build", "digest: %s is not the file Build's record holds" % product)
+        refuse("build", "digest: items.json is not the file Build's record holds")
     print("ok")
 
 
@@ -959,7 +954,7 @@ APK_PRODUCT = re.compile(re.escape(PRODUCT_PREFIX) + r"out/[^/]+/[^/]+\.apk")
 
 def _signed_apk_files(pol, stage, paths, step, label):
     """The whole-file sha256 of every apk product (out/<arch>/*.apk) in the signed records of one step (apk is Build's, rapk is Rebuild's), each verified under the stage's
-    identity; an unverified record, a record of another step, or an apk held by two records is refused. The subjects every record shares (git, admission.json, APKINDEX) are not apks."""
+    identity; an unverified record, a record of another step, or an apk held by two records is refused. The subjects every record shares (git, APKINDEX) are not apks."""
     files = {}
     for path in paths:
         try:
@@ -1165,12 +1160,7 @@ def _rc_stages(rec, pol_path):
                                        record=rec("witness-build/build-collection.json"),
                                        digests=digests, policy=pol_path))
     cmd_bind_items(argparse.Namespace(policy=pol_path, record=rec("witness-build/build-collection.json"),
-                                      items=rec("witness-build/items.json"), product=None))
-    # Build's record names the tag through its signed admission-baseline.json product (`tag`): the baseline is bound to
-    # the record like items.json, and its tag must be the marker's rc tag (checked in _rc_baseline_tag)
-    cmd_bind_items(argparse.Namespace(policy=pol_path, record=rec("witness-build/build-collection.json"),
-                                      items=rec("witness-build/admission-baseline.json"),
-                                      product="admission-baseline.json"))
+                                      items=rec("witness-build/items.json")))
     cmd_stage_start(argparse.Namespace(stage="release", previous="sign", rekor_entries=None,
                                        record=rec("provenance/provenance.json"), digests=digests,
                                        policy=pol_path))
@@ -1178,15 +1168,6 @@ def _rc_stages(rec, pol_path):
                                        record=rec("witness-rebuild/rebuild-collection.json"),
                                        digests=digests, policy=pol_path))
     cmd_check_list(argparse.Namespace(policy=pol_path, digests=digests, dir=rec("witness-check")))
-
-
-def _rc_baseline_tag(rec, marker):
-    """A Build record made in the run for another tag (the final one) is refused."""
-    baseline = load_json(rec("witness-build/admission-baseline.json"), "admission baseline")
-    if not isinstance(baseline, dict) or baseline.get("tag") != marker["rc_tag"]:
-        baseline_tag = baseline.get("tag") if isinstance(baseline, dict) else None
-        refuse("build", "tag: Build's admission baseline is for %s, the marker's rc tag is %s"
-               % (json.dumps(baseline_tag), marker["rc_tag"]))
 
 
 def _rc_provenance(rec, marker, pol_path, repository):
@@ -1236,7 +1217,6 @@ def cmd_rc_proof(a):
         policy_make(argparse.Namespace(template=a.template, tag=marker["rc_tag"], ref=None, out=pol_path))
         with contextlib.redirect_stdout(io.StringIO()):
             _rc_stages(rec, pol_path)
-        _rc_baseline_tag(rec, marker)
         _rc_provenance(rec, marker, pol_path, a.repository)
     _rc_hostile(rec)
     for name, rel in RC_RECORDS:
@@ -2073,8 +2053,8 @@ SR_CHECK_FOLDER = {"witness-" + n: n for n in CHECK_RECORDS}     # Check's three
 SR_CHECK_NAMES = ["%s/%s" % (r, f) for r in CHECK_RUNNERS for f in SR_CHECK_FOLDER]     # a Check record is named <runner>/<folder>: both runners make the same three folders
 SR_CHECK_GROUPS = tuple(("check-results-" + r, ["%s/%s" % (r, f) for f in SR_CHECK_FOLDER]) for r in CHECK_RUNNERS)     # (artifact folder under --artifacts-dir, the records whose products it carries)
 SR_CHECK_PREFIX = "check-results/"
-SR_DATA = ("digests.json", "items.json", "admission-baseline.json", "verdict.json")
-SR_REQUIRED = {"build": ("digests.json", "items.json", "admission-baseline.json"), "rebuild": ("verdict.json",)}
+SR_DATA = ("digests.json", "items.json", "verdict.json")
+SR_REQUIRED = {"build": ("digests.json", "items.json"), "rebuild": ("verdict.json",)}
 # a data file's product name is its path from the repository root: Build's three sit at the root, Rebuild's verdict in
 # witness-rebuild/; matched in full, never by basename
 SR_PATH = {"verdict.json": "witness-rebuild/verdict.json"}
@@ -2664,7 +2644,6 @@ def build_parser():
     bi.add_argument("--policy", required=True)
     bi.add_argument("--record", required=True)
     bi.add_argument("--items", required=True)
-    bi.add_argument("--product")
     bc = sub.add_parser("bind-check")
     bc.add_argument("--policy", required=True)
     bc.add_argument("--record", required=True)

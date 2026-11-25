@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-004-AC13, REQ-CHAIN-004-AC15 — a snapshot record, and anything carrying the snapshot version 0.0.0, is refused everywhere, by name
 #
-# Snapshot mode (REQ-CHAIN-004-AC12) lets the proof workflows build with no tag and no admission; the marker
+# Snapshot mode (REQ-CHAIN-004-AC12) lets the proof workflows build with no tag; the marker
 # is the step name in the signed
 # collection (snapshot-apk, snapshot-build, snapshot-rapk, snapshot-rebuild). Every reader of a record in
 # bin/chain-verify.py applies one rule to the

@@ -8,7 +8,6 @@
 # no build output but Build's own apks (the owner's rule of Oct 21 2026); the comparison with Rebuild is the compare job's, which this job needs.
 set -euo pipefail
 shopt -s nullglob
-python3 -I -B bin/build-admit.py tag-ok --final "${GITHUB_REF_NAME:-}" || { echo "release-apks: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z" >&2; exit 1; }
 runners="ubuntu-24.04:x86_64:amd64 ubuntu-24.04-arm:aarch64:arm64"
 variants="standard fips"
 pattern() { case "$1" in standard) printf %s 'fscache-[0-9]*-r0.apk' ;; fips) printf %s 'fscache-fips-*-r0.apk' ;; esac; }

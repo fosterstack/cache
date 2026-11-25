@@ -19,7 +19,7 @@ hold no signing identity; the Sign stage signs their Witness records:
 Build -> { Sign, Rebuild, Check } ; Rebuild -> Sign (second call) ; Check -> Sign (third call) ; { Check, Sign, Sign (second call), Sign (third call) } -> Release
 ```
 
-The chain starts on a pushed `v*` tag or a push of a `release/vX.Y.Z` branch
+The chain starts on a pushed `v*` tag or a push of a `release/*` branch
 (or a branch dry run, which publishes nothing). Release first verifies the signed records of the stages
 before it; Rebuild and Check tie their work to the digest list Build made; Sign checks
 the building jobs' records (Build's against the artifacts it receives, Rebuild's
@@ -28,8 +28,7 @@ digest the exact bytes Build made and Rebuild and Check judged, and never
 rebuilds. Of the jobs above, Release is the only one that holds a registry credential or
 `packages: write`.
 
-- **Build** (`build-freeze`, `build-apk`, `build-assemble`): admits the tagged commit (tag signature,
-  ancestry of `main`, required checks, approved requirements baseline), builds
+- **Build** (`build-apk`, `build-assemble`): builds
   the apks on two native runners (amd64 and arm64) and assembles the images
   and archives. Witness (pinned by checksum, set up first) wraps every
   building step; the building jobs hold no identity token, so those records
@@ -71,12 +70,11 @@ rebuilds. Of the jobs above, Release is the only one that holds a registry crede
   The stages of Release create no tag: a tag is made before they start, by a
   maintainer, or for an automatic patch release by the `sign-tag` and `cut` jobs
   of `release.yml` (see "Cutting a release" below).
-- **Release branches**: a push of a `release/vX.Y.Z` branch builds once and
+- **Release branches**: a push of a `release/vX.Y` branch builds once as the next patch version of the line and
   runs Rebuild, Check and the persona tests on that build, with no key: Sign
   and Release do not run, nothing is pushed and no release is created. The
-  release tag `vX.Y.Z` of a minor or major release is pushed by hand;
-  patch tags are made on `main` by the `sign-tag` and `cut` jobs. A tag that
-  is not `vX.Y.Z` is refused at Build's admission and by `release-verify`.
+  release tag `vX.Y.0` of a minor or major release is pushed by hand;
+  patch tags are made on `main` by the `sign-tag` and `cut` jobs.
 - **Floating tags**: a final release moves `:X.Y` to itself every time and `:X`
   and `:latest` only when it is the highest released version (the plain
   `X.Y.Z` tags of `ghcr.io/fosterstack/cache`); the `-fips` image gets its exact
@@ -112,8 +110,7 @@ release path.
 An automatic patch release has no maintainer step. On a push to `main` or on the daily
 schedule, `release.yml` runs `decide`, which says which patch tag is due, then `sign-tag`,
 which makes the tag object and signs it with the release KMS key, then `cut`, which pushes
-that signed tag. Source admission accepts that key's signature on a patch tag only; a
-maintainer's SSH signature is accepted on any tag.
+that signed tag.
 
 ## What a release contains
 

@@ -1096,7 +1096,7 @@ t "rule 22" "apk-tool verify (K3): a correctly signed apk whose signature segmen
 t "rule 22" "bin/release-sign-apks.sh, bin/release-apks.sh and bin/apk-tool.py name no stored release key variable and hold no private-key text or PEM key parsing (no PRIVATE KEY text, no derive_pub; the two scripts do not call melange)" bash -c "! grep -En 'APK_RELEASE_SIGN""ING_KEY|PRIVATE KEY|derive_pub' '$RS_REAL' '$root/bin/release-apks.sh' '$root/bin/apk-tool.py' && ! grep -Ev '^ *#' '$RS_REAL' '$root/bin/release-apks.sh' | grep -En 'melange'"
 # release-apks.sh: the whole step on a repo-shaped tree with the test copy of the signer; and the refusals
 rm -rf "$work/ra"; mkdir -p "$work/ra/bin" "$work/ra/.github/policy" "$work/ra/witness-build"
-cp "$root/bin/release-apks.sh" "$root/bin/apk-tool.py" "$root/bin/build-admit.py" "$work/ra/bin/"; cp "$work/rs-copy.sh" "$work/ra/bin/release-sign-apks.sh"; cp "$root/.github/policy/cosign-signing-config.json" "$work/ra/.github/policy/"; cp "$root/bin/chain-verify.py" "$root/bin/chain_common.py" "$root/bin/chain_hostile.py" "$root/bin/chain_items.py" "$work/ra/bin/"; printf 'import sys\nsys.exit(0 if sys.argv[1:] == ["--before-publish"] else 2)\n' > "$work/ra/bin/release-postverify.py"; mkdir -p "$work/ra/.github/policy"; cp "$root/.github/policy/chain-scripts.json" "$work/ra/.github/policy/"
+cp "$root/bin/release-apks.sh" "$root/bin/apk-tool.py" "$work/ra/bin/"; cp "$work/rs-copy.sh" "$work/ra/bin/release-sign-apks.sh"; cp "$root/.github/policy/cosign-signing-config.json" "$work/ra/.github/policy/"; cp "$root/bin/chain-verify.py" "$root/bin/chain_common.py" "$root/bin/chain_hostile.py" "$root/bin/chain_items.py" "$work/ra/bin/"; printf 'import sys\nsys.exit(0 if sys.argv[1:] == ["--before-publish"] else 2)\n' > "$work/ra/bin/release-postverify.py"; mkdir -p "$work/ra/.github/policy"; cp "$root/.github/policy/chain-scripts.json" "$work/ra/.github/policy/"
 python3 - "$work/ra" "$pr/a.apk" <<'P'
 import json, os, shutil, subprocess, sys
 r, apk = sys.argv[1:3]
@@ -1121,8 +1121,6 @@ mv "$work/ra/release-signed" "$work/ra/release-signed.away"; rm -rf "$work/ra/re
 ( cd "$work/ra" && run_s env -u RELEASE_KMS_KEY_REF GITHUB_REF_NAME=v0.3.0 bash bin/release-apks.sh ); cp "$CALLS" "$work/ra.calls"
 t "rule 22" "I4 release-apks.sh without Sign's release-signed/apks fails and releases no apk" bash -c "[ \"\$(cat '$work/rc')\" != 0 ] && [ ! -e '$work/ra/release-apks' ] && ! grep -q '^aws ' '$work/ra.calls'"
 mv "$work/ra/release-signed.away" "$work/ra/release-signed"
-( cd "$work/ra" && run_s env GITHUB_REF_NAME=v0.3.0-rc1 bash bin/release-apks.sh ); cp "$CALLS" "$work/ra.calls"
-t "rule 22" "release-apks.sh: a release candidate tag (v0.3.0-rc1) never signs: exit 1 naming the tag, no aws call" bash -c "[ \"\$(cat '$work/rc')\" = 1 ] && grep -q 'tag refused' '$work/log' && ! grep -q '^aws ' '$work/ra.calls'"
 # The ratified rule of Oct 21 2026 (ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md): the job that holds the signing key never receives Rebuild's apks, so the
 # signer no longer takes --rebuild-dir (an old call is an unknown argument, exit 2) and the comparison lives only in bin/release-compare.sh, which runs in a job without a key
 sr "rule 22" "release signing has no --rebuild-dir any more: the old call is refused as an unknown argument (the comparison is release-compare.sh's, in a job without the key)" 'unknown argument' "${RK[@]}" "$RS" --build-dir "$work/rsA" --rebuild-dir "$work/rsB"
@@ -2742,8 +2740,8 @@ for rel, want in ((kr, kr), ("kr.pub", kr), ("sub/../kr.pub", kr), ("sub/new.txt
     case("abs-file %s" % rel, ["abs-file", rel], out=want, cwd=T)
 
 # ---- exclude-file
-JOB_PATHS = ["/archive/", "/host-tools/", "/out/", "/witness-apk/", "/admission.json",
-        "/build-in/", "/witness-build/", "/witness-rapk/", "/policy.json", "/freeze/"]
+JOB_PATHS = ["/archive/", "/host-tools/", "/out/", "/witness-apk/",
+        "/build-in/", "/witness-build/", "/witness-rapk/", "/policy.json"]
 exn = [0]
 
 
@@ -2776,11 +2774,11 @@ def exclude(label, before, expect_same=False, twice=False):
     print(("FAIL exclude-file %s: %s" % (label, "; ".join(problems))) if problems else "ok exclude-file " + label)
 
 
-exclude("makes the file with the ten paths", None, twice=True)
-exclude("keeps what the file held and adds the ten", "# local\nfoo\n", twice=True)
+exclude("makes the file with the eight paths", None, twice=True)
+exclude("keeps what the file held and adds the eight", "# local\nfoo\n", twice=True)
 exclude("a last line without a newline is not glued to the first pattern", "# local excludes")
 exclude("adds only the paths that are missing", "/out/\n/policy.json\n", twice=True)
-exclude("all ten there: the file is not touched", "".join(p + "\n" for p in JOB_PATHS), expect_same=True)
+exclude("all eight there: the file is not touched", "".join(p + "\n" for p in JOB_PATHS), expect_same=True)
 exclude("a different pattern is not the same line", " /out/\n/out\n/archive/ \n")
 bad_dir = put(T + "/exf/info", "not a directory")
 EXCLUDE_REFUSED = ("the exclude file %s cannot be used: its directory %s is not a directory, "
@@ -2955,15 +2953,14 @@ run_s "${bae[@]}" "$BA" "${ba_args[@]}" --out "$rel_work/out" --render-dir "$rel
 t "770" "relative --out and --render-dir that do not exist yet: made, and melange gets the absolute --out-dir" \
   bash -c "[ '$(rc)' = 0 ] && [ -d '$work/relnew/out' ] && [ -f '$work/relnew/render/melange.yaml' ] \
     && grep -Eq -- '^melange build .*--out-dir $work/relnew/out( |\$)' '$CALLS'"
-# a checkout without .git/info: the script makes the directory; the exclude file takes the job's ten paths once each
+# a checkout without .git/info: the script makes the directory; the exclude file takes the job's eight paths once each
 cp -R "$src" "$work/src-noinfo"; rm -rf "$work/src-noinfo/.git/info"
 run_s "${bae[@]}" "$BA" "${ba_args[@]}" --source-dir "$work/src-noinfo" --out "$(mo)"
-ten="/archive/ /host-tools/ /out/ /witness-apk/ /admission.json /build-in/ /witness-build/ /witness-rapk/ \
-/policy.json /freeze/"
-t "770" "a checkout with no .git/info: the build runs and the exclude file holds each of the ten paths once" bash -c "
+ten="/archive/ /host-tools/ /out/ /witness-apk/ /build-in/ /witness-build/ /witness-rapk/ /policy.json"
+t "770" "a checkout with no .git/info: the build runs and the exclude file holds each of the eight paths once" bash -c "
   ex='$work/src-noinfo/.git/info/exclude'; [ '$(rc)' = 0 ] \
     && for p in $ten; do [ \"\$(grep -cx \"\$p\" \"\$ex\")\" = 1 ] || exit 1; done"
-t "770" "after all the builds of this suite the fixture checkout's exclude file holds each of the ten paths once" \
+t "770" "after all the builds of this suite the fixture checkout's exclude file holds each of the eight paths once" \
   bash -c "for p in $ten; do [ \"\$(grep -cx \"\$p\" '$src/.git/info/exclude')\" = 1 ] || exit 1; done"
 
 echo "build-apk-test: $pass passed, $failn failed"

@@ -333,8 +333,8 @@ jobs:
           gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" --jq '.[] | .filename | @json' > changed.txt
           python3 -I -B base/bin/marker-pr-gate.py --base-dir base --head-dir head --files changed.txt --repository "$GITHUB_REPOSITORY"
 
-  # REQ-SUP-001-AC38: the pull-request pin scan is gone, so the exact-version rule for `go install` is judged here, on push to main, and release admission
-  # (required-checks.json) refuses a tag whose commit has no success of it. No network, no token.
+  # REQ-SUP-001-AC38: the pull-request pin scan is gone, so the exact-version rule for `go install` is judged here, on push to main, and a patch release
+  # (required-checks.json) waits for a success of it on its commit. No network, no token.
   go-exact-pins:
     name: go-exact-pins
     if: github.event_name == 'push'
@@ -376,7 +376,7 @@ jobs:
       # the requirements file AS OF ITS FIXED COMMIT (exact hash + complete
       # blocking set) - never main's current file, so editing requirements on
       # main never turns it red, while a hand-edited freeze is still caught
-      # here, in PR CI. Approval is checked only at release admission.
+      # here, in PR CI.
       - name: frozen baseline consistency (approval-agnostic)
         run: go -C tools/requirements run . verify-freeze v0.2.1
       # Repeatable regressions for the daily image rescan's merge,

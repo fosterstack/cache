@@ -17,7 +17,6 @@ CANON = {}   # job -> the exact normalised run text of its check step (filled be
 root = os.environ["SC_ROOT"]
 WF = os.path.join(root, ".github/workflows/supply-chain.yml")
 DB = os.path.join(root, ".github/dependabot.yml")
-ADM = os.path.join(root, "bin/admission-tag-signer.py")
 PIN = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 ALLOWED_ACTIONS = ("actions/checkout",)
 
@@ -277,15 +276,6 @@ def judge_db(d, gomod_dirs=GOMOD_DIRS):
         bad.append("the pip-minor-patch group is not exactly update-types minor and patch with exclude-patterns pip (a major never joins a group; no patterns)")
     return bad
 
-def judge_rest():
-    bad = []
-    ns = {}
-    src = open(ADM).read()
-    m = re.search(r"PIPELINE_ONLY = frozenset\(\[(.*?)\]\)", src, re.S)
-    if not m or "REQ-SUP-001" not in m.group(1):
-        bad.append("REQ-SUP-001 is not in PIPELINE_ONLY (left off, it is product by default and freezes automatic patches)")
-    return bad
-
 real_wf, real_db = None, None
 try:
     real_wf = load(WF)
@@ -313,8 +303,6 @@ pf = [st for st in J_real_steps() if fetches_pull_ref(st.get("run", ""))]
 result(not pf, "the real daily-audit job has no step that runs git fetch of refs/pull" + ("" if not pf else ": " + "; ".join(str(st.get("run", "")) for st in pf)))
 b = judge_db(real_db)
 result(not b, "the real dependabot.yml: no cooldown anywhere, every gomod entry weekly and nothing else, no docker entry; groups: every github-actions, gomod and pip entry has its minor-patch group (minor and patch only), codeql-action first and major-only, pydantic first on pip, no docker entry, no applies-to" + ("" if not b else ": " + "; ".join(b)))
-b = judge_rest()
-result(not b, "REQ-SUP-001 is pipeline-only and the CI suite list runs the three tests" + ("" if not b else ": " + "; ".join(b)))
 
 # the ci.yml job go-exact-pins (REQ-SUP-001-AC38) runs exactly the ratified command, read from the parsed file
 CI = os.path.join(root, ".github/workflows/ci.yml")

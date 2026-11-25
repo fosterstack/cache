@@ -18,7 +18,6 @@ own job in ci.yml is stopped by the existing workflow-change rule (both reviews 
 Standard library and the gh and git programs only; every program is run with an argument list, never a shell.
 """
 import argparse
-import importlib.util
 import json
 import os
 import re
@@ -31,14 +30,11 @@ MARKER = ".github/policy/rc-proof.json"
 KNOWN_RED = "test-evidence/known-red.json"
 ENTRY = "KR-CUTOVER"
 WORKFLOW = ".github/workflows/release.yml"
-# the one tag grammar (REQ-CHAIN-004-AC20), loaded from the file beside this one
-_spec = importlib.util.spec_from_file_location("build_admit", os.path.join(os.path.dirname(os.path.abspath(__file__)), "build-admit.py"))
-_admit = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_admit)
+TAG_SYNTAX = re.compile(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")     # v1.2.3 yes; v01.2.3 and v1.2.3-rc1 no
 
 
 def is_rc(tag):
-    return bool(_admit.TAG_SYNTAX.fullmatch(tag)) and "-rc" in tag
+    return bool(TAG_SYNTAX.fullmatch(tag)) and "-rc" in tag
 
 
 RUN_ID = re.compile(r"[0-9]{1,20}")

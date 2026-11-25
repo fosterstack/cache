@@ -358,7 +358,7 @@ for _i, st in enumerate(steps_):
 
 PROTECTED = ("allowlist", "allowlist-chain")
 # the protected check names belong to their jobs alone: no other job of this workflow may produce a check run with such a name (a job named
-# `allowlist-chain` that succeeds after the real one failed satisfies admission, which accepts any success with the matching name), and no job
+# `allowlist-chain` that succeeds after the real one failed satisfies the patch release wait, which accepts any success with the matching name), and no job
 # name may be an expression or come from a matrix (its rendered name cannot be judged).
 def name_disjoint(nm):   # a literal name is compared as it is; an expression name may hold only plain `${{ matrix.a.b }}` tokens and must keep a
     nm = str(nm)        # literal space or `(` around them (no protected name has either); any other `${{` is refused, never parsed
@@ -382,7 +382,7 @@ for jid_, j_ in d.get("jobs", {}).items():
         bad.append(f"the job {jid_} can write checks with the Actions token (it could publish a check run under a protected name)")
 if writes_checks(d.get("permissions")):
     bad.append("the workflow can write checks with the Actions token (it could publish a check run under a protected name)")
-# and no other workflow file may carry such a job either (admission accepts any success with the matching name and app); an unreadable or
+# and no other workflow file may carry such a job either; an unreadable or
 # unparseable workflow file is refused, since its job names cannot be judged
 _wdir = os.environ["PIN_WIRING_WORKFLOWS_DIR"]
 for _f in sorted(os.listdir(_wdir)):
@@ -1143,7 +1143,7 @@ WF
   if [ "$got" = "$want" ]; then pass=$((pass+1)); echo "PASS other-workflow-$mut → $got"; else failn=$((failn+1)); echo "FAIL other-workflow-$mut → $got, want $want ($out)"; fi
 done
 
-# the judge does not read required-checks.json (only release admission does): an unreadable file at PIN_WIRING_POLICY_FILE, or one that lists the gate, changes nothing
+# the judge does not read required-checks.json (only the release decide job does): an unreadable file at PIN_WIRING_POLICY_FILE, or one that lists the gate, changes nothing
 printf '{not json' > "$work/pol-required-garbage.json"
 if out=$(PIN_WIRING_POLICY_FILE="$work/pol-required-garbage.json" judge "$here/.github/workflows/ci.yml"); then pass=$((pass+1)); echo "PASS required-checks.json is not read"; else failn=$((failn+1)); echo "FAIL required-checks.json is read ($out)"; fi
 

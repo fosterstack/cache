@@ -35,13 +35,12 @@
 #   chain-verify.py sign-records --stage build|rebuild|check|release --template T.json --digests FILE --out DIR --record-dir D... [--artifacts-dir A]      (the Witness move)
 #     Sign's check-and-stage step. Each --record-dir D holds exactly one <step>-collection.local.json (step apk or build for --stage build, rapk or rebuild for
 #     --stage rebuild; a snapshot- step, another step, a record whose name is not <step>-collection.local.json, two records, or a file that is not a record or one of
-#     digests.json / items.json / admission-baseline.json / verdict.json is refused) and those data files. The record is a DSSE envelope of a Witness collection (the
+#     digests.json / items.json / verdict.json is refused) and those data files. The record is a DSSE envelope of a Witness collection (the
 #     throwaway-key form) whose name is the step, whose attestors are EXACTLY environment, git, material and product, which names no token variable or value
 #     (record-env), whose git commit is the run's commit ($GITHUB_SHA, a 40-hex), and which is not a snapshot record or version. The per-tag policy is made from --template
 #     and $GITHUB_REF / $GITHUB_EVENT_NAME exactly as `sign --check` does (a pushed tag, or a workflow_dispatch on a branch for the dry run). Every artifact file Sign
 #     RECEIVES (the files under A/<D-name>/ and the data files of D) must be a product of the record with the same sha256: no received file the record does not name,
-#     no different byte; a product the record names that Sign does not hold is NOT refused, except the required names (build: digests.json items.json
-#     admission-baseline.json; rebuild: verdict.json), which a record of the assembling step must receive. For --stage rebuild the record's material file:witness-build/digests.json
+#     no different byte; a product the record names that Sign does not hold is NOT refused, except the required names (build: digests.json items.json; rebuild: verdict.json), which a record of the assembling step must receive. For --stage rebuild the record's material file:witness-build/digests.json
 #     must equal --digests (Build's attested list). On success it writes, per record, OUT/<D-name>/<step>-collection.payload (the DSSE payload, byte for byte) and the
 #     data files unchanged, and prints one line per record `OUT/<D-name>/<step>-collection.payload<TAB>signed/<D-name>/<step>-collection.json`. Any refusal: exit 1,
 #     `refused at <build|rebuild>: <reason>`, and OUT is not created. Exit 2: --out exists, a usage error.
@@ -307,7 +306,7 @@ def verifier_copy(name):
     shutil.rmtree(c, ignore_errors=True)
     os.makedirs(c + "/bin")
     shutil.copytree(root + "/.github/policy", c + "/.github/policy")
-    for f in ("build-admit.py", "chain-verify.py", "chain_common.py", "chain_hostile.py", "chain_items.py"):
+    for f in ("chain-verify.py", "chain_common.py", "chain_hostile.py", "chain_items.py"):
         shutil.copy(root + "/bin/" + f, c + "/bin/" + f)
     h.write(c + "/bin/apk-tool.py", h.FAKE_APKTOOL, 0o755)
     return c + "/bin/chain-verify.py"
@@ -583,66 +582,6 @@ check("items-merge: a release candidate's files merge to the oracle's items (PRO
       rc == 0 and os.path.exists(d + "/items.json") and json.load(open(d + "/items.json")) == h.expected(d, "assemble", "items", "v0.3.0-rc1", vex=False),
       "exit %s %s" % (rc, err[:100]))
 
-# ---- admission-baseline (REQ-CHAIN-007-AC19): the baseline admission chose, as a file of Build's own record
-# chain-verify.py admission-baseline --admission A.json --admission B.json --tag T --sha S --out F   (run by the assemble job right after both legs are bound)
-#   A and B are the admission.json of the two apk legs, already verified by `bind` (each is a product of its leg's record). Exit 0 writes F, canonical
-#   (sorted keys, indent 1): exactly {baseline, baseline_version, sha, tag}, taken from the legs, which must agree on those four fields (their evidence
-#   fields may differ). Exit 1, first line `refused at build: <cause>: <detail>`: missing (a file), shape (not a JSON object with those fields as strings),
-#   disagree (the legs differ), tag (not --tag), sha (not --sha), baseline (an rc tag whose version is not the tag, any other tag whose version holds -rc, or a path not requirements/releases/<version>.yaml; no tag grammar is judged here, REQ-CHAIN-004-AC20),
-#   count (not exactly two --admission). Nothing is written on a refusal. Exit 2: a missing option.
-ADM = {"tag": "v0.3.1", "sha": "c" * 40, "baseline_version": "v0.3.0", "baseline": "requirements/releases/v0.3.0.yaml",
-       "required_checks": [{"context": "ci", "id": 11}], "informational_statuses": [], "run": {"id": 1, "attempt": 1}}
-def adm_tree(name, a=None, b=None):
-    d = "%s/%s" % (work, name)
-    shutil.rmtree(d, ignore_errors=True)
-    os.makedirs(d)
-    json.dump(a if a is not None else ADM, open(d + "/a.json", "w"))
-    json.dump(b if b is not None else dict(ADM, required_checks=[{"context": "ci", "id": 99}], run={"id": 2, "attempt": 1}), open(d + "/b.json", "w"))
-    return d
-def adm(label, d, want_rc, cause=None, tag="v0.3.1", sha="c" * 40, extra=None, files=("a.json", "b.json")):
-    args = ["admission-baseline"] + [x for f in files for x in ("--admission", f)] + ["--tag", tag, "--sha", sha, "--out", "out.json"] + (extra or [])
-    if os.path.exists(d + "/out.json"):
-        os.remove(d + "/out.json")
-    rc, out, err = run(args, d)
-    first = err.split("\n", 1)[0]
-    ok = rc == want_rc and "Traceback" not in err
-    if want_rc == 1:
-        ok = ok and first.startswith("refused at build: %s: " % cause) and not os.path.exists(d + "/out.json")
-    if want_rc == 0:
-        ok = ok and os.path.exists(d + "/out.json")
-    check(label, ok, "exit %s, first line %r" % (rc, first[:160]))
-d = adm_tree("adm1")
-adm("admission-baseline: two legs that agree make the baseline file", d, 0)
-want = {"baseline": "requirements/releases/v0.3.0.yaml", "baseline_version": "v0.3.0", "sha": "c" * 40, "tag": "v0.3.1"}
-check("admission-baseline: the file holds exactly tag, sha, baseline_version and baseline, canonical (the evidence fields stay out)",
-      os.path.exists(d + "/out.json") and json.load(open(d + "/out.json")) == want and open(d + "/out.json").read() == json.dumps(want, sort_keys=True, indent=1) + "\n")
-adm("admission-baseline: an owner-signed tag's own baseline (version = tag) is accepted", adm_tree("adm2", dict(ADM, tag="v0.3.0", baseline_version="v0.3.0"), dict(ADM, tag="v0.3.0", baseline_version="v0.3.0")), 0, tag="v0.3.0")
-adm("admission-baseline: a leg that is missing is refused", adm_tree("adm3"), 1, "missing", files=("a.json", "nope.json"))
-adm("admission-baseline: one leg only is refused (count)", adm_tree("adm4"), 1, "count", files=("a.json",))
-adm("admission-baseline: three legs are refused (count)", adm_tree("adm5"), 1, "count", files=("a.json", "b.json", "a.json"))
-d = adm_tree("adm6"); open(d + "/b.json", "w").write("{not json")
-adm("admission-baseline: a leg that is not JSON is refused (shape)", d, 1, "shape")
-adm("admission-baseline: a leg that is a list is refused (shape)", adm_tree("adm7", None, []), 1, "shape")
-adm("admission-baseline: a leg without baseline_version is refused (shape)", adm_tree("adm8", None, {k: v for k, v in ADM.items() if k != "baseline_version"}), 1, "shape")
-adm("admission-baseline: a leg whose baseline_version is not a string is refused (shape)", adm_tree("adm9", None, dict(ADM, baseline_version=3)), 1, "shape")
-adm("admission-baseline: legs that name different baselines are refused (disagree)", adm_tree("adm10", None, dict(ADM, baseline_version="v0.2.0", baseline="requirements/releases/v0.2.0.yaml")), 1, "disagree")
-adm("admission-baseline: legs for different commits are refused (disagree)", adm_tree("adm11", None, dict(ADM, sha="d" * 40)), 1, "disagree")
-adm("admission-baseline: a leg for another tag than the run's is refused (tag)", adm_tree("adm12"), 1, "tag", tag="v0.3.2")
-adm("admission-baseline: a leg for another commit than the run's is refused (sha)", adm_tree("adm13"), 1, "sha", sha="e" * 40)
-# no tag grammar is judged here (build-admit.py judged it at admission; chain_items.py holds none, REQ-CHAIN-004-AC20): a version of another spelling is taken as given
-adm("admission-baseline: a version that is not vX.Y.Z (0.3.0) with its own file is accepted, no grammar judged", adm_tree("adm14a", dict(ADM, baseline_version="0.3.0", baseline="requirements/releases/0.3.0.yaml"), dict(ADM, baseline_version="0.3.0", baseline="requirements/releases/0.3.0.yaml")), 0)
-for label, ver, path in (("a release candidate version", "v0.3.0-rc1", "requirements/releases/v0.3.0-rc1.yaml"), ("a path that is not the version's file", "v0.3.0", "requirements/releases/v0.2.0.yaml"),
-                         ("an absolute path", "v0.3.0", "/etc/passwd")):
-    adm("admission-baseline: %s is refused (baseline)" % label, adm_tree("adm14", dict(ADM, baseline_version=ver, baseline=path), dict(ADM, baseline_version=ver, baseline=path)), 1, "baseline")
-# a baseline version with -rc is refused whatever the tag (release candidates as rc tags are gone: no tag takes an -rc baseline of its own)
-RCA = dict(ADM, tag="v0.3.0-rc1", baseline_version="v0.3.0-rc1", baseline="requirements/releases/v0.3.0-rc1.yaml")
-adm("admission-baseline: a release candidate tag with another rc's baseline (v0.3.0-rc2) is refused (baseline)", adm_tree("adm22", dict(RCA, baseline_version="v0.3.0-rc2", baseline="requirements/releases/v0.3.0-rc2.yaml"), dict(RCA, baseline_version="v0.3.0-rc2", baseline="requirements/releases/v0.3.0-rc2.yaml")), 1, "baseline", tag="v0.3.0-rc1")
-adm("admission-baseline: a final tag with a release candidate baseline stays refused (baseline)", adm_tree("adm23", dict(ADM, tag="v0.3.0", baseline_version="v0.3.0-rc1", baseline="requirements/releases/v0.3.0-rc1.yaml"), dict(ADM, tag="v0.3.0", baseline_version="v0.3.0-rc1", baseline="requirements/releases/v0.3.0-rc1.yaml")), 1, "baseline", tag="v0.3.0")
-adm("admission-baseline: a tag spelled v0.3.0-rc.1 whose baseline is v0.3.0-rc1 is refused (baseline: a baseline version with -rc)", adm_tree("adm25", dict(RCA, tag="v0.3.0-rc.1"), dict(RCA, tag="v0.3.0-rc.1")), 1, "baseline", tag="v0.3.0-rc.1")
-text = open(os.path.join(root, "bin/chain_items.py")).read() + open(os.path.join(root, "bin/chain-verify.py")).read()
-check("admission-baseline: chain_items.py and chain-verify.py hold no occurrence of build-admit (REQ-CHAIN-004-AC20)", "build-admit" not in text and "build_admit" not in text)
-rc, out, err = run(["admission-baseline", "--admission", "a.json", "--admission", "b.json", "--tag", "v0.3.1", "--out", "out.json"], adm_tree("adm15"))
-check("admission-baseline: a missing --sha is a usage error (exit 2)", rc == 2 and "Traceback" not in err, "exit %s" % rc)
 # ---- bind --local (the Witness move: a Build/Rebuild record made with a throwaway key, untrusted until Sign) ---------------------------------------------
 def local_record(path, subjects, name="apk"):
     """The throwaway-key form Witness 0.12.0 writes with a file key: signatures [{keyid, sig}], no certificate (pipeline-cc's probe)."""
@@ -722,7 +661,7 @@ def coll_record(path, name, products, material=(), commit=TAGSHA, attestors=ATT,
     return payload
 
 
-BUILD_DATA = {"digests.json": b'{"apk":"sha256:' + b"c" * 64 + b'"}', "items.json": b'{"items":1}', "admission-baseline.json": b'{"baseline":"v0.3.0"}'}
+BUILD_DATA = {"digests.json": b'{"apk":"sha256:' + b"c" * 64 + b'"}', "items.json": b'{"items":1}'}
 BUILD_ART = {"dist/fscache_0.3.0_linux_amd64.tar.gz": b"archive-bytes", "out/production/index.json": b"{}"}   # Sign downloads Build's images to artifacts/witness-build/out and dist to artifacts/witness-build/dist (stage-sign.yml)
 
 

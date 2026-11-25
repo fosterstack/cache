@@ -14,15 +14,15 @@
   release-metadata.py list     --version V --dir DIR --out F
         release-files.sha256: `<sha256>  <name>` for exactly release-manifest.json, the OpenVEX file, the CSAF file and the inspector-filters
         file of this version, in this order
-  release-metadata.py baseline --admission F --tag TAG --commit SHA
-        prints the requirements baseline version of Build's admission-baseline.json for this tag and commit
+  release-metadata.py baseline --tag TAG
+        prints the highest requirements baseline version at or below TAG
   release-metadata.py bind-archives --version V --digests D --dist DIR
         DIR holds exactly the four Linux archives Build recorded, each with its digest; writes nothing
   release-metadata.py checksums --version V --digests D --dist DIR --out F
         checksums.txt: `<sha256>  <name>` for the four archives, after the checks of bind-archives
 
 Every refusal exits 1 and names the file or the key; an output file is written only after every check passed. Offline."""
-import argparse, hashlib, importlib.util, json, os, re, sys
+import argparse, hashlib, json, os, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import chain_common  # noqa: E402  (the one strict JSON reader)
@@ -33,12 +33,11 @@ ARCHES = ("amd64", "arm64")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
 
+TAG_SYNTAX = re.compile(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")     # v1.2.3 yes; v01.2.3 and v1.2.3-rc1 no
+
+
 def is_final(tag):
-    """The one tag grammar (REQ-CHAIN-004-AC20), loaded from the file beside this one when a version is judged: `images`, which runs beside secrets, never loads it."""
-    spec = importlib.util.spec_from_file_location("build_admit", os.path.join(os.path.dirname(os.path.abspath(__file__)), "build-admit.py"))
-    admit = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(admit)
-    return bool(admit.TAG_SYNTAX.fullmatch(tag)) and "-rc" not in tag
+    return bool(TAG_SYNTAX.fullmatch(tag)) and "-rc" not in tag
 
 
 def refuse(msg):
@@ -191,29 +190,10 @@ def cmd_images(a):
 
 
 def cmd_baseline(a):
-    """REQ-CHAIN-007-AC19 (advisor ruling B): prints the requirements baseline version admission chose for this tag, read from Build's admission-baseline.json (a product of
-    Build's verified record, bound by release-verify). The file is a regular file holding exactly {baseline, baseline_version, sha, tag}; it must be for this tag and
-    this commit, the version vX.Y.Z at requirements/releases/<version>.yaml, and not newer than the tag. Release never picks a baseline itself."""
-    p = a.admission
-    if os.path.islink(p):
-        refuse("%s is a symlink" % p)
-    if not os.path.isfile(p):
-        refuse("%s is missing: Build's verified admission-baseline.json is required" % p)
-    d = strict_json(p)
-    keys = ("baseline", "baseline_version", "sha", "tag")
-    if not isinstance(d, dict) or sorted(d) != list(keys) or not all(isinstance(d[k], str) for k in keys):
-        refuse("%s must be exactly the object {%s}, strings" % (p, ", ".join(keys)))
-    if d["tag"] != a.tag:
-        refuse("%s is for tag %s, this run is %s" % (p, d["tag"], a.tag))
-    if d["sha"] != a.commit:
-        refuse("%s is for commit %s, this run is %s" % (p, d["sha"], a.commit))
-    v = d["baseline_version"]
-    if not is_final(v) or d["baseline"] != "requirements/releases/%s.yaml" % v:
-        refuse("baseline %r at %r is not a vX.Y.Z baseline at requirements/releases/<version>.yaml" % (v, d["baseline"]))
+    """The requirements baseline of a release: the highest requirements/releases/vX.Y.Z.yaml at or below the tag."""
     num = lambda s: tuple(int(x) for x in s[1:].split("."))
-    if not is_final(a.tag or "") or num(v) > num(a.tag):
-        refuse("baseline %s is not a version at or before the tag %s" % (v, a.tag))
-    print(v)
+    found = [f[:-len(".yaml")] for f in os.listdir("requirements/releases")]
+    print(max((v for v in found if num(v) <= num(a.tag)), key=num))
 
 
 def cmd_manifest(a):
@@ -334,7 +314,7 @@ def main(argv):
     for k in ("digests", "images-dir", "items", "modules-dir", "vex-dir", "baseline-version", "repo-root", "version",
               "commit", "ci-url", "workflow", "published-at", "reason", "out"):
         m.add_argument("--" + k, required=True)
-    b = sub.add_parser("baseline"); b.add_argument("--admission", required=True); b.add_argument("--tag", required=True); b.add_argument("--commit", required=True)
+    b = sub.add_parser("baseline"); b.add_argument("--tag", required=True)
     l = sub.add_parser("list"); l.add_argument("--version", required=True); l.add_argument("--dir", required=True); l.add_argument("--out", required=True)
     b = sub.add_parser("bind-archives"); b.add_argument("--version", required=True); b.add_argument("--digests", required=True); b.add_argument("--dist", required=True)
     c = sub.add_parser("checksums"); c.add_argument("--version", required=True); c.add_argument("--digests", required=True); c.add_argument("--dist", required=True); c.add_argument("--out", required=True)
