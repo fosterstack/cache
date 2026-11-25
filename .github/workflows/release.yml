@@ -1478,7 +1478,6 @@ jobs:
       id-token: write
     uses: ./.github/workflows/persona-uat.yml
     with:
-      digests: ${{ needs.build-assemble.outputs.digests }}
       image: ghcr.io/${{ github.repository_owner }}/cache@${{ fromJSON(needs.build-assemble.outputs.digests)['image-production'] }}
     secrets:   # exactly these six, by name, never inherit
       PERSONA_UAT_MODEL: ${{ secrets.PERSONA_UAT_MODEL }}

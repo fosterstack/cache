@@ -724,12 +724,12 @@ def judge_gate(name, j, bad):
     if name == "call":
         trig = {"branch push": branch, "workflow_dispatch": dict(main, event="workflow_dispatch")}
     elif name == "rc":
-        trig = {"a call with digests": {"digests": "{}"}, "a call without digests": {}}
+        trig = {"a call with digests": {"digests": "{}"}, "a call without digests": {}, "a call with an image": {"image": "ghcr.io/o/cache@sha256:" + "a" * 64}}
     else:
-        trig = {"a call with an image": {"image": "ghcr.io/o/cache@sha256:" + "a" * 64}, "a call without an image": {}}
+        trig = {"a call with an image": {"image": "ghcr.io/o/cache@sha256:" + "a" * 64}, "a call without an image": {}, "a call with digests": {"digests": "{}"}}
     try:
         for tn, base in trig.items():
-            trigger_ok = tn in ("branch push", "a call with digests", "a call with an image")           # a dispatch never satisfies a trigger conjunct; the gate is a separate conjunct that no trigger overrides
+            trigger_ok = tn == {"call": "branch push", "rc": "a call with digests"}.get(name, "a call with an image")           # a dispatch never satisfies a trigger conjunct; the gate is a separate conjunct that no trigger overrides
             for label, v in (("unset", None), ("empty", ""), ("false", "false"), ("TRUE", "TRUE"), ("True", "True"), ("1", "1"), ("true", "true"), (" true", " true"), ("yes", "yes")):
                 ctx = dict(base, vars={} if v is None else {"PERSONA_UAT_ENABLED": v})
                 got, want = job_runs(j, ctx), (str(v).lower() == "true" and trigger_ok)
@@ -827,8 +827,8 @@ def judge_call_compliance(j, bad):
         bad.append(f"release.yml's persona-uat-compliance permissions are not exactly {want}: no packages, no write of any kind (found {j.get('permissions')})")
     if j.get("secrets") != {s: "${{ secrets.%s }}" % s for s in PERSONA_SECRETS}:
         bad.append(f"release.yml's persona-uat-compliance does not pass exactly the six persona secrets, each by name, and never inherit (secrets: {j.get('secrets')!r})")
-    if j.get("with") != {"digests": "${{ needs.build-assemble.outputs.digests }}", "image": CALL_IMAGE}:
-        bad.append(f"release.yml's persona-uat-compliance does not pass exactly Build's digests and the published image (with: {j.get('with')!r})")
+    if j.get("with") != {"image": CALL_IMAGE}:
+        bad.append(f"release.yml's persona-uat-compliance does not pass exactly the published image, and no digests (digests would also start persona-uat-rc) (with: {j.get('with')!r})")
     if set(j) - {"uses", "needs", "if", "permissions", "with", "secrets"}:
         bad.append(f"release.yml's persona-uat-compliance has keys beyond uses, needs, if, permissions, with and secrets: {sorted(set(j) - {'uses', 'needs', 'if', 'permissions', 'with', 'secrets'})}")
 
@@ -1182,7 +1182,7 @@ RS = {"on": {"push": {"tags": ["v*"]}}, "jobs": {
                        "secrets": {s: "${{ secrets.%s }}" % s for s in PERSONA_SECRETS}},
     "persona-uat-compliance": {"needs": ["build-assemble", "release"], "if": "${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}",
                                "permissions": {"contents": "read", "id-token": "write"}, "uses": PERSONA_FILE,
-                               "with": {"digests": "${{ needs.build-assemble.outputs.digests }}", "image": CALL_IMAGE},
+                               "with": {"image": CALL_IMAGE},
                                "secrets": {s: "${{ secrets.%s }}" % s for s in PERSONA_SECRETS}}}}
 FS = {"on": {"schedule": [{"cron": "23 6 * * *"}]}, "jobs": {
     "check": {"if": "${{ github.event.schedule == '23 6 * * *' }}", "steps": [{"run": 'gh issue create --title "go freshness" --body x'}]}}}
@@ -1609,6 +1609,7 @@ mutate("call passes no secrets", "does not pass exactly the six persona secrets"
 mutate("call passes a seventh secret", "does not pass exactly the six persona secrets", lambda j: j["secrets"].update(GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}"), "call")
 mutate("call passes one of the six under another value", "does not pass exactly the six persona secrets", lambda j: j["secrets"].update(PERSONA_UAT_MODEL="x"), "call")
 mutate("call passes something else than Build's digests", "does not pass exactly Build's digests", lambda j: j.update({"with": {"digests": "${{ needs.release.outputs.digests }}"}}), "call")
+mutate("compliance call also passes Build's digests, which starts the rc personas", "does not pass exactly the published image", lambda j: j["with"].update(digests="${{ needs.build-assemble.outputs.digests }}"), "ccall")
 mutate("call loses the release-branch condition", "does not run only in release mode", lambda j: j.update({"if": "${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' }}"}), "call")
 mutate("call loses the gate", "does not run only in release mode", lambda j: j.update({"if": "${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/') }}"}), "call")
 mutate("call in release mode only is spelled as a snapshot test the wrong way round", "does not run only in release mode", lambda j: j.update({"if": str(j["if"]).replace("!=", "==")}), "call")
@@ -1765,14 +1766,13 @@ mutate("compliance call passes no secrets", "does not pass exactly the six perso
 mutate("compliance call drops one secret", "does not pass exactly the six persona secrets", lambda j: j["secrets"].pop("ANTHROPIC_WORKSPACE_ID"), "ccall")
 mutate("compliance call passes a seventh secret", "does not pass exactly the six persona secrets", lambda j: j["secrets"].update(GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}"), "ccall")
 mutate("compliance call passes one of the six under another value", "does not pass exactly the six persona secrets", lambda j: j["secrets"].update(PERSONA_UAT_MODEL="x"), "ccall")
-mutate("compliance call passes the digests only (no image)", "does not pass exactly Build's digests and the published image", lambda j: j["with"].pop("image"), "ccall")
-mutate("compliance call passes the image only (no digests)", "does not pass exactly Build's digests and the published image", lambda j: j["with"].pop("digests"), "ccall")
-mutate("compliance call passes the digests of another job", "does not pass exactly Build's digests and the published image", lambda j: j["with"].update(digests="${{ needs.release.outputs.digests }}"), "ccall")
-mutate("compliance call's image is a tag, not the digest", "does not pass exactly Build's digests and the published image", lambda j: j["with"].update(image="ghcr.io/${{ github.repository_owner }}/cache:${{ github.ref_name }}"), "ccall")
-mutate("compliance call's image is of another owner", "does not pass exactly Build's digests and the published image", lambda j: j["with"].update(image=j["with"]["image"].replace("github.repository_owner", "github.actor")), "ccall")
-mutate("compliance call's image is the fips image", "does not pass exactly Build's digests and the published image", lambda j: j["with"].update(image=j["with"]["image"].replace("image-production", "image-fips")), "ccall")
-mutate("compliance call's image is another registry", "does not pass exactly Build's digests and the published image", lambda j: j["with"].update(image=j["with"]["image"].replace("ghcr.io", "localhost:5000")), "ccall")
-mutate("compliance call passes a third input", "does not pass exactly Build's digests and the published image", lambda j: j["with"].update(tag="${{ github.ref_name }}"), "ccall")
+mutate("compliance call passes the digests only (no image)", "does not pass exactly the published image", lambda j: j["with"].pop("image"), "ccall")
+mutate("compliance call passes the digests of another job", "does not pass exactly the published image", lambda j: j["with"].update(digests="${{ needs.release.outputs.digests }}"), "ccall")
+mutate("compliance call's image is a tag, not the digest", "does not pass exactly the published image", lambda j: j["with"].update(image="ghcr.io/${{ github.repository_owner }}/cache:${{ github.ref_name }}"), "ccall")
+mutate("compliance call's image is of another owner", "does not pass exactly the published image", lambda j: j["with"].update(image=j["with"]["image"].replace("github.repository_owner", "github.actor")), "ccall")
+mutate("compliance call's image is the fips image", "does not pass exactly the published image", lambda j: j["with"].update(image=j["with"]["image"].replace("image-production", "image-fips")), "ccall")
+mutate("compliance call's image is another registry", "does not pass exactly the published image", lambda j: j["with"].update(image=j["with"]["image"].replace("ghcr.io", "localhost:5000")), "ccall")
+mutate("compliance call passes a third input", "does not pass exactly the published image", lambda j: j["with"].update(tag="${{ github.ref_name }}"), "ccall")
 mutate("compliance call gains a key beyond the allowed ones", "has keys beyond", lambda j: j.update(concurrency="x"), "ccall")
 mutate("compliance call gains continue-on-error", "has keys beyond", lambda j: j.update({"continue-on-error": "true"}), "ccall")
 mutate("release.yml loses the compliance call", "exactly two jobs", lambda r: r["jobs"].pop("persona-uat-compliance"), "rel_wf")
