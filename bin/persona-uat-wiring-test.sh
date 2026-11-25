@@ -813,6 +813,8 @@ def judge_release(r, bad):
         bad.append("release.yml's patch-failed lists a persona job in needs: a failed persona run would then open a public issue (results stay private: it only fails the job)")
     judge_call(r, bad)
 
+PERSONA_SECRETS = ["PERSONA_UAT_MODEL", "PERSONA_UAT_COMPLIANCE_MODEL", "ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_SERVICE_ACCOUNT_ID", "ANTHROPIC_WORKSPACE_ID"]
+
 def judge_call(r, bad):
     """release.yml calls persona-uat.yml exactly once (REQ-UAT-001-AC1, AC6): a job-level `uses`, in release mode only, on a push of a release branch, behind the gate, after build-assemble,
     with the identity token for the persona federation and no write of any kind; the called file's job takes the digests as its input and its secrets from its own environment"""
@@ -835,12 +837,12 @@ def judge_call(r, bad):
     want = {"contents": "read", "id-token": "write"}
     if j.get("permissions") != want:
         bad.append(f"release.yml's persona-uat-rc permissions are not exactly {want}: no packages, no write of any kind (found {j.get('permissions')})")
-    if "secrets" in j:
-        bad.append(f"release.yml's persona-uat-rc passes secrets to the called file ({j['secrets']!r}): the persona secrets are those of its own environment, and nothing else is needed")
+    if j.get("secrets") != {s: "${{ secrets.%s }}" % s for s in PERSONA_SECRETS}:
+        bad.append(f"release.yml's persona-uat-rc does not pass exactly the six persona secrets, each by name, and never inherit (secrets: {j.get('secrets')!r})")
     if j.get("with") != {"digests": "${{ needs.build-assemble.outputs.digests }}"}:
         bad.append(f"release.yml's persona-uat-rc does not pass exactly Build's digests (with: {j.get('with')!r})")
-    if set(j) - {"uses", "needs", "if", "permissions", "with"}:
-        bad.append(f"release.yml's persona-uat-rc has keys beyond uses, needs, if, permissions and with: {sorted(set(j) - {'uses', 'needs', 'if', 'permissions', 'with'})}")
+    if set(j) - {"uses", "needs", "if", "permissions", "with", "secrets"}:
+        bad.append(f"release.yml's persona-uat-rc has keys beyond uses, needs, if, permissions, with and secrets: {sorted(set(j) - {'uses', 'needs', 'if', 'permissions', 'with', 'secrets'})}")
 
 def judge_persona_file(p, bad):
     if not p:
@@ -1230,7 +1232,8 @@ RS = {"on": {"push": {"tags": ["v*"]}}, "jobs": {
     "build-assemble": {"steps": [{"run": "true"}]}, "release": {"needs": ["build-assemble"], "steps": [{"run": "true"}]},
     "patch-failed": {"needs": ["build-assemble", "release"], "if": "${{ failure() }}", "steps": [{"run": 'gh issue create --title "auditor: release failed" --body "$RUN_URL"'}]},
     "persona-uat-rc": {"needs": "build-assemble", "if": "${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/') }}",
-                       "permissions": {"contents": "read", "id-token": "write"}, "uses": PERSONA_FILE, "with": {"digests": "${{ needs.build-assemble.outputs.digests }}"}}}}
+                       "permissions": {"contents": "read", "id-token": "write"}, "uses": PERSONA_FILE, "with": {"digests": "${{ needs.build-assemble.outputs.digests }}"},
+                       "secrets": {s: "${{ secrets.%s }}" % s for s in PERSONA_SECRETS}}}}
 FS = {"on": {"schedule": [{"cron": "23 6 * * *"}]}, "jobs": {
     "check": {"if": "${{ github.event.schedule == '23 6 * * *' }}", "steps": [{"run": 'gh issue create --title "go freshness" --body x'}]}}}
 PS = {"on": {"schedule": [{"cron": "43 6 * * 1"}], "workflow_call": {"inputs": {"digests": {"type": "string", "default": ""}}}}, "jobs": {
@@ -1650,7 +1653,10 @@ mutate("the call is not job-level `uses` of persona-uat.yml", "does not call", l
 mutate("call holds contents: write", "permissions are not exactly", lambda j: j["permissions"].update(contents="write"), "call")
 mutate("call holds packages: write", "permissions are not exactly", lambda j: j["permissions"].update(packages="write"), "call")
 mutate("call holds no id-token", "permissions are not exactly", lambda j: j["permissions"].pop("id-token"), "call")
-mutate("call passes the secrets on (secrets: inherit)", "passes secrets to the called file", lambda j: j.update(secrets="inherit"), "call")
+mutate("call passes the secrets on (secrets: inherit)", "does not pass exactly the six persona secrets", lambda j: j.update(secrets="inherit"), "call")
+mutate("call passes no secrets", "does not pass exactly the six persona secrets", lambda j: j.pop("secrets"), "call")
+mutate("call passes a seventh secret", "does not pass exactly the six persona secrets", lambda j: j["secrets"].update(GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}"), "call")
+mutate("call passes one of the six under another value", "does not pass exactly the six persona secrets", lambda j: j["secrets"].update(PERSONA_UAT_MODEL="x"), "call")
 mutate("call passes something else than Build's digests", "does not pass exactly Build's digests", lambda j: j.update({"with": {"digests": "${{ needs.release.outputs.digests }}"}}), "call")
 mutate("call loses the release-branch condition", "does not run only in release mode", lambda j: j.update({"if": "${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' }}"}), "call")
 mutate("call loses the gate", "does not run only in release mode", lambda j: j.update({"if": "${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/') }}"}), "call")
