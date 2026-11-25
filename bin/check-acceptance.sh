@@ -34,9 +34,11 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT   # until the suite's own cleanup below replaces it
 # Round 1 F1: the image is the one Build recorded, bound to digests.json before anything is loaded or run; the bind also lists the files of the layout
 # docker may be given (REQ-SUP-001-AC39)
-python3 bin/check-bind.py --digests "$digests" --images "$images" --members-out "$tmp" || exit 1
+python3 bin/check-bind.py --digests "$digests" --images "$images" || exit 1
 [ -f "bin/acceptance-$suite.sh" ] || fail "the $suite suite script is not in the tree"
-tar -C "$images/production" -cf "$tmp/production.tar" -T "$tmp/production.members" || fail "the production image layout could not be archived"
+arch=$(uname -m); arch=${arch/x86_64/amd64}; arch=${arch/aarch64/arm64}   # the chip's linux child is the image this runner can run
+# the engine reads a docker-save tar, not a bare OCI layout: bin/layout-archive.sh builds it from the layout Build recorded
+bash bin/layout-archive.sh "$images/production" "$arch" "$tmp/production.tar" fscache:production > /dev/null || fail "the production image layout could not be archived"
 loaded=$(docker load -i "$tmp/production.tar")
 ref=$(sed -n 's/^Loaded image: //p; s/^Loaded image ID: //p' <<< "$loaded" | tail -1)
 [ -n "$ref" ] || fail "docker load named no image for the production candidate"

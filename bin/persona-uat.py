@@ -792,7 +792,11 @@ def run_agent(agent_cmd, agent_args, request, sandbox, timeout, tfile=None, jfil
     finally:
         kill_group(p)          # on EVERY exit, whatever communicate() raised
     if p.returncode != 0:
-        return None, TranscriptFile("agent failed (exit %d)\n%s\n" % (p.returncode, err[-200000:]), tfile, jfile), "the agent failed (exit %d)" % p.returncode
+        why = "the agent failed (exit %d)" % p.returncode
+        marker = "persona-uat-provider-reason: "     # the provider's error class and HTTP status, written by bin/persona-uat-provider.py
+        if marker in err:
+            why += ": " + err.split(marker, 1)[1].split("\n", 1)[0].strip()[:80]
+        return None, TranscriptFile("agent failed (exit %d)\n%s\n" % (p.returncode, err[-200000:]), tfile, jfile), why
     try:
         return validate_answer(out), None, None
     except ValueError as e:
@@ -1809,7 +1813,12 @@ def _main():
             if not ok:
                 ok = encrypt(a.recipient, persona, out_dir, [text.encode(), b"\n=== TRANSCRIPT ===\ndriver error\n"])
             results[persona] = {"verdict": "blocking", "findings": [], "tokens": None, "capped": False, "encfail": not ok}
+            say_fail(persona, "the driver failed while recording (driver error)")
             sys.stderr.write("persona-uat: %s: fail\n" % persona)
+
+    def say_fail(persona, why):
+        """the job log's one non-secret reason for a failed persona (a driver reason or the persona's own first blocking finding), before its fail line"""
+        sys.stderr.write("persona-uat: %s: reason: %s\n" % (persona, (why or "").strip().split("\n", 1)[0][:200]))
 
     def _record(persona, answer, transcript, did_not_run, proven, extra_blocking, commands=None):
         if answer:
@@ -1844,6 +1853,8 @@ def _main():
             findings = [{"kind": "blocking", "text": "the report could not be encrypted"}]
             verdict = "blocking"
         results[persona] = {"verdict": verdict, "findings": findings, "tokens": tokens, "capped": capped, "encfail": not ok}
+        if verdict == "blocking":
+            say_fail(persona, did_not_run if not answer else next((f["text"] for f in findings if f["kind"] == "blocking"), ""))
         sys.stderr.write("persona-uat: %s: %s\n" % (persona, "fail" if verdict == "blocking" else "pass"))
 
     def all_did_not_run(reason):

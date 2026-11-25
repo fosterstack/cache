@@ -1087,19 +1087,36 @@ for f in sorted(glob.glob(out + "/*.cms")):
 PY
 decout() { rm -rf "${work:?}/$1/plain"; python3 "$work/dec.py" "$work/$1/out" "$work/$1/plain" "${2:-$work/test.key}"; }
 # publiclog <case>: the job log (stdout + stderr) is ONLY `persona-uat: <persona>|overall: pass|fail` lines, one per persona and overall, agreeing with the
-# encrypted reports (friction reads pass) and with each other (overall fails iff a persona does): no finding, doc name, host, model name or transcript text
+# encrypted reports (friction reads pass) and with each other (overall fails iff a persona does): no finding, doc name, host, model name or transcript text.
+# The one other line is the reason of a failed persona, `persona-uat: <persona>: reason: <text>` (one line, 1-200 characters), written immediately before that persona's
+# fail line and never for a persona that passes; the step summary stays the plain pass/fail lines.
 publiclog() { python3 - "$work/$1" "${2:-$PERSONAS}" <<'PYL'
 import re, sys
 d, personas = sys.argv[1], sys.argv[2].split()
 import os
 srcs = ("stdout", "stderr") + (("summary.md",) if os.path.exists(d + "/summary.md") else ())     # the controlled GITHUB_STEP_SUMMARY is a public surface too
-lines = [l for f in srcs for l in open(d + "/" + f).read().splitlines() if l.strip()]
 pat = re.compile(r"^persona-uat: (%s|overall): (pass|fail)$" % "|".join(personas))
+rpat = re.compile(r"^persona-uat: (%s): reason: (.+)$" % "|".join(personas))
+def without_reasons(raw):     # the log minus its reason lines, each of which must sit right before its own persona's fail line
+    out, i, why = [], 0, {}
+    while i < len(raw):
+        m = rpat.match(raw[i])
+        if m:
+            assert len(m.group(2)) <= 200 and m.group(2) == m.group(2).strip(), ("a reason is one line of at most 200 characters", raw[i])
+            assert i + 1 < len(raw) and raw[i + 1] == "persona-uat: %s: fail" % m.group(1), ("a reason line must come immediately before its persona's fail line", raw[i:i + 2])
+            assert m.group(1) not in why, ("two reason lines for one persona", raw[i]); why[m.group(1)] = m.group(2)
+        else: out.append(raw[i])
+        i += 1
+    return out, why
+lines = [l for f in srcs for l in open(d + "/" + f).read().splitlines() if l.strip()]
+lines, reasons = without_reasons(lines)
 bad = [l for l in lines if not pat.match(l)]
-assert not bad, ("the job log carries more than a pass/fail line per persona and overall", bad[:3])
+assert not bad, ("the job log carries more than a pass/fail line per persona and overall (and a reason line for each failed persona)", bad[:3])
 got = {}
 for l in [l for f in ("stdout", "stderr") for l in open(d + "/" + f).read().splitlines() if l.strip()]:
+    if rpat.match(l): continue
     m = pat.match(l); assert m.group(1) not in got, ("a duplicate line", l); got[m.group(1)] = m.group(2)
+assert sorted(reasons) == sorted(p for p in personas if got.get(p) == "fail"), ("every failed persona has a reason line and a persona that passes has none", reasons, got)
 if os.path.exists(d + "/summary.md"):       # a summary, when written, repeats the same lines and nothing else
     for l in open(d + "/summary.md").read().splitlines():
         if l.strip():
@@ -1111,6 +1128,8 @@ for p in personas:
     assert got[p] == ("fail" if first == "VERDICT: blocking" else "pass"), (p, first, got[p])
 PYL
 }
+# reason_of <case> <persona>: the text of that persona's `persona-uat: <persona>: reason: <text>` line in the case's log (nothing when there is none)
+reason_of() { grep -h "^persona-uat: $2: reason: " "$work/$1/stdout" "$work/$1/stderr" | sed "s/^persona-uat: $2: reason: //"; }
 # the "image under test" and Jenkins as tiny local HTTP servers, so the driver's readiness checks have something to find
 # the "image under test" (18080) is a fixture that behaves like the real server's counter: it serves Prometheus text on /metrics, counts every
 # request EXCEPT /metrics, /healthz and /statusz, and shows no fscache_http_requests_total sample until the first counted request. Jenkins (18081)
@@ -1476,7 +1495,9 @@ CASE="release: a blocking finding of the compliance reviewer FAILS the run (exit
 check test "$rc" -eq 1
 check publiclog relblock "$RELEASE_PERSONAS"
 check grep -q 'REL-BLOCK-TEXT' "$(out relblock)/compliance-reviewer.report.md"
-check none_match 'REL-BLOCK-TEXT|cosign verify' "$work/relblock/stdout" "$work/relblock/stderr" "$work/relblock/summary.md"
+check none_match 'REL-BLOCK-TEXT|cosign verify' "$work/relblock/summary.md"
+CASE="release: the reason line of the failed persona is the first line of its first blocking finding, and the step summary stays the plain pass/fail lines"
+check test "$(reason_of relblock compliance-reviewer)" = "REL-BLOCK-TEXT cosign verify fails as written"
 check test ! -s "$work/relblock/gh.log" -a "$(head -1 "$(out relblock)/compliance-reviewer.report.md")" = "VERDICT: blocking"
 IMAGE="$IMG2" run relfr '{"compliance-reviewer":{"findings":[{"kind":"friction","text":"REL-FRICTION-TEXT"}]}}' release
 CASE="release: friction only blocks nothing (exit 0, pass lines); the note is inside the encrypted report and nowhere in the log"
@@ -2389,6 +2410,45 @@ failclosed findings-gone readme-evaluator        '{"drop":["findings"]}'
 CASE="a failed agent leaves its transcript file present AND holding what it had written to stderr, so the artifact can diagnose it"
 check test -e "$(out fc-crash)/compliance-reviewer.transcript.txt"
 check grep -q 'PARTIAL-TRANSCRIPT for compliance-reviewer' "$(out fc-crash)/compliance-reviewer.transcript.txt"
+# REASONS (persona-uat: <persona>: reason: <text>): the one extra line of a failed persona, written right before its fail line (publiclog proves the position, the length and that a passing persona has none)
+CASE="reason: a persona that did not run shows the driver's own reason (an agent that crashed with exit 7 and named no provider reason: 'the agent failed (exit 7)'), nothing of what it wrote to stderr"
+check python3 - "$work/fc-crash/stderr" "$work/fc-crash/stdout" <<'PY'
+import re, sys
+lines = [l for f in sys.argv[1:] for l in open(f).read().splitlines()]
+r = [l for l in lines if l.startswith("persona-uat: compliance-reviewer: reason: ")]
+assert len(r) == 1, lines
+t = r[0].split("reason: ", 1)[1]
+assert t.startswith("the agent failed (exit 7)") and "PARTIAL" not in t and "TRANSCRIPT" not in t, t
+assert lines[lines.index(r[0]) + 1] == "persona-uat: compliance-reviewer: fail", lines
+PY
+# the provider's fixed marker line (as the real provider writes it before its own line) in the agent's stderr: the reason carries the class and the status and nothing else of that stderr
+run rsnprov '{"gradle-platform-engineer":{"crash":true,"crash_lines":["persona-uat-provider-reason: RateLimitError HTTP 429","persona-uat-provider: RateLimitError: Bearer abc.def sk-abcdefghijklmnop"]},"maven-jenkins-ci":{"crash":true,"crash_lines":["persona-uat-provider-reason: APIConnectionError HTTP none","persona-uat-provider: APIConnectionError: connection refused"]}}' rc
+CASE="reason: an agent that failed on a provider call shows 'the agent failed (exit N): <ClassName> HTTP <status>' (the status code, or the word none), and not the provider's message, a token, the model name or the transcript"
+check publiclog rsnprov
+check python3 - "$work/rsnprov" <<'PY'
+import re, sys
+d = sys.argv[1]
+out = open(d + "/stdout").read() + open(d + "/stderr").read() + open(d + "/summary.md").read()
+def reason(p):
+    r = [l for l in out.splitlines() if l.startswith("persona-uat: %s: reason: " % p)]
+    assert len(r) == 1, (p, out)
+    return r[0].split("reason: ", 1)[1]
+assert re.fullmatch(r"the agent failed \(exit [0-9]+\): RateLimitError HTTP 429", reason("gradle-platform-engineer")), reason("gradle-platform-engineer")
+assert re.fullmatch(r"the agent failed \(exit [0-9]+\): APIConnectionError HTTP none", reason("maven-jenkins-ci")), reason("maven-jenkins-ci")
+for secret in ("sk-abcdefghijklmnop", "Bearer abc.def", "connection refused", "MODEL-DEFAULT-X", "PARTIAL-TRANSCRIPT"):
+    assert secret not in out, ("the public log carries " + secret, out)
+PY
+# a marker line with an enormous class name: the reason is still ONE line of at most 200 characters
+run rsnlong "{\"gradle-platform-engineer\":{\"crash\":true,\"crash_lines\":[\"persona-uat-provider-reason: $(printf 'C%.0s' $(seq 600)) HTTP 500\"]}}" rc
+CASE="reason: a reason is cut to 200 characters and stays on one line"
+check publiclog rsnlong
+check test "$(reason_of rsnlong gradle-platform-engineer | wc -c | tr -d ' ')" -le 201 -a "$(reason_of rsnlong gradle-platform-engineer | wc -l | tr -d ' ')" -eq 1
+# a blocking finding: the first line of the FIRST BLOCKING finding (friction before it is skipped), the rest of its text and the later findings stay in the encrypted report
+run rsnfind '{"gradle-platform-engineer":{"findings":[{"kind":"friction","text":"FRICTION-FIRST"},{"kind":"blocking","text":"BLOCK-FIRST-LINE\nBLOCK-SECOND-LINE"},{"kind":"blocking","text":"BLOCK-OTHER"}]},"maven-jenkins-ci":{"findings":[{"kind":"blocking","text":"'"$(printf 'L%.0s' $(seq 300))"'"}]}}' rc
+CASE="reason: a persona that ran and ended blocking shows the first line of its first blocking finding (friction and later findings are not shown), cut to 200 characters"
+check publiclog rsnfind
+check test "$(reason_of rsnfind gradle-platform-engineer)" = "BLOCK-FIRST-LINE" -a "$(reason_of rsnfind maven-jenkins-ci)" = "$(printf 'L%.0s' $(seq 200))"
+check none_match 'FRICTION-FIRST|BLOCK-SECOND-LINE|BLOCK-OTHER' "$work/rsnfind/stdout" "$work/rsnfind/stderr" "$work/rsnfind/summary.md"
 
 seg_begin 8
 seg_on
@@ -2422,7 +2482,9 @@ check test "$rc" -ne 0
 check publiclog mixed
 check grep -q 'confusing proxy text' "$(out mixed)/gradle-platform-engineer.report.md"
 check grep -q 'jenkins step fails' "$(out mixed)/maven-jenkins-ci.report.md"
-check none_match 'jenkins step fails|confusing proxy' "$work/mixed/stdout" "$work/mixed/stderr"
+check none_match 'confusing proxy' "$work/mixed/stdout" "$work/mixed/stderr"
+CASE="a blocking persona's reason line is its blocking finding's first line; a friction-only persona that passes has no reason line (reasons are for failed personas only)"
+check test "$(reason_of mixed maven-jenkins-ci)" = "jenkins step fails" -a -z "$(reason_of mixed gradle-platform-engineer)"
 CASE="a friction-only persona's verdict is friction"
 check grep -q 'VERDICT: friction' "$(out friction)/gradle-platform-engineer.report.md"
 CASE="the driver has no issue machinery left: --publish and --gh are refused (exit 2), nothing starts"
@@ -2452,7 +2514,8 @@ check test "$rc" -eq 1
 check publiclog rcblock
 check grep -q 'jenkins step fails' "$(out rcblock)/maven-jenkins-ci.report.md"
 check grep -q 'rollback step fails as written' "$(out rcblock)/on-call-engineer.report.md"
-check none_match 'jenkins step fails|rollback step fails' "$work/rcblock/stdout" "$work/rcblock/stderr"
+CASE="rc: each blocking persona's reason line is its finding's first line, and no persona that passes has one"
+check test "$(reason_of rcblock maven-jenkins-ci)" = "jenkins step fails" -a "$(reason_of rcblock on-call-engineer)" = "rollback step fails as written" -a -z "$(reason_of rcblock gradle-platform-engineer)" -a -z "$(reason_of rcblock readme-evaluator)"
 check test ! -s "$work/rcblock/gh.log"
 CASE="rc: a clean run exits 0 with a pass line per persona and overall"
 IMAGE="$IMG2" run rcclean '{}' rc
@@ -2665,7 +2728,7 @@ assert rc == 1, rc
 left = [os.path.join(r, f) for r, _, fs in os.walk(d + "/out") for f in fs] if os.path.isdir(d + "/out") else []
 assert left == [], ("an uploadable file survived a failed encryption (a failed destination, or an earlier persona's artifact)", left)
 lines = [l for f in ("stdout", "stderr", "summary.md") for l in open(d + "/" + f).read().splitlines() if l.strip()]
-assert all(re.match(r"^persona-uat: ([a-z-]+|overall): (pass|fail)$", l) for l in lines), lines
+assert all(re.match(r"^persona-uat: (([a-z-]+|overall): (pass|fail)|[a-z-]+: reason: .{1,200})$", l) for l in lines), lines
 assert "persona-uat: overall: fail" in lines
 failed = {"1": personas, "partial": personas, "first": personas[:1], "3": [personas[2]]}[mode]
 for p in failed:
@@ -3164,6 +3227,11 @@ class Anthropic:
             "leaked": sorted(k for k in os.environ if k in ("GITHUB_TOKEN", "GH_TOKEN", "AWS_SECRET_ACCESS_KEY", "SOME_UNKNOWN_SECRET"))}}) + "\n")
         self.messages = self
     def create(self, **kw):
+        if os.environ.get("ANTHROPIC_FAKE_RAISE"):       # CLASS:STATUS (STATUS may be the word none): an SDK exception whose MESSAGE holds secret-looking text and whose status_code is the status
+            n_, st_ = os.environ["ANTHROPIC_FAKE_RAISE"].split(":")
+            e_ = type(n_, (Exception,), {})("rejected sk-abcdefghijklmnop with Bearer abc.def by INTEG-DEFAULT")
+            if st_ != "none": e_.status_code = int(st_)
+            raise e_
         if os.environ.get("ANTHROPIC_FAKE_HANG_AFTER") and len(kw["messages"]) >= 3:
             import time; time.sleep(600)         # the second model call never returns (an agent timeout must keep the first action)
         open(LOG, "a").write(json.dumps({"model": kw["model"], "turn": len(kw["messages"]), "system": kw.get("system", ""),
@@ -3265,6 +3333,27 @@ for t in ts:
     assert "$ cat README.md" in c and "# fscache README" in c, ("the completed action is lost", t, c[:400])
 PY
 check publiclog integt
+CASE="timeout: every persona's reason line is the existing 'timed out after 8s'"
+check test "$(grep -c '^persona-uat: [a-z-]*: reason: timed out after 8s$' "$work/integt/stderr")" -eq 4
+# a model call that raises (the real agent and provider, a fake SDK exception with a status code, then one without): the reason names the class and the status and nothing of the exception's message
+for rz in "RateLimitError:429|the agent failed \\(exit [0-9]+\\): RateLimitError HTTP 429" "APIConnectionError:none|the agent failed \\(exit [0-9]+\\): APIConnectionError HTTP none"; do
+  fz=${rz%%|*}; rx=${rz#*|}; zd="integr-${fz%%:*}"
+  mkdir -p "$work/$zd"; echo FIXTURE-OIDC-TOKEN >"$work/$zd/token"; : >"$work/$zd/docker.log"; : >"$work/$zd/gh.log"; : >"$work/sdk/sdk.log"; rc=0
+  sed "s#__LOG__#$work/$zd/docker.log#" "$work/docker.tmpl" >"$work/$zd/docker"; chmod +x "$work/$zd/docker"; mkhost "$work/$zd"
+  ( cd "$root" && env -u PERSONA_UAT_TOKEN_BUDGET -u ANTHROPIC_API_KEY PATH="$work/pybin:$work/$zd/hostbin:$PATH" GITHUB_RUN_ID=4242 \
+      PERSONA_UAT_MODEL=INTEG-DEFAULT PERSONA_UAT_COMPLIANCE_MODEL=INTEG-COMPLIANCE ANTHROPIC_FAKE_RAISE="$fz" \
+      ANTHROPIC_IDENTITY_TOKEN_FILE="$work/$zd/token" ANTHROPIC_FEDERATION_RULE_ID=f1 ANTHROPIC_ORGANIZATION_ID=o1 \
+      ANTHROPIC_SERVICE_ACCOUNT_ID=s1 ANTHROPIC_WORKSPACE_ID=w1 \
+      python3 "$driver" --mode rc --proc-net "$work/procnet" --image "$IMG" --repo "$repo" --out "$work/$zd/out" --tools "$work/tools.json" \
+        --docker "$work/$zd/docker" --recipient "$work/test.pem" --port 18080 --ready-timeout 5 --agent-timeout 60 --agent "python3 bin/persona-uat-agent.py" ) \
+    >"$work/$zd/stdout" 2>"$work/$zd/stderr" || rc=$?
+  decout "$zd"
+  CASE="a provider call that raises ($fz): the run fails, each persona's reason line is '$rx', and the exception's message (sk-..., Bearer ...), the model name and the transcript are nowhere in the driver's stdout or stderr"
+  check test "$rc" -ne 0
+  check test "$(grep -cE "^persona-uat: [a-z-]+: reason: $rx\$" "$work/$zd/stderr")" -eq 4
+  check publiclog "$zd"
+  check none_match 'sk-abcdefghijklmnop|Bearer abc|INTEG-DEFAULT|rejected|TRANSCRIPT' "$work/$zd/stdout" "$work/$zd/stderr"
+done
 seg_begin 19
 seg_on
 # --- advisor fences (public repo; job logs and artifacts are public) ---------------------------------------------------
@@ -3948,7 +4037,7 @@ import json
 print(json.dumps({"maven-jenkins-ci": {"requests": 0}, "readme-evaluator": {"requests": 2}}))
 PY
 IMAGE="$IMG2" DOCKER_NOISE=3 run rcproof2 "$(cat "$work/proofplan3.json")" rc
-CASE="rc: a persona that finished with no findings and made no counted request is BLOCKING in its encrypted report ('the endpoint was never exercised'), the rc run FAILS (exit 1), the log is a fail line for that persona and overall, and the reason is not public"
+CASE="rc: a persona that finished with no findings and made no counted request is BLOCKING in its encrypted report ('the endpoint was never exercised'), the rc run FAILS (exit 1), the log is a fail line for that persona and overall (with its reason line)"
 check python3 - "$(out rcproof2)" <<'PY'
 import sys
 d = sys.argv[1]
@@ -3958,7 +4047,8 @@ assert "never exercised" not in open(d + "/readme-evaluator.report.md").read().l
 PY
 check test "$rc" -eq 1
 check publiclog rcproof2
-check none_match 'never exercised' "$work/rcproof2/stdout" "$work/rcproof2/stderr"
+CASE="rc: the only public trace of that finding is the persona's reason line (the first line of its blocking finding); the persona that was exercised has none"
+check test "$(reason_of rcproof2 maven-jenkins-ci | grep -ci 'never exercised')" -eq 1 -a -z "$(reason_of rcproof2 readme-evaluator)"
 # surviving work: a timed-out agent that started work in its own session must not leak it into the next persona's window
 AGENT_TIMEOUT=1 run orphan '{"maven-jenkins-ci":{"orphan":1.2,"sleep":30},"readme-evaluator":{"sleep":0.8},"on-call-engineer":{"sleep":0.8}}' rc
 CASE="timeout leaves no survivors: the agent that timed out started work in its OWN session (it would request the endpoint 1.2s later, inside a later persona's window); the driver terminated it: no such request ever reached the endpoint, and the persona is did-not-run"
@@ -5871,7 +5961,7 @@ out = open(d + "/stdout").read() + open(d + "/stderr").read()
 assert rc == 1, rc
 assert "Traceback" not in out and "PRIVATE-DOCS-LEAK" not in out and "/secret/path" not in out, out[:300]
 lines = [l for l in out.splitlines() if l.strip()]
-pat = re.compile(r"^persona-uat: ((%s|overall): (pass|fail)|driver error)$" % "|".join(personas))
+pat = re.compile(r"^persona-uat: ((%s|overall): (pass|fail)|(%s): reason: .{1,200}|driver error)$" % ("|".join(personas), "|".join(personas)))
 assert all(pat.match(l) for l in lines), lines
 assert lines.count("persona-uat: driver error") == 1 and "persona-uat: overall: fail" in lines, lines
 assert len(glob.glob(d + "/out/*.cms")) == 4

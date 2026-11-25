@@ -37,7 +37,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT   # no docker has run yet: the container cleanup below is installed once the bind has passed
 # Round 1 F1: the images are the ones Build recorded, bound to digests.json before anything is loaded or started; the bind also lists the files of each
 # layout docker may be given (REQ-SUP-001-AC39)
-python3 bin/check-bind.py --digests "$digests" --images "$images" --members-out "$tmp" || exit 1
+python3 bin/check-bind.py --digests "$digests" --images "$images" || exit 1
 cleanup() { rm -rf "$tmp"; for v in production fips; do docker rm -f "fscache-check-$v" > /dev/null 2>&1 || true; done; }
 trap cleanup EXIT
 
@@ -45,12 +45,13 @@ trap cleanup EXIT
 # module version v1.0.0 to its certificate line, so a longer version (v1.0.01), another suffix (v1.0.0-other), a note without the certificate line or
 # a contradiction between the boolean and the note is not the validated-module posture. The production image is exactly: false and the note off.
 FIPS_NOTE="active (Go validated module v1.0.0, CMVP cert #5247)"
+arch=$(uname -m); arch=${arch/x86_64/amd64}; arch=${arch/aarch64/arm64}   # the chip's linux child is the image this runner can run
 failed=0
 results="[]"
 for v in production fips; do
   d=$(jq -r --arg k "image-$v" '.[$k]' "$digests")
   name="fscache-check-$v"
-  tar -C "$images/$v" -cf "$tmp/$v.tar" -T "$tmp/$v.members" && loaded=$(docker load -i "$tmp/$v.tar") || { echo "check-fips: $v: the image could not be loaded" >&2; failed=1; continue; }
+  bash bin/layout-archive.sh "$images/$v" "$arch" "$tmp/$v.tar" "fscache:$v" > /dev/null && loaded=$(docker load -i "$tmp/$v.tar") || { echo "check-fips: $v: the image could not be loaded" >&2; failed=1; continue; }
   ref=$(sed -n 's/^Loaded image: //p; s/^Loaded image ID: //p' <<< "$loaded" | tail -1)
   [ -n "$ref" ] || { echo "check-fips: $v: docker load named no image" >&2; failed=1; continue; }
   docker tag "$ref" "localhost/fscache-$v-image"   # a fixed local name per image, run with --pull=never: no variable image for pin-age to refuse

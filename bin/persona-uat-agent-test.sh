@@ -981,6 +981,11 @@ class Anthropic:
                 raise RuntimeError("federation refused: the identity assertion is expired")
         self.messages = self
     def create(self, **kw):
+        if os.environ.get("SDK_RAISE"):       # CLASS:STATUS (STATUS may be the word none): the SDK raises that class, status_code set unless none; its MESSAGE holds secret-looking text
+            n, st = os.environ["SDK_RAISE"].split(":")
+            e = type(n, (Exception,), {})("rejected sk-abcdefghijklmnop with Bearer abc.def")
+            if st != "none": e.status_code = int(st)
+            raise e
         open(os.environ["SDK_LOG"], "a").write(json.dumps({"create": {k: v for k, v in kw.items()}}) + "\n")
         return _Msg(os.environ["SDK_TEXT"], int(os.environ.get("SDK_IN", "100")), int(os.environ.get("SDK_OUT", "50")))
 PY
@@ -1058,6 +1063,29 @@ CASE="provider: a request missing its model is refused before the SDK is touched
 prov p-nomodel '{"action":"finish","findings":[]}' '{"system":"s","messages":[]}'
 check test "$rc" -ne 0 -a ! -s "$work/p-nomodel/sdk.log"
 
+# an SDK call that raises: the FIRST stderr line is the fixed marker `persona-uat-provider-reason: <ClassName> HTTP <status|none>` (status = the exception's status_code), then the provider's
+# own `persona-uat-provider: ...` line; exit 1, nothing on stdout; the exception's message (a token-looking string) is never in the marker line
+for rz in RateLimitError:429 APIConnectionError:none InternalServerError:503; do
+  nm="p-raise-${rz%%:*}"; mkdir -p "$work/$nm"; : >"$work/$nm/sdk.log"; rc=0
+  SDK_RAISE="$rz" SDK_TEXT=x SDK_LOG="$work/$nm/sdk.log" PYTHONPATH="$work/sdk" ANTHROPIC_API_KEY=SECRET-MODEL-KEY \
+    python3 "$provider" <<<'{"model":"M","system":"s","messages":[{"role":"user","content":"a"}]}' >"$work/$nm/out" 2>"$work/$nm/err" || rc=$?
+  CASE="provider: an SDK call that raises ${rz%%:*} (status ${rz#*:}) writes the fixed reason line first, then its own line; exit 1 and nothing on stdout"
+  want="persona-uat-provider-reason: ${rz%%:*} HTTP ${rz#*:}"
+  check test "$rc" -eq 1 -a ! -s "$work/$nm/out" -a "$(head -1 "$work/$nm/err")" = "$want"
+  check test "$(sed -n 2p "$work/$nm/err" | cut -c1-21)" = "persona-uat-provider:"
+  CASE="provider: the marker line of ${rz%%:*} holds only the class name and the status, never the exception's message"
+  check test "$(head -1 "$work/$nm/err" | grep -cE 'sk-abcdefghijklmnop|Bearer abc')" -eq 0
+done
+# the agent keeps the provider's marker line in its failure text, as the driver finds it there
+agent provmarker '[{"exit":1,"stderr":"persona-uat-provider-reason: RateLimitError HTTP 429\npersona-uat-provider: RateLimitError: rejected"}]'
+CASE="a failing provider's reason marker line is in the agent's stderr whole (the driver finds it there), with nothing on stdout and a non-zero exit"
+check python3 - "$work/provmarker" "$rc" <<'PY'
+import sys
+d, rc = sys.argv[1], sys.argv[2]
+e = open(d + "/err.txt").read()
+assert rc != "0" and open(d + "/out.json").read() == ""
+assert any("persona-uat-provider-reason: RateLimitError HTTP 429" in l for l in e.splitlines()), e
+PY
 # the provider's own reason reaches the agent's stderr (the driver keeps that in the encrypted transcript only), scrubbed and clipped; the stdout stays empty
 MODEL=OWNER-MODEL-R agent provreason '[{"exit":1,"stderr":"persona-uat-provider: APIStatusError: model OWNER-MODEL-R refused key=ghp_abcdefghij0123456789ABCDEF"}]'
 CASE="a failing provider's stderr is in the agent's failure text (scrubbed of the model name and a token) and nothing is on stdout"

@@ -1424,6 +1424,9 @@ def debug_problems(run):
     for name in ("README docker without docker debug: busybox sharing the network and process namespaces", "README kubectl debug"):
         if f"pass: {name}" not in out_ok:
             bad.append(f"with a working wget the check {name!r} does not print pass: {out_ok!r}")
+    rk = next((l for l in run.splitlines() if "printf" in l and "kubectl debug -i" in l and "HEALTHZ_OK" in l), "")      # the README kubectl debug check's own line
+    if not re.search(r"\{ sleep 10; printf .*; \} \| kubectl debug -i ", rk):
+        bad.append(f"the README kubectl debug check must feed the shell's stdin only after a pause: {{ sleep 10; printf ...; }} | kubectl debug -i: {rk!r}")
     refs = re.findall(r"busybox[^\s'\"|]*", re.sub(r'\bcheck "[^"]*"', "check NAME", run))      # the words of a check name are not image references
     if len(refs) < 5 or set(refs) != {BB_PIN}:
         bad.append(f"every busybox reference must be exactly {BB_PIN} (at least five of them): {sorted(set(refs))} x{len(refs)}")
@@ -1448,6 +1451,7 @@ else:
     dmut("blob check mounts elsewhere", "read-only blob check", lambda t: t.replace("fscache-data:/data:ro", "fscache-data:/mnt:ro"))
     dmut("blob check lists another path", "read-only blob check", lambda t: t.replace("/data/data/blobs", "/data/blobs"))
     dmut("docker pipe check without -e", "does not make the check", lambda t: re.sub(r"\bsh -e\b", "sh", t, count=1))
+    dmut("kubectl check feeding the shell with no pause", "after a pause", lambda t: t.replace("{ sleep 10; printf", "printf").replace("; } | kubectl debug", " | kubectl debug"))
     dmut("kubectl check without the HEALTHZ_OK marker", "does not make the check", lambda t: t.replace(" | grep -q HEALTHZ_OK", ""))
     dmut("a busybox:1.37 tag", "every busybox reference", lambda t: t.replace(BB_PIN, "busybox:1.37", 1))
     dmut("a busybox:stable tag", "every busybox reference", lambda t: t.replace(BB_PIN, "busybox:stable", 1))
