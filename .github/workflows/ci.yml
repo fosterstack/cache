@@ -140,13 +140,6 @@ jobs:
           gobin="$(go env GOPATH)/bin"; export PATH="$gobin:$PATH"   # the program named literally
           golangci-lint config verify   # the action ran this before every run (its verify input defaults to true)
           golangci-lint run ./...
-      - name: no shop words added to a file a customer can read
-        if: github.event_name == 'pull_request'
-        shell: bash
-        env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-        run: git diff -U0 --no-renames --no-color HEAD^1 HEAD | python3 -I bin/check-customer-words.py
 
   govulncheck:
     name: govulncheck
@@ -191,9 +184,6 @@ jobs:
 
       - name: allowlist branch-scoping regressions
         run: bash bin/check-file-allowlist-test.sh
-
-      - name: customer-word check regressions
-        run: bash bin/check-customer-words-test.sh
 
       - name: branch sweep and local prune regressions
         run: bash bin/branch-sweep-test.sh

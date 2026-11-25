@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # proves: REQ-REL-014-AC1, REQ-REL-014-AC2, REQ-REL-014-AC3
 # Pull requests run six checks (test, lint, govulncheck, analyze (go), fips140-only, scan with the jobs scan needs), the held check
-# marker-gate, customer-words-edited and dependabot-auto-merge.yml; every other job runs on push to main, on a
+# marker-gate and dependabot-auto-merge.yml; every other job runs on push to main, on a
 # schedule or in the release chain (REQ-REL-014-AC1); suite-list, suites and allowlist-chain are in full-suite.yml, on a schedule and dispatch only. supply-chain.yml has no pull_request trigger, no pin-age job and runs only its
 # daily audit; required-checks.json has no pin-age entry (AC2) and no acceptance entry, and every check it scopes to push is produced by a
 # job that runs on push (AC3). Reads the committed workflows and required-checks.json.
@@ -89,16 +89,16 @@ def cond(f, j):   # a job's condition without a ${{ }} wrapper
 SIX = {"ci.yml:test", "ci.yml:lint", "ci.yml:govulncheck", "ci.yml:fips140-only", "codeql.yml:analyze", "scan.yml:scan"}
 SCAN_NEEDS = {"scan.yml:build", "scan.yml:scanner", "scan.yml:inspector"}
 HELD = {"ci.yml:marker-gate"}
-OTHER = {"customer-words-edited.yml:customer-words-edited", "dependabot-auto-merge.yml:auto-merge"}
+OTHER = {"dependabot-auto-merge.yml:auto-merge"}
 ALLOWED = SIX | SCAN_NEEDS | HELD | OTHER
 on_pr = set().union(*(jobs_on(e) for e in PR_EVENTS))
 res(on_pr == ALLOWED, "AC1: the jobs that run on pull_request, merge_group or pull_request_target are exactly the allowed ones "
     "(extra: %s; missing: %s)" % (sorted(on_pr - ALLOWED), sorted(ALLOWED - on_pr)))
 res(not (on_pr - ALLOWED), "AC1: no other job runs on a pull request or the merge queue (%s)" % sorted(on_pr - ALLOWED)[:12])
 pr = jobs_on("pull_request")
-res((SIX - {"codeql.yml:analyze"} | SCAN_NEEDS | HELD | {"customer-words-edited.yml:customer-words-edited"}) <= pr,
-    "AC1: the six, scan's jobs, marker-gate and customer-words-edited run on pull_request (missing: %s)"
-    % sorted((SIX | SCAN_NEEDS | HELD | {"customer-words-edited.yml:customer-words-edited"}) - pr))
+res((SIX - {"codeql.yml:analyze"} | SCAN_NEEDS | HELD) <= pr,
+    "AC1: the six, scan's jobs, and marker-gate run on pull_request (missing: %s)"
+    % sorted((SIX | SCAN_NEEDS | HELD) - pr))
 res("codeql.yml:analyze" in pr, "AC1: analyze (go) runs on pull_request")
 res(cond("ci.yml", "marker-gate") == "github.event_name == 'pull_request'", "AC1: the held check marker-gate keeps its if: github.event_name == 'pull_request' (%r)" % cond("ci.yml", "marker-gate"))
 

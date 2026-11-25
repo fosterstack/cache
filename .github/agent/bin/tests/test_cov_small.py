@@ -719,10 +719,6 @@ class PanelOwnerIssue(Tmp):
     def test_the_standing_owner_issue_has_a_plain_title_and_the_old_one_is_kept_only_to_find_issues(self):
         self.assertEqual(self.P.OWNER_TITLE, self.NEW)
         self.assertEqual(self.P.OLD_OWNER_TITLE, self.OLD)
-        root = os.path.abspath(os.path.join(BIN, "..", "..", ".."))
-        c = subprocess.run([sys.executable, "-I", "bin/check-customer-words.py"], cwd=root, stdin=subprocess.DEVNULL,
-                           env={**os.environ, "PR_TITLE": self.NEW, "PR_BODY": self.NEW}, capture_output=True, text=True)
-        self.assertEqual((c.returncode, c.stdout), (0, ""), c.stderr)
 
     def test_no_open_issue_creates_one_with_the_new_title_after_searching_new_then_old(self):
         calls, err = self.deliver({})

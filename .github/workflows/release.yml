@@ -1460,6 +1460,32 @@ jobs:
     uses: ./.github/workflows/persona-uat.yml
     with:
       digests: ${{ needs.build-assemble.outputs.digests }}
+    secrets:   # exactly these six, by name, never inherit: they are repository secrets, which a called workflow gets only when passed
+      PERSONA_UAT_MODEL: ${{ secrets.PERSONA_UAT_MODEL }}
+      PERSONA_UAT_COMPLIANCE_MODEL: ${{ secrets.PERSONA_UAT_COMPLIANCE_MODEL }}
+      ANTHROPIC_FEDERATION_RULE_ID: ${{ secrets.ANTHROPIC_FEDERATION_RULE_ID }}
+      ANTHROPIC_ORGANIZATION_ID: ${{ secrets.ANTHROPIC_ORGANIZATION_ID }}
+      ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ secrets.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+      ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
+
+  # Persona UAT, promotion leg (REQ-UAT-001-AC2): the last job of the run a release tag push starts, after the image is signed and published; the compliance reviewer follows the public guide against the published image.
+  # A failure fails the run; its fix lands on the release branch and ships as the next automatic patch. GATE: PERSONA_UAT_ENABLED is exactly 'true' (unset = off).
+  persona-uat-compliance:
+    needs: [build-assemble, release]
+    if: ${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/persona-uat.yml
+    with:
+      image: ghcr.io/${{ github.repository_owner }}/cache@${{ fromJSON(needs.build-assemble.outputs.digests)['image-production'] }}
+    secrets:   # exactly these six, by name, never inherit
+      PERSONA_UAT_MODEL: ${{ secrets.PERSONA_UAT_MODEL }}
+      PERSONA_UAT_COMPLIANCE_MODEL: ${{ secrets.PERSONA_UAT_COMPLIANCE_MODEL }}
+      ANTHROPIC_FEDERATION_RULE_ID: ${{ secrets.ANTHROPIC_FEDERATION_RULE_ID }}
+      ANTHROPIC_ORGANIZATION_ID: ${{ secrets.ANTHROPIC_ORGANIZATION_ID }}
+      ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ secrets.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+      ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
 
   patch-failed:
     # Also when the release job was CANCELLED (audit ruling, Oct 22): the release job's concurrency group keeps one pending run, so a third queued tag run

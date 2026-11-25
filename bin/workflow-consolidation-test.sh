@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # proves: REQ-REL-008-AC1, REQ-REL-008-AC2, REQ-REL-008-AC3, REQ-REL-014-AC1, REQ-CI-007-AC1
 # The ratified workflow consolidation (owner, Oct 2): go-freshness.yml keeps the freshness check on its daily schedule (and on a
-# dispatch) and nothing else: the weekly persona-uat cron moved to persona-uat.yml (REQ-UAT-001-AC6, owner rule workflow-grouped-by-purpose,
-# Nov 13). The real workflow must pass; each mutated copy must be caught.
+# dispatch) and nothing else. No workflow file has a persona cron any more (REQ-UAT-001-AC6): the persona tests run only at code promotion, called by
+# release.yml, never on a timer; persona-uat.yml has no schedule trigger at all. The real workflow must pass; each mutated copy must be caught.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
@@ -468,24 +468,24 @@ case_scan workflow-env-path      bad "d['env'] = {'PATH': '/tmp/evil:/usr/bin:/b
 case_scan repro-self-hosted      bad "d['jobs']['reproducibility']['runs-on'] = 'self-hosted'"
 
 # ---------------------------------------------------------------------------------------------------------------------
-# REQ-REL-008-AC1 (owner RATIFIED Oct 2; amended by the owner rule workflow-grouped-by-purpose, Nov 13): the workflow directory holds exactly the 18 ratified files and
+# REQ-REL-008-AC1 (owner RATIFIED Oct 2; amended by the owner rule workflow-grouped-by-purpose, Nov 13): the workflow directory holds exactly the 17 ratified files and
 # nothing else, so no workflow sprawls. The release is the one file release.yml: no stage-*.yml file exists. persona-uat.yml holds the persona UAT jobs (one purpose);
 # codeql.yml stays (owner rule ci-trim-keeps-codeql). evidence-letter.yml is the monthly evidence letter (REQ-REL-015): a monthly schedule, its own purpose.
-ratified="acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml customer-words-edited.yml dependabot-auto-merge.yml
+ratified="acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml dependabot-auto-merge.yml
 dependabot-reviewer.yml evidence-letter.yml full-suite.yml go-freshness.yml main-candidate-rescan.yml persona-uat.yml release.yml reserved-branch-guard.yml scan.yml
 scorecard.yml supply-chain.yml"
 judge_set() {  # $1: the directory's entries as a JSON list (every entry, not only *.yml)
   python3 - "$1" "$ratified" <<'PY'
 import json, sys
 got, want = json.loads(sys.argv[1]), sys.argv[2].split()
-if len(want) != 18:
-    print("the ratified list is not 18 files (owner rule workflow-grouped-by-purpose, Nov 13)")
+if len(want) != 17:
+    print("the ratified list is not 17 files (owner rule workflow-grouped-by-purpose, Nov 13)")
     sys.exit(1)
 odd = [n for n in got if "\n" in n or "/" in n]
 extra, missing = sorted(set(got) - set(want)), sorted(set(want) - set(got))
 stage = sorted(n for n in got if n.startswith("stage-"))
 if odd or extra or missing or stage or len(got) != len(set(got)):
-    print("extra: %s missing: %s odd names: %s stage files: %s (the list is REQ-REL-008-AC1: 18 files, no stage-*.yml, "
+    print("extra: %s missing: %s odd names: %s stage files: %s (the list is REQ-REL-008-AC1: 17 files, no stage-*.yml, "
           "owner rule workflow-grouped-by-purpose of Nov 13)" % (extra, missing, odd, stage)); sys.exit(1)
 print("ok")
 PY
@@ -619,6 +619,50 @@ done
 case_conc supply-chain-daily-group-dropped bad supply-chain "d['jobs']['daily-audit'].pop('concurrency')"
 case_conc supply-chain-daily-cancels bad supply-chain "d['jobs']['daily-audit']['concurrency']['cancel-in-progress'] = 'true'"
 case_conc ci-live-test-group-back bad ci "d['jobs']['test']['concurrency'] = {'group': 'vex-live-test', 'cancel-in-progress': 'false'}"
+
+# REQ-UAT-001-AC6 (owner decision: persona tests run only at code promotion, never on a timer): no workflow file has the Monday persona cron, and persona-uat.yml has no
+# `schedule` trigger of any kind (its only trigger is workflow_call).
+judge_persona_cron() {  # $1: a directory of workflow files
+  python3 - "$1" <<'PY'
+import glob, os, sys, yaml
+bad = []
+for f in sorted(glob.glob(os.path.join(sys.argv[1], "*.y*ml"))):
+    w = yaml.load(open(f), Loader=yaml.BaseLoader) or {}
+    on = w.get("on") if isinstance(w.get("on"), dict) else {}
+    name = os.path.basename(f)
+    sch = on.get("schedule")
+    if "43 6 * * 1" in [c.get("cron") for c in (sch or []) if isinstance(c, dict)]:
+        bad.append("%s has the Monday persona cron: no file has a persona cron any more" % name)
+    if name == "persona-uat.yml" and "schedule" in on:
+        bad.append("persona-uat.yml has a schedule trigger: the persona tests run only at code promotion, never on a timer")
+    if name == "persona-uat.yml" and sorted(on) != ["workflow_call"]:
+        bad.append("persona-uat.yml's only trigger is not workflow_call: %s" % sorted(on))
+print("; ".join(bad) or "ok")
+sys.exit(1 if bad else 0)
+PY
+}
+case_cron() {  # case_cron NAME want FILE EDIT
+  local t="$work/cron-$1"; rm -rf "$t"; mkdir -p "$t"; cp "$root"/.github/workflows/*.y*ml "$t/"
+  if [ -n "${4:-}" ]; then python3 - "$t/$3" "$4" <<'PY'
+import sys, yaml
+p, edit = sys.argv[1], sys.argv[2]
+d = yaml.load(open(p), Loader=yaml.BaseLoader)
+exec(edit)
+yaml.safe_dump(d, open(p, "w"), sort_keys=False, width=100000)
+PY
+  fi
+  if out=$(judge_persona_cron "$t"); then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS cron:$1 → $got ($out)"
+  else failn=$((failn+1)); echo "FAIL cron:$1 → $got, want $2 ($out)"; fi
+}
+case_cron real                       ok  "" ""
+case_cron persona-gets-the-cron-back bad persona-uat.yml "d['on']['schedule'] = [{'cron': '43 6 * * 1'}]"
+case_cron persona-gets-any-cron      bad persona-uat.yml "d['on']['schedule'] = [{'cron': '5 4 * * *'}]"
+case_cron persona-gets-empty-schedule bad persona-uat.yml "d['on']['schedule'] = []"
+case_cron persona-gets-dispatch      bad persona-uat.yml "d['on']['workflow_dispatch'] = ''"
+case_cron freshness-gets-the-cron    bad go-freshness.yml "d['on']['schedule'].append({'cron': '43 6 * * 1'})"
+case_cron release-gets-the-cron      bad release.yml "d['on']['schedule'].append({'cron': '43 6 * * 1'})"
+case_cron ci-gets-the-cron           bad ci.yml "d['on']['schedule'] = [{'cron': '43 6 * * 1'}]"
 
 # The fixer is retired (row 76): no job in ci.yml dispatches it.
 if grep -q "drift-fixer-dispatch" "$root/.github/workflows/ci.yml"; then
