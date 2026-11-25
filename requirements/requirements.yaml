@@ -3106,7 +3106,7 @@ requirements:
   - id: REQ-UAT-001
     title: Persona UAT
     statement: >
-      Five agents, each playing a different customer and reading only our public documents, shall exercise the release/* branch run and the latest release every week, the way a real acceptance test would.
+      Five agents, each playing a different customer and reading only our public documents, shall exercise the release/* branch run and, in the run a release tag starts, the published release, the way a real acceptance test would. Persona tests run only at code promotion, never on a timer.
     source: [bin/persona-uat.py, bin/persona-uat-agent.py, .github/workflows/persona-uat.yml, .github/workflows/release.yml, .github/workflows/go-freshness.yml]
     tier: community
     introduced: v0.3.0
@@ -3116,13 +3116,13 @@ requirements:
       - id: REQ-UAT-001-AC1
         given: a push of a release/* branch and the repository variable PERSONA_UAT_ENABLED set to true
         when: the candidate's own run has built it
-        then: "the personas that can be exercised against an unsigned, unpublished candidate (a Gradle platform engineer setting up for the first time, a Maven CI user on Jenkins, an evaluator with only the README and ten minutes, and an on-call engineer who upgrades from the latest published release to the candidate image, loaded into the persona's kind cluster, and rolls back) exercise the candidate image by digest, each told to use only the public docs and the endpoint, each writes one UAT report, and any broken behavior or doc step that fails as written fails the release branch run; the image is loaded from the run's own build into a registry bound to localhost on the runner (a digest-pinned registry service; nothing is pushed anywhere else), the digest the personas receive is the digest Build made, no registry credential or write token exists in the job (the personas keep their federated model-provider identity token, no stored key), and the only public trace of a persona run is a pass or fail line per persona and overall; the compliance reviewer (signatures, SBOMs, VEX) needs a signed, published release and is exercised by the weekly run against the latest release (AC2), not on a candidate"
+        then: "the personas that can be exercised against an unsigned, unpublished candidate (a Gradle platform engineer setting up for the first time, a Maven CI user on Jenkins, an evaluator with only the README and ten minutes, and an on-call engineer who upgrades from the latest published release to the candidate image, loaded into the persona's kind cluster, and rolls back) exercise the candidate image by digest, each told to use only the public docs and the endpoint, each writes one UAT report, and any broken behavior or doc step that fails as written fails the release branch run; the image is loaded from the run's own build into a registry bound to localhost on the runner (a digest-pinned registry service; nothing is pushed anywhere else), the digest the personas receive is the digest Build made, no registry credential or write token exists in the job (the personas keep their federated model-provider identity token, no stored key), and the only public trace of a persona run is a pass or fail line per persona and overall; the compliance reviewer (signatures, SBOMs, VEX) needs a signed, published release and is exercised by the run the release tag starts, against the published image (AC2), not on a candidate"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-UAT-001-AC2
-        given: the weekly maintenance run
-        when: it runs
-        then: "the same five personas exercise the latest release, and a blocking finding fails the run (the only public trace is the pass or fail line; the finding itself is in the encrypted report)"
+        given: the run a release tag push starts, and the repository variable PERSONA_UAT_ENABLED set to true
+        when: the image is signed and published
+        then: "as the last step of that run, the compliance reviewer follows the public guide as a customer would against the published image, in the environment persona-uat; a blocking finding fails the run (the only public trace is the pass or fail line; the finding itself is in the encrypted report); its fix lands on the release branch and ships as the next patch release, which is automatic like every patch; no persona test runs on a schedule"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-UAT-001-AC3
@@ -3147,7 +3147,7 @@ requirements:
       - id: REQ-UAT-001-AC6
         given: "the workflow files"
         when: "the persona jobs are read"
-        then: "persona-uat.yml is the only file with a persona job: its triggers are the weekly cron of the Monday run (moved from go-freshness.yml, which keeps only its freshness check and no persona job) and workflow_call, with which release.yml runs the release-branch leg of AC1 from a job that carries the gate PERSONA_UAT_ENABLED and the release-branch push condition; it holds the environment persona-uat and the identity token for the persona federation only, never the release signing key's role, and its jobs keep the steps, the gate and the private reports of AC1 to AC3 unchanged"
+        then: "persona-uat.yml is the only file with a persona job: its only trigger is workflow_call (no schedule), with which release.yml runs the release-branch leg of AC1 from a job that carries the gate PERSONA_UAT_ENABLED and the release-branch push condition, and the published-image leg of AC2 from a job that carries the gate and runs after the release job on a release tag push; it holds the environment persona-uat and the identity token for the persona federation only, never the release signing key's role, and its jobs keep the steps, the gate and the private reports of AC1 to AC3 unchanged"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
   - id: REQ-REPO-001
