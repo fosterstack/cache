@@ -140,7 +140,7 @@ jobs:
           sleep 5
           check "README docker without docker debug: busybox sharing the network and process namespaces" \
             bash -c "printf 'wget -qO- http://127.0.0.1:8080/healthz\nps\n' | docker run --rm -i --network=container:cache --pid=container:cache busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec sh -e"
-          if docker debug --help >/dev/null 2>&1; then check "README docker debug" bash -c "echo exit | docker debug cache"; else echo "not run: README docker debug (the docker debug plugin is not on the runner)"; fi
+          if docker debug --help 2>&1 | grep -q '^Usage:  docker debug'; then check "README docker debug" bash -c "echo exit | docker debug cache"; else echo "not run: README docker debug (the docker debug plugin is not on the runner)"; fi
           check "docker-deploy toolbox sharing the server's network and processes" \
             bash -c "printf 'wget -qO- http://localhost:8080/healthz\n' | docker run --rm -i --pid=container:cache --network=container:cache busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec sh"
           check "docker-deploy blob volume, read-only" \
@@ -148,6 +148,7 @@ jobs:
           crane pull "${PERSONA_UAT_IMAGE%@*}:rc" rc-image.tar
           kind create cluster --name debug-check --image "$(jq -er .kind bin/persona-uat-tools.json)"
           kind load image-archive rc-image.tar --name debug-check
+          timeout 60 bash -c 'until kubectl get serviceaccount default >/dev/null 2>&1; do sleep 1; done'
           kubectl run cache --image="${PERSONA_UAT_IMAGE%@*}:rc" --image-pull-policy=IfNotPresent
           kubectl wait --for=condition=Ready pod/cache --timeout=120s
           check "README kubectl debug" \
