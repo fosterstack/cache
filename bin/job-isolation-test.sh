@@ -25,7 +25,7 @@ COMPILE = re.compile(r"\bgo\s+(?:install|build)\b|goreleaser/goreleaser-action|\
 # and persona-uat.yml (release.yml's one call of the release-candidate persona leg, REQ-UAT-001-AC6: identity token for the persona federation only).
 CREDENTIAL_CALLEES = ("release.yml", "persona-uat.yml")
 # the build side of release.yml (REQ-CHAIN-004-AC1, REQ-CHAIN-005-AC1, REQ-CHAIN-006-AC1): each its own job, each declaring its OWN permissions block (the workflow-level block is empty) and holding no credential
-BUILD_SIDE_JOBS = ("build-freeze", "build-apk", "build-assemble", "rebuild-apk", "rebuild-assemble", "check-govulncheck", "check")
+BUILD_SIDE_JOBS = ("build-apk", "build-assemble", "rebuild-apk", "rebuild-assemble", "check-govulncheck", "check")
 # the sign jobs of release.yml (REQ-CHAIN-001-AC9): the only jobs that may hold the sign environment; they build nothing (AC1 above applies to them like to every credential holder)
 SIGN_JOBS = ("sign", "sign-rebuild", "sign-check")
 SIGN_ENV_JOBS = SIGN_JOBS + ("sign-tag",)      # the four jobs of release.yml in the environment sign; sign-tag (REQ-REL-009) holds contents read and id-token write, no secret
@@ -413,7 +413,7 @@ edit("release.yml", lambda s: in_job(s, "'$job'", r"(    permissions:\n)", r"\1 
   mutate "release.yml job $job runs bin/witnessed.sh (keyless) instead of witnessed-local.sh" '
 edit("release.yml", lambda s: in_job(s, "'$job'", r"(    steps:\n)", r"\1      - name: mutant\n        run: bash bin/witnessed.sh x bin/x.sh\n", regex=True))'
 done
-for job in build-freeze build-apk build-assemble rebuild-apk rebuild-assemble check-govulncheck check; do
+for job in build-apk build-assemble rebuild-apk rebuild-assemble check-govulncheck check; do
   want_msg="is a build-side job of release.yml and holds"
   mutate "release.yml build-side job $job holds the environment sign" '
 edit("release.yml", lambda s: in_job(s, "'$job'", r"(    runs-on:)", "    environment: sign\n\\1", regex=True))'

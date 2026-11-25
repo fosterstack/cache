@@ -4,12 +4,12 @@
 # /srv/handoffs/briefs/cache-921-signer-identity-ruling.md and kvm-postponed-one-build-path.md). This suite judges that file from the PARSED workflow (never from substrings of
 # the text), once on the real file, which must pass, and on mutated copies, each of which must be refused FOR THE REASON NAMED (a refusal for another reason, or a crash, counts as a failure).
 # What it pins is what the English rows say and nothing more:
-#   REQ-CHAIN-005-AC5  the job graph: the chain jobs and their needs, the gate G on build-freeze, the guard S on sign, sign-rebuild, sign-check and release, the Check jobs'
+#   REQ-CHAIN-005-AC5  the job graph: the chain jobs and their needs, the gate G on build-apk, the guard S on sign, sign-rebuild, sign-check and release, the Check jobs'
 #                      condition, no if on the Rebuild jobs, workflow-level permissions {}, the allowed other jobs, the dry-run input a boolean
 #   REQ-CHAIN-001-AC9  the four sign jobs: environment sign, exactly contents read and id-token write, the three KMS federation literals as job env, the only jobs that run a signing
 #                      command; the release job holds no AWS role and no id-token; no other file's job names the key role, except the one publish step of
 #                      evidence-letter.yml (environment evidence-letter, the three names as that step's env only; any other job or step there stays refused)
-#   REQ-CHAIN-004-AC1  Build: build-freeze, build-apk (matrix over both chips), build-assemble, their permissions, steps and shape
+#   REQ-CHAIN-004-AC1  Build: build-apk (matrix over both chips), build-assemble, their permissions, steps and shape
 #   REQ-CHAIN-004-AC12 the one input `mode` on workflow_call, the guard step after the checkout, one Witness step per mode with its closed step name
 #   REQ-CHAIN-004-AC19 the hostile Build step runs in every build: no condition, no token
 #   REQ-CHAIN-005-AC1 / AC7  Rebuild: rebuild-apk (needs build-assemble only) is ONE job over both chips (no second per-chip job), rebuild-assemble, both starting from the unsigned artifact witness-build in every mode, the snapshot step names
@@ -30,7 +30,7 @@ path, root = sys.argv[1], sys.argv[2]
 WF = os.path.join(root, ".github/workflows")
 RUNNERS = ["ubuntu-24.04", "ubuntu-24.04-arm"]
 SIGN_JOBS = ["sign", "sign-rebuild", "sign-check"]
-BUILD_JOBS = ["build-freeze", "build-apk", "build-assemble"]
+BUILD_JOBS = ["build-apk", "build-assemble"]
 REBUILD_JOBS = ["rebuild-apk", "rebuild-assemble"]
 CHECK_JOBS = ["check-govulncheck", "check"]
 RELEASE_JOBS = ["release-compare", "release-verify", "release"]
@@ -39,7 +39,7 @@ CHAIN = BUILD_JOBS + ["sign"] + REBUILD_JOBS + ["sign-rebuild"] + CHECK_JOBS + [
 OTHER_ALLOWED = {"decide", "sign-tag", "cut", "patch-notes", "patch-failed", "live-test-release"}   # the four inline tag jobs of the automatic patch release by name (REQ-REL-009), and the hostile-* jobs; persona-uat has its own file
 KMS_ENV = ["AWS_ROLE_ARN", "AWS_REGION", "RELEASE_KMS_KEY_REF"]
 NEEDS = {   # exactly, as REQ-CHAIN-005-AC5 lists them
-    "build-freeze": [], "build-apk": ["build-freeze"], "rebuild-apk": ["build-assemble"], "build-assemble": ["build-apk"], "sign": ["build-assemble"],
+    "build-apk": [], "rebuild-apk": ["build-assemble"], "build-assemble": ["build-apk"], "sign": ["build-assemble"],
     "rebuild-assemble": ["rebuild-apk"], "sign-rebuild": ["build-assemble", "rebuild-assemble", "sign"],
     "sign-check": ["build-assemble", "check", "sign"],
     "release-compare": ["check", "sign", "sign-rebuild", "sign-check"], "release-verify": ["release-compare"],
@@ -61,11 +61,11 @@ def norm(expr):
         elif not c.isspace():
             out.append(c)
     return "".join(out)
-G = norm("(github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true || inputs.mode == 'snapshot'")
+G = norm("(github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true || inputs.mode == 'snapshot'")
 S = norm("inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))")
 NOT_SNAPSHOT = norm("inputs.mode != 'snapshot'")
-# check-govulncheck has no needs, so its own if keeps it off in a run on main (a push or the schedule): a tag push, a push of a release/vX.Y.Z branch or a dry run only
-GV_IF = norm("inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true)")
+# check-govulncheck has no needs, so its own if keeps it off in a run on main (a push or the schedule): a tag push, a push of a release/* branch or a dry run only
+GV_IF = norm("inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true)")
 
 def load(p): return yaml.load(open(p), Loader=yaml.BaseLoader)
 def needs_of(j):
@@ -145,9 +145,9 @@ for jn in CHAIN:
         bad.append("chain job %s has a job-level env (only the sign jobs hold the three federation literals)" % jn)
     if "permissions" not in j:
         bad.append("chain job %s declares no permissions of its own" % jn)
-# the gate G on build-freeze, the guard S on the five jobs, the Check jobs' condition, no if on the others of Build and Rebuild
-if "build-freeze" in jobs and norm(jobs["build-freeze"].get("if", "")) != G:
-    bad.append("build-freeze does not carry the gate G exactly: %s" % jobs["build-freeze"].get("if"))
+# the gate G on build-apk, the guard S on the five jobs, the Check jobs' condition, no if on the others of Build and Rebuild
+if "build-apk" in jobs and norm(jobs["build-apk"].get("if", "")) != G:
+    bad.append("build-apk does not carry the gate G exactly: %s" % jobs["build-apk"].get("if"))
 for jn in SIGN_JOBS + ["release"]:
     if jn in jobs and norm(jobs[jn].get("if", "")) != S:
         bad.append("guard S: %s does not carry the guard S exactly (it must run only on a v* tag push of release.yml itself, never in snapshot mode or under workflow_call): %s" % (jn, jobs[jn].get("if")))
@@ -166,9 +166,9 @@ if st is not None:      # the one tag job that holds the identity token: only in
 for jn in ("decide", "cut", "patch-notes"):
     if jn in jobs and (jobs[jn].get("environment") == "sign" or "id-token" in (jobs[jn].get("permissions") or {})):
         bad.append("the tag job %s is in the environment sign or holds an id-token: only sign-tag does" % jn)
-for jn in ["build-apk", "build-assemble"] + REBUILD_JOBS:
+for jn in ["build-assemble"] + REBUILD_JOBS:
     if jn in jobs and "if" in jobs[jn]:
-        bad.append("%s carries an if (Build and Rebuild run through needs; only build-freeze is gated)" % jn)
+        bad.append("%s carries an if (Build and Rebuild run through needs; only build-apk is gated)" % jn)
 TAG_DUE = norm("${{ needs.decide.outputs.tag != '' }}")
 TAG_NEEDS = {"sign-tag": ["decide"], "cut": ["decide", "sign-tag"], "patch-notes": ["cut", "decide"]}
 for jn, want in TAG_NEEDS.items():
@@ -314,7 +314,7 @@ for jn, j in jobs.items():
             bad.append("job %s calls %s: release.yml calls no workflow file but persona-uat.yml" % (jn, j["uses"]))
         else:
             c = j.get("if", "")
-            if "PERSONA_UAT_ENABLED" not in c or "refs/heads/release/v" not in c or NOT_SNAPSHOT not in norm(c):
+            if "PERSONA_UAT_ENABLED" not in c or "refs/heads/release/" not in c or NOT_SNAPSHOT not in norm(c):
                 bad.append("the persona-uat.yml call %s lacks the gate PERSONA_UAT_ENABLED, the release-branch push condition or the snapshot guard: %s" % (jn, c))
             if "secrets" in j and j["secrets"] == "inherit":
                 bad.append("the persona-uat.yml call %s passes secrets: inherit" % jn)
@@ -328,19 +328,12 @@ def step_names_ok(jn, j, mode_input=True):
     if "inputs.mode" not in text_of(g.get("env") or {}) or not g.get("run"):
         bad.append("%s: the step right after the checkout is not the mode guard (env MODE from inputs.mode, a run that refuses any other value)" % jn)
 READ = {"contents": "read"}
-if "build-freeze" in jobs:
-    j = jobs["build-freeze"]
-    if j.get("runs-on") != "ubuntu-24.04" or j.get("permissions") != READ:
-        bad.append("build-freeze is not on ubuntu-24.04 with exactly contents read: %s %s" % (j.get("runs-on"), j.get("permissions")))
-    step_names_ok("build-freeze", j)
-    if len(steps_of(j)) != 5 or witness_lines(j) or "bin/build-freeze.sh" not in runs_of(j) or "install-scanner.sh go" not in runs_of(j):
-        bad.append("build-freeze steps are not exactly checkout, the mode guard, the Go install, the freeze script and the upload (no Witness step)")
 if "build-apk" in jobs:
     j = jobs["build-apk"]
     if matrix_runners(j) != RUNNERS:
         bad.append("build-apk is not a matrix over the two native runners %s: %s" % (RUNNERS, matrix_runners(j)))
-    if j.get("permissions") != {"contents": "read", "actions": "read", "checks": "read", "statuses": "read", "pull-requests": "read"}:
-        bad.append("build-apk does not hold exactly contents, checks, statuses and pull-requests read, and actions read for admission: %s" % j.get("permissions"))
+    if j.get("permissions") != READ:
+        bad.append("build-apk does not hold exactly contents read: %s" % j.get("permissions"))
 if "build-assemble" in jobs:
     j = jobs["build-assemble"]
     if j.get("runs-on") != "ubuntu-24.04" or j.get("permissions") != READ or "strategy" in j:
@@ -381,7 +374,7 @@ for jn, (sstep, sscript, rstep, rscript) in SNAP.items():
     if "inputs.mode" not in rif or not (rif == norm("inputs.mode != 'snapshot'") or rif == norm("inputs.mode == 'release'")):
         bad.append("%s: the release Witness step %s is not gated by the mode" % (jn, rstep))
     if "GH_TOKEN" in text_of(by[sstep][1]) or re.search(r"\bsecrets\.", text_of(by[sstep][1])):
-        bad.append("%s: the snapshot Witness step %s carries a token or a secret (no GH_TOKEN, no gh call, no admission in snapshot mode)" % (jn, sstep))
+        bad.append("%s: the snapshot Witness step %s carries a token or a secret (no GH_TOKEN, no gh call in snapshot mode)" % (jn, sstep))
     if jn in ("build-apk", "rebuild-apk") and matrix_runners(j) != RUNNERS:
         bad.append("%s is not ONE job with a matrix over both chips %s: %s" % (jn, RUNNERS, matrix_runners(j)))
     if jn in ("build-assemble", "rebuild-assemble") and j.get("runs-on") != "ubuntu-24.04":
@@ -400,7 +393,7 @@ for jn in BUILD_JOBS:
     if not j:
         continue
     t = text_of(j)
-    if re.search(r"inputs\.hostile|\bhostile\s*:|contains\(github\.ref_name,\s*'-rc'\)", t) and jn != "build-freeze":
+    if re.search(r"inputs\.hostile|\bhostile\s*:|contains\(github\.ref_name,\s*'-rc'\)", t):
         bad.append("%s still makes the hostile step depend on a release-candidate tag or a hostile input" % jn)
     for s in steps_of(j):
         if "hostile" in (s.get("name") or "") and "if" in s:
@@ -528,7 +521,7 @@ case_ workflow-env            bad "workflow-level env" "d['env'] = {'X': 'y'}"
 case_ workflow-defaults       bad "workflow-level defaults" "d['defaults'] = {'run': {'shell': 'bash'}}"
 
 # the job set and the graph (REQ-CHAIN-005-AC5)
-for jn in build-freeze build-apk build-assemble sign rebuild-apk rebuild-assemble sign-rebuild check-govulncheck check sign-check release-compare release-verify release; do
+for jn in build-apk build-assemble sign rebuild-apk rebuild-assemble sign-rebuild check-govulncheck check sign-check release-compare release-verify release; do
   case_ "job-$jn-gone"        bad "no chain job $jn" "$J.pop('$jn')"
 done
 for old in rapk rapk-arm check-arm64 govulncheck-build apk assemble freeze rebuild build compare verify; do
@@ -537,7 +530,7 @@ done
 case_ unlisted-job            bad "not a chain job nor on the allowed list" "$J['extra'] = {'runs-on': 'ubuntu-24.04', 'permissions': {'contents': 'read'}, 'steps': []}"
 case_ persona-uat-job-here    bad "not a chain job nor on the allowed list" "$J['persona-uat'] = {'runs-on': 'ubuntu-24.04', 'permissions': {'contents': 'read'}, 'steps': []}"
 case_ hostile-job-allowed     ok  "" "$J['hostile-verify'] = {'runs-on': 'ubuntu-24.04', 'permissions': {'contents': 'read'}, 'needs': 'build-assemble', 'steps': []}"
-for pair in "build-apk:build-freeze" "build-assemble:build-apk" "sign:build-assemble" "rebuild-assemble:rebuild-apk"; do
+for pair in "build-assemble:build-apk" "sign:build-assemble" "rebuild-assemble:rebuild-apk"; do
   jn=${pair%%:*}
   case_ "needs-$jn-widened"   bad "job $jn needs" "$J['$jn']['needs'] = ['${pair##*:}', 'check']"
   case_ "needs-$jn-dropped"   bad "job $jn needs" "$J['$jn'].pop('needs')"
@@ -562,10 +555,10 @@ case_ sign-self-hosted        bad "does not run on a GitHub-hosted" "$J['sign'][
 case_ release-no-permissions  bad "release declares no permissions of its own" "$J['release'].pop('permissions')"
 case_ unpinned-action         bad "not pinned by a full digest" "$J['release-compare']['steps'][0]['uses'] = 'actions/checkout@v4'"
 # the gate G and the guard S, one case each (REQ-CHAIN-003-AC5, REQ-CHAIN-005-AC5)
-case_ gate-gone               bad "gate G" "$J['build-freeze'].pop('if')"
-case_ gate-without-dry-run    bad "gate G" "$J['build-freeze']['if'] = \"\${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.mode == 'snapshot' }}\""
-case_ gate-without-snapshot   bad "gate G" "$J['build-freeze']['if'] = \"\${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true }}\""
-case_ gate-dispatch-on-tag    bad "gate G" "$J['build-freeze']['if'] = \"\${{ (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v')) || inputs.dry-run == true || inputs.mode == 'snapshot' }}\""
+case_ gate-gone               bad "gate G" "$J['build-apk'].pop('if')"
+case_ gate-without-dry-run    bad "gate G" "$J['build-apk']['if'] = \"\${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.mode == 'snapshot' }}\""
+case_ gate-without-snapshot   bad "gate G" "$J['build-apk']['if'] = \"\${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true }}\""
+case_ gate-dispatch-on-tag    bad "gate G" "$J['build-apk']['if'] = \"\${{ (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/')) || inputs.dry-run == true || inputs.mode == 'snapshot' }}\""
 for jn in sign sign-rebuild sign-check release; do
   case_ "guard-$jn-gone"           bad "guard S: $jn" "$J['$jn'].pop('if')"
   case_ "guard-$jn-no-snapshot"    bad "guard S: $jn" "$J['$jn']['if'] = \"\${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}\""
@@ -605,7 +598,7 @@ for tj in decide cut patch-notes; do
   case_ "$tj-in-environment-sign" bad "only sign-tag does" "$J['$tj']['environment'] = 'sign'"
   case_ "$tj-holds-id-token"     bad "only sign-tag does" "$J['$tj'].setdefault('permissions', {})['id-token'] = 'write'"
 done
-for jn in build-apk build-assemble rebuild-apk rebuild-assemble; do
+for jn in build-assemble rebuild-apk rebuild-assemble; do
   case_ "$jn-has-if"          bad "$jn carries an if" "$J['$jn']['if'] = \"\${{ github.event_name == 'push' }}\""
 done
 case_ patch-notes-ungated     bad "patch-notes does not run only if" "$J['decide'] = {'runs-on': 'ubuntu-24.04', 'permissions': {'contents': 'read'}, 'steps': []}; $J['patch-notes'] = {'needs': ['decide', 'cut'], 'if': 'always()', 'runs-on': 'ubuntu-24.04', 'permissions': {'contents': 'read'}, 'steps': []}"
@@ -660,19 +653,15 @@ case_ decide-reachable-in-snapshot bad "reachable in snapshot mode" "$J['decide'
 case_ build-apk-gets-id-token bad "reachable in snapshot mode" "$J['build-apk']['permissions']['id-token'] = 'write'"
 case_ rebuild-assemble-writes bad "reachable in snapshot mode" "$J['rebuild-assemble']['permissions']['packages'] = 'write'"
 case_ live-test-writes-in-snapshot bad "reachable in snapshot mode" "$J['live-test-release']['permissions'] = {'id-token': 'write'}; $J['live-test-release'].pop('if', None)"
-case_ persona-call-unguarded  bad "reachable in snapshot mode" "$J['persona-uat-rc'] = {'needs': 'build-assemble', 'uses': './.github/workflows/persona-uat.yml', 'permissions': {'contents': 'read', 'id-token': 'write'}, 'if': \"\${{ vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v') }}\"}"
-case_ persona-call-ok         ok  "" "$J['persona-uat-rc'] = {'needs': 'build-assemble', 'uses': './.github/workflows/persona-uat.yml', 'permissions': {'contents': 'read', 'id-token': 'write'}, 'if': \"\${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v') }}\"}"
-case_ persona-call-no-gate    bad "lacks the gate PERSONA_UAT_ENABLED" "$J['persona-uat-rc'] = {'needs': 'build-assemble', 'uses': './.github/workflows/persona-uat.yml', 'permissions': {'contents': 'read'}, 'if': \"\${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v') }}\"}"
+case_ persona-call-unguarded  bad "reachable in snapshot mode" "$J['persona-uat-rc'] = {'needs': 'build-assemble', 'uses': './.github/workflows/persona-uat.yml', 'permissions': {'contents': 'read', 'id-token': 'write'}, 'if': \"\${{ vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/') }}\"}"
+case_ persona-call-ok         ok  "" "$J['persona-uat-rc'] = {'needs': 'build-assemble', 'uses': './.github/workflows/persona-uat.yml', 'permissions': {'contents': 'read', 'id-token': 'write'}, 'if': \"\${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/') }}\"}"
+case_ persona-call-no-gate    bad "lacks the gate PERSONA_UAT_ENABLED" "$J['persona-uat-rc'] = {'needs': 'build-assemble', 'uses': './.github/workflows/persona-uat.yml', 'permissions': {'contents': 'read'}, 'if': \"\${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/') }}\"}"
 case_ persona-call-no-branch  bad "lacks the gate PERSONA_UAT_ENABLED" "$J['persona-uat-rc'] = {'needs': 'build-assemble', 'uses': './.github/workflows/persona-uat.yml', 'permissions': {'contents': 'read'}, 'if': \"\${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' }}\"}"
 case_ calls-another-workflow  bad "release.yml calls no workflow file but persona-uat.yml" "$J['x'] = {'uses': './.github/workflows/ci.yml'}; $J['x']['permissions'] = {'contents': 'read'}"
 
 # Build (REQ-CHAIN-004-AC1, AC12)
-case_ freeze-wrong-runner     bad "build-freeze is not on ubuntu-24.04" "$J['build-freeze']['runs-on'] = 'ubuntu-24.04-arm'"
-case_ freeze-id-token         bad "build-freeze is not on ubuntu-24.04" "$J['build-freeze']['permissions']['id-token'] = 'write'"
-case_ freeze-extra-step       bad "build-freeze steps are not exactly" "$J['build-freeze']['steps'].append({'run': 'echo x'})"
-case_ freeze-witness-step     bad "build-freeze steps are not exactly" "$J['build-freeze']['steps'][2] = {'run': 'bash bin/witnessed-local.sh freeze bin/build-freeze.sh'}"
 case_ build-apk-one-runner    bad "build-apk is not a matrix over the two native runners" "$J['build-apk']['strategy']['matrix'][list($J['build-apk']['strategy']['matrix'])[0]] = ['ubuntu-24.04']"
-case_ build-apk-no-admission-reads bad "build-apk does not hold exactly contents, checks" "$J['build-apk']['permissions'] = {'contents': 'read'}"
+case_ build-apk-checks-read   bad "build-apk does not hold exactly contents read" "$J['build-apk']['permissions']['checks'] = 'read'"
 case_ build-apk-packages-write bad "build-apk does not hold exactly" "$J['build-apk']['permissions']['packages'] = 'write'"
 case_ build-assemble-matrix   bad "build-assemble is not one job" "$J['build-assemble']['strategy'] = {'matrix': {'r': ['ubuntu-24.04']}}"
 case_ build-assemble-arm      bad "build-assemble is not one job" "$J['build-assemble']['runs-on'] = 'ubuntu-24.04-arm'"

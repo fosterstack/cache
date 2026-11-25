@@ -11,7 +11,7 @@ the job graph is exactly the keys and targets in CHAIN. Anything else is a fault
 
   helper FILE                               REQ-CHAIN-004-AC2 (the Witness seam): bin/witnessed.sh is exactly the canonical helper, (no timeout since handoff 0713)
   directwitness FILE...                     REQ-CHAIN-004-AC2: no `witness run` in any stage file or stage script (every call goes through the helper)
-  stage FILE build|rebuild [ALLOWED.json]   REQ-CHAIN-004-AC1, AC2 / REQ-CHAIN-005-AC1, AC4: FILE is a workflow file holding the family's jobs (release.yml: build-freeze, build-apk, build-assemble; rebuild-apk, rebuild-assemble)
+  stage FILE build|rebuild [ALLOWED.json]   REQ-CHAIN-004-AC1, AC2 / REQ-CHAIN-005-AC1, AC4: FILE is a workflow file holding the family's jobs (release.yml: build-apk, build-assemble; rebuild-apk, rebuild-assemble)
   script FILE KIND                          REQ-CHAIN-004-AC3, AC6, AC11 / REQ-CHAIN-005-AC2: FILE is exactly expected_lines(KIND)
   lockflow WORKFLOW...                      REQ-CHAIN-004-AC11 / REQ-CHAIN-005-AC6: no workflow names apko beyond the pinned install
   listed CHAIN_SCRIPTS.json ROOT            the stage scripts are rows of .github/policy/chain-scripts.json and exist
@@ -40,7 +40,7 @@ import json, os, re, shlex, sys, yaml
 
 ARCHIVE, GO_ARCHIVE = "archive", "archive/go"
 KEYRING_WOLFI, MELANGE_LOCK, ASSEMBLY_PUB = "archive/keys/wolfi-signing.rsa.pub", "build/locks/melange.lock", "build/keys/assembly.rsa.pub"
-TAG_LINE = "tag=${GITHUB_REF_NAME#release/}"    # the tag: GITHUB_REF_NAME on a tag push, the name minus "release/" on a push of a release/vX.Y.Z branch
+TAG_LINE = "tag=$(bin/release-version.sh)"    # the tag: GITHUB_REF_NAME on a tag push, the next patch of the line on a push of a release/* branch
 VER = '"${tag#v}"'          # --version is the tag minus the leading v: 0.3.0, or 0.3.0-rc.1 for a release candidate (PROPOSED, cache-3f)
 TAG = '"$tag"'
 RUNNERS = [("ubuntu-24.04", "x86_64"), ("ubuntu-24.04-arm", "aarch64")]
@@ -121,12 +121,12 @@ def items_apk():
 def expected_lines(kind):
     """The exact lines (shebang, comments and blank lines aside; a trailing-backslash break is joined) of bin/build-stage-KIND.sh."""
     if kind == "apk":
-        return ([H, "python3 -I bin/build-admit.py run", "unset GH_TOKEN", TAG_LINE] + RELEASE_TAG_LINES + SDE + [apk_cmd("standard"),
+        return ([H, TAG_LINE] + RELEASE_TAG_LINES + SDE + [apk_cmd("standard"),
             apk_cmd("fips"), baselayout_cmd(),
-                version_check("standard"), version_check("fips"), items_apk(), ADMISSION_COPY])
+                version_check("standard"), version_check("fips"), items_apk()])
     if kind == "assemble":     # one script for all four kinds: STEP is apk, rapk, snapshot-apk or snapshot-rapk
         return ASSEMBLE_LINES
-    if kind == "snapshot-apk":       # no admission, no version check, no tag: the version is the fixed snapshot one
+    if kind == "snapshot-apk":       # no version check, no tag: the version is the fixed snapshot one
         return ([H] + SNAPSHOT_TAG_LINES + SDE
                 + [apk_cmd("standard", SNAPSHOT_VERSION), apk_cmd("fips", SNAPSHOT_VERSION),
                    baselayout_cmd(SNAPSHOT_VERSION), items_apk()])
@@ -203,7 +203,6 @@ CHECKOUT_WITH = {"persist-credentials": "false", "fetch-depth": "0"}      # fetc
 # the four building jobs hold NO identity token (owner Oct 22 2026, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md): their Witness record is made with a throwaway key and
 # signed outside the build, by Sign
 PERM_PLAIN = {"contents": "read"}
-PERM_ADMIT = {"contents": "read", "actions": "read", "checks": "read", "statuses": "read", "pull-requests": "read"}
 MAT = "${{ matrix.runner }}"
 # Build hands the snapshot callers the digests.json text: the workflow output reads the build-assemble job's output, which one pinned step fills from digests.json
 STAGE_OUTPUT = "${{ jobs.build-assemble.outputs.digests }}"
@@ -220,29 +219,10 @@ MODE_GUARD_ENV = {"MODE": "${{ inputs.mode || 'release' }}"}
 # the way the chain installs Witness: a
 # checksum-pinned `bash bin/install-scanner.sh go` run line, AFTER the Witness install (rule 68: Witness first) and before the downloads and the Witness step
 # (advisor, Codex A r3 F4: no setup-go action; the toolchain bytes are pinned by a committed sha256)
-# admission.json is written once per apk leg (the Witness record of each leg holds it as a product) but uploaded ONCE, from the leg on ubuntu-24.04 and only in a
-# release run, under the fixed name `admission` (PR 4's Release reads the baseline a CI patch tag used from it; a matrix upload under one name would clash)
-ADMISSION_IF = "${{ inputs.mode != 'snapshot' && matrix.runner == 'ubuntu-24.04' }}"
-# REQ-CHAIN-007-AC19 (advisor ruling B, Oct 12): the baseline admission chose reaches Release as a product of Build's own record. Each apk leg copies its admission.json
-# into out/ (so the leg's record holds it and the assemble job's `bind` verifies it), the assemble job writes admission-baseline.json from both legs (a product of
-# Build's record), and uploads it under the fixed name `admission-baseline` in a release run only.
-BASELINE_IF = "${{ inputs.mode != 'snapshot' }}"
-ADMISSION_COPY = "cp admission.json out/admission.json"
-ADMISSION_BASELINE = ('python3 -I bin/chain-verify.py admission-baseline --admission apk/ubuntu-24.04/admission.json '
-    '--admission apk/ubuntu-24.04-arm/admission.json '
-                      '--tag %s --sha "$GITHUB_SHA" --out admission-baseline.json' % TAG)
 INSTALL_GO = "bash bin/install-scanner.sh go"
-# rule 1 of the sandboxed build (ratify Oct 27): the requirements tool is Go source of the tagged commit, so its freeze
-# check runs in a job of its own, before Build's apk job:
-# contents: read, no secret, no token, no Witness. It writes freeze/freeze.txt (one `freeze-ok BASE` line per baseline
-# file at the tagged commit); the apk job downloads that
-# artifact and admission reads it. The pinned Go comes from the same line as Build's own install (INSTALL_GO): one pin
-# source.
-FREEZE_RUN = "bash bin/build-freeze.sh"
-FREEZE_ARTIFACT = {"name": "freeze", "path": "freeze"}
 # REQ-CHAIN-004-AC3 (rule 62, advisor 0393 item 1; advisor Oct 12 item 4): the VM runs melange and apko, each in the job that uses it: an apk job of Build and Rebuild installs
 # melange ONLY and an assemble job apko ONLY, from cache's bin/install-build-tools.sh, the pinned and checksummed installer (version and sha256 per tool and architecture, fixed
-# destination /usr/local/bin), one step, right after the Witness (and Go) install and so before admission; no secret, the same way as Witness and Go
+# destination /usr/local/bin), one step, right after the Witness (and Go) install; no secret, the same way as Witness and Go
 INSTALL_MELANGE = "bash bin/install-build-tools.sh melange"
 INSTALL_APKO = "bash bin/install-build-tools.sh apko"
 # REQ-CHAIN-004-AC16 (advisor ACs 10-13, Oct 15; owner rules 3 and 9): every job builds from archive/, so each installs the checksum-pinned crane (fixed
@@ -265,11 +245,11 @@ SNAPSHOT_VERDICT = "witness-rebuild/snapshot-verdict.json"       # a snapshot Re
 SNAP = "snapshot-"
 CASE = 'case "$step" in'
 ASSEMBLE_LINES = (
-    [H, "step=$1", "dir=${step#%s}" % SNAP, TAG_LINE, "version=${tag#v}", CASE,
-     "  %s*) version=%s ;;" % (SNAP, SNAPSHOT_VERSION), "esac"]
+    [H, "step=$1", "dir=${step#%s}" % SNAP, CASE,
+     "  %s*) version=%s ;;" % (SNAP, SNAPSHOT_VERSION), "  *) version=$(bin/release-version.sh); version=${version#v} ;;", "esac"]
     + ['python3 -I bin/chain-verify.py bind --local --step "$step" --record "rec-$dir/%s/$step-collection.local.json" '
        '--dir "$dir/%s" --as out' % (r, r) for r, a in RUNNERS]
-    + [CASE, "  apk)", "    " + ADMISSION_BASELINE + " ;;", "esac", "mkdir -p melange-repo"]
+    + ["mkdir -p melange-repo"]
     + ['cp -R "$dir/%s/%s" melange-repo/%s' % (r, a, a) for r, a in RUNNERS]
     + ["mkdir -p keyring",
       "cp %s keyring/wolfi-signing.rsa.pub" % KEYRING_WOLFI, "cp %s keyring/assembly.rsa.pub" % ASSEMBLY_PUB]
@@ -301,14 +281,12 @@ RAPK_CHECK_RUN = ('bash bin/rebuild-records-digests.sh --check rec-digests/ubunt
                   'rec-digests/ubuntu-24.04-arm/rebuild-records.json')
 RECORDS_JOB_OUTPUT = "${{ steps.records.outputs.records }}"
 JOBS = {  # (family, job id of release.yml) -> spec; every step list is EXACT and in this order. An upload names ONE path (the artifact is rooted at it).
-    # judged by freeze_job(): no Witness step, no mode, no tools; the job carries gate G as its if
-    ("build", "build-freeze"): dict(kind="freeze", perm=PERM_PLAIN, gh=False, matrix=False, up=[("freeze", "freeze")]),
-    ("build", "build-apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, needs="build-freeze",
-    down=[("freeze", "freeze")], mode=True, setup_go=True, tools=(INSTALL_MELANGE,), hosttools=True, probe=True,
-        up=[("apk-" + MAT, "out"), ("witness-apk-" + MAT, "witness-apk"), ("admission", "admission.json")]),
+    ("build", "build-apk"): dict(kind="apk", step="apk", perm=PERM_PLAIN, gh=False, matrix=True, gate=True,
+    down=[], mode=True, setup_go=True, tools=(INSTALL_MELANGE,), hosttools=True, probe=True,
+        up=[("apk-" + MAT, "out"), ("witness-apk-" + MAT, "witness-apk")]),
     ("build", "build-assemble"): dict(kind="assemble", step="build", args="apk", snap_args="snapshot-apk", perm=PERM_PLAIN, gh=False, matrix=False, needs="build-apk", tools=(INSTALL_APKO,), expose=True, hostile=True, mode=True,
         down=[("apk-" + r, "apk/" + r) for r, a in RUNNERS] + [("witness-apk-" + r, "rec-apk/" + r) for r, a in RUNNERS],
-        up=[("witness-build", "witness-build"), ("digests", "digests.json"), ("items", "items.json"), ("admission-baseline", "admission-baseline.json"), ("dist", "dist"), ("images", "out")]),
+        up=[("witness-build", "witness-build"), ("digests", "digests.json"), ("items", "items.json"), ("dist", "dist"), ("images", "out")]),
     ("rebuild", "rebuild-apk"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=True, needs="build-assemble", tools=(INSTALL_MELANGE,), hosttools=True, mode=True, setup_go=True, records_file=True,
         down=[(WB_DOWN, "witness-build"), ("digests", "build-in")],
         up=[("rapk-" + MAT, "out"), ("witness-rapk-" + MAT, "witness-rapk"), ("rebuild-records-" + MAT, "rebuild-records.json")]),
@@ -318,12 +296,12 @@ JOBS = {  # (family, job id of release.yml) -> spec; every step list is EXACT an
         down_records=[("rebuild-records-" + r, "rec-digests/" + r) for r, a in RUNNERS],
         up=[("witness-rebuild", "witness-rebuild")]),
 }
-FAMILY_JOBS = {"build": ("build-freeze", "build-apk", "build-assemble"), "rebuild": ("rebuild-apk", "rebuild-assemble")}
-BUILD_GATE = "${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"      # gate G (REQ-CHAIN-005-AC5): the chain starts on a tag push, on a push of a release/vX.Y.Z branch, in a dry run or in a snapshot call
+FAMILY_JOBS = {"build": ("build-apk", "build-assemble"), "rebuild": ("rebuild-apk", "rebuild-assemble")}
+BUILD_GATE = "${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"      # gate G (REQ-CHAIN-005-AC5): the chain starts on a tag push, on a push of a release/* branch, in a dry run or in a snapshot call
 
 
 def stage(path, family, allowed_path=None):
-    """The jobs of one family in release.yml (Build: build-freeze, build-apk, build-assemble; Rebuild: rebuild-apk, rebuild-assemble), each an exact grammar. The file's triggers, its outputs and its
+    """The jobs of one family in release.yml (Build: build-apk, build-assemble; Rebuild: rebuild-apk, rebuild-assemble), each an exact grammar. The file's triggers, its outputs and its
     other jobs are judged by graph() and the other judges."""
     bad = []
     d = yaml.load(open(path).read(), Loader=yaml.BaseLoader)
@@ -341,11 +319,7 @@ def stage(path, family, allowed_path=None):
     for name in names:
         txt = json.dumps(jobs[name])
         if re.search(r"\bwitness\s+run\b", txt): bad.append("%s names `witness run` directly (every stage goes through bin/witnessed-local.sh)" % name)
-        if "verify-freeze" in txt: bad.append("%s names verify-freeze: only bin/build-freeze.sh, run by the build-freeze job, may run it" % name)
-        if name != "build-freeze" and "build-freeze.sh" in txt:
-            bad.append("%s: only the build-freeze job runs bin/build-freeze.sh (it starts go of the tagged tree)" % name)
-        bad += ["%s: %s" % (name, m) for m in (freeze_job(jobs[name], allowed) if name == "build-freeze" else job(jobs[name],
-            family, name, allowed))]
+        bad += ["%s: %s" % (name, m) for m in job(jobs[name], family, name, allowed)]
     return bad
 
 
@@ -356,54 +330,12 @@ def pinned(uses, prefix, allowed):
     return allowed is None or u in allowed
 
 
-def freeze_job(j, allowed):
-    """The freeze job: a runner of its own, gate G as its if, contents: read, no needs, no outputs, no env but the guard's, no secret.
-    Steps: checkout,
-    the mode guard (no if), then in release mode only the pinned Go, bin/build-freeze.sh and one upload. Nothing
-    else."""
-    bad = []
-    keys = {"runs-on", "permissions", "steps", "timeout-minutes", "if"}
-    if set(j) - keys: bad.append("job keys outside the allowlist: %s" % sorted(set(j) - keys))
-    if j.get("if") != BUILD_GATE: bad.append("the build-freeze job must carry exactly the gate G as its if: %s, got %r (the chain starts here)" % (BUILD_GATE, j.get("if")))
-    if j.get("runs-on") != "ubuntu-24.04": bad.append("the freeze job must run directly on the ubuntu-24.04 VM, got "
-        "%r" % j.get("runs-on"))
-    if j.get("permissions") != PERM_PLAIN: bad.append("permissions must be exactly %s (no token, no write), got "
-        "%s" % (PERM_PLAIN, j.get("permissions")))
-    steps = j.get("steps") or []
-    for s_ in steps:
-        u_ = (s_.get("uses") or "").split(" ")[0]
-        if allowed is not None and PIN.match(u_) and u_ not in allowed: bad.append("action %s is not on the "
-            "allowed-actions list" % u_)
-    want = 5
-    if len(steps) != want: bad.append("%d steps, the grammar has %d (checkout, the mode guard, the Go install, the "
-        "freeze script, the upload)" % (len(steps), want)); return bad
-    s = steps[0]
-    if set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/checkout",
-        allowed) or (s.get("with") or {}) != CHECKOUT_WITH:
-        bad.append("step 1 must be a digest-pinned actions/checkout (on the allowed list) with exactly "
-            "%s" % CHECKOUT_WITH)
-    s = steps[1]
-    if set(s) != {"name", "env",
-        "run"} or s.get("env") != MODE_GUARD_ENV or str(s.get("run") or "").strip() != MODE_GUARD_RUN:
-        bad.append("step 2 must be exactly env %s, run: %s, and no if (the mode guard)" % (MODE_GUARD_ENV,
-            MODE_GUARD_RUN))
-    for k, cmd in ((2, INSTALL_GO), (3, FREEZE_RUN)):
-        s = steps[k]
-        if set(s) - {"run", "name", "if"} or str(s.get("run") or "").strip() != cmd or s.get("if") != MODE_RELEASE_IF:
-            bad.append("step %d must be exactly: run %s under if: %s (no env, no secret)" % (k + 1, cmd,
-                MODE_RELEASE_IF))
-    s = steps[4]
-    if (set(s) - {"uses", "with", "name", "if"} or not pinned(s.get("uses"), "actions/upload-artifact", allowed)
-            or (s.get("with") or {}) != FREEZE_ARTIFACT or s.get("if") != MODE_RELEASE_IF):
-        bad.append("step 5 must be a pinned actions/upload-artifact with exactly name freeze and the ONE path freeze "
-            "under if: %s" % MODE_RELEASE_IF)
-    return bad
-
-
 def job(j, family, name, allowed):
     spec = JOBS[(family, name)]
     bad = []
-    keys = {"runs-on", "permissions", "steps", "timeout-minutes"}
+    keys = {"runs-on", "permissions", "steps", "timeout-minutes"} | ({"if"} if spec.get("gate") else set())
+    if spec.get("gate") and j.get("if") != BUILD_GATE:
+        bad.append("the %s job must carry exactly the gate G as its if: %s, got %r (the chain starts here)" % (name, BUILD_GATE, j.get("if")))
     if spec["matrix"]:
         keys |= {"strategy"} | ({"needs"} if spec.get("needs") else set())
     else:
@@ -416,7 +348,8 @@ def job(j, family, name, allowed):
     if {"runs-on", "permissions", "steps"} - set(j):
         bad.append("job lacks %s" % sorted({"runs-on", "permissions", "steps"} - set(j)))
     for k in ("container", "services", "env", "defaults", "environment", "outputs", "if", "continue-on-error", "uses", "secrets"):
-        if k in j and not (k == "outputs" and (spec.get("expose") or spec.get("expose_records"))): bad.append("job has %s" % k)
+        if k in j and not (k == "outputs" and (spec.get("expose") or spec.get("expose_records"))) and not (k == "if" and spec.get("gate")):
+            bad.append("job has %s" % k)
     if spec.get("expose") and j.get("outputs") != {"digests": JOB_OUTPUT}:
         bad.append("the assemble job must expose exactly outputs: digests: %s, got %s" % (JOB_OUTPUT, j.get("outputs")))
     if spec.get("expose_records") and j.get("outputs") != {"records": RECORDS_JOB_OUTPUT}:
@@ -438,25 +371,6 @@ def job(j, family, name, allowed):
         for s_ in steps:
             u_ = (s_.get("uses") or "").split(" ")[0]
             if PIN.match(u_) and u_ not in allowed: bad.append("action %s is not on the allowed-actions list" % u_)
-    if spec.get("gh"):       # the admission job: the advisor's reading of rule 51 (admission is the first TRUST decision), made a test
-        first_wit = next((k for k, x in enumerate(steps) if "witnessed-local.sh" in str(x.get("run", ""))), len(steps))
-        if first_wit < len(steps) and (steps[first_wit].get("if") != MODE_RELEASE_IF or "witnessed-local.sh apk " not in str(steps[first_wit].get("run", ""))):
-            bad.append("the first step that runs bin/witnessed-local.sh must be the release admission step `bash bin/witnessed-local.sh apk ...` under if: %s; another Witness "
-                       "step before it runs before admission" % MODE_RELEASE_IF)
-        for k, x in enumerate(steps[:first_wit]):
-            run_ = str(x.get("run", "")).strip()
-            kind = ("checkout" if k == 0 and set(x) <= {"uses", "with", "name"} and pinned(x.get("uses"), "actions/checkout", allowed) and (x.get("with") or {}) == CHECKOUT_WITH
-                    else "guard" if set(x) == {"name", "env", "run"} and x.get("env") == MODE_GUARD_ENV and run_ == MODE_GUARD_RUN
-                    else "install" if set(x) <= {"name", "run"} and run_ in PRE_INSTALLS
-                    else "freeze-download" if (set(x) <= {"uses", "with", "name", "if"}
-                                               and pinned(x.get("uses"), "actions/download-artifact", allowed)
-                                               and (x.get("with") or {}) == FREEZE_ARTIFACT
-                                               and x.get("if") == MODE_RELEASE_IF) else None)
-            if kind is None:
-                bad.append("step %d runs before admission (the first step that runs bin/witnessed-local.sh) and is not the checkout, the mode guard or a checksum-pinned "
-                           "install line or the one download of the freeze result: %s (nothing with an env, a token, "
-                           "a secret, a build command, another download or an upload may come before admission)"
-                           % (k + 1, sorted(x)))
     i = 0
     s = steps[i]; i += 1
     if set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/checkout", allowed) or (s.get("with") or {}) != CHECKOUT_WITH:
@@ -476,7 +390,7 @@ def job(j, family, name, allowed):
     for cmd in spec["tools"]:       # an apk job installs melange only, an assemble job apko only (advisor Oct 12, item 4)
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != cmd:
-            bad.append("step %d must be exactly: run %s (the checksum-pinned build tool this job uses and no other, right after the Witness and Go installs, before admission; no env, no secret)" % (i, cmd))
+            bad.append("step %d must be exactly: run %s (the checksum-pinned build tool this job uses and no other, right after the Witness and Go installs; no env, no secret)" % (i, cmd))
     for cmd in (INSTALL_CRANE, ARCHIVE_PULL) + ((INSTALL_HOSTTOOLS,) if spec.get("hosttools") else ()):       # REQ-CHAIN-004-AC16: the pinned crane, then the archive pull (AC17: and in an apk job the host tools out of it), each a step of a name and a run and nothing else
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != cmd:
@@ -484,10 +398,8 @@ def job(j, family, name, allowed):
                        "bin/install-build-tools.sh and before the downloads; no env, no if, no continue-on-error, no other argument, no other install)" % (i, cmd))
     for nm, path_ in spec["down"]:
         s = steps[i] if i < len(steps) else {}; i += 1
-        # only the freeze result is downloaded in release mode alone
-        gated = s.get("if") == MODE_RELEASE_IF if nm == "freeze" else "if" not in s
         if (set(s) - {"uses", "with", "name", "if"} or not pinned(s.get("uses"), "actions/download-artifact", allowed)
-                or (s.get("with") or {}) != {"name": nm, "path": path_} or not gated):
+                or (s.get("with") or {}) != {"name": nm, "path": path_} or "if" in s):
             bad.append("step %d must be a pinned actions/download-artifact with exactly name %s and path %s "
                        "(a fresh named directory, never . or bin/ or .github/)" % (i, nm, path_))
     for nm, path_ in spec.get("down_records", ()):       # A1: the digest lists the rapk jobs uploaded (release mode only), downloaded before the check
@@ -500,15 +412,13 @@ def job(j, family, name, allowed):
         if set(s) - {"name", "if", "run"} or s.get("if") != MODE_RELEASE_IF or str(s.get("run") or "").strip() != RAPK_CHECK_RUN:
             bad.append("step %d must be exactly if: %s, run: %s (the rapk records are checked against the digest lists of their jobs before the Witness step; no env, no job output)" % (i, MODE_RELEASE_IF, RAPK_CHECK_RUN))
     s = steps[i] if i < len(steps) else {}; i += 1
-    want_keys = {"run", "name"} | ({"env"} if spec["gh"] else set()) | ({"if"} if spec.get("mode") else set())
+    want_keys = {"run", "name"} | ({"if"} if spec.get("mode") else set())
     if set(s) - want_keys: bad.append("the Witness step may carry only %s (no shell, working-directory)" % sorted(want_keys))
     if spec.get("mode") and s.get("if") != MODE_RELEASE_IF:
         bad.append("the release Witness step must carry exactly if: %s" % MODE_RELEASE_IF)
-    if spec["gh"] and s.get("env") != {"GH_TOKEN": "${{ github.token }}"}:
-        bad.append("the admission job's Witness step must carry env exactly GH_TOKEN: ${{ github.token }} (PROPOSED, advisor-confirmed default)")
-    if not spec["gh"] and "env" in s: bad.append("the Witness step has env")
+    if "env" in s: bad.append("the Witness step has env")
     bad += witness_seam(s.get("run") or "", spec, family)
-    if spec.get("mode"):         # the snapshot Witness step: its own closed step name and script, no GH_TOKEN (nothing is admitted), gated by the mode
+    if spec.get("mode"):         # the snapshot Witness step: its own closed step name and script, no GH_TOKEN, gated by the mode
         s = steps[i] if i < len(steps) else {}; i += 1
         snap = dict(spec, step=SNAPSHOT_STEP[spec["step"]])
         if "args" in spec: snap["args"] = spec["snap_args"]
@@ -544,7 +454,7 @@ def job(j, family, name, allowed):
             bad.append("step %d must be a pinned actions/upload-artifact of %s with no if" % (i, HOSTILE_UP))
     for nm, path_ in spec["up"]:
         s = steps[i] if i < len(steps) else {}; i += 1
-        want_if = ALWAYS if nm == VERDICT_ARTIFACT else (ADMISSION_IF if nm == "admission" else BASELINE_IF if nm == "admission-baseline" else MODE_RELEASE_IF if nm.startswith("rebuild-records-") else None)      # the verdict is uploaded even when the comparison failed: it is the only place the differences are readable
+        want_if = ALWAYS if nm == VERDICT_ARTIFACT else (MODE_RELEASE_IF if nm.startswith("rebuild-records-") else None)      # the verdict is uploaded even when the comparison failed: it is the only place the differences are readable
         if (set(s) - {"uses", "with", "name", "if"} or s.get("if") != want_if or not pinned(s.get("uses"), "actions/upload-artifact", allowed)
                 or (s.get("with") or {}) != {"name": nm, "path": path_}):
             bad.append("step %d must be a pinned actions/upload-artifact with exactly name %s and the ONE path %s%s "
@@ -710,8 +620,7 @@ def listed(path, root):
 #   command by command with the lines held here (script, localhelper, shell_exact); a case, a loop, a function, a
 #   subshell or a read in a helper is one more command,
 #   so it is a finding. Line 1 of each is held too (the shebang picks the program that runs the file).
-#   The stage lines and every python3 child that a closure file starts (build-admit.py,
-#   chain_items.py) run python3 -I, so a file of bin/ cannot
+#   The stage lines and every python3 child that a closure file starts (chain_items.py) run python3 -I, so a file of bin/ cannot
 #   shadow a module for them and they ignore PYTHON* variables. The program python3 is still found by PATH, and a file
 #   written by one step and run by the next is not
 #   seen (both: P6, filed).
@@ -720,19 +629,13 @@ def listed(path, root):
 # text or does not parse is a finding (its children could not be followed). bin/install-scanner.sh and
 # bin/install-build-tools.sh are not read: install-scanner.sh is on
 # the review list (its witness, go and crane arms run in Build, so a change there gets the second review), and
-# install-build-tools.sh compiles nothing. bin/build-freeze.sh is no root: a closure file that names it is a finding.
-# No finding is known on the real tree. The admission step in bin/build-admit.py runs no go: the requirements tool's
-# freeze check is the job `freeze` before Build (bin/build-freeze.sh), and admission reads its file.
+# install-build-tools.sh compiles nothing.
 NS_ROOTS = ("bin/build-stage-*.sh", "bin/witnessed-local.sh", "bin/archive-pull.sh", "bin/install-host-bwrap.py",
             # what the run: lines of stage-build.yml and stage-reproducibility.yml start, bar NS_SKIP
             "bin/chain-hostile-step.sh", "bin/chain-sandbox-probe.sh", "bin/rebuild-records-digests.sh")
 NS_SKIP = ("bin/install-scanner.sh", "bin/install-build-tools.sh")
 # Only named by bin/dependabot-reviewer-version.sh, whose hash covers them; no stage starts them.
 NS_NAMED_ONLY = ("bin/dependabot-reviewer.py",)
-# The freeze job's script starts go of the tagged tree. It is no root of the closure; a closure file that names it or
-# lists
-# it in `runs` is a finding (ns_closure), and stage() lets only the freeze job run it.
-NS_FREEZE = "bin/build-freeze.sh"
 NS_NAME = re.compile(r"(?<![\w/.-])(?:\./)?(bin/[A-Za-z0-9_][A-Za-z0-9_.-]*)")
 
 
@@ -789,10 +692,7 @@ def ns_closure(root):
             bad.append("%s cannot be followed: it %s (its children are not in the closure)" % (
                 p, "does not read as UTF-8 text" if isinstance(e,
                 UnicodeDecodeError) else str(e) if "parse" in str(e) else "cannot be read"))
-        if NS_FREEZE in children:
-            bad.append("%s reaches %s: only the freeze job runs it, and it starts go of the tagged tree" % (p,
-                NS_FREEZE))
-        todo += [n for n in children if n != NS_FREEZE]
+        todo += children
     return sorted(seen), bad
 
 
@@ -1276,19 +1176,18 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
 
 # ---- release.yml --------------------------------------------------------------------------------------------------------------------
 # REQ-CHAIN-005-AC5 and the rulings of cache#921: release.yml is ONE file, each stage step its own job on its own runner. The chain jobs, each with its exact needs, permissions, environment and if.
-GATE = "${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"      # gate G, on build-freeze only: a tag push, a push of a release/vX.Y.Z branch, a dry-run dispatch or a snapshot call
+GATE = "${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"      # gate G, on build-apk only: a tag push, a push of a release/* branch, a dry-run dispatch or a snapshot call
 GUARD_S = ("inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && "
            "startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))")      # guard S: a v* tag push of release.yml itself, never in snapshot mode or under a workflow_call
 SIGN_IF = "${{ %s }}" % GUARD_S                                                    # sign, sign-rebuild, sign-check
 AFTER_IF = SIGN_IF                                                                 # release: exactly guard S, as the sign jobs
 # check-govulncheck has no needs: it also names the runs that start the chain, so a push to main or the daily run (the patch tag jobs only) never starts it
-GV_IF = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true) }}"
+GV_IF = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true) }}"
 CHECK_IF = "${{ inputs.mode != 'snapshot' }}"                                     # check-govulncheck and check
 PERM_READ = {"contents": "read"}
 SIGN_PERMISSIONS = {"contents": "read", "id-token": "write"}
 CHAIN_SPEC = {   # job -> exact needs, permissions, if and environment
-    "build-freeze": dict(needs=[], perm=PERM_READ, if_=GATE, env=None),
-    "build-apk": dict(needs=["build-freeze"], perm=PERM_ADMIT, if_=None, env=None),
+    "build-apk": dict(needs=[], perm=PERM_READ, if_=GATE, env=None),
     "build-assemble": dict(needs=["build-apk"], perm=PERM_READ, if_=None, env=None),
     "sign": dict(needs=["build-assemble"], perm=SIGN_PERMISSIONS, if_=SIGN_IF, env="sign"),
     "rebuild-apk": dict(needs=["build-assemble"], perm=PERM_READ, if_=None, env=None),
@@ -1319,7 +1218,7 @@ STATUS_FUNCTION = re.compile(r"always\(\)|cancelled\(\)|failure\(\)|success\(\)"
 TAG_DUE_IF = "${{ needs.decide.outputs.tag != '' }}"
 PATCH_NOTES_IF = TAG_DUE_IF
 LIVE_TEST_FINAL_IF = "${{ inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc') && !inputs.dry-run }}"
-PERSONA_RC_IF = "${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v') }}"
+PERSONA_RC_IF = "${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/') }}"
 # The persona job's only secrets (REQ-UAT-001-AC1, the persona-uat environment): the model names and the federation identifiers. It holds no registry credential or write token.
 # The live-test environment's Docker Hub credentials (REQ-SCAN-012-AC1, amended on the advisor reading of Oct 17): the test user and its push token (an organization access token
 # scoped to the test repository only) and the read-only Scout token with its user; the same four in the live-test job, nothing else
@@ -1470,8 +1369,7 @@ def graph(path):
 # those two (ops#107) and REQ-SCAN-015 forbids anyone calling them. Their job `build` calls ./.github/workflows/release.yml with `mode: snapshot` and NOTHING
 # else: no other input, no secrets, no `if`, no needs, and exactly the called file's permission set as a static ceiling. THE JUDGE READS ONLY `on` AND THE
 # JOBS THAT CALL A WORKFLOW FILE: the scanner steps and the other jobs (`manifests` of main-candidate-rescan.yml, cache's REQ-REL-004-AC5) are not read here.
-SNAPSHOT_CALLER_PERMISSIONS = {"contents": "write", "packages": "write", "id-token": "write", "issues": "write", "actions": "read", "checks": "read", "statuses": "read",
-                               "pull-requests": "read"}     # REQ-CHAIN-004-AC14: the called file's set (issues write: patch-failed opens its issue), a STATIC CEILING pinned in both directions
+SNAPSHOT_CALLER_PERMISSIONS = {"contents": "write", "packages": "write", "id-token": "write", "issues": "write", "actions": "read", "checks": "read"}     # REQ-CHAIN-004-AC14: the called file's set (issues write: patch-failed opens its issue), a STATIC CEILING pinned in both directions
 # THE ALLOWLIST: in a proof workflow the only job that carries a job-level `uses` is build, calling EXACTLY ./.github/workflows/release.yml, whatever the form.
 # release.yml runs Build and Rebuild in snapshot mode through that one call, so there is no rebuild or artifact-acceptance caller job.
 CALLER_ALLOWLIST = {"build": "./.github/workflows/release.yml"}

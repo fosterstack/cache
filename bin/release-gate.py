@@ -69,7 +69,7 @@ KEY_MANIFEST = ("release-key-manifest.json", "release-key-manifest.sig")
 # Sign's three files: the record the Sign stage signed; the bundle carries its signature (AC9, REQ-CHAIN-007-AC19)
 PROVENANCE = ("provenance.json", "provenance.rekor.json", "provenance.bundle.json")
 # Build's products of its signed record
-BUILD_FILES = ("digests.json", "items.json", "admission-baseline.json")
+BUILD_FILES = ("digests.json", "items.json")
 
 
 def gate(a):
@@ -79,7 +79,7 @@ def gate(a):
     release-files.sha256, or it is a bundle whose signed file is an asset, or it has its own bundle, or it is an apk
     (signed by the release key inside the file), a Witness record (`*-collection.json`, a signed envelope the stages
     verified, with exactly one `*-collection.rekor.json` entries file beside it and none without its record) or Build's
-    digests.json, items.json or admission-baseline.json (products of Build's signed record) or Sign's provenance.json,
+    digests.json or items.json (products of Build's signed record) or Sign's provenance.json,
     provenance.rekor.json and provenance.bundle.json (all three are required) or the key manifest and its signature
     (signed by the root key). A symlink, a directory, or anything else is refused by name."""
     names = sorted(os.listdir(a.dir))

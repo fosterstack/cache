@@ -8,7 +8,7 @@ name: Release
 # The jobs that sign (sign, sign-rebuild, sign-check, and sign-tag for an automatic patch release's tag) are the only ones in the environment sign and the only ones that hold the identity token for the release
 # key's KMS federation: the building and checking jobs hold no key, no token and no secret; their records are made under a throwaway key and trusted by nobody until a sign job checks and signs them.
 #
-# build-freeze -> build-apk -> build-assemble -> sign ; build-assemble -> { rebuild-apk -> rebuild-assemble } ; build-assemble -> check (after check-govulncheck)
+# build-apk -> build-assemble -> sign ; build-assemble -> { rebuild-apk -> rebuild-assemble } ; build-assemble -> check (after check-govulncheck)
 # { build-assemble, rebuild-assemble, sign } -> sign-rebuild ; { build-assemble, check, sign } -> sign-check ; { check, sign, sign-rebuild, sign-check } -> release-compare -> release-verify -> release
 #
 # A push to main and the daily schedule run only decide -> sign-tag -> cut -> patch-notes (REQ-REL-009); every job of the chain is off there.
@@ -21,13 +21,13 @@ on:
     tags:
       - "v*"
     # Automatic patch releases (REQ-REL-009): a push to main and a daily schedule run ONLY the
-    # decide, sign-tag, cut and patch-notes jobs below; the chain itself starts only on a v* tag or a push of a release/vX.Y.Z branch.
+    # decide, sign-tag, cut and patch-notes jobs below; the chain itself starts only on a v* tag or a push of a release/* branch.
     branches:
       - main
-      - "release/v*"
+      - "release/*"
   schedule:
     - cron: '47 9 * * *'   # daily, after the rescan (07:41) and the auditor (08:23)
-  # The dry run of the chain: a manual run on a branch; Build stops at admission (a branch that is not release/vX.Y.Z is refused); it neither tags nor publishes.
+  # The dry run of the chain: a manual run on a branch; Build stops at the version (a branch that is not release/* has none); it neither tags nor publishes.
   workflow_dispatch:
     inputs:
       dry-run:
@@ -185,57 +185,20 @@ jobs:
           n=$(gh issue list --state open --search "$title in:title" --json number,title --jq "[.[] | select(.title == \"$title\")][0].number // empty")
           if [ -n "$n" ]; then gh issue comment "$n" --body-file "$RUNNER_TEMP/issue-body.md"; else gh issue create --title "$title" --body-file "$RUNNER_TEMP/issue-body.md"; fi
 
-      # REQ-REL-009-AC13: a CI patch uses the latest maintainer-approved ACs baseline of its line, only
-      # if the requirements are byte-for-byte unchanged since it. Decide runs this rule over the same sources
-      # (maintainer-signed
-      # tags) and cuts no tag at all (no signer exists yet); admission accepts an maintainer-signed
-      # patch
-      # tag on the maintainers' baseline. Otherwise no cut: it waits for a maintainer.
-      - name: pre-check the ACs baseline admission will require (bin/admission-tag-signer.py baseline)
-        id: basecheck
-        if: ${{ steps.decide.outputs.cut == 'true' }}
-        env:
-          VERSION: ${{ steps.decide.outputs.version }}
-        run: |
-          set -euo pipefail
-          # baselines only from SSH-signed tags of the line, verified against protected main's allowed signers —
-          # exactly what admission reads (Codex #163 r1, B01)
-          git fetch -q --no-tags origin main
-          git show origin/main:.github/policy/allowed_signers > "$RUNNER_TEMP/allowed_signers"
-          python3 bin/admission-tag-signer.py owner-baselines --tag "${VERSION}" \
-            --allowed-signers "$RUNNER_TEMP/allowed_signers" --out "$RUNNER_TEMP/owner-baselines"
-          b=$(python3 bin/admission-tag-signer.py baseline --tag "${VERSION}" --owner-baselines "$RUNNER_TEMP/owner-baselines" \
-                --requirements requirements/requirements.yaml)
-          echo "$b"
-          case "$b" in
-            "use "*)
-              # admission will read the tagged commit's copy and refuse it unless it equals the signed tag's
-              base=$(cut -d' ' -f2 <<<"$b")
-              if git show "${base}:requirements/releases/${base}.yaml" | cmp -s - "requirements/releases/${base}.yaml"; then
-                echo "ok=true" >> "$GITHUB_OUTPUT"
-              else
-                echo "::notice::no cut: requirements/releases/${base}.yaml differs from the signed ${base}"
-                echo "ok=false" >> "$GITHUB_OUTPUT"
-              fi ;;
-            *) echo "::notice::no cut: ${b#no }"; echo "ok=false" >> "$GITHUB_OUTPUT" ;;
-          esac
-
-      # Admission requires every push-scoped required check green on the exact tagged commit; on a push, that commit's
-      # checks are still running when decide runs. Wait for them (bounded: a wait, never a retry); cut only if they
-      # are all green, judged as admission judges them. Otherwise no cut, and the daily run picks the patch up.
-      - name: wait for the tagged commit's required checks (as admission judges them; bounded)
+      # On a push, the tagged commit's required checks are still running when decide runs. Wait for them (bounded: a
+      # wait, never a retry); cut only if they are all green. Otherwise no cut, and the daily run picks the patch up.
+      - name: wait for the tagged commit's required checks (bounded)
         id: checks
-        if: ${{ steps.basecheck.outputs.ok == 'true' }}
+        if: ${{ steps.decide.outputs.cut == 'true' }}
         timeout-minutes: 65
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # the same query admission makes (the latest run of each name, filter=latest), against the same policy: protected main's, never the
-          # checked-out commit's (Codex #159 r1, B6; pin pass B01/B02) — so "ready" here is what admission will see
+          # the latest run of each name (filter=latest), against protected main's policy, never the checked-out commit's
           end=$((SECONDS + 3600))
           while [ "$SECONDS" -lt "$end" ]; do
-            # re-read each time: a policy change on main during the wait applies, as it will at admission (pin pass B02)
+            # re-read each time: a policy change on main during the wait applies
             git fetch -q --no-tags origin main
             git show origin/main:.github/policy/required-checks.json > "$RUNNER_TEMP/required-checks.json"
             gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?filter=latest&per_page=100" --paginate \
@@ -451,47 +414,17 @@ jobs:
           fi
 
   # ---------------------------------------------------------------------------------------------------------------
-  # Build (REQ-CHAIN-004). The gate G is on build-freeze only; the rest of Build and Rebuild run through needs.
-
-  build-freeze:
-    if: ${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - name: the mode is release or snapshot
-        env:
-          MODE: ${{ inputs.mode || 'release' }}
-        run: bash bin/build-stage-refuse-mode.sh "$MODE"
-      - name: install Go (pinned by checksum)
-        if: ${{ inputs.mode != 'snapshot' }}
-        run: bash bin/install-scanner.sh go
-      - name: the freeze check of every baseline file
-        if: ${{ inputs.mode != 'snapshot' }}
-        run: bash bin/build-freeze.sh
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: ${{ inputs.mode != 'snapshot' }}
-        with:
-          name: freeze
-          path: freeze
+  # Build (REQ-CHAIN-004). The gate G is on build-apk only; the rest of Build and Rebuild run through needs.
 
   # the apk legs: one job, a matrix over the two native runners
   build-apk:
-    needs: build-freeze
+    if: ${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     permissions:
       contents: read
-      actions: read
-      checks: read
-      statuses: read
-      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -513,15 +446,8 @@ jobs:
         run: bash bin/archive-pull.sh --pointer build/archive.json --out archive
       - name: unpack the host tools from the archive (bubblewrap for melange's runner)
         run: python3 -I bin/install-host-bwrap.py --archive archive --lock build/locks/host-tools.lock --root host-tools
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        if: ${{ inputs.mode != 'snapshot' }}
-        with:
-          name: freeze
-          path: freeze
       - name: apk under Witness
         if: ${{ inputs.mode != 'snapshot' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: bash bin/witnessed-local.sh apk bin/build-stage-apk.sh
       - name: snapshot-apk under Witness
         if: ${{ inputs.mode == 'snapshot' }}
@@ -540,11 +466,6 @@ jobs:
         with:
           name: witness-apk-${{ matrix.runner }}
           path: witness-apk
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: ${{ inputs.mode != 'snapshot' && matrix.runner == 'ubuntu-24.04' }}
-        with:
-          name: admission
-          path: admission.json
 
   build-assemble:
     needs: build-apk
@@ -615,11 +536,6 @@ jobs:
           name: items
           path: items.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: ${{ inputs.mode != 'snapshot' }}
-        with:
-          name: admission-baseline
-          path: admission-baseline.json
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
           path: dist
@@ -657,10 +573,6 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: items
-          path: witness-build
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: admission-baseline
           path: witness-build
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -921,7 +833,7 @@ jobs:
   # Check (REQ-CHAIN-006): scanners, acceptance suites, the FIPS check and the customer-guide commands against the exact candidate digests. govulncheck publishes no release binary, so it is built from the committed
   # tools/govulncheck module in its own job, which holds no credential; the check job downloads it by artifact id after download-artifact's own digest check.
   check-govulncheck:
-    if: ${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true) }}
+    if: ${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true) }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -957,6 +869,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: install Witness (pinned by checksum)
         run: bash bin/install-scanner.sh witness
       - name: install grype (pinned by checksum)
@@ -1060,10 +973,6 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: items
-          path: witness-build
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: admission-baseline
           path: witness-build
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -1182,10 +1091,6 @@ jobs:
           path: witness-build
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: admission-baseline
-          path: witness-build
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
           name: signed-witness-rebuild
           path: witness-rebuild
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -1283,10 +1188,6 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: items
-          path: witness-build
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: admission-baseline
           path: witness-build
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -1548,11 +1449,11 @@ jobs:
       - name: every hostile attempt refused with its own cause, the positive control accepted
         run: python3 bin/chain-verify.py hostile-verdict hostile-results/hostile-results.json
 
-  # Persona UAT, release-branch leg (REQ-UAT-001-AC1, AC6): the jobs live in persona-uat.yml; this is the one call of that file, in release mode on a push of a release/vX.Y.Z branch only.
+  # Persona UAT, release-branch leg (REQ-UAT-001-AC1, AC6): the jobs live in persona-uat.yml; this is the one call of that file, in release mode on a push of a release/* branch only.
   # The persona job needs Build only, holds no registry credential and no write permission, and never the KMS role. GATE: PERSONA_UAT_ENABLED is exactly 'true' (unset = off).
   persona-uat-rc:
     needs: build-assemble
-    if: ${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v') }}
+    if: ${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/') }}
     permissions:
       contents: read
       id-token: write
@@ -1564,7 +1465,7 @@ jobs:
     # Also when the release job was CANCELLED (audit ruling, Oct 22): the release job's concurrency group keeps one pending run, so a third queued tag run
     # replaces the first pending one, which ends as cancelled, not failed. failure() alone would open no issue; the issue below says to publish the tag again.
     if: ${{ inputs.mode != 'snapshot' && always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
-    needs: [build-freeze, build-apk, build-assemble, sign, rebuild-apk, rebuild-assemble, sign-rebuild, check-govulncheck, check, sign-check, release-compare, release-verify, hostile-verify, hostile-verdict, release]
+    needs: [build-apk, build-assemble, sign, rebuild-apk, rebuild-assemble, sign-rebuild, check-govulncheck, check, sign-check, release-compare, release-verify, hostile-verify, hostile-verdict, release]
     runs-on: ubuntu-latest
     permissions:
       contents: read

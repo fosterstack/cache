@@ -84,7 +84,7 @@ def up(name, path): return f"      - uses: {UPL}\n        with:\n          name:
 def wit(step): return f"      - name: {step}\n        run: bash bin/witnessed-local.sh {step} bin/check-phase.sh {step}\n"
 RUN = "${{ matrix.runner }}"
 SNAP = "${{ inputs.mode != 'snapshot' }}"
-GVIF = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true) }}"   # check-govulncheck has no needs: its ref guard keeps it off in a run on main
+GVIF = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true) }}"   # check-govulncheck has no needs: its ref guard keeps it off in a run on main
 stage = ("name: Release\non:\n  push:\n    tags: [\"v*\"]\npermissions: {}\njobs:\n"
          "  check-govulncheck:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n    outputs:\n      artifact-id: ${{ steps.upload.outputs.artifact-id }}\n"
          f"    if: {GVIF}\n    steps:\n"
@@ -165,7 +165,7 @@ sr += [x for r in RUNNERS for s in ("scanners", "acceptance", "runtime") for x i
 sign_check = {"needs": ["build-assemble", "check", "sign"], "runs-on": "ubuntu-24.04", "environment": "sign", "permissions": {"contents": "read", "id-token": "write"},
               "steps": [{"uses": CHK, "with": {"persist-credentials": "false"}}]
                        + [dl("witness-check-" + r, "rec-check/" + r) for r in RUNNERS] + [dl("check-results-" + r, "artifacts/check-results-" + r) for r in RUNNERS] + [dl("check-records-" + r, "rec-digests/" + r) for r in RUNNERS]
-                       + [dl(n, "witness-build") for n in ("digests", "items", "admission-baseline")] + [dl("images", "images"), dl("dist", "dist")]
+                       + [dl(n, "witness-build") for n in ("digests", "items")] + [dl("images", "images"), dl("dist", "dist")]
                        + [dl("apk-" + r, "apks/" + r) for r in RUNNERS] + [dl("check-results-ubuntu-24.04", "check-results/ubuntu-24.04")]
                        + [{"run": "bash bin/install-scanner.sh aws-cli"}, {"run": "printf '%s' \"$DIGESTS\" > digests.json"}, {"run": " ".join(sr)}]
                        + [{"run": "bash bin/witness-sign-staged.sh staged/%s signed/%s" % (r, r)} for r in RUNNERS]
@@ -283,7 +283,7 @@ m g_cred '(  check-govulncheck:\n    runs-on: ubuntu-24.04\n    permissions:\n  
 m g_gvsnap '(  check-govulncheck:\n.*?    if: )[^\n]*' "\\1\${{ inputs.mode != 'snapshot' }}" 'may carry only the `if`' "REL-011-AC1 check-govulncheck back to the snapshot-only if (no ref guard: it would run on every push to main)"
 m g_gvother '(  check-govulncheck:\n.*?    if: )[^\n]*' "\\1\${{ always() }}" 'may carry only the `if`' "REL-011-AC1 check-govulncheck with another if"
 m g_gvnoif '(  check-govulncheck:\n.*?)    if: [^\n]*\n' '\1' 'may carry only the `if`' "REL-011-AC1 check-govulncheck with no if (it has no needs: it would run in every run)"
-m g_gvnodry '(  check-govulncheck:\n.*?    if: )[^\n]*' "\\1\${{ inputs.mode != 'snapshot' && github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v')) }}" 'may carry only the `if`' "REL-011-AC1 check-govulncheck without the dry-run alternative"
+m g_gvnodry '(  check-govulncheck:\n.*?    if: )[^\n]*' "\\1\${{ inputs.mode != 'snapshot' && github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/')) }}" 'may carry only the `if`' "REL-011-AC1 check-govulncheck without the dry-run alternative"
 m g_envjob '  check-govulncheck:\n' '  check-govulncheck:\n    environment: agent\n' 'may hold exactly' "REL-011-AC1 govulncheck-build gets an environment"
 m g_pkgs '(  check-govulncheck:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n)' '\1      packages: write\n' 'permissions' "REL-011-AC1 govulncheck-build granted packages: write"
 m c_noneed '    needs:\n      - check-govulncheck\n' '    needs:\n' 'must need exactly' "REL-011-AC1 the Check job does not need check-govulncheck"

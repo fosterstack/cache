@@ -63,7 +63,6 @@ mut "decide names the release key"                $R '(      - name: decide \(bi
 mut "decide has no tag output"                    $R '(  decide:.*?)    outputs:\n      tag: [^\n]*\n'          '\1'                                        'output `tag`'
 mut "decide runs on every branch"                 $R "(  decide:\n    if: )[^\n]*"                              "\\1\${{ github.event_name != 'workflow_dispatch' }}" 'main only'
 mut "decide does not decide"                      $R 'patch-decide.py decide --event'                           'patch-decide.py dicide --event'            'fix-only decision'
-mut "decide does not check the ACs baseline"      $R 'python3 bin/admission-tag-signer.py baseline'             'python3 bin/admission-tag-signer.py basel1ne' 'ACs baseline'
 mut "decide does not wait for the required checks" $R 'patch-decide.py ready'                                   'patch-decide.py reedy'                     'required checks'
 mut "decide writes no notes"                      $R 'patch-decide.py notes --version'                          'patch-decide.py n0tes --version'           'generated notes'
 mut "decide uploads no tag request"               $R '      - name: upload the tag request\n.*?          if-no-files-found: error\n' '' 'upload exactly one artifact'

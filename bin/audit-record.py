@@ -269,7 +269,6 @@ def _approval(tag_object):
     msg = tag_object.split("\n\n", 1)[1]
     found = []
     for ln in msg.split("\n"):
-        # exactly the labels the admission signer recognises (bin/admission-tag-signer.py BLOCKS);
         # any other PEM-looking block is message text
         if ln in _SIG_BEGIN:
             break
@@ -310,9 +309,7 @@ def verify_release(tag, tag_object, tagged_sha, ref, commit, policy, items, toda
     """Gate 7 (release process rule 7): (True, "") for a patch tag or for a release tag whose commit has a
     passed-audit record that the owner's signed tag message approves; else (False, reason). Every tag is refused while
     an owner-decision item is open in `items` (the parsed .auditor/accepted-items.json, REQ-AUD-17 AC5), `today` being
-    an ISO date.
-    The tag's signature is verified by the admission step before this runs, so a line in the message is the
-    owner's own."""
+    an ISO date."""
     if not isinstance(tag, str) or not _RELEASE_TAG.fullmatch(tag):
         return False, "the tag is not a release version"
     held = _open_item(items, today)

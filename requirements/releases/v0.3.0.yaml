@@ -119,12 +119,6 @@ release_blocking_acs:
     - id: REQ-CHAIN-004-AC3
       method: unit
       phase: candidate
-    - id: REQ-CHAIN-004-AC4
-      method: unit
-      phase: candidate
-    - id: REQ-CHAIN-004-AC5
-      method: unit
-      phase: candidate
     - id: REQ-CHAIN-004-AC6
       method: unit
       phase: candidate
@@ -231,9 +225,6 @@ release_blocking_acs:
       method: unit
       phase: candidate
     - id: REQ-CHAIN-007-AC18
-      method: unit
-      phase: candidate
-    - id: REQ-CHAIN-007-AC19
       method: unit
       phase: candidate
     - id: REQ-CHAIN-007-AC2

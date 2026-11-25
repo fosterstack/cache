@@ -10,7 +10,7 @@
 #        cosign|witness|go|crane|aws-cli|govulncheck> [dest-dir]
 # `aws-cli` (KA-2: the signer's KMS calls) installs the pinned AWS CLI v2 job-locally into $RUNNER_TEMP/aws-cli (the binary at $RUNNER_TEMP/aws-cli/aws) and takes no destination: nothing is left in /usr/local.
 # `go` installs the Go toolchain of the working directory's go.mod (its `toolchain` line, else its `go` line) into <dest-dir>/fscache-go, only when that
-# version is the pinned one (GO_VER); admission's freeze check runs it from there (the runner's own Go may be older than go.mod).
+# version is the pinned one (GO_VER).
 # `govulncheck` (the Go source scan of Check, ruling G of Oct 12) is a Go MODULE, not release archives (golang/vuln publishes none): it is built from the committed module
 # tools/govulncheck, whose go.sum h1 hashes are the pin, with the pinned toolchain `go` installed (<dest-dir>/fscache-go/bin/go), and installed as <dest-dir>/govulncheck.
 # inspector-sbomgen is Amazon Inspector's SBOM generator (the PR gate's
@@ -223,7 +223,6 @@ case "$TOOL" in
       [ "$key" != require ] || { key=$val; val=${rest%% *}; }
       [ "$key" != golang.org/x/vuln ] || { pin=$val; break; }
     done < tools/govulncheck/go.mod
-    python3 -I bin/build-admit.py tag-ok --final "$pin" || pipeline_fail "tools/govulncheck/go.mod does not require golang.org/x/vuln at a version"
     mkdir -p "$tmp/home" "$tmp/gocache" "$tmp/gomod"
     # nothing Go-related from the caller's environment reaches the build: those names are unset, the pinned ones exported, in a subshell; GOFLAGS is among the unset names and none is defined: tools/govulncheck has no vendor/ directory, so Go's own default (read-only modules) applies
     ( unset GOFLAGS GOROOT GOPATH GOPRIVATE GONOPROXY GONOSUMDB GONOSUMCHECK GOSUMDB GOINSECURE GOVCS GOEXPERIMENT GODEBUG GOCACHEPROG GOAUTH GOTOOLDIR GOBIN GOTMPDIR GOMODCACHEPROG GOOS GOARCH GOAMD64 GOARM GO386 GOMIPS GOPPC64 GORISCV64 GOWASM CC CXX CGO_CFLAGS CGO_CPPFLAGS CGO_CXXFLAGS CGO_LDFLAGS

@@ -27,7 +27,7 @@ The Build stage refuses a tag whose signature does not verify against the mainta
 
 | Stage | Jobs | What it does |
 |---|---|---|
-| Build | `build-freeze`, `build-apk`, `build-assemble` | Admits the tagged commit, builds the packages on two native runners, assembles the two images and the archives, and lists everything it made in a digest list. |
+| Build | `build-apk`, `build-assemble` | Builds the packages on two native runners, assembles the two images and the archives, and lists everything it made in a digest list. |
 | Rebuild | `rebuild-apk`, `rebuild-assemble` | Builds the same commit again on fresh machines; the images are compared with Build's before the release. |
 | Sign | `sign`, `sign-rebuild`, `sign-check` | The only jobs that can reach the release key. They check the records of Build, Rebuild and Check and sign them, sign the provenance, and make the signatures of the release files. |
 | Check | `check-govulncheck`, `check` | Runs the scanners in [scanners.json](../.github/policy/scanners.json), the build-tool, Kubernetes and no-outbound suites and the FIPS check against the exact candidate images. |

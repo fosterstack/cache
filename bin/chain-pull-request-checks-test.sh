@@ -130,7 +130,7 @@ for (f, j), want in sorted(PUSH_IF.items()):
         "AC1: %s %s does not run on pull_request or merge_group" % (f, j))
     res(runs_on(jb.get("if"), "push") and "push" in triggers(wf[f]), "AC1: %s %s runs on push" % (f, j))
 
-# ---- scan.yml's reproducibility runs on push, schedule and workflow_dispatch, never on a pull request, and is not skipped on a schedule run (release admission takes only a schedule or dispatch run of it)
+# ---- scan.yml's reproducibility runs on push, schedule and workflow_dispatch, never on a pull request, and is not skipped on a schedule run (a patch release takes only a schedule or dispatch run of it)
 REPRO = (wf["scan.yml"].get("jobs") or {}).get("reproducibility") or {}
 res(cond("scan.yml", "reproducibility") == "always() && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')",
     "AC1: scan.yml reproducibility has the job-level if always() && (push || schedule || workflow_dispatch) (%r)" % cond("scan.yml", "reproducibility"))

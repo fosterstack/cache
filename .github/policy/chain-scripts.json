@@ -86,9 +86,7 @@
         "trap",
         "unzip"
       ],
-      "runs": [
-        "bin/build-admit.py"
-      ],
+      "runs": [],
       "signs": "other",
       "reason": "installs one pinned tool by checksum (curl downloads it, trap cleans the temp dir); it signs nothing; the listed words appear in its comments",
       "exceptions": [
@@ -249,7 +247,7 @@
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
       ],
-      "reason": "installs melange or apko from its exact pinned release (version and sha256 on each tool-and-architecture download line, compared BEFORE unpacking, fixed destination /usr/local/bin); curl downloads the one archive and tar unpacks it; signs nothing (it names no signing tool); run by Build's and Rebuild's jobs right after the Witness and Go installs, before admission, with no secret"
+      "reason": "installs melange or apko from its exact pinned release (version and sha256 on each tool-and-architecture download line, compared BEFORE unpacking, fixed destination /usr/local/bin); curl downloads the one archive and tar unpacks it; signs nothing (it names no signing tool); run by Build's and Rebuild's jobs right after the Witness and Go installs, with no secret"
     },
     {
       "path": "bin/vex-index.py",
@@ -500,17 +498,14 @@
         "python3"
       ],
       "runs": [
-        "bin/build-admit.py",
+        "bin/release-version.sh",
         "bin/build-version-check.py",
         "bin/chain-verify.py",
         "bin/build-apk.sh",
         "bin/build-baselayout-apk.sh"
       ],
       "signs": false,
-      "reason": "Build, job apk: admission, on a release branch the job-local tag at HEAD (refuses outside GitHub Actions, deletes the other local v* tags at HEAD), the two apk builds with cache's script, the version checks, this architecture's items fragment",
-      "reads_env": [
-        "GH_TOKEN"
-      ],
+      "reason": "Build, job apk: on a release branch the job-local tag at HEAD (refuses outside GitHub Actions, deletes the other local v* tags at HEAD), the two apk builds with cache's script, the version checks, this architecture's items fragment",
       "exceptions": [
         {
           "rule": "deny",
@@ -527,6 +522,7 @@
         "python3"
       ],
       "runs": [
+        "bin/release-version.sh",
         "bin/chain-verify.py",
         "bin/build-archives.py",
         "bin/build-apk.sh",
@@ -544,6 +540,7 @@
         "python3"
       ],
       "runs": [
+        "bin/release-version.sh",
         "bin/chain-verify.py",
         "bin/build-apk.sh",
         "bin/build-baselayout-apk.sh"
@@ -556,86 +553,6 @@
           "line": "  [ \"${GITHUB_ACTIONS:-}\" = true ] || { echo \"refusing to delete tags outside GitHub Actions (run in a throwaway clone)\" >&2; exit 2; }",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; the same guard line as the snapshot apk scripts, indented inside the release-branch block)"
-        }
-      ]
-    },
-    {
-      "path": "bin/build-admit.py",
-      "tools": [
-        "python3",
-        "command",
-        "gh",
-        "at",
-        "git",
-        "env",
-        "ssh",
-        "source",
-        "script"
-      ],
-      "runs": [
-        "bin/admission-tag-signer.py",
-        "bin/audit-record.py"
-      ],
-      "signs": "other",
-      "reason": "verifies (never makes) the owner's SSH signature of a release tag and calls gh for GET-only reads",
-      "reads_env": [
-        "GH_TOKEN"
-      ],
-      "env_mentions": [
-        {
-          "name": "PATH",
-          "text": "`git show REV:PATH`",
-          "why": "a docstring naming the path operand of git show; nothing is set"
-        },
-        {
-          "name": "PATH",
-          "text": "cannot trust a PATH an earlier step set",
-          "why": "a comment naming why the program paths are fixed; nothing is set"
-        },
-        {
-          "name": "PYTHON3",
-          "text": "PYTHON3 = \"/usr/bin/python3\"",
-          "why": "the fixed python3 path constant, read as a Python name; no environment variable is read or set"
-        },
-        {
-          "name": "PYTHON3",
-          "text": "run([PYTHON3, \"-I\", signer, \"route\"",
-          "why": "the fixed python3 path constant, read as a Python name; no environment variable is read or set"
-        },
-        {
-          "name": "PYTHON3",
-          "text": "run([PYTHON3, \"-I\", os.path.join(root, AUDIT_RECORD), \"held\"",
-          "why": "the fixed python3 path constant, read as a Python name; no environment variable is read or set"
-        },
-        {
-          "name": "PYTHON3",
-          "text": "run([PYTHON3, \"-I\", signer, \"owner-baselines\"",
-          "why": "the fixed python3 path constant, read as a Python name; no environment variable is read or set"
-        },
-        {
-          "name": "PYTHON3",
-          "text": "run([PYTHON3, \"-I\", signer, \"baseline\"",
-          "why": "the fixed python3 path constant, read as a Python name; no environment variable is read or set"
-        }
-      ],
-      "exceptions": [
-        {
-          "rule": "deny",
-          "line": "GIT = \"/usr/bin/git\"            # TEST-SUBST",
-          "count": 1,
-          "why": "admission runs first, so it runs git at its fixed location and never searches PATH (a path constant, the test suites substitute it)"
-        },
-        {
-          "rule": "deny",
-          "line": "GH = \"/usr/bin/gh\"              # TEST-SUBST",
-          "count": 1,
-          "why": "admission runs first, so it runs gh at its fixed location and never searches PATH (a path constant, the test suites substitute it)"
-        },
-        {
-          "rule": "deny",
-          "line": "PYTHON3 = \"/usr/bin/python3\"    # TEST-SUBST",
-          "count": 1,
-          "why": "admission runs first, so it runs python3 at its fixed location and never searches PATH (a path constant, the test suites substitute it)"
         }
       ]
     },
@@ -672,11 +589,10 @@
         "make"
       ],
       "runs": [
-        "bin/admission-tag-signer.py",
         "bin/dependabot-reviewer-version.sh"
       ],
       "signs": false,
-      "reason": "the judge's decision over data the wrapper fetched (the record, the writers policy, the tag object) and main's accepted-items.json, the fourth input; main's copy, read from origin/main by bin/build-admit.py, runs held (the owner-decision hold, REQ-AUD-17-AC5); reads and decides, signs and writes nothing"
+      "reason": "the judge's decision over data the wrapper fetched (the record, the writers policy, the tag object) and main's accepted-items.json, the fourth input; reads and decides, signs and writes nothing"
     },
     {
       "path": "bin/dependabot-reviewer-version.sh",
@@ -716,31 +632,6 @@
           "rule": "script-name",
           "text": ".github/policy/required-checks.json",
           "why": "a file name in the list of files the version covers: sha256sum reads and hashes it, nothing starts it (policy file)"
-        }
-      ]
-    },
-    {
-      "path": "bin/build-freeze.sh",
-      "tools": [
-        "go",
-        "git",
-        "basename",
-        "mkdir"
-      ],
-      "runs": [],
-      "signs": false,
-      "reason": "the freeze job's script: runs the requirements tool's verify-freeze of the tagged tree with the pinned Go for each release baseline file and writes one freeze-ok line per file; it runs only in the freeze job of release.yml, which holds no token and no Witness step",
-      "exceptions": [
-        {
-          "rule": "deny",
-          "line": "  if GOTOOLCHAIN=local /usr/local/bin/fscache-go/bin/go -C tools/requirements run . verify-freeze \"$base\"; then",
-          "count": 1,
-          "why": "the fixed install path of the checksum-pinned Go toolchain (bash bin/install-scanner.sh go), named in full so the runner's own go is never used; the pin checker refuses a program named by a variable"
-        },
-        {
-          "rule": "script-name",
-          "text": "GOTOOLCHAIN=local /usr/local/bin/fscache-go/bin/go -C tools/requirements run . verify-freeze \"$base\"",
-          "why": "the pinned Go toolchain by its fixed install path, as above; the runner's own go is never used"
         }
       ]
     },
@@ -806,6 +697,17 @@
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)"
     },
     {
+      "path": "bin/release-version.sh",
+      "tools": [
+        "git",
+        "sort",
+        "tail"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "prints the version being built: the tag of a v* tag push, the next patch of the line on a release/* branch"
+    },
+    {
       "path": "bin/build-stage-snapshot-apk.sh",
       "tools": [
         "at",
@@ -819,7 +721,7 @@
         "bin/build-baselayout-apk.sh"
       ],
       "signs": false,
-      "reason": "Snapshot Build, job apk: refuses outside GitHub Actions, deletes the other local v* tags at HEAD, makes v0.0.0-rc.1, builds the apks (no admission)",
+      "reason": "Snapshot Build, job apk: refuses outside GitHub Actions, deletes the other local v* tags at HEAD, makes v0.0.0-rc.1, builds the apks ",
       "exceptions": [
         {
           "rule": "deny",
@@ -863,28 +765,6 @@
           "line": "if git tag --points-at HEAD | grep -qvx 'v0.0.0-rc.1'; then \\",
           "count": 1,
           "why": "a line the data-opener default deny cannot read as code: a comment, a message, a nested substitution (live code in double quotes around single-quoted text), a generated-source printf or a shell continuation holding quoted text with $( or backticks; it is not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454 round 9, every waived line is comment, message or ordinary nested-substitution code)"
-        }
-      ]
-    },
-    {
-      "path": "bin/admission-tag-signer.py",
-      "tools": [
-        "source",
-        "ssh",
-        "git",
-        "at",
-        "just"
-      ],
-      "runs": [
-        "bin/build-admit.py"
-      ],
-      "signs": "other",
-      "reason": "the tag-signature route and the owner baselines (policy read from origin/main by bin/build-admit.py); names git verify-tag, verifies and signs nothing",
-      "exceptions": [
-        {
-          "rule": "script-name",
-          "text": "build-admit.py",
-          "why": "the one tag grammar (REQ-CHAIN-004-AC20) is loaded as a module from the build-admit.py beside this file (bin/build-admit.py, listed in runs); it is imported, never run"
         }
       ]
     },
@@ -1093,6 +973,7 @@
         "trap"
       ],
       "runs": [
+        "bin/release-version.sh",
         "bin/check-guide-plan.py"
       ],
       "signs": false,
@@ -1684,18 +1565,11 @@
         "python3"
       ],
       "runs": [
-        "bin/build-admit.py",
         "bin/chain-verify.py"
       ],
       "signs": false,
       "reason": "Release, step release-verify: the tag, the release policy, then Build's, Sign's, Rebuild's and Check's records in rule 69's order (REQ-CHAIN-007-AC4); no secret or token is bound to this step",
       "exceptions": [
-        {
-          "rule": "deny",
-          "line": "  { echo \"refused at tag: ${GITHUB_REF_NAME:-} is not vX.Y.Z\" >&2; exit 1; }",
-          "count": 1,
-          "why": "the refusal message must read `refused at <stage>` (the failure names its stage); `at` is a word of that message, not a command;"
-        },
         {
           "rule": "deny",
           "line": "python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json \\",
@@ -1713,7 +1587,6 @@
       ],
       "runs": [
         "bin/apk-tool.py",
-        "bin/build-admit.py",
         "bin/release-postverify.py",
         "bin/release-sign-apks.sh"
       ],
@@ -1827,7 +1700,6 @@
         "python3"
       ],
       "runs": [
-        "bin/build-admit.py",
         "bin/patch-decide.py",
         "bin/release-gate.py",
         "bin/release-metadata.py"
@@ -1924,7 +1796,6 @@
         "just"
       ],
       "runs": [
-        "bin/build-admit.py",
         "bin/chain-verify.py",
         "bin/guide_plan_judge.py"
       ],
@@ -1943,18 +1814,9 @@
       "tools": [
         "at"
       ],
-      "runs": [
-        "bin/build-admit.py"
-      ],
+      "runs": [],
       "signs": false,
-      "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
-      "exceptions": [
-        {
-          "rule": "script-name",
-          "text": "build-admit.py",
-          "why": "the one tag grammar (REQ-CHAIN-004-AC20) is loaded as a module from the build-admit.py beside this file (bin/build-admit.py, listed in runs); it is imported, never run"
-        }
-      ]
+      "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages"
     },
     {
       "path": "bin/vex-forms.py",
@@ -2651,7 +2513,6 @@
         "trap"
       ],
       "runs": [
-        "bin/build-admit.py",
         "bin/chain-verify.py",
         "bin/release-metadata.py",
         "bin/vendor-provenance.py",
@@ -2674,28 +2535,6 @@
     }
   ],
   "ambient_env": [
-    {
-      "name": "GH_TOKEN",
-      "script": "bin/witnessed-local.sh",
-      "why": "the Witness wrapper of the building steps (bin/witnessed-local.sh) receives the job's GH_TOKEN from the apk step's env and passes its environment to the stage script; it never reads it and names it only in the sensitive-key filter list",
-      "file": ".github/workflows/release.yml",
-      "job": "build-apk"
-    },
-    {
-      "name": "GH_TOKEN",
-      "script": "bin/build-stage-apk.sh",
-      "why": "the stage script runs the admission script first and unsets GH_TOKEN right after, so cache's build scripts never see it (REQ-CHAIN-004-AC3, AC8)",
-      "file": ".github/workflows/release.yml",
-      "job": "build-apk",
-      "handoff_line": "unset GH_TOKEN"
-    },
-    {
-      "name": "GH_TOKEN",
-      "script": "bin/build-admit.py",
-      "why": "admission reads GitHub (GET only) through gh, which inherits the token; the step's env is the only route the token has (REQ-CHAIN-004-AC8)",
-      "file": ".github/workflows/release.yml",
-      "job": "build-apk"
-    },
     {
       "name": "GH_TOKEN",
       "script": "bin/witnessed.sh",

@@ -26,7 +26,7 @@ nothing is expanded after the check.
 commands that name provenance.bundle.json, on release-staged/ (that bundle from provenance/ and the key manifest, removed when
 the pass ends), with the same judge, refusals and key. It reads no list and touches no registry.
 """
-import collections, importlib.util, json, os, re, shlex, shutil, subprocess, sys, tempfile, types
+import collections, json, os, re, shlex, shutil, subprocess, sys, tempfile, types
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import guide_plan_judge   # noqa: E402
@@ -42,14 +42,11 @@ ROOT_KEY = ".github/policy/release-key-root.pub"   # the committed offline root 
 DIGESTS = "witness-build/digests.json"
 # Constants: releases publish identical digests to both, and no input names a repository.
 REPOSITORIES = ("ghcr.io/fosterstack/cache", "docker.io/fosterstack/cache")
-# the one tag grammar (REQ-CHAIN-004-AC20), loaded from bin/ of the checkout the step runs in, as VERIFIER is
-_spec = importlib.util.spec_from_file_location("build_admit", "bin/build-admit.py")
-_admit = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_admit)
+TAG_SYNTAX = re.compile(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")     # v1.2.3 yes; v01.2.3 and v1.2.3-rc1 no
 
 
 def is_final(tag):   # v0.3.0 yes, v0.3.0-rc1 and "v0.3.0\n" no: a release candidate publishes nothing to verify
-    return bool(_admit.TAG_SYNTAX.fullmatch(tag)) and "-rc" not in tag
+    return bool(TAG_SYNTAX.fullmatch(tag)) and "-rc" not in tag
 
 
 # sha256: and 64 lowercase hex digits yes; sha256:abc and an upper-case digest no

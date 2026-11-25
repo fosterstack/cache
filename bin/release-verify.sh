@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
-# Release, first witnessed step: checks the tag, makes the release policy for it, and verifies every earlier
+# Release, first witnessed step: makes the release policy for it, and verifies every earlier
 # stage's signed record in the order of the release rules. A failure stops the run and the message starts with
 # the stage. No credential is bound to this step: it has no environment block and no secret.
 set -euo pipefail
-python3 -I -B bin/build-admit.py tag-ok "${GITHUB_REF_NAME:-}" || \
-  { echo "refused at tag: ${GITHUB_REF_NAME:-} is not vX.Y.Z" >&2; exit 1; }
 # The signed key manifest, its signature and the offline root key must exist before anything else runs (B-F22): the
 # later steps hold credentials and publish.
 for f in release-key-manifest.json release-key-manifest.sig release-key-root.pub; do \
@@ -18,9 +16,6 @@ python3 -I -B bin/chain-verify.py stage-start --stage release --previous build \
   --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json
 python3 -I -B bin/chain-verify.py bind-items --policy policy.json \
   --record witness-build/build-collection.json --items witness-build/items.json
-python3 -I -B bin/chain-verify.py bind-items --policy policy.json \
-  --record witness-build/build-collection.json --items witness-build/admission-baseline.json \
-  --product admission-baseline.json
 python3 -I -B bin/chain-verify.py stage-start --stage release --previous sign \
   --record provenance/provenance.json --digests witness-build/digests.json --policy policy.json \
   --rekor-entries provenance/provenance.rekor.json

@@ -302,8 +302,7 @@ func verifyFreeze(version string) (fixedAt, reason string) {
 var yamlMarshal = yaml.Marshal
 
 // freeze writes requirements/releases/<version>.yaml: the immutable
-// release baseline the source-admission stage and the acceptance
-// aggregator read. It records the version, the sha256 of the exact
+// release baseline the acceptance aggregator reads. It records the version, the sha256 of the exact
 // requirements.yaml it froze, and the full set of release-blocking AC
 // IDs (with phase: candidate for pre-promotion checks, publication for
 // checks that can only run against the published release). It is written

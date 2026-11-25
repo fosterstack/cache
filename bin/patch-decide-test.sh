@@ -399,7 +399,7 @@ cs = P.gather_commits("v0.2.1", blk)
 check("gather: a replace-block edit in a real repo is not patch-clean", [P.classify(x)[0] for x in cs] == ["fix", "dirty"], [P.classify(x) for x in cs])
 
 # --- `ready` (advisor 0063; rules 2, 4, 7): a cut waits until the tagged commit's required checks have
-# finished, judged exactly as admission judges them (a success from the pinned app)
+# finished, a success from the pinned app
 REQ = {"required_checks": [{"context": "test", "integration_id": 15368, "scope": "push"},
                            {"context": "scan", "integration_id": 15368, "scope": "push"}]}
 def run(name, status="completed", conclusion="success", app=15368):
@@ -411,8 +411,8 @@ for runs, want, why in [
     ([run("test"), run("scan", conclusion="failure")], "no", "one finished red"),
     ([run("test"), run("scan", conclusion="cancelled")], "no", "one cancelled"),
     ([run("test"), run("scan", app=999)], "wait", "a green run from another app does not count"),
-    ([run("test"), run("scan", conclusion="failure"), run("scan")], "no", "two latest runs, one green, are ambiguous, as admission has it"),
-    ([run("test"), run("scan", conclusion="failure"), run("scan", "queued")], "no", "two latest runs, one queued, are ambiguous, as admission has it"),
+    ([run("test"), run("scan", conclusion="failure"), run("scan")], "no", "two latest runs, one green, are ambiguous"),
+    ([run("test"), run("scan", conclusion="failure"), run("scan", "queued")], "no", "two latest runs, one queued, are ambiguous"),
     ([run("test"), run("scan", conclusion="neutral")], "no", "neutral is not success"),
 ]:
     got = P.ready(REQ, runs)
@@ -426,7 +426,7 @@ with contextlib.redirect_stdout(buf):
     rc = P.main(["ready", "--required", pol, "--check-runs", cr])
 check("ready CLI: prints the verdict first", rc == 0 and buf.getvalue().split()[0] == "ready", buf.getvalue())
 
-# `ready` reads one policy file, main's required-checks.json; a file admission refuses is "no", never a lower requirement
+# `ready` reads one policy file, main's required-checks.json; a file it refuses is "no", never a lower requirement
 rd_ = tempfile.mkdtemp()
 def jf_(obj):
     f = os.path.join(rd_, "f%d.json" % len(os.listdir(rd_))); open(f, "w").write(obj if isinstance(obj, str) else json.dumps(obj)); return f
@@ -496,7 +496,7 @@ for s_ in ("internal/providerOpenAI.go", "internal/myClaudeClient.go", "x/useGem
     out = P._clean(s_)
     check("B5 %s is redacted" % s_, not re.search(r"(?i)openai|claude|gemini|meta\.go", out), out)
 check("B5 ordinary words survive (metadata, so3)", P._clean("metadata so3") == "metadata so3", P._clean("metadata so3"))
-# B6: a policy admission would reject is never "ready"
+# B6: a policy it would reject is never "ready"
 for pol_, why in [({}, "no required_checks"), ({"required_checks": None}, "required_checks null"),
                   ({"required_checks": [{"context": "test", "integration_id": 15368, "scope": "typo"}]}, "an unknown scope"),
                   ({"required_checks": [{"integration_id": 15368}]}, "no context"),
@@ -511,7 +511,7 @@ check("B4 tags but no published release: no cut, the first release is the owner'
 for s_, want in (("internal/providerGoogle.go", "internal/provider<redacted>.go"), ("laws draws jaws", "laws draws jaws"),
                  ("useAzureClient", "use<redacted>Client")):
     check("B5 camelCase vendor %r" % s_, P._clean(s_) == want, P._clean(s_))
-# Codex #159 pin pass B01: a null scope is "push", as admission's `.scope // "push"` reads it
+# Codex #159 pin pass B01: a null scope is "push"
 NUL = {"required_checks": [{"context": "test", "integration_id": 15368, "scope": None},
                            {"context": "scan", "integration_id": 15368, "scope": "push"}]}
 check("B01 a null-scoped check is push-scoped: absent -> wait, never ready", P.ready(NUL, [run("scan")])[0] == "wait", P.ready(NUL, [run("scan")]))

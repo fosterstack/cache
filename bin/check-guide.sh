@@ -5,7 +5,7 @@
 # starting with # are comments; other fenced blocks are prose), unattended, in customer order, at most ten in all. Placeholders are
 # ALL-CAPS in angle brackets, each defined once in a list line before the first fence, as  - `<NAME>`: what it is. Check knows
 # <IMAGE_REF> and <IMAGE_REF_FIPS> ($CANDIDATE_REPOSITORY@ the image-production / image-fips digest of the digest list)
-# and <TAG> ($GITHUB_REF_NAME, without "release/" on a release branch). <RELEASE_KEY> is Release's: only a listed command may name it, and Check never holds
+# and <TAG> (bin/release-version.sh). <RELEASE_KEY> is Release's: only a listed command may name it, and Check never holds
 # the verified key.
 # A command RUNS only when it is a pipeline of the verify forms (cosign verify, cosign verify-attestation, cosign verify-blob,
 # cosign verify-blob-attestation) and jq, with no other shell syntax ($ only inside single quotes), and every
@@ -44,7 +44,7 @@ mkdir -p "$out"
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
 # Read the guide and the cannot-run list, judge every command, substitute the candidate's values: one plan row per command, in order.
-python3 bin/check-guide-plan.py "$guide" "${guide%.md}.cannot-run.json" "$d" "$tmp/plan.jsonl" "$df"
+TAG=$(bin/release-version.sh) python3 bin/check-guide-plan.py "$guide" "${guide%.md}.cannot-run.json" "$d" "$tmp/plan.jsonl" "$df"
 
 failed=0 n=0
 : > "$tmp/results.jsonl"

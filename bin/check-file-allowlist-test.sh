@@ -102,7 +102,7 @@ build/vm-host.yaml build/vm-guest.yaml build/locks/vm-host.lock build/locks/vm-g
 build/vm-keys/kernel-key-6165ee59.rsa.pub
 build/keys/assembly.rsa build/keys/assembly.rsa.pub build/keys/release.rsa.pub build/archive.json
 bin/build-apk.sh bin/assemble-image.sh bin/apko-lock.sh bin/install-build-tools.sh bin/release-sign-apks.sh
-bin/sealed-proof.sh bin/lock-proof.sh bin/refresh-inputs.sh bin/build-freeze.sh bin/with-aws-token.sh
+bin/sealed-proof.sh bin/lock-proof.sh bin/refresh-inputs.sh bin/with-aws-token.sh
 bin/apk-tool.py bin/gen-recipes.py bin/go-module-sbom.py bin/install-host-bwrap.py bin/refresh-inputs.py
 bin/melange-apko-lib.sh
 bin/build-helpers-test.sh bin/refresh-inputs-test.sh bin/build-apk-test.sh bin/assemble-image-test.sh bin/archive-test.sh
@@ -123,7 +123,7 @@ bin/evidence-letter-verify.sh bin/evidence-letter-present.sh
 bin/tag-sign.py bin/tag-sign-test.sh bin/chain-tag-jobs-judge.py bin/chain-tag-jobs-test.sh bin/patch-tag-texts-test.sh
 bin/tag-sign-prepare.sh bin/tag-sign-kms.sh bin/patch-decide.py bin/patch-decide-test.sh
 """.split())
-if len(DECLARED) != 107: errs.append("declared list is not 107 paths: %d" % len(DECLARED))
+if len(DECLARED) != 106: errs.append("declared list is not 106 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -753,7 +753,6 @@ runeach fail "feature/x" "queue gate: near-miss judge script names refused" \
   ".github/agent/bin/x/queue-gate-judge.sh" "bin/queue-gate-judge.sh" ".github/agent/queue-gate-judge.sh" \
   ".github/agent/bin/queue-gate-judge-test.sh"
 runeach fail "feature/x" "v030: the removed recipe comparer is no longer admitted" "bin/compare-recipes.py"
-passfam "feature/x" "v030: the freeze job script" "bin/build-freeze.sh"
 passfam "feature/x" "v030: the token wrapper of the release steps" "bin/with-aws-token.sh"
 passfam "feature/x" "v030: the build-chain scripts" "bin/build-apk.sh" "bin/assemble-image.sh" "bin/apko-lock.sh" "bin/install-build-tools.sh" "bin/release-sign-apks.sh" "bin/sealed-proof.sh" "bin/lock-proof.sh" "bin/refresh-inputs.sh"
 passfam "feature/x" "v030: the build-chain Python tools" "bin/apk-tool.py" "bin/gen-recipes.py" \

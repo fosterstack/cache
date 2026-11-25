@@ -195,14 +195,8 @@ def expected(d, kind, which, tag, vex=True):
 
 
 # ---- the fakes: what the real cache scripts and chain-verify.py would do, reduced to what a stage script can observe ----------------
-FAKE_ADMIT = '''#!/usr/bin/env python3
-import json, os, subprocess, sys
-open("calls.log", "a").write("admit gh=%s\\n" % ("yes" if os.environ.get("GH_TOKEN") else "no"))
-tag = os.environ.get("GITHUB_REF_NAME", "v0.3.0").removeprefix("release/")      # as the real admission: a release branch is admitted as the tag its name carries
-json.dump({"tag": tag, "sha": os.environ.get("GITHUB_SHA", "0" * 40), "baseline_version": tag,
-           "baseline": "requirements/releases/%s.yaml" % tag}, open("admission.json", "w"))      # what the real admission writes at the repository root
-subprocess.run(["gh", "api", "repos/fosterstack/cache/commits/0123/check-runs"])      # the admission reads (GET only); the fake gh logs the call to gh.log
-sys.exit(int(os.environ.get("FAKE_ADMIT_RC", "0")))
+FAKE_VERSION = '''#!/usr/bin/env bash
+echo "${GITHUB_REF_NAME#release/}"
 '''
 FAKE_GH = '''#!/usr/bin/env bash
 echo "gh $*" >> gh.log
@@ -333,8 +327,6 @@ a = sys.argv[1:]
 open("calls.log", "a").write("verify " + " ".join(a) + "\\n")
 def arg(n): return a[a.index(n) + 1]
 cmd = a[0]
-if cmd == "admission-baseline":     # REQ-CHAIN-007-AC19: the REAL command (bin/chain_items.py) runs, so a refusal of an admitted tag shows up in the integration cases (Codex 4b-2 r1)
-    os.execv(sys.executable, [sys.executable, os.environ["REAL_CV"]] + a)
 if cmd == "bind" and os.environ.get("FAKE_BIND_RC"):      # a refused local record (the building job's own record): the bind is the only check left in the building job
     sys.stderr.write("refused at build: digest (fake)\\n"); sys.exit(int(os.environ["FAKE_BIND_RC"]))
 if cmd == "bind":       # every file under --dir must be a product of the record: the harness wrote the table .bind/<path with / as _>
@@ -350,7 +342,7 @@ if cmd == "items-apk" and os.environ.get("ITEMS_MODE") == "real":
     real = os.path.dirname(os.environ["REAL_CV"])
     shadow = os.path.abspath(".real")
     os.makedirs(shadow + "/bin", exist_ok=True); os.makedirs(shadow + "/.github/policy", exist_ok=True)
-    for f in ("build-admit.py", "chain-verify.py", "chain_common.py", "chain_hostile.py", "chain_items.py"): shutil.copy(real + "/" + f, shadow + "/bin/" + f)
+    for f in ("chain-verify.py", "chain_common.py", "chain_hostile.py", "chain_items.py"): shutil.copy(real + "/" + f, shadow + "/bin/" + f)
     for f in ("rebuild-items.json", "chain-scripts.json"): shutil.copy(real + "/../.github/policy/" + f, shadow + "/.github/policy/" + f)
     shutil.copy(os.path.abspath("bin/apk-tool.py"), shadow + "/bin/apk-tool.py")
     os.execv(sys.executable, [sys.executable, shadow + "/bin/chain-verify.py"] + a)
@@ -410,7 +402,7 @@ def make_test_manifest(dest):
 
 def mktree(d, kind, script, mode="oracle", tag="v0.3.0"):
     shutil.rmtree(d, ignore_errors=True); os.makedirs(d)
-    for name, body in (("build-admit.py", FAKE_ADMIT), ("build-version-check.py", FAKE_VERSION_CHECK), ("build-archives.py", FAKE_ARCHIVES),
+    for name, body in (("release-version.sh", FAKE_VERSION), ("build-version-check.py", FAKE_VERSION_CHECK), ("build-archives.py", FAKE_ARCHIVES),
                        ("apk-tool.py", FAKE_APKTOOL), ("git", FAKE_GIT), ("gh", FAKE_GH), ("build-apk.sh", FAKE_BUILD_APK),
                        ("build-baselayout-apk.sh", FAKE_BUILD_BASELAYOUT),
                        ("assemble-image.sh", FAKE_ASSEMBLE), ("chain-verify.py", FAKE_CV)):
@@ -435,8 +427,6 @@ def mktree(d, kind, script, mode="oracle", tag="v0.3.0"):
         for r, arch, _ in RUNNERS:                   # the downloaded artifacts, laid out as upload-artifact rooted at `out` lays them out
             files = out_files(arch, tag)
             files["items-apk.json"] = json.dumps(fragment(arch, tag)).encode()
-            if kind == "assemble":      # each release apk leg copies its admission.json into out/ (REQ-CHAIN-007-AC19)
-                files["admission.json"] = json.dumps({"tag": tag, "sha": "0123456789abcdef0123456789abcdef01234567", "baseline_version": tag, "baseline": "requirements/releases/%s.yaml" % tag}).encode()
             for rel, b in files.items():
                 write("%s/%s/%s/%s" % (d, pre, r, rel), b)
                 write("%s/.bind/%s" % (d, ("%s/%s/%s" % (pre, r, rel)).replace("/", "_")), sha(b))

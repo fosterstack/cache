@@ -59,7 +59,7 @@ permissions:
   contents: read
 
 jobs:
-  # The proof build (REQ-CHAIN-004-AC12, AC14): Build in SNAPSHOT mode, with no tag and no admission; its records are refused by every release verifier.
+  # The proof build (REQ-CHAIN-004-AC12, AC14): Build in SNAPSHOT mode, with no tag; its records are refused by every release verifier.
   build:
     permissions:
       contents: write
@@ -68,8 +68,6 @@ jobs:
       issues: write
       actions: read
       checks: read
-      statuses: read
-      pull-requests: read
     uses: ./.github/workflows/release.yml
     with:
       mode: snapshot
@@ -328,6 +326,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       issues: write
+      actions: read
+      checks: read
     steps:
       - name: open the fix item, or comment on the open one
         env:
