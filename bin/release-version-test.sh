@@ -29,6 +29,12 @@ git -C "$work" tag v0.3.1
 expect "v0.3.0 and v0.3.1 present give v0.3.2" v0.3.2 refs/heads/release/v0.3 release/v0.3
 for t in v0.3.9 v0.3.10; do git -C "$work" tag "$t"; done
 expect "v0.3.9 and v0.3.10 present give v0.3.11" v0.3.11 refs/heads/release/v0.3 release/v0.3
+for t in v0.5.0-rc1 v0.5.0-rc2; do git -C "$work" tag "$t"; done
+expect "only release candidates of the line give v0.5.0" v0.5.0 refs/heads/release/v0.5 release/v0.5
+for t in v0.6.0-rc1 v0.6.0-rc2 v0.6.0; do git -C "$work" tag "$t"; done
+expect "release candidates and v0.6.0 present give v0.6.1" v0.6.1 refs/heads/release/v0.6 release/v0.6
+for t in v0.7.0 v0.7.1-rc.1; do git -C "$work" tag "$t"; done
+expect "v0.7.0 and v0.7.1-rc.1 present give v0.7.1" v0.7.1 refs/heads/release/v0.7 release/v0.7
 run refs/heads/main main
 if [ "$rc" -ne 0 ] && [ -z "$out" ]; then ok "another ref exits non-zero with no output"; else bad "another ref (rc=$rc, out '$out')"; fi
 echo "release-version: $pass passed, $fail failed"; [ "$fail" -eq 0 ]

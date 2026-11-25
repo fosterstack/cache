@@ -7,7 +7,7 @@ line=${GITHUB_REF_NAME#release/}
 if [ "$kind" = tags ]; then
   echo "$GITHUB_REF_NAME"
 elif [ "$kind" = heads ] && [ "$line" != "$GITHUB_REF_NAME" ]; then
-  last=$(git tag --list "$line.*" | sort -V | tail -n 1)
+  last=$(git tag --list "$line.*" | grep -E '^[v0-9.]+$' | sort -V | tail -n 1 || true)
   [ -n "$last" ] || { echo "$line.0"; exit; }
   patch=${last##*.}
   echo "$line.$((patch + 1))"
