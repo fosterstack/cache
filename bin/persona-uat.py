@@ -778,12 +778,12 @@ def kill_group(p):
 
 
 def provider_reason(err):
-    """": <ClassName> HTTP <3 digits or none>" from the provider's failure, or "". The agent's stderr starts with the transcript, so the marker is read only from the agent's
-    last failure line (the provider's own output, which bin/persona-uat-provider.py begins with the marker); anything of another shape adds nothing."""
-    i = err.rfind("persona-uat-agent: the provider failed (exit ")
-    if i < 0:
+    """": <ClassName> HTTP <3 digits or none>" from the provider's failure, or "". The agent's stderr starts with the transcript, so only its LAST line that begins "persona-uat-agent: "
+    is read (the agent's own failure line, written after the transcript; bin/persona-uat-provider.py begins the provider's output with the marker); a line of another shape adds nothing."""
+    lines = [l for l in err.split("\n") if l.startswith("persona-uat-agent: ")]
+    if not lines or not lines[-1].startswith("persona-uat-agent: the provider failed (exit "):
         return ""
-    line = err[i:].split("\n", 1)[0]
+    line = lines[-1]
     parts = line.partition("): persona-uat-provider-reason: ")[2].split(" ")
     if len(parts) == 3 and parts[0].isascii() and parts[0].isidentifier() and parts[1] == "HTTP" and (parts[2] == "none" or (parts[2].isascii() and parts[2].isdigit() and len(parts[2]) == 3)):
         return ": " + " ".join(parts)

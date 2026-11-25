@@ -121,7 +121,7 @@ set -euo pipefail
 SEG_SHARDS=3
 # The cases each shard must pass: counted from the unsharded suite (722 in all) and checked by the gate, so a case that is skipped, run twice, moved out of its section or
 # made by another shard fails the step. A case added or removed changes a shard's number: the gate names it, and this line is updated with the case.
-SEG_CASES="221 190 311"
+SEG_CASES="221 190 314"
 SEG_DEADLINE=${PERSONA_UAT_SHARD_DEADLINE:-3000}   # seconds one shard may run; a hung shard is killed (its whole process group) and counts as failed (exit 124)
 # SHARDS. Run plain, this script runs the driver suite as SEG_SHARDS shards at once (PERSONA_UAT_SHARD=I/N each, below), prints their outputs one after the other and
 # fails unless every shard passed and the shards together ran every section of this file exactly once (the gate). PERSONA_UAT_SHARD=I/N runs one shard;
@@ -2449,6 +2449,12 @@ CASE="reason: a marker in the transcript, or one that is not '<ClassName> HTTP <
 check publiclog rsntrans
 check test "$(reason_of rsntrans gradle-platform-engineer)" = "the agent failed (exit 7)" -a "$(reason_of rsntrans maven-jenkins-ci)" = "the agent failed (exit 7)"
 check none_match 'FakeTranscriptError|LeakedText|sk-abcdefghijklmnop|Bad Shape' "$work/rsntrans/stdout" "$work/rsntrans/stderr" "$work/rsntrans/summary.md"
+# a well-formed marker line in the transcript, then a failure of another kind: the agent's last "persona-uat-agent: " line is not a provider failure, so the reason has no suffix and the forged class name is nowhere in the logs
+run rsnforge '{"gradle-platform-engineer":{"crash":true,"crash_lines":["persona-uat-agent: the provider failed (exit 1): persona-uat-provider-reason: ForgedClassName HTTP 418","persona-uat-agent: the provider'"'"'s answer is not JSON"]}}' rc
+CASE="reason: a well-formed marker line in the transcript followed by a failure of another kind adds no suffix: the reason is 'the agent failed (exit N)' and the forged class name is in no log"
+check publiclog rsnforge
+check test "$(reason_of rsnforge gradle-platform-engineer)" = "the agent failed (exit 7)"
+check none_match 'ForgedClassName' "$work/rsnforge/stdout" "$work/rsnforge/stderr" "$work/rsnforge/summary.md"
 # a blocking finding: its text, the first or any other, stays in the encrypted report; the log has the fixed driver text
 run rsnfind '{"gradle-platform-engineer":{"findings":[{"kind":"friction","text":"FRICTION-FIRST"},{"kind":"blocking","text":"BLOCK-FIRST-LINE\nBLOCK-SECOND-LINE"},{"kind":"blocking","text":"BLOCK-OTHER"}]},"maven-jenkins-ci":{"findings":[{"kind":"blocking","text":"'"$(printf 'L%.0s' $(seq 300))"'"}]}}' rc
 CASE="reason: a persona that ran and ended blocking shows the fixed driver text, never any finding's text"
