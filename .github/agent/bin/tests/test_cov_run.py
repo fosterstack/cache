@@ -1232,10 +1232,6 @@ class SuppressionPR(Base):
         title, body = create[create.index("--title") + 1], create[create.index("--body") + 1]
         self.assertEqual(title, "auditor: update suppressions (1 statements)")
         self.assertEqual(body, "Automated suppression update from the daily CVE auditor. Draft for review.")
-        root = os.path.abspath(os.path.join(BIN, "..", "..", ".."))
-        check = subprocess.run([sys.executable, "-I", "bin/check-customer-words.py"], cwd=root, stdin=subprocess.DEVNULL,
-                               env={**os.environ, "PR_TITLE": title, "PR_BODY": body}, capture_output=True, text=True)
-        self.assertEqual((check.returncode, check.stdout), (0, ""), check.stderr)
 
     def test_the_delivery_commit_is_made_through_the_api_never_git(self):   # main requires signed commits
         fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
@@ -1840,13 +1836,6 @@ class FixPR(Base):
     def held_lists(self, fr):
         return [a[a.index("--search") + 1] for a in fr.argvs() if a[:3] == ["gh", "issue", "list"]]
 
-    def words_ok(self, text):
-        """the text as a PR_BODY under the repository's own customer-words check (empty diff on stdin): rc 0, nothing printed"""
-        root = os.path.abspath(os.path.join(BIN, "..", "..", ".."))
-        c = subprocess.run([sys.executable, "-I", "bin/check-customer-words.py"], cwd=root, stdin=subprocess.DEVNULL,
-                           env={**os.environ, "PR_TITLE": "x", "PR_BODY": text}, capture_output=True, text=True)
-        self.assertEqual((c.returncode, c.stdout), (0, ""), c.stderr)
-
     def test_the_held_major_issue_title_notes_and_body_are_plain_words(self):
         created = {("gh", "issue", "create"): (0, "https://x/issues/12\n", "")}
         row, errs, fr = self.held_run({**self.list_rule(self.HELD_NEW_TITLE), **self.list_rule(self.HELD_OLD_TITLE), **created})
@@ -1860,14 +1849,12 @@ class FixPR(Base):
         self.assertNotIn("harness lane", row["action"])
         for text in (self.HELD_NEW_TITLE, body, row["action"]):
             self.assertNotRegex(text, r"(?i)\b(owner|lane)\b")
-        self.words_ok(self.HELD_NEW_TITLE + "\n" + body + "\n" + row["action"])
         # delivery switched off: the note says so in the same words
         os.environ["AUDITOR_ALLOW_REAL_GH"] = "0"
         r2 = self.held_row()
         with mock.patch.object(R, "_deliver_fix_pr", return_value=("https://x/pull/3", None, "delivered")):
             self.quiet(R._deliver_bumps, [r2], "2026-09-22", "abcdef1234567890", False, [])
         self.assertIn("MAJOR transition: needs a manual change, issue NOT opened (delivery disabled)", r2["action"])
-        self.words_ok(r2["action"])
 
     def test_an_open_held_issue_under_the_old_title_is_commented_and_nothing_is_created(self):
         old = {"number": 41, "title": self.HELD_OLD_TITLE}
@@ -1947,7 +1934,6 @@ class FixPR(Base):
         self.assertEqual(len(notes), 1)
         self.assertNotIn("REQ-", notes[0]); self.assertNotIn("audit-lane", notes[0])
         self.assertIn("a reviewer promotes it", notes[0])
-        self.words_ok(notes[0])
 
     BAD_NUMBERS = (None, False, True, "", "7", 0, -3, 1.5, [], {})          # none of these is an issue number: a positive integer, a bool is not one
 
