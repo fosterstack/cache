@@ -333,11 +333,10 @@ stage-admission.yml stage-authorize.yml stage-build.yml stage-image.yml stage-pr
 stage-verify.yml supply-chain.yml""".split())
 
 def only_new_workflow(files, bad):
-    """001-AC1: release.yml (it existed at v0.2.2) is the only signing workflow file v0.3.0 has: the files added beyond v0.2.2 are customer-words-edited.yml, which holds no signer
-    (listed_signers and direct_signers still judge it; decision 98, Oct 3), persona-uat.yml, the persona proof's own file, and full-suite.yml, the full suite at promotion (docs/ratify/2026-11-10-full-suite-at-promotion.md:11-12). No stage-*.yml file is added."""
+    """001-AC1: release.yml (it existed at v0.2.2) is the only signing workflow file v0.3.0 has: the files added beyond v0.2.2 are evidence-letter.yml, persona-uat.yml, the persona proof's own file, and full-suite.yml, the full suite at promotion (docs/ratify/2026-11-10-full-suite-at-promotion.md:11-12). No stage-*.yml file is added."""
     new = sorted(os.path.basename(f) for f in files if os.path.basename(f) not in V022_WORKFLOWS)
-    if set(new) != {"persona-uat.yml", "customer-words-edited.yml", "evidence-letter.yml", "full-suite.yml"}:
-        bad.append("AC1: workflow files added since v0.2.2 must be customer-words-edited.yml (decision 98, Oct 3), evidence-letter.yml (REQ-REL-015), persona-uat.yml and full-suite.yml (docs/ratify/2026-11-10-full-suite-at-promotion.md:11-12), found %s" % new)
+    if set(new) != {"persona-uat.yml", "evidence-letter.yml", "full-suite.yml"}:
+        bad.append("AC1: workflow files added since v0.2.2 must be evidence-letter.yml (REQ-REL-015), persona-uat.yml and full-suite.yml (docs/ratify/2026-11-10-full-suite-at-promotion.md:11-12), found %s" % new)
 
 def listed_signers(base, bad):
     """001-AC1: "every other signing call being listed with its reason in .github/policy/chain-signers.json" (never a provenance signer)."""
@@ -1196,7 +1195,6 @@ SPEC_GOOD=$(cat "$FXDIR/spec_good.json")
 mk() {
   local d="$work/$1"; rm -rf "$d"; mkdir -p "$d/.github/workflows" "$d/.github/policy" "$d/.github/actions/x" "$d/bin"
   for f in acceptance auditor ci stage-promote stage-verify stage-reproducibility; do printf 'jobs: {}\n' > "$d/.github/workflows/$f.yml"; done
-  printf 'jobs: {}\n' > "$d/.github/workflows/customer-words-edited.yml"   # an added file that is not a signer
   printf 'jobs: {}\n' > "$d/.github/workflows/evidence-letter.yml"   # the monthly evidence letter's file (REQ-REL-015)
   printf 'jobs: {}\n' > "$d/.github/workflows/persona-uat.yml"      # the other added file: the persona proof has its own workflow file
   printf 'jobs: {}\n' > "$d/.github/workflows/full-suite.yml"      # the full suite at promotion (docs/ratify/2026-11-10-full-suite-at-promotion.md:11-12)
@@ -2986,10 +2984,6 @@ d=$(mk t_intoto); printf 'jobs:\n  b:\n    steps:\n      - run: in-toto-run --st
 expect caught "AC1 in-toto-run is a known signer that must be listed" tree "$d"
 d=$(mk t_new); cp "$good" "$d/.github/workflows/stage-extra.yml"
 expect caught "AC1 a second new workflow file" tree "$d"
-d=$(mk t_cwsigner); printf 'jobs:\n  b:\n    steps:\n      - run: notation sign "$IMG"\n' > "$d/.github/workflows/customer-words-edited.yml"
-expect caught "AC1 customer-words-edited.yml is no exemption: a signer in it is still found" tree "$d"
-d=$(mk t_cwgone); rm "$d/.github/workflows/customer-words-edited.yml"
-expect caught "AC1 the added set is exact: without customer-words-edited.yml it is wrong too" tree "$d"
 d=$(mk t_puatgone); rm "$d/.github/workflows/persona-uat.yml"
 expect caught "AC1 the added set is exact: without persona-uat.yml it is wrong too" tree "$d"
 d=$(mk t_fsgone); rm "$d/.github/workflows/full-suite.yml"
@@ -3015,8 +3009,8 @@ extra="$d/.github/workflows/stage-extra.yml"
 printf 'jobs:\n  b:\n    steps:\n      - uses: actions/checkout@%s # v4\n' "$sha" > "$extra"
 printf '        with:\n          persist-credentials: false\n' >> "$extra"
 out=$(judge tree "$d" 2>/dev/null) || true
-want="AC1: workflow files added since v0.2.2 must be customer-words-edited.yml (decision 98, Oct 3), evidence-letter.yml (REQ-REL-015), persona-uat.yml and full-suite.yml (docs/ratify/2026-11-10-full-suite-at-promotion.md:11-12),"
-want="$want found ['customer-words-edited.yml', 'evidence-letter.yml', 'full-suite.yml', 'persona-uat.yml', 'stage-extra.yml']"
+want="AC1: workflow files added since v0.2.2 must be evidence-letter.yml (REQ-REL-015), persona-uat.yml and full-suite.yml (docs/ratify/2026-11-10-full-suite-at-promotion.md:11-12),"
+want="$want found ['evidence-letter.yml', 'full-suite.yml', 'persona-uat.yml', 'stage-extra.yml']"
 if [ "$out" = "$want" ]; then
   pass=$((pass + 1))
   echo "ok   AC1 a third new workflow file is refused by the workflow-name rule alone"
@@ -3147,7 +3141,7 @@ expect ok "002-AC4 a step that runs bin/witnessed-local.sh with no secret passes
   build "$work/build-clean.yml"
 expect caught "002-AC4 a secret on the step that runs bin/witnessed-local.sh" build "$work/build-secret.yml"
 expect ok "the real tree: only scan.yml and main-candidate-rescan.yml call release.yml, in snapshot mode; no stage file is called; every sign job and release carries the guard (003-AC5)" calls "$REAL"
-label="the real tree: only customer-words-edited.yml, evidence-letter.yml, persona-uat.yml and full-suite.yml are new and only the sign jobs of release.yml sign provenance"
+label="the real tree: only evidence-letter.yml, persona-uat.yml and full-suite.yml are new and only the sign jobs of release.yml sign provenance"
 expect ok "$label" tree "$REAL"
 # a grant covers a whole file: the grants of these two files excused one literal and one prose word (B1)
 b1() { # b1 0|1 LABEL [DETAIL]: 0 is a pass
