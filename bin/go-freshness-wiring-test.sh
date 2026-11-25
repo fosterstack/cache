@@ -103,7 +103,7 @@ if re.sub(r"\s+", " ", cond).strip() != "${{ github.ref == 'refs/heads/main' && 
     bad.append("AC25: the refresh job's condition is not main plus schedule or dispatch: %s" % cond)
 trig = d.get("on") or d.get(True) or {}
 sched = trig.get("schedule") if isinstance(trig, dict) else None
-if sched != [{"cron": "23 6 * * *"}]:      # REQ-UAT-001-AC6: the weekly persona cron moved to persona-uat.yml; this file keeps the daily freshness cron alone
+if sched != [{"cron": "23 6 * * *"}]:      # REQ-UAT-001-AC6: no file has a persona cron any more (persona tests run only at code promotion); this file keeps the daily freshness cron alone
     bad.append("AC25: the schedule is not exactly the daily freshness cron (cron 23 6 * * *): %s" % sched)
 conc = r.get("concurrency")
 if not isinstance(conc, dict) or conc.get("group") != "refresh-inputs" or str(conc.get("cancel-in-progress")).lower() != "false" or sorted(conc) != ["cancel-in-progress", "group"]:
@@ -112,6 +112,13 @@ if [x.get("name") for x in rsteps if str(x.get("continue-on-error", "false")).lo
     bad.append("AC30: a refresh step or the job is allowed to continue on error (a stop must stop the later steps)")
 if sorted(trig) != ["schedule", "workflow_dispatch"]:
     bad.append("AC25: go-freshness.yml triggers are not schedule and workflow_dispatch only: %s" % sorted(trig))
+for f in sorted(glob.glob(os.path.join(tree, ".github/workflows/*.y*ml"))):      # REQ-UAT-001-AC6: no workflow file has a persona cron; persona-uat.yml has no schedule at all
+    w_ = yaml.load(open(f), Loader=yaml.BaseLoader) or {}
+    on_ = w_.get("on") if isinstance(w_.get("on"), dict) else {}
+    if "43 6 * * 1" in [c.get("cron") for c in (on_.get("schedule") or []) if isinstance(c, dict)]:
+        bad.append("AC25: %s has the Monday persona cron: no file has a persona cron any more" % os.path.basename(f))
+    if os.path.basename(f) == "persona-uat.yml" and "schedule" in on_:
+        bad.append("AC25: persona-uat.yml has a schedule trigger: the persona tests run only at code promotion, never on a timer")
 wf = sorted(os.path.basename(f) for f in glob.glob(os.path.join(tree, ".github/workflows/*.y*ml")))
 if "go-freshness.yml" not in wf or any(n.startswith("refresh") for n in wf):
     bad.append("AC24: a refresh workflow file exists beside go-freshness.yml: %s" % wf)
@@ -326,5 +333,19 @@ open(p, "w").write(head + tail)
 PY
 if out=$(judge "$work/tagpin.yml" "$root"); then got=ok; else got=bad; fi
 if [ "$got" = bad ]; then pass=$((pass+1)); echo "PASS refresh-action-by-tag → bad ($out)"; else failn=$((failn+1)); echo "FAIL refresh-action-by-tag → ok"; fi
+# REQ-UAT-001-AC6: a persona cron in any file of the tree, or a schedule on persona-uat.yml, is refused (the tree's own files are judged)
+for pc in "persona-uat.yml|d['on']['schedule'] = [{'cron': '43 6 * * 1'}]|persona-cron-back-in-persona-file" "persona-uat.yml|d['on']['schedule'] = [{'cron': '5 4 * * *'}]|persona-file-any-schedule" \
+          "release.yml|d['on']['schedule'].append({'cron': '43 6 * * 1'})|persona-cron-in-release"; do
+  IFS='|' read -r pf pe pn <<< "$pc"
+  t=$(mk_tree "$pn")
+  python3 - "$t/.github/workflows/$pf" "$pe" <<'PY'
+import sys, yaml
+p, edit = sys.argv[1], sys.argv[2]
+d = yaml.load(open(p), Loader=yaml.BaseLoader)
+exec(edit)
+yaml.safe_dump(d, open(p, "w"), sort_keys=False, width=100000)
+PY
+  case_ "$pn" bad "" "$t"
+done
 echo "go-freshness-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
