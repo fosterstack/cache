@@ -4,8 +4,8 @@ version: v0.3.0
 approved: true
 approved_on: 2026-11-23
 # owner approval Nov 23 2026 16:43Z (relayed by the advisor): "yes approved." Baseline for the v0.3.0 release branch.
-fixed_at: 1a3153f281ca8194511ef85237833bd8a6164055
-requirements_sha256: 429b6dd3ba3272871ddbba666e33586f6fe9f888fb51fb9417d7c4c9f5435412
+fixed_at: 684d4e0249885cae154606a051b371527a9b0ce6
+requirements_sha256: 2da816ab7cbda7c9871d2df45766125ef23b430a165e3c310bc796e1a1430c92
 frozen_from: requirements/requirements.yaml
 release_blocking_acs:
     - id: REQ-AUTH-001-AC1
@@ -425,4 +425,4 @@ release_blocking_acs:
     - id: REQ-TLS-001-AC9
       method: http-integration
       phase: candidate
-note: 'Frozen release baseline. The release manager reviews and sets approved: true with approved_on. Admission verifies this file structurally; the acceptance aggregator derives the required candidate-phase AC set from release_blocking_acs where phase == candidate.'
+note: 'Frozen release baseline. The release manager reviews and sets approved: true with approved_on. The acceptance aggregator derives the required candidate-phase AC set from release_blocking_acs where phase == candidate.'
