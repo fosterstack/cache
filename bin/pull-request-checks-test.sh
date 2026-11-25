@@ -9,8 +9,8 @@
 #   AC2  supply-chain.yml (the daily audit) has no push, pull_request, pull_request_target or workflow_run trigger: the
 #        pin-age pull-request scan was deleted. The chain has no dependency-review job.
 #   AC3  required-checks.json scopes requirements to push and lists each of the six.
-# On the chain: scan needs build, the scanner and the inspector; marker-gate and customer-words-edited are its own
-# pull-request jobs outside the six (marker-gate has no push run).
+# On the chain: scan needs build, the scanner and the inspector; marker-gate is its own
+# pull-request job outside the six (marker-gate has no push run).
 # The real files must pass and each mutated copy must be caught.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -163,8 +163,8 @@ def closure(w, jid):
 SIX = {"ci.yml:test", "ci.yml:lint", "ci.yml:govulncheck", "ci.yml:fips140-only", "codeql.yml:analyze", "scan.yml:scan"}
 SIX_NAMES = {"test", "lint", "govulncheck", "analyze (go)", "fips140-only", "scan"}
 UNTOUCHED = {"dependabot-auto-merge.yml:auto-merge"}
-# the chain's own pull-request jobs, outside the six (a later change removes them); marker-gate has no push run
-CHAIN_PR = {"ci.yml:marker-gate", "customer-words-edited.yml:customer-words-edited"}
+# the chain's own pull-request job, outside the six (a later change removes them); marker-gate has no push run
+CHAIN_PR = {"ci.yml:marker-gate"}
 
 
 def judge_ac1(wfs):

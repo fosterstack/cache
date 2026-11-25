@@ -8,7 +8,6 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/.." && pwd)
 page="$root/docs/verify-key.md"
-words="$root/bin/check-customer-words.py"
 work=$(mktemp -d -t cache5-vkp.XXXXXX); trap 'rm -rf "$work"' EXIT
 pass=0; failn=0
 ok()  { pass=$((pass+1)); echo "PASS $1"; }
@@ -87,22 +86,9 @@ print("\n".join(errs) if errs else "OK")
 sys.exit(1 if errs else 0)
 PY
 
-# The checker reads an added-lines diff, so the page is committed as a new file on an empty base.
-cat > "$work/allow.txt" <<'TXT'
-# header
-TXT
-words_ok() {
-  local r="$work/r"; rm -rf "$r"; mkdir -p "$r/docs"
-  git -C "$r" init -q . && git -C "$r" commit -q --allow-empty -m base || return 2
-  [ -f "$1" ] || return 2
-  cp "$1" "$r/docs/verify-key.md" && git -C "$r" add -A && git -C "$r" commit -q -m pr || return 2
-  git -C "$r" diff -U0 --no-renames --no-color HEAD^1 HEAD | CUSTOMER_WORDS_ALLOW="$work/allow.txt" python3 -I "$words" 2>&1
-}
 judge() {
-  local out rc w wrc
+  local out rc
   out=$(python3 -I "$work/judge.py" "$1" </dev/null); rc=$?
-  w=$(words_ok "$1"); wrc=$?
-  [ "$wrc" -eq 0 ] || { out="$out"$'\n'"check-customer-words.py rc=$wrc: $w"; rc=1; }
   printf '%s\n' "$out"; return "$rc"
 }
 
@@ -212,7 +198,6 @@ mutant "a TO-VERIFY line on publishing"  "TO-VERIFY mark"  's + "\nTO-VERIFY: wh
 python3 -I -c 'import sys; open(sys.argv[2],"w").write(open(sys.argv[1]).read() + "\nTO-VERIFY: the cosign version.\n")' "$work/f/good.md" "$work/f/other.md" </dev/null
 out=$(judge "$work/f/other.md"); rc=$?
 [ "$rc" -eq 0 ] && ok "a TO-VERIFY mark on an unrelated line is allowed" || bad "a TO-VERIFY mark on an unrelated line is refused" "$out"
-mutant "a shop word in an added line"    "check-customer-words.py rc=1" 's + "\nAsk the owner.\n"'
 out=$(judge "$work/f/none.md"); rc=$?
 [ "$rc" -ne 0 ] && [[ "$out" == *"does not exist"* ]] && ok "kills mutant: the page is missing" || bad "MISSED mutant: the page is missing" "$out"
 

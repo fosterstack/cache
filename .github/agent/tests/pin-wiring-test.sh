@@ -231,10 +231,6 @@ JUDGED = json.loads(r'''{
     "run": "bash bin/check-file-allowlist-test.sh"
    },
    {
-    "name": "customer-word check regressions",
-    "run": "bash bin/check-customer-words-test.sh"
-   },
-   {
     "name": "branch sweep and local prune regressions",
     "run": "bash bin/branch-sweep-test.sh"
    },
@@ -743,7 +739,7 @@ case_fs full-suite-concurrency-shared   bad "d['concurrency'] = {'group': 'full-
 # REQ-CI-005: a counting step is exactly `bash PATH`; any other form of the line is refused
 case_ count-step-plain-ok           ok  "w = $CW; w['run'] = 'bash bin/check-file-allowlist-test.sh'"
 case_ count-step-devnull-added      bad "w = $CW; w['run'] = 'bash bin/check-file-allowlist-test.sh </dev/null'"
-case_ count-step-other-path         bad "w = $CW; w['run'] = 'bash bin/check-customer-words-test.sh'"
+case_ count-step-other-path         bad "w = $CW; w['run'] = 'bash bin/branch-sweep-test.sh'"
 case_ count-step-or-true            bad "w = $CW; w['run'] = 'bash bin/check-file-allowlist-test.sh || true'"
 case_ count-step-wrapper            bad "w = $CW; w['run'] = 'timeout 60 bash bin/check-file-allowlist-test.sh'"
 case_ count-step-twice              bad "w = $CW; w['run'] = 'bash bin/check-file-allowlist-test.sh\nbash bin/check-file-allowlist-test.sh'"
@@ -751,7 +747,7 @@ case_ count-step-if-false           bad "w = $CW; w['if'] = 'false'"
 case_ count-step-continue           bad "w = $CW; w['continue-on-error'] = 'true'"
 case_ count-step-env-injected       bad "w = $CW; w['run'] = 'BASH_ENV=/tmp/x bash bin/check-file-allowlist-test.sh'"
 case_ count-step-copied-to-test-job bad "d['jobs']['test']['steps'].append(dict($CW))"
-case_ count-step-two-suites-one-step bad "w = $CW; w['run'] = w['run'] + '\nbash bin/check-customer-words-test.sh'"
+case_ count-step-two-suites-one-step bad "w = $CW; w['run'] = w['run'] + '\nbash bin/branch-sweep-test.sh'"
 case_ job-if-false          bad "d['jobs']['allowlist']['if'] = 'false'"
 case_ job-if-gone           bad "d['jobs']['allowlist'].pop('if', None)"
 case_ job-if-always         bad "d['jobs']['allowlist']['if'] = 'always()'"
@@ -776,7 +772,7 @@ case_ github-env-write-test-job bad "d['jobs']['test']['steps'].insert(1, {'run'
 case_ checkout-other-ref    bad "$steps[0]['with'] = {'ref': 'main'}"
 
 # the counting steps of the allowlist job (REQ-CI-005): each is one step with exactly its name and its counting line and nothing else, so a pull request cannot remove, skip, rename, weaken, wrap or move it
-for sfx in check-file-allowlist check-customer-words branch-sweep govulncheck-fixtures docs-snippets auditor-matrix auditor-labels; do
+for sfx in check-file-allowlist branch-sweep govulncheck-fixtures docs-snippets auditor-matrix auditor-labels; do
   sel=$(cnt "$sfx-test.sh")
   case_ "$sfx-removed"  bad "$steps[:] = [s for s in $steps if s is not $sel]"
   case_ "$sfx-if"       bad "$sel['if'] = 'false'"

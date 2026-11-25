@@ -548,17 +548,17 @@ wit_mutants st ab_snap snapshot-build snapshot-apk snapshot-rapk apk snapshot-as
 wit_mutants rb ar_rel rebuild rapk apk snapshot-rapk rebuild-assemble
 wit_mutants rb ar_snap snapshot-rebuild snapshot-rapk snapshot-apk rapk snapshot-rebuild-assemble
 expect caught "AC1 an unreadable allowed-actions list fails closed" "unreadable" stage "$work/build.yml" build "$work/does-not-exist.json"
-# no workflow file is added (REQ-CHAIN-004-AC1, REQ-REL-008-AC1): the release is the one file release.yml, so no stage-*.yml file exists; persona-uat.yml, customer-words-edited.yml and evidence-letter.yml are the other files this set has beyond the v0.2.2 ones
+# no workflow file is added (REQ-CHAIN-004-AC1, REQ-REL-008-AC1): the release is the one file release.yml, so no stage-*.yml file exists; persona-uat.yml and evidence-letter.yml are the other files this set has beyond the v0.2.2 ones
 mkdir -p "$work/wf-ok" "$work/wf-new" "$work/wf-old" "$work/wf-cw-new"
-for f in ci.yml release.yml scan.yml persona-uat.yml customer-words-edited.yml full-suite.yml; do : > "$work/wf-ok/$f"; done
+for f in ci.yml release.yml scan.yml persona-uat.yml full-suite.yml; do : > "$work/wf-ok/$f"; done
 cp "$work/wf-ok"/* "$work/wf-new/"; : > "$work/wf-new/stage-extra.yml"
 mkdir -p "$work/wf-letter"; cp "$work/wf-ok"/* "$work/wf-letter/"; : > "$work/wf-letter/evidence-letter.yml"
 cp "$work/wf-ok"/* "$work/wf-old/"; : > "$work/wf-old/stage-admission.yml"
 cp "$work/wf-ok"/* "$work/wf-cw-new/"; : > "$work/wf-cw-new/sprawl.yml"
-expect ok     "AC1 fixture: a workflow directory of release.yml (one file for the release), persona-uat.yml and customer-words-edited.yml, with no stage-*.yml file, passes" "" workflows "$work/wf-ok"
+expect ok     "AC1 fixture: a workflow directory of release.yml (one file for the release), persona-uat.yml, with no stage-*.yml file, passes" "" workflows "$work/wf-ok"
 expect caught "AC1 a new workflow file other than the two named" "was added" workflows "$work/wf-new"
 expect ok     "AC1 evidence-letter.yml is admitted beside release.yml (REQ-REL-015)" "" workflows "$work/wf-letter"
-expect caught "AC1 persona-uat.yml and customer-words-edited.yml do not admit any other new file" "was added" workflows "$work/wf-cw-new"
+expect caught "AC1 persona-uat.yml does not admit any other new file" "was added" workflows "$work/wf-cw-new"
 expect caught "AC1 a stage-*.yml file is back (stage-admission.yml)" "stage-admission.yml" workflows "$work/wf-old"
 for st in stage-build.yml stage-sign.yml stage-verify.yml stage-promote.yml stage-reproducibility.yml; do
   rm -rf "$work/wf-stage"; mkdir -p "$work/wf-stage"; cp "$work/wf-ok"/* "$work/wf-stage/"; : > "$work/wf-stage/$st"
@@ -3489,7 +3489,7 @@ expect ok "AC14 the real scan.yml calls release.yml in snapshot mode and nothing
 expect ok "AC14 the real main-candidate-rescan.yml calls release.yml in snapshot mode and nothing else" "" callers "$root/.github/workflows/main-candidate-rescan.yml"
 expect ok "AC11/005-AC6 release.yml does not name apko in a run line (Build and Rebuild run the one assemble script)" "" lockflow \
        "$root/.github/workflows/release.yml"
-label="AC1 the real workflow directory: no file added beyond persona-uat.yml, customer-words-edited.yml, evidence-letter.yml and full-suite.yml, no stage-*.yml file left"
+label="AC1 the real workflow directory: no file added beyond persona-uat.yml, evidence-letter.yml and full-suite.yml, no stage-*.yml file left"
 expect ok "$label (REQ-CHAIN-005-AC5, REQ-UAT-001)" "" \
        workflows "$root/.github/workflows"
 # take 15 (Codex PR 421): the chain files pin download-artifact and upload-artifact each to ONE digest, and that digest is on the action allowlist; a bump that reached some of them (the Dependabot bump of main's #402 did all four) leaves two digests in one chain
