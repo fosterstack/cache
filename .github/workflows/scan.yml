@@ -326,8 +326,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       issues: write
-      actions: read
-      checks: read
     steps:
       - name: open the fix item, or comment on the open one
         env:

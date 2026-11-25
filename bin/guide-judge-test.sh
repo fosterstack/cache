@@ -38,7 +38,7 @@ tree() {
 # check_says / release_says: accept or refuse (a crash is neither: it is reported as the verdict "crash")
 check_says() {
   local t=$1 tag=${2:-v0.3.0} out rc=0
-  out=$(cd "$t" && GITHUB_REF_NAME=$tag python3 -I bin/check-guide-plan.py docs/verify-release.md \
+  out=$(cd "$t" && TAG=$tag python3 -I bin/check-guide-plan.py docs/verify-release.md \
     docs/verify-release.cannot-run.json "sha256:$A" plan.json "sha256:$A" 2>&1) || rc=$?
   printf '%s' "$out" > "$work/last"
   case $out in *Traceback*) echo crash;; *) [ $rc = 0 ] && echo accept || echo refuse;; esac
@@ -278,7 +278,7 @@ done
 
 # the real tree: the real guide with the real list (image-reference commands only) plans with exit 0
 rt=$(mktemp -d "$work/real.XXXXXX"); rc=0
-(cd "$root" && GITHUB_REF_NAME=v0.3.0 python3 -I bin/check-guide-plan.py docs/verify-release.md docs/verify-release.cannot-run.json \
+(cd "$root" && TAG=v0.3.0 python3 -I bin/check-guide-plan.py docs/verify-release.md docs/verify-release.cannot-run.json \
   "sha256:$A" "$rt/plan.json" "sha256:$A") > "$rt/out" 2>&1 || rc=$?
 [ "$rc" = 0 ] && ok "check-guide-plan: the real guide with the real list plans (accept)" \
   || bad "check-guide-plan: the real guide with the real list" "rc=$rc: $(head -c 200 "$rt/out")"
