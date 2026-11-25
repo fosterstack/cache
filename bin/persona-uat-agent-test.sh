@@ -1076,7 +1076,7 @@ for rz in RateLimitError:429 APIConnectionError:none InternalServerError:503; do
   CASE="provider: the marker line of ${rz%%:*} holds only the class name and the status, never the exception's message"
   check test "$(head -1 "$work/$nm/err" | grep -cE 'sk-abcdefghijklmnop|Bearer abc')" -eq 0
 done
-# the agent keeps the provider's marker line in its failure text, as the driver finds it there
+# the agent keeps the provider's marker line in its own failure line, which is where the driver reads it
 agent provmarker '[{"exit":1,"stderr":"persona-uat-provider-reason: RateLimitError HTTP 429\npersona-uat-provider: RateLimitError: rejected"}]'
 CASE="a failing provider's reason marker line is in the agent's stderr whole (the driver finds it there), with nothing on stdout and a non-zero exit"
 check python3 - "$work/provmarker" "$rc" <<'PY'
@@ -1084,7 +1084,7 @@ import sys
 d, rc = sys.argv[1], sys.argv[2]
 e = open(d + "/err.txt").read()
 assert rc != "0" and open(d + "/out.json").read() == ""
-assert any("persona-uat-provider-reason: RateLimitError HTTP 429" in l for l in e.splitlines()), e
+assert any(l.startswith("persona-uat-agent: the provider failed (exit 1): persona-uat-provider-reason: RateLimitError HTTP 429") for l in e.splitlines()), e
 PY
 # the provider's own reason reaches the agent's stderr (the driver keeps that in the encrypted transcript only), scrubbed and clipped; the stdout stays empty
 MODEL=OWNER-MODEL-R agent provreason '[{"exit":1,"stderr":"persona-uat-provider: APIStatusError: model OWNER-MODEL-R refused key=ghp_abcdefghij0123456789ABCDEF"}]'

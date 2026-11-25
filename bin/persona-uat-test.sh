@@ -119,9 +119,9 @@
 #       The gradle/maven entrypoint models are the FAKE's (program first; the exact exit status and text of a real digest's failure cannot be checked offline).
 set -euo pipefail
 SEG_SHARDS=3
-# The cases each shard must pass: counted from the unsharded suite (698 in all) and checked by the gate, so a case that is skipped, run twice, moved out of its section or
+# The cases each shard must pass: counted from the unsharded suite (722 in all) and checked by the gate, so a case that is skipped, run twice, moved out of its section or
 # made by another shard fails the step. A case added or removed changes a shard's number: the gate names it, and this line is updated with the case.
-SEG_CASES="221 180 297"
+SEG_CASES="221 190 311"
 SEG_DEADLINE=${PERSONA_UAT_SHARD_DEADLINE:-3000}   # seconds one shard may run; a hung shard is killed (its whole process group) and counts as failed (exit 124)
 # SHARDS. Run plain, this script runs the driver suite as SEG_SHARDS shards at once (PERSONA_UAT_SHARD=I/N each, below), prints their outputs one after the other and
 # fails unless every shard passed and the shards together ran every section of this file exactly once (the gate). PERSONA_UAT_SHARD=I/N runs one shard;
@@ -1495,9 +1495,9 @@ CASE="release: a blocking finding of the compliance reviewer FAILS the run (exit
 check test "$rc" -eq 1
 check publiclog relblock "$RELEASE_PERSONAS"
 check grep -q 'REL-BLOCK-TEXT' "$(out relblock)/compliance-reviewer.report.md"
-check none_match 'REL-BLOCK-TEXT|cosign verify' "$work/relblock/summary.md"
-CASE="release: the reason line of the failed persona is the first line of its first blocking finding, and the step summary stays the plain pass/fail lines"
-check test "$(reason_of relblock compliance-reviewer)" = "REL-BLOCK-TEXT cosign verify fails as written"
+check none_match 'REL-BLOCK-TEXT|cosign verify' "$work/relblock/stdout" "$work/relblock/stderr" "$work/relblock/summary.md"
+CASE="release: the reason line of a persona that ran and ended blocking is the fixed driver text, never its finding's text"
+check test "$(reason_of relblock compliance-reviewer)" = "a blocking finding (see the encrypted report)"
 check test ! -s "$work/relblock/gh.log" -a "$(head -1 "$(out relblock)/compliance-reviewer.report.md")" = "VERDICT: blocking"
 IMAGE="$IMG2" run relfr '{"compliance-reviewer":{"findings":[{"kind":"friction","text":"REL-FRICTION-TEXT"}]}}' release
 CASE="release: friction only blocks nothing (exit 0, pass lines); the note is inside the encrypted report and nowhere in the log"
@@ -2422,7 +2422,7 @@ assert t.startswith("the agent failed (exit 7)") and "PARTIAL" not in t and "TRA
 assert lines[lines.index(r[0]) + 1] == "persona-uat: compliance-reviewer: fail", lines
 PY
 # the provider's fixed marker line (as the real provider writes it before its own line) in the agent's stderr: the reason carries the class and the status and nothing else of that stderr
-run rsnprov '{"gradle-platform-engineer":{"crash":true,"crash_lines":["persona-uat-provider-reason: RateLimitError HTTP 429","persona-uat-provider: RateLimitError: Bearer abc.def sk-abcdefghijklmnop"]},"maven-jenkins-ci":{"crash":true,"crash_lines":["persona-uat-provider-reason: APIConnectionError HTTP none","persona-uat-provider: APIConnectionError: connection refused"]}}' rc
+run rsnprov '{"gradle-platform-engineer":{"crash":true,"crash_lines":["persona-uat-agent: the provider failed (exit 1): persona-uat-provider-reason: RateLimitError HTTP 429","persona-uat-provider: RateLimitError: Bearer abc.def sk-abcdefghijklmnop"]},"maven-jenkins-ci":{"crash":true,"crash_lines":["persona-uat-agent: the provider failed (exit 1): persona-uat-provider-reason: APIConnectionError HTTP none","persona-uat-provider: APIConnectionError: connection refused"]}}' rc
 CASE="reason: an agent that failed on a provider call shows 'the agent failed (exit N): <ClassName> HTTP <status>' (the status code, or the word none), and not the provider's message, a token, the model name or the transcript"
 check publiclog rsnprov
 check python3 - "$work/rsnprov" <<'PY'
@@ -2439,16 +2439,22 @@ for secret in ("sk-abcdefghijklmnop", "Bearer abc.def", "connection refused", "M
     assert secret not in out, ("the public log carries " + secret, out)
 PY
 # a marker line with an enormous class name: the reason is still ONE line of at most 200 characters
-run rsnlong "{\"gradle-platform-engineer\":{\"crash\":true,\"crash_lines\":[\"persona-uat-provider-reason: $(printf 'C%.0s' $(seq 600)) HTTP 500\"]}}" rc
+run rsnlong "{\"gradle-platform-engineer\":{\"crash\":true,\"crash_lines\":[\"persona-uat-agent: the provider failed (exit 1): persona-uat-provider-reason: $(printf 'C%.0s' $(seq 600)) HTTP 500\"]}}" rc
 CASE="reason: a reason is cut to 200 characters and stays on one line"
 check publiclog rsnlong
 check test "$(reason_of rsnlong gradle-platform-engineer | wc -c | tr -d ' ')" -le 201 -a "$(reason_of rsnlong gradle-platform-engineer | wc -l | tr -d ' ')" -eq 1
-# a blocking finding: the first line of the FIRST BLOCKING finding (friction before it is skipped), the rest of its text and the later findings stay in the encrypted report
+# the marker string in the transcript (which comes first in the agent's stderr) before the real failure, and a marker of the wrong shape in the failure line: neither reaches the log
+run rsntrans '{"gradle-platform-engineer":{"crash":true,"crash_lines":["persona-uat-provider-reason: FakeTranscriptError HTTP 418","persona-uat-agent: the provider failed (exit 1): persona-uat-provider-reason: LeakedText sk-abcdefghijklmnop HTTP 500","persona-uat-agent: the provider failed (exit 1): the provider timed out"]},"maven-jenkins-ci":{"crash":true,"crash_lines":["persona-uat-provider-reason: FakeTranscriptError HTTP 418","persona-uat-agent: the provider failed (exit 1): persona-uat-provider-reason: Bad Shape sk-abcdefghijklmnop"]}}' rc
+CASE="reason: a marker in the transcript, or one that is not '<ClassName> HTTP <3 digits or none>', adds no suffix: the reason is 'the agent failed (exit N)' and nothing else"
+check publiclog rsntrans
+check test "$(reason_of rsntrans gradle-platform-engineer)" = "the agent failed (exit 7)" -a "$(reason_of rsntrans maven-jenkins-ci)" = "the agent failed (exit 7)"
+check none_match 'FakeTranscriptError|LeakedText|sk-abcdefghijklmnop|Bad Shape' "$work/rsntrans/stdout" "$work/rsntrans/stderr" "$work/rsntrans/summary.md"
+# a blocking finding: its text, the first or any other, stays in the encrypted report; the log has the fixed driver text
 run rsnfind '{"gradle-platform-engineer":{"findings":[{"kind":"friction","text":"FRICTION-FIRST"},{"kind":"blocking","text":"BLOCK-FIRST-LINE\nBLOCK-SECOND-LINE"},{"kind":"blocking","text":"BLOCK-OTHER"}]},"maven-jenkins-ci":{"findings":[{"kind":"blocking","text":"'"$(printf 'L%.0s' $(seq 300))"'"}]}}' rc
-CASE="reason: a persona that ran and ended blocking shows the first line of its first blocking finding (friction and later findings are not shown), cut to 200 characters"
+CASE="reason: a persona that ran and ended blocking shows the fixed driver text, never any finding's text"
 check publiclog rsnfind
-check test "$(reason_of rsnfind gradle-platform-engineer)" = "BLOCK-FIRST-LINE" -a "$(reason_of rsnfind maven-jenkins-ci)" = "$(printf 'L%.0s' $(seq 200))"
-check none_match 'FRICTION-FIRST|BLOCK-SECOND-LINE|BLOCK-OTHER' "$work/rsnfind/stdout" "$work/rsnfind/stderr" "$work/rsnfind/summary.md"
+check test "$(reason_of rsnfind gradle-platform-engineer)" = "a blocking finding (see the encrypted report)" -a "$(reason_of rsnfind maven-jenkins-ci)" = "a blocking finding (see the encrypted report)"
+check none_match 'FRICTION-FIRST|BLOCK-FIRST-LINE|BLOCK-SECOND-LINE|BLOCK-OTHER|LLLLLLLLLL' "$work/rsnfind/stdout" "$work/rsnfind/stderr" "$work/rsnfind/summary.md"
 
 seg_begin 8
 seg_on
@@ -2482,9 +2488,9 @@ check test "$rc" -ne 0
 check publiclog mixed
 check grep -q 'confusing proxy text' "$(out mixed)/gradle-platform-engineer.report.md"
 check grep -q 'jenkins step fails' "$(out mixed)/maven-jenkins-ci.report.md"
-check none_match 'confusing proxy' "$work/mixed/stdout" "$work/mixed/stderr"
-CASE="a blocking persona's reason line is its blocking finding's first line; a friction-only persona that passes has no reason line (reasons are for failed personas only)"
-check test "$(reason_of mixed maven-jenkins-ci)" = "jenkins step fails" -a -z "$(reason_of mixed gradle-platform-engineer)"
+check none_match 'jenkins step fails|confusing proxy' "$work/mixed/stdout" "$work/mixed/stderr"
+CASE="a blocking persona's reason line is the fixed driver text; a friction-only persona that passes has no reason line (reasons are for failed personas only)"
+check test "$(reason_of mixed maven-jenkins-ci)" = "a blocking finding (see the encrypted report)" -a -z "$(reason_of mixed gradle-platform-engineer)"
 CASE="a friction-only persona's verdict is friction"
 check grep -q 'VERDICT: friction' "$(out friction)/gradle-platform-engineer.report.md"
 CASE="the driver has no issue machinery left: --publish and --gh are refused (exit 2), nothing starts"
@@ -2514,8 +2520,9 @@ check test "$rc" -eq 1
 check publiclog rcblock
 check grep -q 'jenkins step fails' "$(out rcblock)/maven-jenkins-ci.report.md"
 check grep -q 'rollback step fails as written' "$(out rcblock)/on-call-engineer.report.md"
-CASE="rc: each blocking persona's reason line is its finding's first line, and no persona that passes has one"
-check test "$(reason_of rcblock maven-jenkins-ci)" = "jenkins step fails" -a "$(reason_of rcblock on-call-engineer)" = "rollback step fails as written" -a -z "$(reason_of rcblock gradle-platform-engineer)" -a -z "$(reason_of rcblock readme-evaluator)"
+check none_match 'jenkins step fails|rollback step fails' "$work/rcblock/stdout" "$work/rcblock/stderr"
+CASE="rc: each blocking persona's reason line is the fixed driver text, and no persona that passes has one"
+check test "$(reason_of rcblock maven-jenkins-ci)" = "a blocking finding (see the encrypted report)" -a "$(reason_of rcblock on-call-engineer)" = "a blocking finding (see the encrypted report)" -a -z "$(reason_of rcblock gradle-platform-engineer)" -a -z "$(reason_of rcblock readme-evaluator)"
 check test ! -s "$work/rcblock/gh.log"
 CASE="rc: a clean run exits 0 with a pass line per persona and overall"
 IMAGE="$IMG2" run rcclean '{}' rc
@@ -4047,8 +4054,9 @@ assert "never exercised" not in open(d + "/readme-evaluator.report.md").read().l
 PY
 check test "$rc" -eq 1
 check publiclog rcproof2
-CASE="rc: the only public trace of that finding is the persona's reason line (the first line of its blocking finding); the persona that was exercised has none"
-check test "$(reason_of rcproof2 maven-jenkins-ci | grep -ci 'never exercised')" -eq 1 -a -z "$(reason_of rcproof2 readme-evaluator)"
+check none_match 'never exercised' "$work/rcproof2/stdout" "$work/rcproof2/stderr"
+CASE="rc: the persona's reason line is the fixed driver text; the persona that was exercised has none"
+check test "$(reason_of rcproof2 maven-jenkins-ci)" = "a blocking finding (see the encrypted report)" -a -z "$(reason_of rcproof2 readme-evaluator)"
 # surviving work: a timed-out agent that started work in its own session must not leak it into the next persona's window
 AGENT_TIMEOUT=1 run orphan '{"maven-jenkins-ci":{"orphan":1.2,"sleep":30},"readme-evaluator":{"sleep":0.8},"on-call-engineer":{"sleep":0.8}}' rc
 CASE="timeout leaves no survivors: the agent that timed out started work in its OWN session (it would request the endpoint 1.2s later, inside a later persona's window); the driver terminated it: no such request ever reached the endpoint, and the persona is did-not-run"

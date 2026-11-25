@@ -777,6 +777,19 @@ def kill_group(p):
         pass
 
 
+def provider_reason(err):
+    """": <ClassName> HTTP <3 digits or none>" from the provider's failure, or "". The agent's stderr starts with the transcript, so the marker is read only from the agent's
+    last failure line (the provider's own output, which bin/persona-uat-provider.py begins with the marker); anything of another shape adds nothing."""
+    i = err.rfind("persona-uat-agent: the provider failed (exit ")
+    if i < 0:
+        return ""
+    line = err[i:].split("\n", 1)[0]
+    parts = line.partition("): persona-uat-provider-reason: ")[2].split(" ")
+    if len(parts) == 3 and parts[0].isascii() and parts[0].isidentifier() and parts[1] == "HTTP" and (parts[2] == "none" or (parts[2].isascii() and parts[2].isdigit() and len(parts[2]) == 3)):
+        return ": " + " ".join(parts)
+    return ""
+
+
 def run_agent(agent_cmd, agent_args, request, sandbox, timeout, tfile=None, jfile=None):
     """-> (answer or None, transcript (text or a TranscriptFile), failure reason or None). The agent's stderr is kept for the encrypted transcript only; the actions it completed
     before a timeout or a failure come from its streamed transcript file. Whatever the agent left running is killed on EVERY exit: its window must end with nothing of it alive."""
@@ -793,9 +806,7 @@ def run_agent(agent_cmd, agent_args, request, sandbox, timeout, tfile=None, jfil
         kill_group(p)          # on EVERY exit, whatever communicate() raised
     if p.returncode != 0:
         why = "the agent failed (exit %d)" % p.returncode
-        marker = "persona-uat-provider-reason: "     # the provider's error class and HTTP status, written by bin/persona-uat-provider.py
-        if marker in err:
-            why += ": " + err.split(marker, 1)[1].split("\n", 1)[0].strip()[:80]
+        why += provider_reason(err)
         return None, TranscriptFile("agent failed (exit %d)\n%s\n" % (p.returncode, err[-200000:]), tfile, jfile), why
     try:
         return validate_answer(out), None, None
@@ -1817,7 +1828,7 @@ def _main():
             sys.stderr.write("persona-uat: %s: fail\n" % persona)
 
     def say_fail(persona, why):
-        """the job log's one non-secret reason for a failed persona (a driver reason or the persona's own first blocking finding), before its fail line"""
+        """the job log's one non-secret reason for a failed persona (the driver's own text, never a model-written finding), before its fail line"""
         sys.stderr.write("persona-uat: %s: reason: %s\n" % (persona, (why or "").strip().split("\n", 1)[0][:200]))
 
     def _record(persona, answer, transcript, did_not_run, proven, extra_blocking, commands=None):
@@ -1854,7 +1865,7 @@ def _main():
             verdict = "blocking"
         results[persona] = {"verdict": verdict, "findings": findings, "tokens": tokens, "capped": capped, "encfail": not ok}
         if verdict == "blocking":
-            say_fail(persona, did_not_run if not answer else next((f["text"] for f in findings if f["kind"] == "blocking"), ""))
+            say_fail(persona, did_not_run if not answer else "a blocking finding (see the encrypted report)")
         sys.stderr.write("persona-uat: %s: %s\n" % (persona, "fail" if verdict == "blocking" else "pass"))
 
     def all_did_not_run(reason):
