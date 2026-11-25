@@ -5,23 +5,14 @@
 set -euo pipefail
 step=$1
 dir=${step#snapshot-}
-tag=${GITHUB_REF_NAME#release/}
-version=${tag#v}
 case "$step" in
   snapshot-*) version=0.0.0-rc.1 ;;
+  *) version=$(bin/release-version.sh); version=${version#v} ;;
 esac
 python3 -I bin/chain-verify.py bind --local --step "$step" \
   --record "rec-$dir/ubuntu-24.04/$step-collection.local.json" --dir "$dir/ubuntu-24.04" --as out
 python3 -I bin/chain-verify.py bind --local --step "$step" \
   --record "rec-$dir/ubuntu-24.04-arm/$step-collection.local.json" --dir "$dir/ubuntu-24.04-arm" --as out
-case "$step" in
-  apk)
-    # the baseline admission chose (both legs, bound by the binds above) becomes a file of Build's own record,
-    # which Release verifies (REQ-CHAIN-007-AC19)
-    python3 -I bin/chain-verify.py admission-baseline --admission apk/ubuntu-24.04/admission.json \
-      --admission apk/ubuntu-24.04-arm/admission.json --tag "$tag" --sha "$GITHUB_SHA" \
-      --out admission-baseline.json ;;
-esac
 mkdir -p melange-repo
 cp -R "$dir/ubuntu-24.04/x86_64" melange-repo/x86_64
 cp -R "$dir/ubuntu-24.04-arm/aarch64" melange-repo/aarch64

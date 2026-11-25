@@ -576,13 +576,11 @@ AMBIENT_VALUE = re.compile(r"\$\{\{ ?(?:github\.token|inputs\.[A-Za-z_][\w-]*|ma
 
 # Release's NAMED SECRETS (rule 56: only the release job holds a stored secret or the registry credentials; advisor 0386 J; REQ-REL-011-AC3, REQ-CHAIN-007-AC18): ONE closed list of rows, in code, so that another row, another name, another place
 # or another script is a reviewed edit of this file and nothing else.  name -> {(stage file, job): the listed scripts that may receive it}.  the sign jobs hold no row at all (no secret, no GH_TOKEN, no DOCKERHUB_*);
-# the registry credentials are bound only in release-publish and release-sign of the release job.  The wrapper receives every name at the place it is bound, GH_TOKEN being bound at the three places below.
+# the registry credentials are bound only in release-publish and release-sign of the release job.  The wrapper receives every name at the place it is bound, GH_TOKEN being bound at the places below.
 _WIT = "bin/witnessed.sh"
-_WITL = "bin/witnessed-local.sh"      # the Witness wrapper of the BUILDING steps (owner Oct 22): Build's apk job binds the admission token to it; Release binds every name to bin/witnessed.sh
 _HUB = {(_R, "release"): {_WIT, "bin/release-publish.sh", "bin/release-sign.sh"}}
 SECRET_ROWS = {
-    "GH_TOKEN": {(_R, "build-apk"): {_WITL, "bin/build-stage-apk.sh", "bin/build-admit.py"},                 # the run's own token, admission only
-                 (_R, "release"): {_WIT, "bin/release-publish.sh", "bin/release-sign.sh", "bin/release-assets.sh"}},
+    "GH_TOKEN": {(_R, "release"): {_WIT, "bin/release-publish.sh", "bin/release-sign.sh", "bin/release-assets.sh"}},
     "DOCKERHUB_USERNAME": _HUB,
     "DOCKERHUB_TOKEN": _HUB,
 }
@@ -610,9 +608,8 @@ def fed_value(name):
     return m.group(1) if m else "<RELEASE_KEY_REF not found in bin/chain-verify.py>"
 
 
-# the job that holds a named credential holds exactly these permissions (Build's apk job: read-only, the Actions read of admission's bound check runs (docs/ratify/2026-11-10-full-suite-at-promotion.md:11-12), no identity token since the Witness record is signed outside the build; Release: the three writes)
-PLACE_PERMS = {(_R, "build-apk"): {"contents": "read", "actions": "read", "checks": "read", "statuses": "read", "pull-requests": "read"},
-               (_R, "release"): {"contents": "write", "packages": "write"}}
+# the job that holds a named credential holds exactly these permissions (Release: the three writes)
+PLACE_PERMS = {(_R, "release"): {"contents": "write", "packages": "write"}}
 # the one workflow-level group of release.yml: release.yml's own push and daily runs on main share 'patch-release' (queued, never cancelled); every other run has its own
 # (a tag push, a dispatch, and a snapshot call, whose ref and event are the caller's)
 RELEASE_CONCURRENCY = {"group": "${{ inputs.mode != 'snapshot' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) && 'patch-release' || github.run_id }}", "cancel-in-progress": "false"}
@@ -632,7 +629,6 @@ CLOSED = "not in the closed secret list"
 #  - a command text that crosses a backslash-newline is named by its JOINED text (bash joins with nothing inserted).
 #  - reads_env is satisfied by any mention outside comments and docstrings, so a string that merely contains the name counts: it is a staleness
 #    tripwire, not proof that the script reads the variable.
-#  - the AC8 `unset GH_TOKEN` after admission cannot be judged by a text judge; the review of the script and the Witness record are what show it.
 #  - AC1 wording residual: the English of REQ-CHAIN-001-AC1 predates the reviewed mechanisms (exceptions, ambient_env, pinned_steps); REQ-CHAIN-004-AC2
 #    (ratified) is their basis; the owner is asked to add the clause.
 #  - round 3: comment stripping inside ${..}, backticks and $'..' contexts; strings that span lines (a quote spanning lines pairs with a later quote on
@@ -929,7 +925,7 @@ def load_scripts(base):
                 errs.append("chain-scripts.json: ambient_env %s for %s at %s job %s is %s" % (nm, sc, e["file"], e["job"], CLOSED)); continue
             if (nm, sc, e["file"], e["job"]) in seen_at:
                 errs.append("chain-scripts.json: ambient_env %s for %s is listed twice at %s job %s" % (nm, sc, e["file"], e["job"])); continue
-            if (nm, sc) in seen and not (nm == "GH_TOKEN" and sc in (_WIT, _WITL)):      # only the wrappers are bound at several places of GH_TOKEN
+            if (nm, sc) in seen and not (nm == "GH_TOKEN" and sc == _WIT):      # only the wrappers are bound at several places of GH_TOKEN
                 errs.append("chain-scripts.json: ambient_env %s for %s is listed twice" % (nm, sc)); continue
             if "file" in e and e["file"] != _R:
                 errs.append("chain-scripts.json: ambient_env %s for %s: file %r is not the release file (%s)" % (nm, sc, e["file"], _R)); continue

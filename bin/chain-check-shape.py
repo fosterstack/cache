@@ -38,6 +38,7 @@ import importlib.util, json, os, re, shlex, sys, yaml
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import guide_plan_judge   # noqa: E402
 
+CHECKOUT_WITH = ({"persist-credentials": "false"}, {"persist-credentials": "false", "fetch-depth": "0"})   # fetch-depth 0: the version script reads the tags
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 DOWN = {"digests", "dist", "locks", "images"}   # Build's artifacts (Check's previous stage is Build; Sign's provenance is Release's to verify); images travel as files (OCI tarballs)
 RECORD_DIRS = "witness-scanners\nwitness-acceptance\nwitness-runtime"           # PR 2's helper writes witness-STEP/STEP-collection.json
@@ -51,7 +52,7 @@ REC_LINE = 'bash bin/check-records-digests.sh "$LEG" check-records.json witness-
 REC_ENV = {"LEG": "${{ matrix.runner }}"}
 SNAPSHOT_IF = "${{ inputs.mode != 'snapshot' }}"
 # check-govulncheck has no needs, so a push to main or the daily run (which run only the patch tag jobs) would start it: it also names the runs that start the chain
-GV_IF = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true) }}"
+GV_IF = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true) }}"
 CHECK_NEEDS = ["check-govulncheck", "build-assemble"]
 CHECK_STRATEGY = {"matrix": {"runner": RUNNERS}}
 GV_BUILD = "check-govulncheck"   # REQ-REL-011-AC1 (advisor, Oct 23; Witness review F9): the job with no credential that builds govulncheck; the check job (no identity token) only installs what it hands over
@@ -162,7 +163,7 @@ def exact_steps(label, steps, want, what):
             bad.append("%s step %d: keys not allowed (an if, env or shell would change what runs): %s" % (label, i, sorted(s) if isinstance(s, dict) else s)); continue
         u, w, r = (s.get("uses") or ""), s.get("with") or {}, (s.get("run") or "").strip()
         if kind == "checkout":
-            if not u.startswith("actions/checkout@") or not PIN.match(u.split(" ")[0]) or w != {"persist-credentials": "false"} or "run" in s:
+            if not u.startswith("actions/checkout@") or not PIN.match(u.split(" ")[0]) or w not in CHECKOUT_WITH or "run" in s:
                 bad.append("%s step %d must be a digest-pinned checkout with persist-credentials: false only" % (label, i))
         elif kind == "run":
             if u or r != arg:
@@ -249,7 +250,7 @@ def stage(path):
         u = s.get("uses", "")
         if u.startswith("actions/checkout@"):
             kinds.append("checkout")
-            if not PIN.match(u.split(" ")[0]) or s.get("with") != {"persist-credentials": "false"}:
+            if not PIN.match(u.split(" ")[0]) or s.get("with") not in CHECKOUT_WITH:
                 bad.append("checkout must be digest-pinned with persist-credentials: false only")
         elif u.startswith("actions/download-artifact@"):
             w = s.get("with") or {}
@@ -415,7 +416,7 @@ def signcheck(path):
     steps = j.get("steps") or []
     downs = sorted((s["with"].get("name"), s["with"].get("path")) for s in steps if (s.get("uses") or "").startswith("actions/download-artifact@"))
     want_d = sorted([("witness-check-" + r, "rec-check/" + r) for r in RUNNERS] + [("check-results-" + r, "artifacts/check-results-" + r) for r in RUNNERS] + [("check-records-" + r, "rec-digests/" + r) for r in RUNNERS]
-                    + [(n, "witness-build") for n in ("digests", "items", "admission-baseline")] + [("images", "images"), ("dist", "dist")]
+                    + [(n, "witness-build") for n in ("digests", "items")] + [("images", "images"), ("dist", "dist")]
                     + [("apk-" + r, "apks/" + r) for r in RUNNERS] + [("check-results-ubuntu-24.04", "check-results/ubuntu-24.04")])   # S2 (cache#912): Build's outputs and the govulncheck stream bin/release-signatures.sh reads
     if downs != want_d:
         bad.append("sign-check must download exactly %s (name, path), found %s" % (want_d, downs))

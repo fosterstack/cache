@@ -1,7 +1,7 @@
 name: Persona UAT
 
 # Persona UAT (REQ-UAT-001), the one file with a persona job (one purpose per file). Two legs:
-#   persona-uat-rc      the release-branch leg: release.yml calls this file once, in release mode on a push of a release/vX.Y.Z branch only (the caller holds the branch and snapshot conditions), and
+#   persona-uat-rc      the release-branch leg: release.yml calls this file once, in release mode on a push of a release/* branch only (the caller holds the branch and snapshot conditions), and
 #                       four personas (gradle-platform-engineer, maven-jenkins-ci, readme-evaluator, on-call-engineer) test the image Build made, BEFORE anything is released; nothing is published.
 #                       The driver loads that image into the on-call engineer's kind cluster (crane pull, kind load); a last step runs the README's and docs/docker-deploy.md's container-debugging commands against it.
 #                       Build's production OCI layout (artifact images) is pushed with the pinned crane to a registry:2 service pinned by digest and published on the runner's loopback only;

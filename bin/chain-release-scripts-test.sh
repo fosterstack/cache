@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-007-AC22, REQ-CHAIN-008-AC1, REQ-CHAIN-008-AC2, REQ-CHAIN-008-AC3, REQ-CHAIN-008-AC4, REQ-CHAIN-008-AC5, REQ-CHAIN-007-AC4, REQ-CHAIN-007-AC5, REQ-CHAIN-007-AC6, REQ-CHAIN-007-AC7, REQ-CHAIN-007-AC8, REQ-CHAIN-007-AC9, REQ-CHAIN-007-AC10, REQ-CHAIN-007-AC14, REQ-CHAIN-007-AC17, REQ-CHAIN-007-AC19, REQ-CHAIN-007-AC20, REQ-CHAIN-007-AC21, REQ-CHAIN-005-AC4
+# proves: REQ-CHAIN-007-AC22, REQ-CHAIN-008-AC1, REQ-CHAIN-008-AC2, REQ-CHAIN-008-AC3, REQ-CHAIN-008-AC4, REQ-CHAIN-008-AC5, REQ-CHAIN-007-AC4, REQ-CHAIN-007-AC5, REQ-CHAIN-007-AC6, REQ-CHAIN-007-AC7, REQ-CHAIN-007-AC8, REQ-CHAIN-007-AC9, REQ-CHAIN-007-AC10, REQ-CHAIN-007-AC14, REQ-CHAIN-007-AC17, REQ-CHAIN-007-AC20, REQ-CHAIN-007-AC21, REQ-CHAIN-005-AC4
 #
 # Behaviour of the release scripts. Every script is run in a throw-away tree with FAKE tools first on PATH
 # (crane over a directory "registry", cosign, gh, melange, and fakes of bin/chain-verify.py, bin/apk-tool.py and
@@ -214,9 +214,8 @@ if a[0] == "bundle-check":     # a model of the one bundle check: exactly one Re
 if a[0] == "policy":
     if os.environ.get("POLICY_FAIL"): print("refused at release: policy", file=sys.stderr); sys.exit(1)
     open(a[a.index("--out") + 1], "w").write("{}"); sys.exit(0)
-if a[0] == "bind-items":     # items.json (and, with --product, admission-baseline.json) must be a product of Build's record: modelled as the two files existing
-    prev = "baseline" if "--product" in a else "items"
-    if "--product" in a and a[a.index("--product") + 1] != "admission-baseline.json": print("refused at build: product: only admission-baseline.json", file=sys.stderr); sys.exit(1)
+if a[0] == "bind-items":     # items.json must be a product of Build's record: modelled as the two files existing
+    prev = "items"
     if os.environ.get("FAIL_STAGE") == prev: print("refused at build: %s: %s is not the file Build's record holds" % (prev, prev), file=sys.stderr); sys.exit(1)
     for f in (a[a.index("--record") + 1], a[a.index("--items") + 1]):
         if not os.path.exists(f): print("refused at build: missing %s" % f, file=sys.stderr); sys.exit(1)
@@ -277,11 +276,6 @@ APKS = (("standard", "fscache-0.3.0-r0.apk"), ("fips", "fscache-fips-0.3.0-r0.ap
 MODULE_SBOMS = (("standard", "fscache-modules.spdx.json"), ("fips", "fscache-modules-fips.spdx.json"))
 def module_sbom(variant): return "module sbom " + variant
 def sha_of(text): return "sha256:" + hashlib.sha256(text.encode()).hexdigest()
-def adm(t, tag, base, **over):
-    """witness-build/admission-baseline.json as Build's assemble job writes it (REQ-CHAIN-007-AC19): the tag, the commit and the baseline admission chose."""
-    d = {"tag": tag, "sha": "c" * 40, "baseline_version": base, "baseline": "requirements/releases/%s.yaml" % base}
-    d.update(over)
-    json.dump(d, open(os.path.join(t, "witness-build/admission-baseline.json"), "w"))
 # (moved up from the post-publish section: release-apks runs the same key helpers)
 # ---- REQ-CHAIN-008: the keys and the manifests of these cases, made with openssl here (a throwaway root key signs; no real key is read) -----------------
 KEYS = tempfile.TemporaryDirectory(prefix="release-key-manifest-")
@@ -325,7 +319,7 @@ def seed_manifest(t, body=None, signer="root", root_pub="root", sig=None, drop=(
         os.remove(os.path.join(rp, as_dir)); os.mkdir(os.path.join(rp, as_dir))
 def real_verifier(t):
     """release-postverify.py loads the verifier and the verifier loads its helpers: the real files go over the fake chain-verify.py the other scripts' tests use"""
-    for extra in ("build-admit.py", "chain-verify.py", "chain_common.py", "chain_hostile.py", "chain_items.py"):
+    for extra in ("chain-verify.py", "chain_common.py", "chain_hostile.py", "chain_items.py"):
         if os.path.exists(os.path.join(BIN, extra)): shutil.copy(os.path.join(BIN, extra), os.path.join(t, "bin", extra))
     if os.path.exists(os.path.join(BIN, "..", ".github/policy/chain-scripts.json")):
         os.makedirs(os.path.join(t, ".github/policy"), exist_ok=True); shutil.copy(os.path.join(BIN, "..", ".github/policy/chain-scripts.json"), os.path.join(t, ".github/policy/chain-scripts.json"))
@@ -340,7 +334,7 @@ def tree():
     for s in ("release-verify", "release-apks", "release-publish", "release-sign", "release-sign-verify", "release-signatures", "release-stage", "release-assets", "release-postverify"):
         src = os.path.join(BIN, s + ".sh")
         if os.path.exists(src): shutil.copy(src, os.path.join(t, "bin", s + ".sh"))
-    for extra in ("build-admit.py", "release-postverify.py", "release-metadata.py", "release-gate.py", "patch-decide.py", "release-layout.py", "chain_common.py", "guide_plan_judge.py"):
+    for extra in ("release-postverify.py", "release-metadata.py", "release-gate.py", "patch-decide.py", "release-layout.py", "chain_common.py", "guide_plan_judge.py"):
         if os.path.exists(os.path.join(BIN, extra)): shutil.copy(os.path.join(BIN, extra), os.path.join(t, "bin", extra))
     os.makedirs(os.path.join(t, "build/keys")); open(os.path.join(t, "build/keys/release.rsa.pub"), "w").write("-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----\n")
     os.makedirs(os.path.join(t, ".vex")); open(os.path.join(t, ".vex/fosterstack-cache.openvex.json"), "w").write("{}")
@@ -377,7 +371,6 @@ def tree():
     for variant, name in MODULE_SBOMS:
         items["modules-sbom-" + variant] = sha_of(module_sbom(variant))
     json.dump(items, open(os.path.join(t, "witness-build/items.json"), "w"))
-    adm(t, "v0.3.0", "v0.3.0")
     for f in ["provenance/provenance.rekor.json", "provenance/provenance.bundle.json"]:      # Sign's three files (REQ-CHAIN-007-AC9: attached to the release; provenance.json is below)
         open(os.path.join(t, f), "w").write("{}")
     for f in ["witness-build/build-collection.json", "witness-rebuild/rebuild-collection.json", "provenance/provenance.json"] + CHECK_RECS:
@@ -478,26 +471,21 @@ def tree_text(t):
     return out
 def first(s): return s.strip().split("\n")[0] if s.strip() else ""
 # ---- AC4/AC5: release-verify.sh ------------------------------------------------------------------------------------------------------
-STAGES = ["build", "items", "baseline", "sign", "rebuild", "apkcompare", "check", "govulncheck"]     # items: bind-items (REQ-CHAIN-007-AC16); baseline: bind-items --product admission-baseline.json (AC19, ruling B); check: the list verifier of the four Check records
-def stage_of(c): return c.split("--previous ")[1].split()[0] if "--previous" in c else (("baseline" if "--product admission-baseline.json" in c else "items") if c.startswith("chain-verify bind-items") else "govulncheck" if c.startswith("chain-verify bind-check") else "check" if c.startswith("chain-verify check-list") else "apkcompare" if c.startswith("chain-verify apk-compare") else None)
+STAGES = ["build", "items", "sign", "rebuild", "apkcompare", "check", "govulncheck"]     # items: bind-items (REQ-CHAIN-007-AC16); check: the list verifier of the four Check records
+def stage_of(c): return c.split("--previous ")[1].split()[0] if "--previous" in c else ("items" if c.startswith("chain-verify bind-items") else "govulncheck" if c.startswith("chain-verify bind-check") else "check" if c.startswith("chain-verify check-list") else "apkcompare" if c.startswith("chain-verify apk-compare") else None)
 t = vtree(); rc, so, se = run(t, "release-verify")
 calls = [l for l in log(t) if l.startswith("chain-verify")]
 check(rc == 0, "AC5 a good v0.3.0 passes", se)
 check([stage_of(c) for c in calls if stage_of(c)] == STAGES and calls and calls[0].startswith("chain-verify policy make"), "AC4 the policy is made first, then build, sign, rebuild, check are verified in that order", str(calls))
-check(all("--digests witness-build/digests.json" in c for c in calls if stage_of(c) and stage_of(c) not in ("items", "baseline")) and any("--tag v0.3.0" in c for c in calls if "policy" in c), "AC4 every record is checked against the same digest list and the policy is made for the tag")
-# REQ-CHAIN-007-AC14: a release tag is vX.Y.Z by the one tag grammar of bin/build-admit.py (REQ-CHAIN-004-AC20):
-# case-sensitive, anchored, no leading zero in any number, no suffix
-for tag in ("v0.3.0-rc1", "v10.20.30-rc12", "v01.02.03-rc01", "v0.3.0-rc0", "v0.3", "v0.3.0-rc", "v0.3.0-rc.1", "v0.3.0-rc.x", "v0.3.0-rc1x", "v0.3.0-rc1.2", "v0.3.0-RC1", "v0.3.0-Rc1", "v0.3.0rc1", "v0.rc1.3.0", "rc1", "v0.3.0-1rc1", "v0.3.0-rc-1", "v0.3.0-beta.1", "v0.3.0.1", "0.3.0", "main", "refs/heads/x", "v0.3.0-rc1\n", "v0.3.0\n", ""):
-    t = vtree(); rc, so, se = run(t, "release-verify", tag=tag)
-    check(rc != 0 and first(se).startswith("refused at tag") and not [l for l in log(t) if l.startswith("chain-verify")], "AC5 the tag %r is refused first, naming the tag, before any verification" % tag, "rc=%s %s" % (rc, first(se)))
+check(all("--digests witness-build/digests.json" in c for c in calls if stage_of(c) and stage_of(c) != "items") and any("--tag v0.3.0" in c for c in calls if "policy" in c), "AC4 every record is checked against the same digest list and the policy is made for the tag")
 for s in STAGES:
     t = vtree(); rc, so, se = run(t, "release-verify", env={"FAIL_STAGE": s})
     after = STAGES[STAGES.index(s) + 1:]
     seen = " ".join(l for l in log(t) if l.startswith("chain-verify"))
-    check(rc != 0 and first(se).startswith("refused at " + ("build" if s in ("items", "baseline") else "check" if s == "govulncheck" else "rebuild" if s == "apkcompare" else s) + ":") and not any(("--previous " + a in seen) or (a == "check" and "check-list" in seen) or (a == "items" and "bind-items" in seen) or (a == "baseline" and "--product admission-baseline.json" in seen) or (a == "govulncheck" and "bind-check" in seen) or (a == "apkcompare" and "apk-compare" in seen) for a in after), "AC5 an invalid %s record stops release at %s and no later record is checked" % (s, s), "rc=%s %s" % (rc, first(se)))
-    t = vtree(); rec = {"build": "witness-build/build-collection.json", "sign": "provenance/provenance.json", "rebuild": "witness-rebuild/rebuild-collection.json", "check": "witness-check/ubuntu-24.04-arm/witness-runtime/runtime-collection.json", "items": "witness-build/items.json", "baseline": "witness-build/admission-baseline.json", "govulncheck": GV, "apkcompare": "apk-compare/apk-compare.json"}[s]
+    check(rc != 0 and first(se).startswith("refused at " + ("build" if s == "items" else "check" if s == "govulncheck" else "rebuild" if s == "apkcompare" else s) + ":") and not any(("--previous " + a in seen) or (a == "check" and "check-list" in seen) or (a == "items" and "bind-items" in seen) or (a == "govulncheck" and "bind-check" in seen) or (a == "apkcompare" and "apk-compare" in seen) for a in after), "AC5 an invalid %s record stops release at %s and no later record is checked" % (s, s), "rc=%s %s" % (rc, first(se)))
+    t = vtree(); rec = {"build": "witness-build/build-collection.json", "sign": "provenance/provenance.json", "rebuild": "witness-rebuild/rebuild-collection.json", "check": "witness-check/ubuntu-24.04-arm/witness-runtime/runtime-collection.json", "items": "witness-build/items.json", "govulncheck": GV, "apkcompare": "apk-compare/apk-compare.json"}[s]
     os.remove(os.path.join(t, rec)); rc, so, se = run(t, "release-verify")
-    check(rc != 0 and "refused at " + ("build" if s in ("items", "baseline") else "check" if s == "govulncheck" else "rebuild" if s == "apkcompare" else s) in first(se) and "missing" in first(se), "AC5 a missing %s record stops release, naming it" % s, "rc=%s %s" % (rc, first(se)))
+    check(rc != 0 and "refused at " + ("build" if s == "items" else "check" if s == "govulncheck" else "rebuild" if s == "apkcompare" else s) in first(se) and "missing" in first(se), "AC5 a missing %s record stops release, naming it" % s, "rc=%s %s" % (rc, first(se)))
 # Release does not rely on Check having verified Sign; it verifies Sign's provenance itself, whatever Check's
 # four records say
 t = vtree(); rc, so, se = run(t, "release-verify", env={"FAIL_STAGE": "sign"}); seen = [l for l in log(t) if "--previous sign" in l]
@@ -585,10 +573,10 @@ check(bool(P) and P[0][3].startswith("ghcr.io/"), "AC7 ghcr.io comes first")
 check(bool(P) and all(os.path.exists(os.path.join(t, "reg", p[3].replace(":", "/", 1))) and open(os.path.join(t, "reg", p[3].replace(":", "/", 1))).read().strip() == DIG["image-production" if "fips" not in p[3] else "image-fips"] for p in P), "AC7 the registry shows the attested index digest for every tag pushed")
 check(any(l.startswith("crane digest") for l in log(t)), "AC7 each registry is read back")
 check(SENT["DOCKERHUB_TOKEN"] not in "\n".join(log(t)) + so + se and SENT["GH_TOKEN"] not in "\n".join(log(t)) + so + se, "AC7 the credentials go in by standard input, never on a command line or in output")
-# REQ-CHAIN-004-AC20 / REQ-CHAIN-007-AC14: the tag is judged once, in release-verify; the three scripts that hold credentials judge none
+# REQ-CHAIN-004-AC20 / REQ-CHAIN-007-AC14: the three scripts that hold credentials judge no tag
 for s in ("release-sign", "release-publish", "release-assets"):
     src = open(os.path.join(BIN, s + ".sh")).read()
-    check(not re.search(r"build-admit|tag-ok|tag-pattern|TAG_PATTERN|v\[0-9\]|\^v|-rc\[", src), "AC14 bin/%s.sh holds no tag regex and does not call or load bin/build-admit.py (the tag is judged once, in release-verify)" % s)
+    check(not re.search(r"v\[0-9\]|\^v|-rc\[", src), "AC14 bin/%s.sh holds no tag regex" % s)
 import yaml
 _rel = yaml.safe_load(open(os.path.join(os.environ["RELEASE_ROOT"], ".github/workflows/release.yml")))["jobs"]["release"]
 _GUARD_S = "${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}"
@@ -854,7 +842,6 @@ for name in ("RELEASE_KMS_KEY_REF", "RUNNER_TEMP", "GITHUB_SHA", "GITHUB_SERVER_
     check(rc == 2 and name in se and not log(tg) and not os.path.exists(os.path.join(tg, S)), "I1 an unset %s exits 2, naming it, before anything is made or signed" % name, "rc=%s %s" % (rc, first(se)))
 tg = tree(); rc, so, se = sign_step(tg, env={"RELEASE_KMS_KEY_REF": None}, tag="v1.2.3-rc1")
 check(rc == 2 and "RELEASE_KMS_KEY_REF" in se and not log(tg) and not os.path.exists(os.path.join(tg, S)), "I1 an unset name together with an rc tag exits 2 (names are checked before the tag)", "rc=%s %s" % (rc, first(se)))
-tg = tree(); rc, so, se = sign_step(tg, env={"GITHUB_REF_NAME": None}); check(rc != 0 and not log(tg) and not kms_calls(tg), "I1 an unset GITHUB_REF_NAME stops the step before anything is signed", "rc=%s %s" % (rc, first(se)))
 def refused_ref(val, label):
     t = tree(); before = files_of(t)
     rc, so, se = sign_step(t, env={"RELEASE_KMS_KEY_REF": val})
@@ -877,8 +864,6 @@ refused_ref(
 )
 refused_ref("awskms:///alias/other", "W2 another awskms alias is refused with exit 2 before anything is made or signed")
 refused_ref("arn:aws:kms:us-east-1:111122223333:key/abc", "P3 a key reference that is not awskms:/// is refused before any signature")
-for tag in ("v0.3.0-rc1", "v0.3.0-rc.1", "main", "v0.3", "v0.3.0-fips"):
-    t = tree(); rc, so, se = sign_step(t, tag=tag); check(rc == 1 and "tag" in se and not log(t) and not os.path.exists(os.path.join(t, S)), "AC14 release-signatures refuses the tag %r with exit 1 before anything is made (only vX.Y.Z reaches it)" % tag, "rc=%s %s" % (rc, first(se)))
 # G1: release-signatures.sh makes policy.json itself (a stage file's run lines cannot read GITHUB_REF_NAME): after the tag check and the key-reference check, before anything is made or signed
 POLICY = "chain-verify policy make --template .github/policy/release-policy.template.json --tag v0.3.0 --out policy.json"
 def tree_without_policy():
@@ -900,10 +885,7 @@ check(rc != 0 and not [l for l in log(t) if l.startswith(("vendor-provenance", "
 t = tree_without_policy(); rc, so, se = sign_step(t, env={"RELEASE_KMS_KEY_REF": "awskms:///alias/other"})
 check(rc == 2 and not policy_calls(t) and not os.path.exists(os.path.join(t, "policy.json")),
       "G1 a refused key reference stops the step before the policy is made", "rc=%s %s" % (rc, first(se)))
-t = tree_without_policy(); rc, so, se = sign_step(t, tag="v0.3.0-rc1")
-check(rc == 1 and not policy_calls(t) and not os.path.exists(os.path.join(t, "policy.json")),
-      "G1 a refused tag stops the step before the policy is made", "rc=%s %s" % (rc, first(se)))
-t = tree_without_policy(); adm(t, "v0.3.1", "v0.3.0")      # Build's admission file is for the tag of the run
+t = tree_without_policy()
 rc, so, se = sign_step(t, tag="v0.3.1")
 check(rc == 0 and policy_calls(t) == [POLICY.replace("v0.3.0", "v0.3.1")], "G1 the policy is made for the tag of the run", "rc=%s %s" % (rc, policy_calls(t)))
 # a signature that fails stops the step at that call
@@ -991,28 +973,13 @@ check(sorted(vi) == ["fips", "production"] and sorted(vi["production"]) == ["chi
 t2 = tree(); os.remove(os.path.join(t2, "witness-build/items.json")); rc2, so2, se2 = sign_step(t2); check(rc2 != 0 and "items.json" in se2 and not signs(t2), "AC13 without Build's verified items Sign does not check the digests it puts in the VEX forms: it stops before anything is signed", "rc=%s %s" % (rc2, first(se2)))
 check(mj.get("requirements_baseline", {}).get("path") == "requirements/releases/v0.3.0.yaml" and mj.get("requirements_baseline", {}).get("sha256") == hashlib.sha256(b"baseline v0.3.0\n").hexdigest() and mj.get("test_evidence", {}).get("path") == "test-evidence/mappings.yaml", "AC19 the manifest records the requirements baseline of the tag and the test-evidence hash (REL-009-AC13 note)", str({k: mj.get(k) for k in ("requirements_baseline", "test_evidence")}))
 t2 = tree(); os.remove(os.path.join(t2, "requirements/releases/v0.3.0.yaml")); rc2, so2, se2 = sign_step(t2)
-check(rc2 != 0 and "v0.3.0.yaml" in se2 and not signs(t2), "AC19 a tag with no baseline file stops before anything is signed, naming it", "rc=%s %s" % (rc2, first(se2)))
-# AC19: a CI patch tag has no requirements/releases/<tag>.yaml of its own; the manifest records the baseline
-# admission chose, read from
-# Build's VERIFIED admission-baseline.json (bound to Build's record by release-verify), never one Sign picks itself
-t3 = tree(); os.remove(os.path.join(t3, "requirements/releases/v0.3.1.yaml")); adm(t3, "v0.3.1", "v0.3.0")
+check(rc2 != 0 and not signs(t2), "AC19 a tag with no baseline file stops before anything is signed", "rc=%s %s" % (rc2, first(se2)))
+# AC19: a CI patch tag has no requirements/releases/<tag>.yaml of its own; the manifest records the highest baseline below it
+t3 = tree(); os.remove(os.path.join(t3, "requirements/releases/v0.3.1.yaml"))
 rc3, so3, se3 = sign_step(t3, tag="v0.3.1")
 mj3 = json.load(open(os.path.join(t3, S, "release-metadata/release-manifest.json"))) if os.path.exists(os.path.join(t3, S, "release-metadata/release-manifest.json")) else {}
 check(rc3 == 0 and mj3.get("requirements_baseline", {}).get("version") == "v0.3.0" and mj3.get("requirements_baseline", {}).get("path") == "requirements/releases/v0.3.0.yaml"
-      and mj3.get("requirements_baseline", {}).get("sha256") == hashlib.sha256(b"baseline v0.3.0\n").hexdigest(), "AC19 a CI patch tag with no requirements/releases/<tag>.yaml produces a manifest that records admission's baseline", "rc=%s %s" % (rc3, first(se3)))
-for label, mk, word in (
-    ("a missing admission-baseline.json", lambda t: os.remove(os.path.join(t, "witness-build/admission-baseline.json")), "admission-baseline.json"),
-    ("a file for another tag (forged: the owner tag's baseline reused)", lambda t: adm(t, "v0.3.0", "v0.3.0"), "tag"),
-    ("a file for another commit", lambda t: adm(t, "v0.3.1", "v0.3.0", sha="d" * 40), "commit"),
-    ("a baseline version that is not vX.Y.Z", lambda t: adm(t, "v0.3.1", "../v0.3.0", baseline="requirements/releases/../v0.3.0.yaml"), "baseline"),
-    ("a baseline path that is not the version's file", lambda t: adm(t, "v0.3.1", "v0.3.0", baseline="requirements/releases/v0.2.0.yaml"), "baseline"),
-    ("a baseline newer than the tag", lambda t: adm(t, "v0.3.1", "v0.3.2"), "baseline"),
-    ("an extra key", lambda t: adm(t, "v0.3.1", "v0.3.0", evidence="x"), "admission-baseline.json"),
-    ("a symlink", lambda t: (os.remove(os.path.join(t, "witness-build/admission-baseline.json")), os.symlink("items.json", os.path.join(t, "witness-build/admission-baseline.json"))), "admission-baseline.json"),
-    ("a file that is not JSON", lambda t: open(os.path.join(t, "witness-build/admission-baseline.json"), "w").write("{nope"), "admission-baseline.json")):
-    t4 = tree(); os.remove(os.path.join(t4, "requirements/releases/v0.3.1.yaml")); adm(t4, "v0.3.1", "v0.3.0"); mk(t4)
-    rc4, so4, se4 = sign_step(t4, tag="v0.3.1")
-    check(rc4 != 0 and word in se4 and not signs(t4) and not os.path.exists(os.path.join(t4, S, "release-metadata/release-manifest.json")), "AC19 %s is refused before anything is signed, naming it" % label, "rc=%s %s" % (rc4, first(se4)))
+      and mj3.get("requirements_baseline", {}).get("sha256") == hashlib.sha256(b"baseline v0.3.0\n").hexdigest(), "AC19 a CI patch tag with no requirements/releases/<tag>.yaml produces a manifest that records the highest baseline below it", "rc=%s %s" % (rc3, first(se3)))
 first_sig = next((i for i, l in enumerate(L) if l.startswith("with-aws-token")), 99)
 check(L.index(vf[0]) < first_sig if vf else False, "AC13 the metadata is made before the first signature")
 check(any(" --bundle release-signed/release-metadata/release-files.sha256.bundle" in c and c.split(" --digest ")[1].split(" ")[0] == sha_file(lf) for c in kms_calls(t)), "AC13 release-files.sha256 is signed with a bundle beside it in release-signed/release-metadata/", str([c for c in kms_calls(t) if "release-files" in c]))
@@ -1451,13 +1418,13 @@ t = full_assets(); rc, so, se = staged_assets(t, env={"GH_DROP": "release-files.
 check(rc != 0 and "release-files.sha256.bundle" in se, "AC13 the gate runs again AFTER publishing, on what the release stores: a missing asset fails the run", "rc=%s %s" % (rc, first(se)))
 t = full_assets(); rc, so, se = staged_assets(t, env={"GH_ALTER": "release-manifest.json"})
 check(rc != 0 and "release-manifest.json" in se, "AC13 the gate after publishing catches a stored file that differs from the staged one", "rc=%s %s" % (rc, first(se)))
-# REQ-CHAIN-004-AC20: release-assets.sh holds the release credentials, so it loads no tag grammar: it runs bin/release-gate.py (and nothing else of bin/), which works with bin/build-admit.py and the rest of bin/ absent
+# REQ-CHAIN-004-AC20: release-assets.sh holds the release credentials, so it loads no tag grammar: it runs bin/release-gate.py (and nothing else of bin/), which works with the rest of bin/ absent
 t = full_assets(); rcs_, sos_, ses_ = run(t, "release-stage")
 for f_ in os.listdir(os.path.join(t, "bin")):
     if f_.endswith(".py") and f_ != "release-gate.py": os.remove(os.path.join(t, "bin", f_))
 rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"])
-check(rcs_ == 0 and os.path.exists(os.path.join(t, "bin", "release-gate.py")) and not os.path.exists(os.path.join(t, "bin", "build-admit.py")) and rc == 0 and any(l.startswith("gh release upload") for l in log(t)),
-      "AC20 release-assets publishes with only bin/release-gate.py among the Python files of bin/ (no build-admit.py, no release-metadata.py, no chain_common.py)", "rc=%s/%s %s" % (rcs_, rc, first(se)))
+check(rcs_ == 0 and os.path.exists(os.path.join(t, "bin", "release-gate.py")) and rc == 0 and any(l.startswith("gh release upload") for l in log(t)),
+      "AC20 release-assets publishes with only bin/release-gate.py among the Python files of bin/ (no release-metadata.py, no chain_common.py)", "rc=%s/%s %s" % (rcs_, rc, first(se)))
 t = full_assets(); rcs_, sos_, ses_ = run(t, "release-stage")
 for f_ in os.listdir(os.path.join(t, "bin")):
     if f_.endswith(".py") and f_ != "release-gate.py": os.remove(os.path.join(t, "bin", f_))

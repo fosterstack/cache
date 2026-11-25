@@ -272,7 +272,7 @@ for n in ("full-suite.yml", "scan.yml", "codeql.yml"):
 
 
 # ---------------------------------------------------------------------------------- AC7: a run before the tag
-# the tag push alone is too late: admission reads runs on the tagged commit, so each workflow of the full suite must also start from a schedule
+# the tag push alone is too late: a patch release waits for runs on the tagged commit, so each workflow of the full suite must also start from a schedule
 # or a manual dispatch (workflow_call, a push to main and a tag push do not count: a bound context counts only from a schedule or dispatch run)
 def early_run_problems(w, name):
     on = w.get("on") or {}

@@ -125,8 +125,8 @@ archives, OSV-Scanner the Go modules). The same Check stage also runs
 policy that the rest of this section does not describe. Before a release, on every pull
 request, every push to `main` and every day,
 [`scan.yml`](../.github/workflows/scan.yml) scans the candidate images with Grype
-and Amazon Inspector. A release is admitted only when the required checks, scan
-among them, passed on that exact commit.
+and Amazon Inspector. A release is built and tested on its release branch and published only after the
+acceptance and persona tests pass.
 
 The gate's policy is every severity, with the published VEX applied, and the
 example below uses the same policy.

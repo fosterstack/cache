@@ -162,7 +162,6 @@ fi
 gv="$work/gv"; mkdir -p "$gv/dest/fscache-go/bin" "$gv/repo/tools/govulncheck" "$gv/nogo" "$gv/repo-nosum/tools/govulncheck" "$gv/repo-nomod/tools" "$gv/repo-vendor/tools/govulncheck/vendor"
 cp "$root/tools/govulncheck/go.mod" "$root/tools/govulncheck/go.sum" "$gv/repo/tools/govulncheck/" 2> /dev/null || { printf 'module x\n' > "$gv/repo/tools/govulncheck/go.mod"; printf 'x\n' > "$gv/repo/tools/govulncheck/go.sum"; }
 cp "$gv/repo/tools/govulncheck/go.mod" "$gv/repo-nosum/tools/govulncheck/"
-for r in repo repo-nosum repo-nomod repo-vendor; do mkdir -p "$gv/$r/bin"; cp "$root/bin/build-admit.py" "$gv/$r/bin/"; done   # the installer asks it whether the pin is a version
 cp "$gv/repo/tools/govulncheck/go.mod" "$gv/repo/tools/govulncheck/go.sum" "$gv/repo-vendor/tools/govulncheck/"
 cat > "$gv/dest/fscache-go/bin/go" <<'EOF'
 #!/usr/bin/env bash

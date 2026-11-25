@@ -172,7 +172,7 @@ printf '%s\n%s\n' ".github/policy/rc-proof.json" '"test-evidence/known-red.json"
 gate "a file list line that is not a JSON string is refused" 1 "not a JSON string"
 files $MARK $KRF
 # The cases of the run the marker names, its artifacts, the verifier call and which copy of the verifier runs were deleted on Nov 23: the one tag
-# grammar of bin/build-admit.py admits no rc tag since release candidates as rc tags were removed, so read_marker refuses every marker before any of
+# grammar admits no rc tag since release candidates as rc tags were removed, so read_marker refuses every marker before any of
 # those checks is reached; what is left here is judged before the marker is read, or is the marker's own refusal.
 printf '{not json' > "$work/head/$MARK"; files $MARK $KRF
 gate "an unreadable marker is refused" 1 "marker"

@@ -16,8 +16,6 @@ set -euo pipefail
 for name in RELEASE_KMS_KEY_REF RUNNER_TEMP GITHUB_SHA GITHUB_SERVER_URL GITHUB_REPOSITORY GITHUB_RUN_ID GITHUB_RUN_ATTEMPT GITHUB_WORKFLOW_REF; do
   printenv "$name" > /dev/null || { echo "release-signatures: $name is unset" >&2; exit 2; }
 done
-tag=${GITHUB_REF_NAME:-}
-python3 -I -B bin/build-admit.py tag-ok --final "$tag" || { echo "release-signatures: tag refused: $tag is not vX.Y.Z" >&2; exit 1; }
 # the one key-reference check (bin/chain-verify.py key-ref-check): the job's reference is the release key's, byte for byte; exit 2 before anything is made or signed. kms-sign asks the key for its algorithm on every call.
 python3 -I -B bin/chain-verify.py key-ref-check || exit $?
 # the release policy of this tag, made as release-verify makes it for Release: it is signed below, and Release checks the bundle against its own copy
@@ -57,8 +55,7 @@ cp dependency-provenance.json release-signed/release-evidence/dependency-list.js
 python3 -I -B bin/release-metadata.py images --digests witness-build/digests.json --images-dir images --items witness-build/items.json --out "$out/release-metadata/vex-images.json"
 cp .vex/fosterstack-cache.openvex.json release-signed/release-metadata/
 python3 -I -B bin/vex-forms.py --openvex .vex/fosterstack-cache.openvex.json --images "$out/release-metadata/vex-images.json" --version "$GITHUB_REF_NAME" --out-dir "$out/release-metadata"
-# the baseline is the one admission chose (REQ-CHAIN-007-AC19), read from Build's verified admission-baseline.json
-baseline=$(python3 -I -B bin/release-metadata.py baseline --admission witness-build/admission-baseline.json --tag "$GITHUB_REF_NAME" --commit "$GITHUB_SHA")
+baseline=$(python3 -I -B bin/release-metadata.py baseline --tag "$GITHUB_REF_NAME")
 # the manifest's reason is the first line of the annotated release tag's message (the owner's own words); a tag with no message, or no annotation, fails: no default text
 tagobj=$(git cat-file tag "$GITHUB_REF_NAME" 2> /dev/null) || tagobj=""
 reason=${tagobj#*$'\n\n'}; reason=${reason%%$'\n'*}      # the message starts after the header's blank line; its first line

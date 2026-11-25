@@ -58,7 +58,7 @@ case_ no-dispatch             bad "d['on'].pop('workflow_dispatch')"
 # PR 2 of 4: ci.yml absorbs hygiene.yml and requirements.yml (REQ-REL-008-AC2). Every moved job
 # keeps its exact check name, top-level placement, job permissions, environment, needs and condition; ci.yml's
 # top-level permissions stay read-only and its one concurrency block is the reviewed one (judge_conc). This suite does not read
-# .github/policy/required-checks.json: only release admission reads it, and the GitHub ruleset is the only required list.
+# .github/policy/required-checks.json: only the release decide job reads it, and the GitHub ruleset is the only required list.
 # dependabot-auto-merge.yml does NOT move: its events (pull_request only) differ from ci.yml's (advisor, 0051 check 3).
 judge_ci() { python3 - "$1" "$root" <<'PY'
 import os, sys, yaml
@@ -175,7 +175,7 @@ for gone in ("daily-rescan.yml", "rescan-v010.yml"):
 # REQ-CHAIN-004-AC14 / REQ-CHAIN-003-AC5: the one build path. Its job build calls release.yml with exactly `with: mode: snapshot` (no other input, secrets, if or needs),
 # under the called file's permission set as a static ceiling; no job calls a stage-*.yml file
 b = jobs.get("build") or {}
-CEILING = {"contents": "write", "packages": "write", "id-token": "write", "issues": "write", "actions": "read", "checks": "read", "statuses": "read", "pull-requests": "read"}
+CEILING = {"contents": "write", "packages": "write", "id-token": "write", "issues": "write", "actions": "read", "checks": "read"}
 if b.get("uses") != "./.github/workflows/release.yml" or b.get("with") != {"mode": "snapshot"}:
     bad.append("the build job is not a snapshot call of release.yml: %s" % {k: b.get(k) for k in ("uses", "with")})
 if b.get("permissions") != CEILING:
@@ -194,8 +194,7 @@ if not shape or 'jq -e "$TARGET_SHAPE"' not in mrun:
     bad.append("the manifests job does not check every target's shape before emitting the matrix")
 else:
     def ok(t):
-        env = dict(os.environ, TAG_RE=subprocess.check_output(["python3", "-I", os.path.join(sys.argv[2], "bin/build-admit.py"), "tag-pattern"], text=True).strip())
-        return subprocess.run(["jq", "-e", shape.group(1)], input=json.dumps([t]), capture_output=True, text=True, env=env).returncode == 0
+        return subprocess.run(["jq", "-e", shape.group(1)], input=json.dumps([t]), capture_output=True, text=True).returncode == 0
     good = {"release": "v0.2.1", "variant": "production", "digest": "sha256:" + "a" * 64, "scanner": "grype"}
     if not ok(good):
         bad.append("TARGET_SHAPE refuses a well-formed target")
@@ -347,7 +346,7 @@ if (jobs.get("build") or {}).get("with") != {"mode": "snapshot"}:
 if "rebuild" in jobs:
     bad.append("scan.yml still has a rebuild job: release.yml's Rebuild jobs run in the one snapshot call")
 # the call's permissions are the STATIC CEILING of the called file's set, in both directions (REQ-CHAIN-004-AC14)
-CEILING = {"contents": "write", "packages": "write", "id-token": "write", "issues": "write", "actions": "read", "checks": "read", "statuses": "read", "pull-requests": "read"}
+CEILING = {"contents": "write", "packages": "write", "id-token": "write", "issues": "write", "actions": "read", "checks": "read"}
 if (jobs.get("build") or {}).get("permissions") != CEILING:
     bad.append("the build call's permissions are not exactly the called file's set (the ceiling): %s" % (jobs.get("build") or {}).get("permissions"))
 r = jobs.get("reproducibility") or {}

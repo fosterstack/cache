@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-009-AC5, REQ-REL-009-AC6, REQ-REL-009-AC2, REQ-REL-009-AC3, REQ-REL-009-AC4, REQ-REL-009-AC8
+# proves: REQ-REL-009-AC5, REQ-REL-009-AC2, REQ-REL-009-AC3, REQ-REL-009-AC4, REQ-REL-009-AC8
 # The structure of the automatic patch release's tag jobs (rules: ops docs/ratify/2026-10-02-automatic-patch-releases.md, 2026-10-28-kms-signing-key-and-one-step-build.md).
 # Static, except for one step that is run in a scratch repository: no network, no secrets, no keys, nothing is run on GitHub. The judge (bin/chain-tag-jobs-judge.py) reads release.yml and
 # the two policy lists and answers with a list of faults. Every case mutates a COPY of the real file and must be refused; the unmutated real tree must pass.
@@ -63,7 +63,6 @@ mut "decide names the release key"                $R '(      - name: decide \(bi
 mut "decide has no tag output"                    $R '(  decide:.*?)    outputs:\n      tag: [^\n]*\n'          '\1'                                        'output `tag`'
 mut "decide runs on every branch"                 $R "(  decide:\n    if: )[^\n]*"                              "\\1\${{ github.event_name != 'workflow_dispatch' }}" 'main only'
 mut "decide does not decide"                      $R 'patch-decide.py decide --event'                           'patch-decide.py dicide --event'            'fix-only decision'
-mut "decide does not check the ACs baseline"      $R 'python3 bin/admission-tag-signer.py baseline'             'python3 bin/admission-tag-signer.py basel1ne' 'ACs baseline'
 mut "decide does not wait for the required checks" $R 'patch-decide.py ready'                                   'patch-decide.py reedy'                     'required checks'
 mut "decide writes no notes"                      $R 'patch-decide.py notes --version'                          'patch-decide.py n0tes --version'           'generated notes'
 mut "decide uploads no tag request"               $R '      - name: upload the tag request\n.*?          if-no-files-found: error\n' '' 'upload exactly one artifact'

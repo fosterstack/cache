@@ -39,7 +39,7 @@ CHECK_RUNNERS = ["ubuntu-24.04", "ubuntu-24.04-arm"]
 S_GUARD = ("inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && "
            "startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))")   # guard S: a push of a version tag, in release mode, in release.yml itself
 RELEASE_IF = "${{ %s }}" % S_GUARD   # the job if of release: exactly guard S
-BUILD_PAIRS = {"signed-witness-build": "witness-build", "digests": "witness-build", "items": "witness-build", "admission-baseline": "witness-build", "signed-witness-rebuild": "witness-rebuild", "provenance": "provenance"}
+BUILD_PAIRS = {"signed-witness-build": "witness-build", "digests": "witness-build", "items": "witness-build", "signed-witness-rebuild": "witness-rebuild", "provenance": "provenance"}
 CHECK_PAIRS = dict([("signed-witness-check-" + r, "witness-check/" + r) for r in CHECK_RUNNERS] + [("check-results-" + r, "check-results/" + r) for r in CHECK_RUNNERS])   # Check's two chips, each under its runner's name
 COMPARE_PAIRS = {"apk-ubuntu-24.04": "apks/ubuntu-24.04", "apk-ubuntu-24.04-arm": "apks/ubuntu-24.04-arm", "rapk-ubuntu-24.04": "rapks/ubuntu-24.04", "rapk-ubuntu-24.04-arm": "rapks/ubuntu-24.04-arm", "signed-witness-rapk-ubuntu-24.04": "witness-rapk-ubuntu-24.04", "signed-witness-rapk-ubuntu-24.04-arm": "witness-rapk-ubuntu-24.04-arm"}   # the compare job: Build's apks and Rebuild's, nothing else
 VERIFY_PAIRS = dict(BUILD_PAIRS, **dict(CHECK_PAIRS, **{"apk-compare": "apk-compare", "signed-witness-rapk-ubuntu-24.04": "witness-rapk-ubuntu-24.04", "signed-witness-rapk-ubuntu-24.04-arm": "witness-rapk-ubuntu-24.04-arm", "signed-witness-apk-ubuntu-24.04": "witness-apk-ubuntu-24.04", "signed-witness-apk-ubuntu-24.04-arm": "witness-apk-ubuntu-24.04-arm"}))   # what release-verify reads, and where (the last: the compare job's result file, the only trace of Rebuild's apks that reaches these jobs)
@@ -77,26 +77,20 @@ def fed_env():
         m = None
     return {"AWS_ROLE_ARN": FED_ROLE, "AWS_REGION": FED_REGION, "RELEASE_KMS_KEY_REF": m.group(1) if m else "<RELEASE_KEY_REF not found in bin/chain-verify.py>"}
 # the jobs of the chain by their needs (REQ-CHAIN-007-AC11; rulings 1, 2 and 8 of cache#921): job -> exactly the jobs it needs
-NEEDS_OF = {"build-apk": {"build-freeze"}, "build-assemble": {"build-apk"}, "sign": {"build-assemble"}, "rebuild-apk": {"build-assemble"}, "rebuild-assemble": {"rebuild-apk"}, "sign-rebuild": {"build-assemble", "rebuild-assemble", "sign"},
+NEEDS_OF = {"build-assemble": {"build-apk"}, "sign": {"build-assemble"}, "rebuild-apk": {"build-assemble"}, "rebuild-assemble": {"rebuild-apk"}, "sign-rebuild": {"build-assemble", "rebuild-assemble", "sign"},
             "check": {"check-govulncheck", "build-assemble"}, "sign-check": {"build-assemble", "check", "sign"}, "release-compare": {"check", "sign", "sign-rebuild", "sign-check"}, "release-verify": {"release-compare"},
             "release": {"release-verify", "release-compare", "hostile-verdict"}}
-CHAIN_JOBS = ["build-freeze", "check-govulncheck"] + list(NEEDS_OF)
+CHAIN_JOBS = ["build-apk", "check-govulncheck"] + list(NEEDS_OF)
 NEEDS_SKIPPED = re.compile(r"always\(\)|cancelled\(\)|failure\(\)|success\(\)")   # a status function in an if lets a job run after a failed predecessor
-# the tag rule (REQ-CHAIN-007-AC14, REQ-CHAIN-004-AC20): vX.Y.Z, decided by bin/build-admit.py tag-ok, the one tag grammar
-TAGLINE = (r'python3 -I -B bin/build-admit\.py tag-ok "\$\{GITHUB_REF_NAME:-\}" \|\| '
-           r'\{ echo "refused at tag: \$\{GITHUB_REF_NAME:-\} is not vX\.Y\.Z" >&2; exit 1; \}')
 # G1: the one line with which bin/release-signatures.sh makes policy.json (the same command as release-verify.sh's), so that the file it signs exists
 POLICY_MAKE = ('python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json '
                '--tag "$GITHUB_REF_NAME" --out policy.json')
 VERIFY = [   # bin/release-verify.sh after `set -euo pipefail`: rule 69's order, nothing else
-    TAGLINE,
     # B-F22: the signed key manifest, its signature and the root key exist before any later step
     r'for f in release-key-manifest\.json release-key-manifest\.sig release-key-root\.pub; do \[ -f "\.github/policy/\$f" \] && \[ ! -L "\.github/policy/\$f" \] \|\| \{ echo "release-verify: \.github/policy/\$f is missing: the release is refused before any credential step" >&2; exit 1; \}; done',
     r'python3 -I -B bin/chain-verify\.py policy make --template \.github/policy/release-policy\.template\.json --tag "\$GITHUB_REF_NAME" --out policy\.json',
     r"python3 -I -B bin/chain-verify\.py stage-start --stage release --previous build --record witness-build/build-collection\.json --digests witness-build/digests\.json --policy policy\.json",
     r"python3 -I -B bin/chain-verify\.py bind-items --policy policy\.json --record witness-build/build-collection\.json --items witness-build/items\.json",
-    # REQ-CHAIN-007-AC19 (advisor ruling B, Oct 12): the baseline admission chose is a second product of Build's record, bound by name
-    r"python3 -I -B bin/chain-verify\.py bind-items --policy policy\.json --record witness-build/build-collection\.json --items witness-build/admission-baseline\.json --product admission-baseline\.json",
     r"python3 -I -B bin/chain-verify\.py stage-start --stage release --previous sign --record provenance/provenance\.json --digests witness-build/digests\.json --policy policy\.json --rekor-entries provenance/provenance\.rekor\.json",
     r"python3 -I -B bin/chain-verify\.py stage-start --stage release --previous rebuild --record witness-rebuild/rebuild-collection\.json --digests witness-build/digests\.json --policy policy\.json",
     # the owner's rule of Oct 21 2026: Rebuild's apks are compared in the compare job (no key, no token); this job reads only its result file, for Build's attested apk digests
@@ -108,20 +102,20 @@ VERIFY = [   # bin/release-verify.sh after `set -euo pipefail`: rule 69's order,
 ]
 # what each release script may use; `signs` says whether it signs anything; `runs` the other scripts it may start (the chain-scripts.json row)
 ROWS = {
-    "bin/release-verify.sh":  {"tools": ["python3"], "signs": False, "runs": ["bin/build-admit.py", "bin/chain-verify.py"]},
-    "bin/release-apks.sh":    {"tools": ["bash", "jq", "python3"], "signs": False, "runs": ["bin/apk-tool.py", "bin/build-admit.py", "bin/release-postverify.py", "bin/release-sign-apks.sh"]},   # S2: Release holds no key; the script it calls only checks Sign's signatures and attaches them
+    "bin/release-verify.sh":  {"tools": ["python3"], "signs": False, "runs": ["bin/chain-verify.py"]},
+    "bin/release-apks.sh":    {"tools": ["bash", "jq", "python3"], "signs": False, "runs": ["bin/apk-tool.py", "bin/release-postverify.py", "bin/release-sign-apks.sh"]},   # S2: Release holds no key; the script it calls only checks Sign's signatures and attaches them
     "bin/release-compare.sh": {"tools": ["python3"], "signs": False, "runs": ["bin/apk-tool.py", "bin/release-compare.py"]},   # the compare job's one plain step: a wrapper around the Python file
     "bin/release-compare.py": {"tools": ["make"], "signs": False, "runs": ["bin/apk-tool.py", "bin/chain-verify.py"]},   # no key, no signing, no network: it reads the two apk trees, binds Rebuild's apks to the signed rapk records (chain-verify.py verify and bind) and writes the result file; `make` is the word of `policy make`
     "bin/release-publish.sh": {"tools": ["bash", "crane", "jq", "python3", "trap"], "signs": False, "runs": ["bin/release-layout.py", "bin/release-sign-verify.sh"]},   # round 1 B4: the layout is checked first
     "bin/release-layout.py":  {"tools": [], "signs": False, "runs": []},
     "bin/release-sign.sh":    {"tools": ["bash", "cosign", "crane", "git", "jq", "python3", "sha256sum", "trap"], "signs": False, "runs": ["bin/chain-verify.py", "bin/release-sign-verify.sh"]},
     "bin/release-sign-verify.sh": {"tools": ["jq", "python3", "sha256sum", "trap"], "signs": False, "runs": ["bin/chain-verify.py"]},   # row 2: every signature is checked before release-publish logs in   # S2: Release checks Sign's signatures (bundle-check) and pushes them (cosign login, attach, verify); it signs nothing
-    "bin/release-signatures.sh": {"tools": ["bash", "git", "jq", "python3", "sha256sum", "trap"], "signs": "other", "runs": ["bin/build-admit.py", "bin/chain-verify.py", "bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py", "bin/apk-tool.py", "bin/with-aws-token.sh"]},   # S2: the Sign job's release step: the one place the release KMS key is reached
-    "bin/release-gate.py":    {"tools": [], "signs": False, "runs": []},   # AC20: the coverage gate alone, so release-assets.sh (a secret holder) runs no build-admit.py
-    "bin/release-stage.sh":   {"tools": ["git", "python3"], "signs": False, "runs": ["bin/build-admit.py", "bin/patch-decide.py", "bin/release-gate.py", "bin/release-metadata.py"]},   # B-F22: gathers the release's files before release-postverify and writes the release notes (a generated patch tag's, via patch-decide.py tag-notes, REQ-REL-009-AC8); no credential, no gh
+    "bin/release-signatures.sh": {"tools": ["bash", "git", "jq", "python3", "sha256sum", "trap"], "signs": "other", "runs": ["bin/chain-verify.py", "bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py", "bin/apk-tool.py", "bin/with-aws-token.sh"]},   # S2: the Sign job's release step: the one place the release KMS key is reached
+    "bin/release-gate.py":    {"tools": [], "signs": False, "runs": []},   # AC20: the coverage gate alone, so release-assets.sh (a secret holder) runs nothing else
+    "bin/release-stage.sh":   {"tools": ["git", "python3"], "signs": False, "runs": ["bin/patch-decide.py", "bin/release-gate.py", "bin/release-metadata.py"]},   # B-F22: gathers the release's files before release-postverify and writes the release notes (a generated patch tag's, via patch-decide.py tag-notes, REQ-REL-009-AC8); no credential, no gh
     "bin/release-assets.sh":  {"tools": ["gh", "jq", "python3"], "signs": False, "runs": ["bin/release-gate.py"]},   # B-F22: creates the release after release-postverify has passed
     "bin/release-postverify.sh": {"tools": ["bash", "python3"], "signs": False, "runs": ["bin/release-postverify.py", "bin/release-stage.sh"]},   # rule 79 amended; runs the staging first
-    "bin/release-postverify.py": {"tools": ["at", "command", "cosign", "exec", "gh", "jq", "just"], "signs": False, "runs": ["bin/build-admit.py", "bin/chain-verify.py", "bin/guide_plan_judge.py"]},   # runs only verify forms, judged first
+    "bin/release-postverify.py": {"tools": ["at", "command", "cosign", "exec", "gh", "jq", "just"], "signs": False, "runs": ["bin/chain-verify.py", "bin/guide_plan_judge.py"]},   # runs only verify forms, judged first
 }
 # commands a plain release script must not use unless its row lists them
 DENY = ("curl wget nc ncat ssh scp rsync git docker podman buildah buildx kaniko make xargs find eval source trap sudo bash sh dash zsh "
@@ -215,7 +209,7 @@ def verify_job(j):
     if len(ws) != 1 or ws[0] != 2 + len(ds):
         bad.append("verify job: exactly one release-verify under Witness must follow the downloads directly: %s" % kinds)
     dl = {(x.get("with") or {}).get("name"): (x.get("with") or {}).get("path") for x in j.get("steps") or [] if str(x.get("uses", "")).startswith("actions/download-artifact@")}
-    for nm, want in [("admission-baseline", "witness-build")] + sorted(CHECK_PAIRS.items()):
+    for nm, want in sorted(CHECK_PAIRS.items()):
         if dl.get(nm) != want:
             bad.append("verify job: artifact %s must be downloaded to %s (where release-verify reads it), got %r" % (nm, want, dl.get(nm)))
     res = [i for i, k in enumerate(kinds) if k == "RE"]
@@ -675,20 +669,20 @@ def metadata(path):
     bad = ["release-signatures.sh has no %s step" % k for k, v in marks.items() if v is None]
     if bad:
         return bad
-    # G1: policy.json is made after the tag check and the key-reference check and before the first signature; a failure of the command stops the script (set -e), so no `|| ...` may follow it
+    # G1: policy.json is made after the key-reference check and before the first signature; a failure of the command stops the script (set -e), so no `|| ...` may follow it
     made = [i for i, l in enumerate(lines) if "policy make" in l]
-    tag_at, key_at = at(r'^python3 -I -B bin/build-admit\.py tag-ok --final "\$tag" \|\| '), at(r"bin/chain-verify\.py key-ref-check")
+    key_at = at(r"bin/chain-verify\.py key-ref-check")
     if [lines[i] for i in made] != [POLICY_MAKE]:
         bad.append("release-signatures.sh must run exactly once, as one whole line, `%s` (policy.json is the file it signs as release-policy.bundle), found %s" % (POLICY_MAKE, [lines[i] for i in made]))
-    elif tag_at is None or key_at is None or not tag_at < key_at < made[0] < marks["first"]:
-        bad.append("the policy make line must come after the tag check and the key-reference check and before the first signature")
+    elif key_at is None or not key_at < made[0] < marks["first"]:
+        bad.append("the policy make line must come after the key-reference check and before the first signature")
     order = ["images", "cp", "vex", "baseline", "manifest", "list", "first"]
     for a, b in zip(order, order[1:]):
         if not marks[a] < marks[b]:
             bad.append("the %s step must come before the %s step (the VEX and CSAF files are generated before the manifest and the list, and nothing is signed before them)" % (a, b))
     for k, need in (("images", ["--items witness-build/items.json", "--digests witness-build/digests.json", "--images-dir images"]),
                     ("vex", ["--openvex .vex/fosterstack-cache.openvex.json", "release-metadata/vex-images.json", '--version "$GITHUB_REF_NAME"']),
-                    ("baseline", ["--admission witness-build/admission-baseline.json", '--tag "$GITHUB_REF_NAME"', '--commit "$GITHUB_SHA"']),
+                    ("baseline", ['--tag "$GITHUB_REF_NAME"']),
                     ("manifest", ["--items witness-build/items.json", "--vex-dir ", "--digests witness-build/digests.json", '--baseline-version "$baseline"',
                                   "--modules-dir apks/ubuntu-24.04 "])):
         for n in need:

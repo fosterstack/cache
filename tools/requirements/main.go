@@ -302,8 +302,7 @@ func verifyFreeze(version string) (fixedAt, reason string) {
 var yamlMarshal = yaml.Marshal
 
 // freeze writes requirements/releases/<version>.yaml: the immutable
-// release baseline the source-admission stage and the acceptance
-// aggregator read. It records the version, the sha256 of the exact
+// release baseline the acceptance aggregator reads. It records the version, the sha256 of the exact
 // requirements.yaml it froze, and the full set of release-blocking AC
 // IDs (with phase: candidate for pre-promotion checks, publication for
 // checks that can only run against the published release). It is written
@@ -343,7 +342,7 @@ func freeze(args []string) {
 		RequirementsSHA: fmt.Sprintf("%x", sum),
 		FrozenFrom:      reqFile,
 		BlockingACs:     blocking,
-		Note:            "Frozen release baseline. The release manager reviews and sets approved: true with approved_on. Admission verifies this file structurally; the acceptance aggregator derives the required candidate-phase AC set from release_blocking_acs where phase == candidate.",
+		Note:            "Frozen release baseline. The release manager reviews and sets approved: true with approved_on. The acceptance aggregator derives the required candidate-phase AC set from release_blocking_acs where phase == candidate.",
 	}
 	body, err := yamlMarshal(out)
 	if err != nil {

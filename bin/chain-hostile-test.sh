@@ -24,8 +24,7 @@
 #       The hostile-verify job makes its policy with `policy make --template .github/policy/release-policy.template.json --ref
 #       "$GITHUB_REF" --out policy.json` (pinned) for the run's own ref and judges every attempt, and ONE positive control,
 #       against that same policy.json.
-#   REACHABILITY: admission is no longer a job (it is the first step of Build's apk
-#       job), so `build` has no `needs` and carries `if: ${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) ||
+#   REACHABILITY: `build` has no `needs` and carries `if: ${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) ||
 #       inputs.dry-run == true }}` (the same text on sign, judged by bin/chain-build-wiring-test.sh); a v* tag push or a dry-run dispatch runs
 #       it, and `mode` is gone (stage-build.yml has no such input). Without a gate every job of a dry run would be skipped, green with no checks.
 #   release.yml: the build caller passes `hostile: ${{ github.event_name == 'push' &&
@@ -479,15 +478,15 @@ def conj(cond):
         if "(" in body or ")" in body: return None
         out.append(body.replace("TAGCALL", TAGCONJ).replace("FAILCALL", "failure()").replace("ALWAYSCALL", "always()").replace("RCCALL", "contains(github.ref_name, '-rc')").replace("WFREFCALL", WFREF).replace("DASHCALL", "contains(github.ref_name, '-')"))
     return out
-# the jobs that may run in a dry run or on a release branch: Build and Rebuild (gate G is on build-freeze), check-govulncheck, check (the tests run on Build's unsigned build, before Sign) and the persona leg (its own condition asks for a push of a release branch); every other job is skipped through its needs or carries its own gate
-OPEN = {"build-freeze", "build-apk", "build-assemble", "rebuild-apk", "rebuild-assemble", "check-govulncheck", "check", "persona-uat-rc"}
+# the jobs that may run in a dry run or on a release branch: Build and Rebuild (gate G is on build-apk), check-govulncheck, check (the tests run on Build's unsigned build, before Sign) and the persona leg (its own condition asks for a push of a release branch); every other job is skipped through its needs or carries its own gate
+OPEN = {"build-apk", "build-assemble", "rebuild-apk", "rebuild-assemble", "check-govulncheck", "check", "persona-uat-rc"}
 SIGN_JOBS = ("sign", "sign-rebuild", "sign-check", "sign-release")      # the four jobs of the environment sign (ruling 1 of cache#921); sign-tag is NOT one of them: it is a tag job, below
 # the automatic patch release's inline tag jobs (REQ-REL-009): decide runs on main only (a push or the schedule of release.yml itself) and nowhere else; the three after it run only when decide named a tag
 DECIDE_IF = "${{ inputs.mode != 'snapshot' && github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run && " + WFREF + " }}"
 TAG_DUE_IF = "${{ needs.decide.outputs.tag != '' }}"
 TAG_JOBS = {"decide": ([], DECIDE_IF), "sign-tag": (["decide"], TAG_DUE_IF), "cut": (["decide", "sign-tag"], TAG_DUE_IF), "patch-notes": (["decide", "cut"], TAG_DUE_IF)}
 # check-govulncheck has no needs and runs in a dry run: its ref guard keeps it off in a run on main (push or schedule), where only the tag jobs may run
-CGV_IF = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true) }}"
+CGV_IF = "${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true) }}"
 norm = lambda s: re.sub(r"\s+", " ", str(s)).strip()
 CHECK_IF = "${{ inputs.mode != 'snapshot' }}"      # the Check jobs carry exactly this (REQ-CHAIN-005-AC5)
 POLICY_MAKE = r'python3 bin/chain-verify\.py policy make --template \.github/policy/release-policy\.template\.json --ref "\$GITHUB_REF" --out policy\.json'
@@ -668,11 +667,11 @@ else:
             if "if" not in j: bad.append("the job %s is not skipped in a dry run or on a branch: it has no if: of its own and needs no job that is (its if: must be exactly ${{ !inputs.dry-run }} or have it as an && conjunct, no ||): %r" % (jn, cond))
             elif jn in after_sign and (cs is None or TAGCONJ not in cs): bad.append("the job %s needs Sign (transitively) and its if: must also carry the POSITIVE conjunct startsWith(github.ref, 'refs/tags/v') exactly (not negated, not compared, no ||) so a branch run can never reach it: %r" % (jn, cond))
             else: bad.append("the job %s is not skipped in a dry run (its if: must be exactly ${{ !inputs.dry-run }} or have it as an && conjunct, no ||): %r" % (jn, cond))
-        # REACHABILITY: the dry run must be REACHABLE. Admission is the first step of Build's apk job, so the chain hangs off ONE gate, on build-freeze: a v* tag push, a dry-run dispatch on any branch, or a snapshot call
-        bj = jobs.get("build-freeze") or {}
-        BUILD_IF = "${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"
-        if re.sub(r"\s+", "", str(bj.get("if", ""))) != re.sub(r"\s+", "", BUILD_IF): bad.append("the build-freeze job must carry `if: %s` (else a dry run skips it, and with it everything after it, and is green with no checks): %r" % (BUILD_IF, bj.get("if")))
-        if need(bj): bad.append("the build-freeze job needs nothing (admission is the first step of build-apk, not a job): %r" % need(bj))
+        # REACHABILITY: the dry run must be REACHABLE. The chain hangs off ONE gate, on build-apk: a v* tag push, a dry-run dispatch on any branch, or a snapshot call
+        bj = jobs.get("build-apk") or {}
+        BUILD_IF = "${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"
+        if re.sub(r"\s+", "", str(bj.get("if", ""))) != re.sub(r"\s+", "", BUILD_IF): bad.append("the build-apk job must carry `if: %s` (else a dry run skips it, and with it everything after it, and is green with no checks): %r" % (BUILD_IF, bj.get("if")))
+        if need(bj): bad.append("the build-apk job needs nothing: %r" % need(bj))
     # ---- the tag jobs of the automatic patch release, by name (REQ-REL-009): decide, sign-tag, cut and patch-notes are release.yml's inline jobs; no job of the chain is among them and they are not Sign jobs ----
     nd = lambda j: [j.get("needs")] if isinstance(j.get("needs"), str) else list(j.get("needs") or [])
     for tn, (tneeds, tif) in TAG_JOBS.items():
@@ -775,13 +774,13 @@ mk() { # a known-good fixture tree
   { cat <<EOF
 on: {workflow_dispatch: {inputs: {dry-run: {type: boolean}}}}
 jobs:
-  build-freeze:
-    if: \${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}
+  build-apk:
+    if: \${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}
     runs-on: ubuntu-24.04
     steps:
-      - run: echo freeze
+      - run: echo build
   build-assemble:
-    needs: build-freeze
+    needs: build-apk
     runs-on: ubuntu-24.04
     steps:
       - name: hostile step
@@ -861,7 +860,7 @@ EOF
     steps:
       - run: echo publish
   check-govulncheck:
-    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true) }}
+    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true) }}
     runs-on: ubuntu-24.04
     steps:
       - run: echo govulncheck
@@ -1318,17 +1317,17 @@ PY
 wexpect caught "wiring: hostile-verify has no checkout (the repo's verifier is not there to run)" "$d"
 d=$(mk w_persist); sed -i.bak 's/{persist-credentials: false}/{persist-credentials: true}/' "$(rel "$d")"; wexpect caught "wiring: hostile-verify checks out with persisted credentials" "$d"
 d=$(mk w_hostileinput); pymut "$(rel "$d")" "on: {workflow_dispatch:" "on: {workflow_call: {inputs: {hostile: {type: boolean, default: false}}}, workflow_dispatch:"; wexpect caught "wiring: release.yml takes an input hostile (a switch that turns the hostile step off)" "$d"
-d=$(mk w_buildnoif); pymut "$(rel "$d")" "    if: \${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}
+d=$(mk w_buildnoif); pymut "$(rel "$d")" "    if: \${{ (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true || inputs.mode == 'snapshot' }}
     runs-on: ubuntu-24.04
     steps:
-      - run: echo freeze" "    runs-on: ubuntu-24.04
+      - run: echo build" "    runs-on: ubuntu-24.04
     steps:
-      - run: echo freeze"; wexpect caught "wiring: the build-freeze job has no gate: a dry run (or a push to main) would run the whole chain, or nothing is reachable (step-8 B-2)" "$d"
-d=$(mk w_buildneeds); pymut "$(rel "$d")" "  build-freeze:
-" "  build-freeze:
+      - run: echo build"; wexpect caught "wiring: the build-apk job has no gate: a dry run (or a push to main) would run the whole chain, or nothing is reachable (step-8 B-2)" "$d"
+d=$(mk w_buildneeds); pymut "$(rel "$d")" "  build-apk:
+" "  build-apk:
     needs: sign
-"; wexpect caught "wiring: the build-freeze job needs another job (admission is Build's first step; a skipped needed job would skip the dry run)" "$d"
-d=$(mk w_buildtagonly); pymut "$(rel "$d")" "(github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true" "startsWith(github.ref, 'refs/tags/v')"; wexpect caught "wiring: the build gate is the tag test alone (a dry run on a branch would never run)" "$d"
+"; wexpect caught "wiring: the build-apk job needs another job (a skipped needed job would skip the dry run)" "$d"
+d=$(mk w_buildtagonly); pymut "$(rel "$d")" "(github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true" "startsWith(github.ref, 'refs/tags/v')"; wexpect caught "wiring: the build gate is the tag test alone (a dry run on a branch would never run)" "$d"
 d=$(mk w_buildnosnap); pymut "$(rel "$d")" " || inputs.mode == 'snapshot'" ""; wexpect caught "wiring: the build gate leaves out the snapshot call (the callers' snapshot build would never start)" "$d"
 d=$(mk w_nosignrec); pymut "$(rel "$d")" " --policy policy.json" ""; wexpect caught "wiring: the key attempt is graded without Sign's record (a key found on the runner would be judged by its text)" "$d"
 d=$(mk w_handsign); pymut "$(rel "$d")" "check-build-record --digests" "sign --check --signer cosign --digests"; wexpect caught "wiring: the hand-code attempt runs sign --check again (a signer in a job that must hold no signing right)" "$d"
@@ -1368,7 +1367,7 @@ import sys
 t = open(sys.argv[1]).read() + "  rebuild-apk:\n    needs: build-assemble\n    runs-on: ubuntu-24.04\n    steps:\n      - run: true\n"
 open(sys.argv[1], "w").write(t)
 PY
-wexpect ok "wiring: the Rebuild job runs in a dry run, as does check-govulncheck with its guard (allowlist: build-freeze, build-apk, build-assemble, rebuild-apk, rebuild-assemble, check-govulncheck, check, persona-uat-rc, hostile-*)" "$d"
+wexpect ok "wiring: the Rebuild job runs in a dry run, as does check-govulncheck with its guard (allowlist: build-apk, build-assemble, rebuild-apk, rebuild-assemble, check-govulncheck, check, persona-uat-rc, hostile-*)" "$d"
 d=$(mk w_tracked); echo '{"attempts":[]}' > "$d/hostile-results.json"; wexpect caught "wiring: a hostile-results.json is checked into the tree" "$d"
 d=$(mk w_nodry); sed -i.bak "s/if: .*!inputs.dry-run && startsWith(github.ref, 'refs\/tags\/v') }}\$/if: true/" "$(rel "$d")"; wexpect caught "wiring: the release job still runs in a dry run" "$d"
 d=$(mk w_orgate); sed -i.bak "s/!inputs.dry-run \&\& startsWith(github.ref/!inputs.dry-run || true \&\& startsWith(github.ref/" "$(rel "$d")"; wexpect caught "wiring: a dry-run gate with || true" "$d"
@@ -1413,10 +1412,10 @@ d=$(mk w_ctlrec); pymut "$(rel "$d")" "--record provenance/provenance.json" "--r
 d=$(mk w_indef); pymut "$(rel "$d")" "on: {workflow_dispatch:" "on: {workflow_call: {inputs: {hostile: {type: boolean, default: true}}}, workflow_dispatch:"; wexpect caught "wiring: a hostile input that defaults to true" "$d"
 d=$(mk w_opennm); python3 - "$(rel "$d")" <<'PY'
 import sys
-t = open(sys.argv[1]).read() + "  build-apk:\n    needs: build-freeze\n    uses: ./.github/workflows/stage-promote.yml\n"
+t = open(sys.argv[1]).read() + "  rebuild-assemble:\n    needs: build-assemble\n    uses: ./.github/workflows/stage-promote.yml\n"
 open(sys.argv[1], "w").write(t)
 PY
-wexpect caught "wiring: a job named build-apk that calls a workflow is not exempt from the dry-run gate (open names may call nothing)" "$d"
+wexpect caught "wiring: a job named rebuild-assemble that calls a workflow is not exempt from the dry-run gate (open names may call nothing)" "$d"
 d=$(mk w_hostilename); python3 - "$(rel "$d")" <<'PY'
 import sys
 t = open(sys.argv[1]).read() + "  hostile-publish:\n    uses: ./.github/workflows/persona-uat.yml\n"
@@ -1458,7 +1457,7 @@ tjmut w_tj_or "decide's if with an || that lets a tag push through" "format('{0}
       - run: echo decide"
 tjmut w_tj_decneeds "decide needs another job" "  decide:
     if:" "  decide:
-    needs: build-freeze
+    needs: build-apk
     if:"
 tjmut w_tj_signneeds "sign-tag needs more than decide" "  sign-tag:
     needs: decide" "  sign-tag:
@@ -1472,7 +1471,7 @@ tjmut w_tj_cutneeds1 "cut does not need sign-tag (another needs)" "  cut:
     needs: [decide]"
 tjmut w_tj_cutneeds2 "cut needs another job beside decide and sign-tag" "  cut:
     needs: [decide, sign-tag]" "  cut:
-    needs: [decide, sign-tag, build-freeze]"
+    needs: [decide, sign-tag, build-apk]"
 tjmut w_tj_pnneeds1 "patch-notes does not need cut (another needs)" "  patch-notes:
     needs: [decide, cut]" "  patch-notes:
     needs: [decide]"
@@ -1517,20 +1516,20 @@ import re, sys
 t = open(sys.argv[1]).read(); t = re.sub(r"  patch-notes:\n.*\Z", "", t, flags=re.S); open(sys.argv[1], "w").write(t)
 PY
 wexpect caught "wiring: patch-notes is gone from release.yml (the four tag jobs are known by name)" "$d"
-tjmut w_tj_cgv "check-govulncheck without its ref guard (back to inputs.mode != 'snapshot' only: it has no needs and runs on every push to main)" "    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true) }}
+tjmut w_tj_cgv "check-govulncheck without its ref guard (back to inputs.mode != 'snapshot' only: it has no needs and runs on every push to main)" "    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true) }}
     runs-on: ubuntu-24.04
     steps:
       - run: echo govulncheck" "    if: \${{ inputs.mode != 'snapshot' }}
     runs-on: ubuntu-24.04
     steps:
       - run: echo govulncheck"
-tjmut w_tj_cgv2 "check-govulncheck with no if at all" "    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true) }}
+tjmut w_tj_cgv2 "check-govulncheck with no if at all" "    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true) }}
     runs-on: ubuntu-24.04
     steps:
       - run: echo govulncheck" "    runs-on: ubuntu-24.04
     steps:
       - run: echo govulncheck"
-tjmut w_tj_cgv3 "check-govulncheck with a guard that still lets a main push through (only the dispatch is kept out)" "    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/v'))) || inputs.dry-run == true) }}
+tjmut w_tj_cgv3 "check-govulncheck with a guard that still lets a main push through (only the dispatch is kept out)" "    if: \${{ inputs.mode != 'snapshot' && ((github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release/'))) || inputs.dry-run == true) }}
     runs-on: ubuntu-24.04
     steps:
       - run: echo govulncheck" "    if: \${{ inputs.mode != 'snapshot' && github.event_name != 'workflow_dispatch' }}

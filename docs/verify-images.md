@@ -109,7 +109,7 @@ From v0.3.0 the chain has five stages: Build, Sign, Rebuild, Check and Release <
 The records are attached to the release, so you can verify them too. They are
 Witness records (Witness is the tool that records what each job did):
 
-- Build: `build-collection.json`, `digests.json`, `items.json`, `admission-baseline.json`
+- Build: `build-collection.json`, `digests.json`, `items.json`
 - Rebuild: `rebuild-collection.json`, `verdict.json`
 - Check: the `scanners`, `acceptance` and `runtime` collections of each of the two runners, attached as `ubuntu-24.04-scanners-collection.json`, `ubuntu-24.04-arm-scanners-collection.json` and so on
 

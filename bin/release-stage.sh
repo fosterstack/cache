@@ -5,7 +5,6 @@
 # of the two images, have the same file names, so each is staged under its architecture's or variant's name.
 set -euo pipefail
 shopt -s nullglob
-python3 -I -B bin/build-admit.py tag-ok --final "${GITHUB_REF_NAME:-}" || { echo "release-stage: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z" >&2; exit 1; }
 rel="$GITHUB_REF_NAME"
 # Everything is staged under its release name in release-upload/. The apks of the two architectures, and the SBOMs and lock files of the two images,
 # have the same file names, so each is staged under its architecture's or variant's name.
@@ -74,14 +73,14 @@ for v in production fips; do
   done
 done
 for f in fscache-modules.spdx.json fscache-modules-fips.spdx.json; do stage "apks/ubuntu-24.04/$f" "$f"; done
-only witness-build build-collection.json build-collection.rekor.json digests.json items.json admission-baseline.json
+only witness-build build-collection.json build-collection.rekor.json digests.json items.json
 only witness-rebuild rebuild-collection.json rebuild-collection.rekor.json verdict.json
 only provenance provenance.json provenance.rekor.json provenance.bundle.json
 for c in "${runners[@]}"; do for n in scanners acceptance runtime; do only "witness-check/$c/witness-$n" "$n-collection.json" "$n-collection.rekor.json"; done; done
 for f in dist/*.txt; do [ "${f##*/}" = checksums.txt ] || { echo "release-stage: $f is not in the inventory of dist (the four archives and checksums.txt)" >&2; exit 1; }; done
 for f in release-key-manifest.json release-key-manifest.sig; do stage ".github/policy/$f" "$f"; done
 for f in dist/*.tar.gz dist/checksums.txt release-evidence/*.bundle release-evidence/*.json release-metadata/release-manifest.json release-metadata/fosterstack-cache*.json release-metadata/release-files.sha256 policy.json \
-         witness-build/build-collection.json witness-build/build-collection.rekor.json witness-build/digests.json witness-build/items.json witness-build/admission-baseline.json witness-rebuild/rebuild-collection.json witness-rebuild/rebuild-collection.rekor.json provenance/provenance.json provenance/provenance.rekor.json provenance/provenance.bundle.json; do
+         witness-build/build-collection.json witness-build/build-collection.rekor.json witness-build/digests.json witness-build/items.json witness-rebuild/rebuild-collection.json witness-rebuild/rebuild-collection.rekor.json provenance/provenance.json provenance/provenance.rekor.json provenance/provenance.bundle.json; do
   stage "$f" "${f##*/}"
 done
 # the two chips each have the same three records: each is attached under its runner's name

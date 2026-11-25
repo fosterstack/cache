@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-009-AC5, REQ-REL-009-AC6, REQ-REL-009-AC8
+# proves: REQ-REL-009-AC5, REQ-REL-009-AC8
 # bin/tag-sign.py: the two offline halves of signing a patch tag with the one release KMS key (the sign-tag job of release.yml runs
 # `prepare` (bin/tag-sign-prepare.sh), then the KMS call (bin/tag-sign-kms.sh, which has bin/with-aws-token.sh kms-sign sign the digest), then `assemble`). No AWS, no network: the KMS call is stood in
 # for here by `openssl pkeyutl` with a fixture RSA key made at test time (RSASSA-PKCS1-v1_5 over the 32-byte sha256 digest, as KMS signs a
 # DIGEST with RSASSA_PKCS1_V1_5_SHA_256). The oracle is git itself: the assembled tag is verified with `git verify-tag` against a one-line
-# allowed-signers file, the same check source admission makes (bin/build-admit.py).
+# allowed-signers file, the check a verifier makes.
 #
 # THE CLI THIS TEST ASSUMES (bin/tag-sign.py; the one file this test needs the implementation to add; TAG_SIGN=path overrides the script):
 #   tag-sign.py prepare  --tag vX.Y.Z --commit SHA40 --notes FILE --tagger 'Name <email>' --time EPOCH --object OUT --digest OUT
 #       writes the annotated tag object WITHOUT a signature (what `git cat-file tag` prints minus the signature: object, type commit, tag, tagger
 #       `NAME <EMAIL> EPOCH +0000`, a blank line, the notes file's bytes verbatim as the message) to --object, and to --digest the lowercase hex
 #       sha256 of the OpenSSH SSHSIG signed-data blob (namespace git) over that object, one line: the digest the KMS key signs. Only a patch tag
-#       vX.Y.Z with Z >= 1 is accepted (the release key signs no other tag: admission refuses it); anything else exits non-zero and writes nothing.
+#       vX.Y.Z with Z >= 1 is accepted (the release key signs no other tag); anything else exits non-zero and writes nothing.
 #   tag-sign.py assemble --object FILE --signature FILE --signer-file FILE --out OUT
 #       --signature is the raw RSA signature bytes (what kms-sign writes as --out); --signer-file is a one-line allowed-signers file
 #       (.github/policy/release_tag_signer: `PRINCIPAL ssh-rsa KEY`) whose key goes into the signature block. Writes to --out the --object bytes
@@ -40,7 +40,7 @@ prep() { python3 "$TS" prepare --tag "${1:-v0.3.1}" --commit "${2:-$SHA}" --note
 kms_sign() { # KMS stand-in: sign the hex digest file $1 as KMS does a DIGEST message, write the raw signature to $2
   python3 -c 'import sys; sys.stdout.buffer.write(bytes.fromhex(open(sys.argv[1]).read().strip()))' "$1" > "$W/digest.bin"
   openssl pkeyutl -sign -inkey "$W/kms.pem" -pkeyopt digest:sha256 -in "$W/digest.bin" -out "$2" 2> /dev/null; }
-verify() { # verify OBJFILE SIGNERFILE : put the tag object into the repo and run git verify-tag as admission does; sets VOUT
+verify() { # verify OBJFILE SIGNERFILE : put the tag object into the repo and run git verify-tag; sets VOUT
   local id; id=$(git -C "$W/repo" hash-object -t tag -w "$1") || return 1
   git -C "$W/repo" update-ref refs/tags/v0.3.1 "$id"
   VOUT=$(LC_ALL=C git -C "$W/repo" -c gpg.ssh.allowedSignersFile="$2" verify-tag v0.3.1 2>&1) || return 1; }
@@ -168,9 +168,6 @@ if [ -s "$W/obj-bad" ]; then
     { [ "$rc" = 2 ] && grep -q 'tag message:' "$W/n5.err"; } && ok "patch-decide tag-notes refuses a '-----BEGIN ' in the notes of a signed generated tag (exit 2, the line named)" || bad "tag-notes on a notes line holding BEGIN -> exit $rc: $(head -c 150 "$W/n5.err")"
   else bad "the tag with a BEGIN line in its notes could not be stored"; fi
 else bad "prepare wrote no object for the notes holding a BEGIN line (the notes are decide's to check, not prepare's)"; fi
-# ---- source admission's router sees an SSH signature (kind ssh), as for the owner ----
-rc=0; python3 "$root/bin/admission-tag-signer.py" route --tag-object "$W/raw" > "$W/route.out" 2>&1 || rc=$?
-[ "$rc" = 0 ] && [ "$(cut -d' ' -f1 "$W/route.out")" = ssh ] && ok "bin/admission-tag-signer.py routes the assembled tag to the ssh verifier" || bad "router -> exit $rc: $(cat "$W/route.out")"
 # ---- the two scripts the sign-tag job runs around it (bin/tag-sign-prepare.sh, bin/tag-sign-kms.sh), in a scratch tree laid out as the job lays it out ----
 S="$W/job"; mkdir -p "$S/bin" "$S/tag-request"
 cp "$TS" "$S/bin/tag-sign.py"; cp "$root/bin/tag-sign-prepare.sh" "$root/bin/tag-sign-kms.sh" "$S/bin/"

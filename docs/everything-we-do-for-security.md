@@ -120,8 +120,8 @@ describe that chain.
   nothing hard-codes a name or a count ([scanner list](../.github/policy/scanners.json),
   [SECURITY.md](../SECURITY.md#nothing-ships-with-a-known-cve)).
 - **Scanned on every pull request, every push to `main` and every day.** The scan
-  builds the same image the release would ship and scans it. A release is admitted
-  only when the required checks, scan among them, passed on that exact commit
+  builds the same image the release would ship and scans it. A release is built and tested on its release branch
+  and published only after the acceptance and persona tests pass
   ([scan workflow](../.github/workflows/scan.yml),
   [release checks](../.github/policy/required-checks.json)).
 - **Four scanners, every day.** The daily rescan builds main's candidate and scans
