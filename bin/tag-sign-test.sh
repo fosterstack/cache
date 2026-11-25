@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-009-AC5, REQ-REL-009-AC6, REQ-REL-009-AC8
+# proves: REQ-REL-009-AC5, REQ-REL-009-AC8
 # bin/tag-sign.py: the two offline halves of signing a patch tag with the one release KMS key (the sign-tag job of release.yml runs
 # `prepare` (bin/tag-sign-prepare.sh), then the KMS call (bin/tag-sign-kms.sh, which has bin/with-aws-token.sh kms-sign sign the digest), then `assemble`). No AWS, no network: the KMS call is stood in
 # for here by `openssl pkeyutl` with a fixture RSA key made at test time (RSASSA-PKCS1-v1_5 over the 32-byte sha256 digest, as KMS signs a

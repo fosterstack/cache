@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-009-AC5, REQ-REL-009-AC6, REQ-REL-009-AC2, REQ-REL-009-AC3, REQ-REL-009-AC4, REQ-REL-009-AC8
+# proves: REQ-REL-009-AC5, REQ-REL-009-AC2, REQ-REL-009-AC3, REQ-REL-009-AC4, REQ-REL-009-AC8
 # The structure of the automatic patch release's tag jobs (rules: ops docs/ratify/2026-10-02-automatic-patch-releases.md, 2026-10-28-kms-signing-key-and-one-step-build.md).
 # Static, except for one step that is run in a scratch repository: no network, no secrets, no keys, nothing is run on GitHub. The judge (bin/chain-tag-jobs-judge.py) reads release.yml and
 # the two policy lists and answers with a list of faults. Every case mutates a COPY of the real file and must be refused; the unmutated real tree must pass.

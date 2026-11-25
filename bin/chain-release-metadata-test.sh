@@ -153,7 +153,7 @@ for variant, name in MODULE_SBOMS:
     module_sbom_refused("no Build item modules-sbom-%s is refused, naming the file and the item" % variant, name,
                         lambda t: setitems(t, {k: v for k, v in items_of(t).items() if k != "modules-sbom-" + variant}),
                         also="modules-sbom-" + variant)
-# ---- the baseline travels with the manifest (REQ-REL-009-AC13 note): requirements/releases/<baseline>.yaml and test-evidence/mappings.yaml, by sha256 ----------------
+# ---- the baseline travels with the manifest: requirements/releases/<baseline>.yaml and test-evidence/mappings.yaml, by sha256 ----------------
 t, d = tree(); rc, so, se = manifest(t, t + "/m.json"); mj = json.load(open(t + "/m.json")) if os.path.exists(t + "/m.json") else {}
 hx = lambda f: hashlib.sha256(open(f, "rb").read()).hexdigest()
 check(mj.get("requirements_baseline") == {"path": "requirements/releases/%s.yaml" % V, "version": V, "sha256": hx(t + "/repo/requirements/releases/%s.yaml" % V)}, "baseline: the manifest records the baseline file (path, version, sha256)", str(mj.get("requirements_baseline")))

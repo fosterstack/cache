@@ -592,7 +592,7 @@
         "bin/dependabot-reviewer-version.sh"
       ],
       "signs": false,
-      "reason": "the judge's decision over data the wrapper fetched (the record, the writers policy, the tag object) and main's accepted-items.json, the fourth input; reads and decides, signs and writes nothing"
+      "reason": "the judge's decision over data the wrapper fetched (the record, the writers policy, the tag object); reads and decides, signs and writes nothing"
     },
     {
       "path": "bin/dependabot-reviewer-version.sh",

@@ -1964,12 +1964,6 @@ requirements:
         then: "the deciding job creates, signs and pushes no tag, holds no token that could push one and names no keyless signing tool; its output `tag` names the patch tag due (empty when none); the sign-tag job signs that tag with the one release KMS key and holds no push right, the cut job pushes the signed tag with the auditor App's token and holds no key, and an unsigned tag is never cut"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
-      - id: REQ-REL-009-AC6
-        given: "a release tag"
-        when: "source admission verifies it"
-        then: "it accepts the maintainer's SSH signature (allowed-signers) for any tag, and the signature of the one release KMS key (the SSH signature block of .github/policy/release_tag_signer, read from main) for a patch tag vX.Y.Z with Z at least 1 only; any other signer, a keyless identity included, is refused, and the release key never admits a minor or major tag"
-        verification: { method: unit, release_blocking: false }
-        status: approved
       - id: REQ-REL-009-AC7
         given: "a patch tag"
         when: "the release runs"
@@ -2005,12 +1999,6 @@ requirements:
         when: "the label is applied"
         then: "both reviewers' records for that PR say no behavior change; otherwise only the release manager applies it, or the change waits for a minor release"
         verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-REL-009-AC13
-        given: "a CI-signed patch tag vX.Y.Z"
-        when: "the patch decision considers cutting it, and source admission admits it"
-        then: "it uses the latest maintainer-approved ACs baseline of its own X.Y line, only when requirements/requirements.yaml is byte-for-byte unchanged since that baseline (same requirements hash); if anything changed, no automatic patch is cut and it waits for a maintainer; Build records which baseline it used; tags signed by the maintainers keep needing their own approved baseline"
-        verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC14
         given: "the notes sources of a patch release: the fix records the release scans and go.mod give, the entries of docs/next-release-notes.md, and the changelog inputs (the notes file the changelog step is handed and the existing docs/quality/releases/CHANGELOG.md)"

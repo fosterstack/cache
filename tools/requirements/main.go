@@ -342,7 +342,7 @@ func freeze(args []string) {
 		RequirementsSHA: fmt.Sprintf("%x", sum),
 		FrozenFrom:      reqFile,
 		BlockingACs:     blocking,
-		Note:            "Frozen release baseline. The release manager reviews and sets approved: true with approved_on. Admission verifies this file structurally; the acceptance aggregator derives the required candidate-phase AC set from release_blocking_acs where phase == candidate.",
+		Note:            "Frozen release baseline. The release manager reviews and sets approved: true with approved_on. The acceptance aggregator derives the required candidate-phase AC set from release_blocking_acs where phase == candidate.",
 	}
 	body, err := yamlMarshal(out)
 	if err != nil {
