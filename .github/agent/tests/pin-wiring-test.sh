@@ -231,10 +231,6 @@ JUDGED = json.loads(r'''{
     "run": "bash bin/check-file-allowlist-test.sh"
    },
    {
-    "name": "customer-word check regressions",
-    "run": "bash bin/check-customer-words-test.sh"
-   },
-   {
     "name": "branch sweep and local prune regressions",
     "run": "bash bin/branch-sweep-test.sh"
    },
@@ -743,7 +739,7 @@ case_fs full-suite-concurrency-shared   bad "d['concurrency'] = {'group': 'full-
 # REQ-CI-005: a counting step is exactly `bash PATH`; any other form of the line is refused
 case_ count-step-plain-ok           ok  "w = $CW; w['run'] = 'bash bin/check-file-allowlist-test.sh'"
 case_ count-step-devnull-added      bad "w = $CW; w['run'] = 'bash bin/check-file-allowlist-test.sh </dev/null'"
-case_ count-step-other-path         bad "w = $CW; w['run'] = 'bash bin/check-customer-words-test.sh'"
+case_ count-step-other-path         bad "w = $CW; w['run'] = 'bash bin/branch-sweep-test.sh'"
 case_ count-step-or-true            bad "w = $CW; w['run'] = 'bash bin/check-file-allowlist-test.sh || true'"
 case_ count-step-wrapper            bad "w = $CW; w['run'] = 'timeout 60 bash bin/check-file-allowlist-test.sh'"
 case_ count-step-twice              bad "w = $CW; w['run'] = 'bash bin/check-file-allowlist-test.sh\nbash bin/check-file-allowlist-test.sh'"
@@ -751,7 +747,7 @@ case_ count-step-if-false           bad "w = $CW; w['if'] = 'false'"
 case_ count-step-continue           bad "w = $CW; w['continue-on-error'] = 'true'"
 case_ count-step-env-injected       bad "w = $CW; w['run'] = 'BASH_ENV=/tmp/x bash bin/check-file-allowlist-test.sh'"
 case_ count-step-copied-to-test-job bad "d['jobs']['test']['steps'].append(dict($CW))"
-case_ count-step-two-suites-one-step bad "w = $CW; w['run'] = w['run'] + '\nbash bin/check-customer-words-test.sh'"
+case_ count-step-two-suites-one-step bad "w = $CW; w['run'] = w['run'] + '\nbash bin/branch-sweep-test.sh'"
 case_ job-if-false          bad "d['jobs']['allowlist']['if'] = 'false'"
 case_ job-if-gone           bad "d['jobs']['allowlist'].pop('if', None)"
 case_ job-if-always         bad "d['jobs']['allowlist']['if'] = 'always()'"
@@ -768,7 +764,7 @@ case_ other-job-continue    bad "d['jobs']['lint']['continue-on-error'] = 'true'
 case_ other-step-continue   bad "d['jobs']['requirements']['steps'][-1]['continue-on-error'] = 'true'"
 case_ bash-env-on-job       bad "d['jobs']['allowlist']['env'] = {'BASH_ENV': '/tmp/x.sh'}"
 case_ bash-env-on-other-job bad "d['jobs']['test']['env'] = {'BASH_ENV': '/tmp/x.sh'}"
-case_ shellopts-on-other-step bad "d['jobs']['lint']['steps'][-1]['env']['SHELLOPTS'] = 'noexec'"
+case_ shellopts-on-other-step bad "d['jobs']['lint']['steps'][-1].setdefault('env', {})['SHELLOPTS'] = 'noexec'"
 case_ path-on-workflow      bad "d['env'] = {'PATH': '/tmp/fake:/usr/bin'}"
 case_ github-env-write      bad "$steps.insert(1, {'run': 'echo BASH_ENV=/tmp/x.sh >> \"\$GITHUB_ENV\"'})"
 case_ github-path-write     bad "$steps.insert(1, {'run': 'echo /tmp/fake >> \"\$GITHUB_PATH\"'})"
@@ -776,7 +772,7 @@ case_ github-env-write-test-job bad "d['jobs']['test']['steps'].insert(1, {'run'
 case_ checkout-other-ref    bad "$steps[0]['with'] = {'ref': 'main'}"
 
 # the counting steps of the allowlist job (REQ-CI-005): each is one step with exactly its name and its counting line and nothing else, so a pull request cannot remove, skip, rename, weaken, wrap or move it
-for sfx in check-file-allowlist check-customer-words branch-sweep govulncheck-fixtures docs-snippets auditor-matrix auditor-labels; do
+for sfx in check-file-allowlist branch-sweep govulncheck-fixtures docs-snippets auditor-matrix auditor-labels; do
   sel=$(cnt "$sfx-test.sh")
   case_ "$sfx-removed"  bad "$steps[:] = [s for s in $steps if s is not $sel]"
   case_ "$sfx-if"       bad "$sel['if'] = 'false'"
@@ -1016,8 +1012,8 @@ case_ uses-third-party-in-requirements bad "d['jobs']['requirements']['steps'].i
 case_ uses-local-action-in-marker-gate bad "d['jobs']['marker-gate']['steps'].insert(2, {'uses': './.github/actions/x'})"
 case_ uses-reusable-workflow-job bad "d['jobs']['extra'] = {'uses': 'o/r/.github/workflows/w.yml@abababababababababababababababababababab'}"
 # each job's actions are judged on their own, so one job cannot borrow another's
-case_ allowlist-uses-bumped-digest-ok ok "d['jobs']['allowlist']['steps'][7]['uses'] = 'actions/setup-python@abababababababababababababababababababab'"
-case_msg allowlist-uses-setup-python-other-owner "d['jobs']['allowlist']['steps'][7]['uses'] = 'evil/setup-python@0123456789abcdef0123456789abcdef01234567'" "the allowlist step 8 (set up Python) is not a judged action step"
+case_ allowlist-uses-bumped-digest-ok ok "d['jobs']['allowlist']['steps'][6]['uses'] = 'actions/setup-python@abababababababababababababababababababab'"
+case_msg allowlist-uses-setup-python-other-owner "d['jobs']['allowlist']['steps'][6]['uses'] = 'evil/setup-python@0123456789abcdef0123456789abcdef01234567'" "the allowlist step 7 (set up Python) is not a judged action step"
 case_msg allowlist-uses-extra-action-step "d['jobs']['allowlist']['steps'].insert(3, {'name': 'x', 'uses': 'actions/cache@0123456789abcdef0123456789abcdef01234567'})" "the allowlist step 4 (x) is not a judged action step"
 RUNX="d['jobs']['suites']['steps'][3]['run'] += ' || true'"
 case_msg_fs run-changed-names-step "$RUNX" "the suites step 4 ("

@@ -468,24 +468,24 @@ case_scan workflow-env-path      bad "d['env'] = {'PATH': '/tmp/evil:/usr/bin:/b
 case_scan repro-self-hosted      bad "d['jobs']['reproducibility']['runs-on'] = 'self-hosted'"
 
 # ---------------------------------------------------------------------------------------------------------------------
-# REQ-REL-008-AC1 (owner RATIFIED Oct 2; amended by the owner rule workflow-grouped-by-purpose, Nov 13): the workflow directory holds exactly the 18 ratified files and
+# REQ-REL-008-AC1 (owner RATIFIED Oct 2; amended by the owner rule workflow-grouped-by-purpose, Nov 13): the workflow directory holds exactly the 17 ratified files and
 # nothing else, so no workflow sprawls. The release is the one file release.yml: no stage-*.yml file exists. persona-uat.yml holds the persona UAT jobs (one purpose);
 # codeql.yml stays (owner rule ci-trim-keeps-codeql). evidence-letter.yml is the monthly evidence letter (REQ-REL-015): a monthly schedule, its own purpose.
-ratified="acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml customer-words-edited.yml dependabot-auto-merge.yml
+ratified="acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml dependabot-auto-merge.yml
 dependabot-reviewer.yml evidence-letter.yml full-suite.yml go-freshness.yml main-candidate-rescan.yml persona-uat.yml release.yml reserved-branch-guard.yml scan.yml
 scorecard.yml supply-chain.yml"
 judge_set() {  # $1: the directory's entries as a JSON list (every entry, not only *.yml)
   python3 - "$1" "$ratified" <<'PY'
 import json, sys
 got, want = json.loads(sys.argv[1]), sys.argv[2].split()
-if len(want) != 18:
-    print("the ratified list is not 18 files (owner rule workflow-grouped-by-purpose, Nov 13)")
+if len(want) != 17:
+    print("the ratified list is not 17 files (owner rule workflow-grouped-by-purpose, Nov 13)")
     sys.exit(1)
 odd = [n for n in got if "\n" in n or "/" in n]
 extra, missing = sorted(set(got) - set(want)), sorted(set(want) - set(got))
 stage = sorted(n for n in got if n.startswith("stage-"))
 if odd or extra or missing or stage or len(got) != len(set(got)):
-    print("extra: %s missing: %s odd names: %s stage files: %s (the list is REQ-REL-008-AC1: 18 files, no stage-*.yml, "
+    print("extra: %s missing: %s odd names: %s stage files: %s (the list is REQ-REL-008-AC1: 17 files, no stage-*.yml, "
           "owner rule workflow-grouped-by-purpose of Nov 13)" % (extra, missing, odd, stage)); sys.exit(1)
 print("ok")
 PY

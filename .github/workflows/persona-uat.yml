@@ -8,7 +8,7 @@ name: Persona UAT
 #                       the pushed digest must equal Build's image-production digest, which the caller passes as the input digests. The image is unverified (no release-verify has run): that is what the personas test.
 #   persona-uat-weekly  the Monday cron: the five personas follow the docs AS PUBLISHED with the latest release (checked out under release-docs) against that release's public image,
 #                       resolved to its digest. The harness is the root checkout (today's main, bin/), so a persona never edits the code that judges it.
-# Results stay private: pass/fail lines only, one encrypted artifact per persona, no issue; a blocking persona fails its job. The model identities are environment SECRETS (masked); the
+# Results stay private: pass/fail lines only, one encrypted artifact per persona, no issue; a blocking persona fails its job. The model identities and the four Anthropic ids are repository SECRETS (masked), passed by name by the caller; the
 # token budget is the one variable. Every job is in the environment persona-uat and holds contents read and the identity token for the persona federation only: never the release signing key's role.
 # GATE: PERSONA_UAT_ENABLED is exactly 'true' (unset = off), on each JOB, so while off the persona-uat environment is never entered and no token is minted.
 # compliance-reviewer (it needs a signed, published image) runs in the weekly job only.
@@ -21,6 +21,19 @@ on:
         description: the digests.json text Build produced (the release-branch leg)
         type: string
         default: ''
+    secrets:   # the release-branch leg's caller passes exactly these six by name (never inherit); the weekly leg reads them directly
+      PERSONA_UAT_MODEL:
+        required: false
+      PERSONA_UAT_COMPLIANCE_MODEL:
+        required: false
+      ANTHROPIC_FEDERATION_RULE_ID:
+        required: false
+      ANTHROPIC_ORGANIZATION_ID:
+        required: false
+      ANTHROPIC_SERVICE_ACCOUNT_ID:
+        required: false
+      ANTHROPIC_WORKSPACE_ID:
+        required: false
 
 permissions:
   contents: read
@@ -140,7 +153,7 @@ jobs:
           sleep 5
           check "README docker without docker debug: busybox sharing the network and process namespaces" \
             bash -c "printf 'wget -qO- http://127.0.0.1:8080/healthz\nps\n' | docker run --rm -i --network=container:cache --pid=container:cache busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec sh -e"
-          if docker debug --help >/dev/null 2>&1; then check "README docker debug" bash -c "echo exit | docker debug cache"; else echo "not run: README docker debug (the docker debug plugin is not on the runner)"; fi
+          if docker debug --help 2>&1 | grep '^Usage:  docker debug' >/dev/null; then check "README docker debug" bash -c "echo exit | docker debug cache"; else echo "not run: README docker debug (the docker debug plugin is not on the runner)"; fi
           check "docker-deploy toolbox sharing the server's network and processes" \
             bash -c "printf 'wget -qO- http://localhost:8080/healthz\n' | docker run --rm -i --pid=container:cache --network=container:cache busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec sh"
           check "docker-deploy blob volume, read-only" \
@@ -148,6 +161,7 @@ jobs:
           crane pull "${PERSONA_UAT_IMAGE%@*}:rc" rc-image.tar
           kind create cluster --name debug-check --image "$(jq -er .kind bin/persona-uat-tools.json)"
           kind load image-archive rc-image.tar --name debug-check
+          timeout 60 bash -c 'until kubectl get serviceaccount default >/dev/null 2>&1; do sleep 1; done'
           kubectl run cache --image="${PERSONA_UAT_IMAGE%@*}:rc" --image-pull-policy=IfNotPresent
           kubectl wait --for=condition=Ready pod/cache --timeout=120s
           check "README kubectl debug" \
