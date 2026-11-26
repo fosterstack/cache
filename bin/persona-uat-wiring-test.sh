@@ -1427,6 +1427,10 @@ def debug_problems(run):
     rk = next((l for l in run.splitlines() if "printf" in l and "kubectl debug -i" in l and "HEALTHZ_OK" in l), "")      # the README kubectl debug check's own line
     if not re.search(r"\{ sleep 10; printf .*; \} \| kubectl debug -i ", rk):
         bad.append(f"the README kubectl debug check must feed the shell's stdin only after a pause: {{ sleep 10; printf ...; }} | kubectl debug -i: {rk!r}")
+    if not re.search(r"\{ sleep \d+; printf .*; sleep [1-9]\d*; \} \| kubectl debug -i ", rk):
+        bad.append(f"the README kubectl debug check must hold stdin open after the commands with a second sleep: {{ sleep A; printf ...; sleep N; }} | kubectl debug -i: {rk!r}")
+    if not re.search(r"kubectl debug .*\| tee /dev/stderr \| grep ", rk):
+        bad.append(f"the README kubectl debug check must show the debug shell's output in the job log: kubectl debug ... | tee /dev/stderr | grep: {rk!r}")
     refs = re.findall(r"busybox[^\s'\"|]*", re.sub(r'\bcheck "[^"]*"', "check NAME", run))      # the words of a check name are not image references
     if len(refs) < 5 or set(refs) != {BB_PIN}:
         bad.append(f"every busybox reference must be exactly {BB_PIN} (at least five of them): {sorted(set(refs))} x{len(refs)}")
