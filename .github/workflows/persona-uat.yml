@@ -167,7 +167,7 @@ jobs:
           kubectl run cache --image="${PERSONA_UAT_IMAGE%@*}:rc" --image-pull-policy=IfNotPresent
           kubectl wait --for=condition=Ready pod/cache --timeout=120s
           check "README kubectl debug" \
-            bash -c "printf 'wget -qO- http://127.0.0.1:8080/healthz && echo HEALTHZ_OK\nps\n' | kubectl debug -i cache --image=busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec --target=cache -- sh -e | grep -q HEALTHZ_OK"
+            bash -c "{ sleep 10; printf 'wget -qO- http://127.0.0.1:8080/healthz && echo HEALTHZ_OK\nps\n'; } | kubectl debug -i cache --image=busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec --target=cache -- sh -e | grep -q HEALTHZ_OK"
           check "docker-deploy kubectl debug" \
             kubectl debug -i cache --image=busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec --target=cache -- true
           exit "$fail"

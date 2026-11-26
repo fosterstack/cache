@@ -69,7 +69,7 @@ stop_last() { stop_pid "${pids[${#pids[@]}-1]}"; }
 
 # The images and archives are the ones Build recorded (re-derived from digests.json), before anything is extracted, loaded or executed; the bind also
 # lists the files of each layout docker may be given (REQ-SUP-001-AC39).
-python3 bin/check-bind.py --digests "$digests" --images "$images" --archives "$archives" --members-out "$tmp" || exit 1
+python3 bin/check-bind.py --digests "$digests" --images "$images" --archives "$archives" || exit 1
 
 # this architecture's binaries out of the archives: the bind above proved the four Linux archives are there (REQ-PLAT-001-AC1)
 for n in fscache fscache-fips; do
@@ -145,7 +145,7 @@ for v in production fips; do
   for want in linux/amd64 linux/arm64; do
     grep -qx "$want" <<< "$plats" || fail "the $v image archive has no $want platform entry"
   done
-  tar -C "$images/$v" -cf "$tmp/$v.tar" -T "$tmp/$v.members" || fail "the $v image layout could not be archived"
+  bash bin/layout-archive.sh "$images/$v" "$arch" "$tmp/$v.tar" "fscache:$v" > /dev/null || fail "the $v image layout could not be archived"
   loaded=$(docker load -i "$tmp/$v.tar") || fail "the $v image could not be loaded"
   ref=$(sed -n 's/^Loaded image: //p; s/^Loaded image ID: //p' <<< "$loaded" | tail -1)
   [ -n "$ref" ] || fail "docker load named no image for the $v candidate"

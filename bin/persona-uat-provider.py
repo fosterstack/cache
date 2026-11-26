@@ -92,4 +92,6 @@ try:
 except SystemExit:
     raise
 except Exception as e:      # an SDK error, an auth error, a network error: the persona did not run
+    # the one line the driver may print in the job log: the error class and HTTP status, never the message (it can quote a request)
+    sys.stderr.write("persona-uat-provider-reason: %s HTTP %s\n" % (type(e).__name__, getattr(e, "status_code", None) or "none"))
     fail("%s: %s" % (type(e).__name__, str(e)[:300]))
