@@ -94,4 +94,8 @@ except SystemExit:
 except Exception as e:      # an SDK error, an auth error, a network error: the persona did not run
     # the one line the driver may print in the job log: the error class and HTTP status, never the message (it can quote a request)
     sys.stderr.write("persona-uat-provider-reason: %s HTTP %s\n" % (type(e).__name__, getattr(e, "status_code", None) or "none"))
+    if type(e).__name__ == "WorkloadIdentityError":
+        # the SDK holds only the provider's OAuth fields in this error (no token): the one line that says why the sign-in was refused
+        vals = [" ".join(v.split()) if isinstance(v, str) and v.strip() else "none" for v in (getattr(e, a, None) for a in ("error", "error_description", "request_id"))]
+        sys.stderr.write("persona-uat-provider-detail: %s\n" % " ".join(vals))
     fail("%s: %s" % (type(e).__name__, str(e)[:300]))

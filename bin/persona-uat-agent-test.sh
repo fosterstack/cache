@@ -985,6 +985,9 @@ class Anthropic:
             n, st = os.environ["SDK_RAISE"].split(":")
             e = type(n, (Exception,), {})("rejected sk-abcdefghijklmnop with Bearer abc.def")
             if st != "none": e.status_code = int(st)
+            for k in ("error", "error_description", "request_id"):      # SDK_ERR / SDK_ERR_DESC / SDK_REQ_ID: the attributes of an identity-federation error (an unset variable leaves the attribute off)
+                v = os.environ.get({"error": "SDK_ERR", "error_description": "SDK_ERR_DESC", "request_id": "SDK_REQ_ID"}[k])
+                if v is not None: setattr(e, k, v)
             raise e
         open(os.environ["SDK_LOG"], "a").write(json.dumps({"create": {k: v for k, v in kw.items()}}) + "\n")
         return _Msg(os.environ["SDK_TEXT"], int(os.environ.get("SDK_IN", "100")), int(os.environ.get("SDK_OUT", "50")))
@@ -1076,6 +1079,47 @@ for rz in RateLimitError:429 APIConnectionError:none InternalServerError:503; do
   CASE="provider: the marker line of ${rz%%:*} holds only the class name and the status, never the exception's message"
   check test "$(head -1 "$work/$nm/err" | grep -cE 'sk-abcdefghijklmnop|Bearer abc')" -eq 0
 done
+# WorkloadIdentityError (R1): ONE extra stderr line `persona-uat-provider-detail: <error> <error_description> <request_id>` between the reason line and the provider's own line; nothing else of the exception
+rawl() { # <case> <CLASS:STATUS> [env assignments...]; the fake SDK raises; sets rc; stderr in $work/<case>/err
+  local nm=$1 rz=$2; shift 2; mkdir -p "$work/$nm"; : >"$work/$nm/sdk.log"; rc=0
+  env "$@" SDK_RAISE="$rz" SDK_TEXT=x SDK_LOG="$work/$nm/sdk.log" PYTHONPATH="$work/sdk" ANTHROPIC_API_KEY=SECRET-MODEL-KEY \
+    python3 "$provider" <<<'{"model":"M","system":"s","messages":[{"role":"user","content":"a"}]}' >"$work/$nm/out" 2>"$work/$nm/err" || rc=$?
+}
+rawl p-wie WorkloadIdentityError:401 SDK_ERR=invalid_grant SDK_ERR_DESC=jti_reused SDK_REQ_ID=req_abc
+CASE="provider: a WorkloadIdentityError writes the reason line, then exactly 'persona-uat-provider-detail: <error> <error_description> <request_id>', then its own line; exit 1, nothing on stdout"
+check test "$rc" -eq 1 -a ! -s "$work/p-wie/out"
+check test "$(sed -n 1p "$work/p-wie/err")" = "persona-uat-provider-reason: WorkloadIdentityError HTTP 401"
+check test "$(sed -n 2p "$work/p-wie/err")" = "persona-uat-provider-detail: invalid_grant jti_reused req_abc"
+check test "$(sed -n 3p "$work/p-wie/err" | cut -c1-21)" = "persona-uat-provider:"
+check test "$(grep -c '^persona-uat-provider-detail: ' "$work/p-wie/err")" -eq 1
+CASE="provider: the detail line of a WorkloadIdentityError never holds the exception's message"
+check test "$(sed -n 2p "$work/p-wie/err" | grep -cE 'sk-abcdefghijklmnop|Bearer abc|rejected')" -eq 0
+rawl p-wie-none WorkloadIdentityError:none
+CASE="provider: a WorkloadIdentityError without the attributes writes 'none' for each missing value"
+check test "$rc" -eq 1 -a ! -s "$work/p-wie-none/out"
+check test "$(sed -n 2p "$work/p-wie-none/err")" = "persona-uat-provider-detail: none none none"
+check test "$(sed -n 3p "$work/p-wie-none/err" | cut -c1-21)" = "persona-uat-provider:"
+rawl p-wie-part WorkloadIdentityError:401 SDK_ERR=invalid_client SDK_ERR_DESC= SDK_REQ_ID=req_9
+CASE="provider: an empty attribute is written as 'none' and the others stay"
+check test "$(sed -n 2p "$work/p-wie-part/err")" = "persona-uat-provider-detail: invalid_client none req_9"
+rawl p-wie-ws WorkloadIdentityError:401 SDK_ERR=invalid_grant "SDK_ERR_DESC=line one
+line   two		tabbed" SDK_REQ_ID=req_abc
+CASE="provider: newlines and runs of spaces inside a value collapse to single spaces, so the detail is one line"
+check test "$(sed -n 2p "$work/p-wie-ws/err")" = "persona-uat-provider-detail: invalid_grant line one line two tabbed req_abc"
+check test "$(sed -n 3p "$work/p-wie-ws/err" | cut -c1-21)" = "persona-uat-provider:"
+check test "$(grep -c '^persona-uat-provider-detail: ' "$work/p-wie-ws/err")" -eq 1
+for rz in RateLimitError:429 APIConnectionError:none InternalServerError:503; do
+  nm="p-nodetail-${rz%%:*}"
+  rawl "$nm" "$rz" SDK_ERR=invalid_grant SDK_ERR_DESC=jti_reused SDK_REQ_ID=req_abc
+  CASE="provider: ${rz%%:*} with error, error_description and request_id set still writes no detail line; line 2 is the provider's own line"
+  check test "$rc" -eq 1 -a ! -s "$work/$nm/out"
+  check test "$(sed -n 1p "$work/$nm/err")" = "persona-uat-provider-reason: ${rz%%:*} HTTP ${rz#*:}"
+  check test "$(sed -n 2p "$work/$nm/err" | cut -c1-21)" = "persona-uat-provider:"
+  check test "$(grep -c 'persona-uat-provider-detail' "$work/$nm/err")" -eq 0
+done
+rawl p-lookalike WorkloadIdentityErrors:401 SDK_ERR=invalid_grant SDK_ERR_DESC=jti_reused SDK_REQ_ID=req_abc
+CASE="provider: a class whose name only starts with WorkloadIdentityError gets no detail line"
+check test "$(grep -c 'persona-uat-provider-detail' "$work/p-lookalike/err")" -eq 0
 # the agent keeps the provider's marker line in its own failure line, which is where the driver reads it
 agent provmarker '[{"exit":1,"stderr":"persona-uat-provider-reason: RateLimitError HTTP 429\npersona-uat-provider: RateLimitError: rejected"}]'
 CASE="a failing provider's reason marker line is in the agent's stderr whole (the driver finds it there), with nothing on stdout and a non-zero exit"
@@ -1096,6 +1140,17 @@ e = open(d + "/err.txt").read()
 assert rc != "0" and open(d + "/out.json").read() == ""
 assert "the provider failed (exit 1): persona-uat-provider: APIStatusError: model [scrubbed] refused" in e, e
 assert "OWNER-MODEL-R" not in e and "ghp_abcdefghij" not in e, e
+PY
+# a detail line with a token-shaped value, in a failing provider's stderr: the agent keeps the line and scrubs the token
+agent provdetail '[{"exit":1,"stderr":"persona-uat-provider-reason: WorkloadIdentityError HTTP 401\npersona-uat-provider-detail: invalid_grant key=ghp_abcdefghij0123456789ABCDEF req_abc\npersona-uat-provider: WorkloadIdentityError: refused"}]'
+CASE="a failing provider's detail line is in the agent's stderr with a token-shaped value scrubbed, and the token is nowhere in it"
+check python3 - "$work/provdetail" "$rc" <<'PY'
+import sys
+d, rc = sys.argv[1], sys.argv[2]
+e = open(d + "/err.txt").read()
+assert rc != "0" and open(d + "/out.json").read() == ""
+assert "persona-uat-provider-detail: invalid_grant key=[scrubbed] req_abc" in e, e
+assert "ghp_abcdefghij" not in e, e
 PY
 agent provlong "[{\"exit\":1,\"stderr\":\"$(printf 'x%.0s' $(seq 9000))\"}]"
 CASE="a long provider stderr is clipped to a few KB in the failure text"

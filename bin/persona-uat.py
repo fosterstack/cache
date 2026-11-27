@@ -786,6 +786,10 @@ def provider_reason(err):
     line = lines[-1]
     parts = line.partition("): persona-uat-provider-reason: ")[2].split(" ")
     if len(parts) == 3 and parts[0].isascii() and parts[0].isidentifier() and parts[1] == "HTTP" and (parts[2] == "none" or (parts[2].isascii() and parts[2].isdigit() and len(parts[2]) == 3)):
+        rest = err.split("\n")
+        rest = rest[rest.index(line) + 1:][:1]      # the failure line's own next line: the provider's detail, never a transcript line
+        if parts[0] == "WorkloadIdentityError" and rest and rest[0].startswith("persona-uat-provider-detail: "):
+            return ": " + " ".join(parts) + " " + rest[0].partition(": ")[2][:200]
         return ": " + " ".join(parts)
     return ""
 

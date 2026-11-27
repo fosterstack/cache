@@ -121,7 +121,7 @@ set -euo pipefail
 SEG_SHARDS=3
 # The cases each shard must pass: counted from the unsharded suite (722 in all) and checked by the gate, so a case that is skipped, run twice, moved out of its section or
 # made by another shard fails the step. A case added or removed changes a shard's number: the gate names it, and this line is updated with the case.
-SEG_CASES="221 190 314"
+SEG_CASES="221 190 323"
 SEG_DEADLINE=${PERSONA_UAT_SHARD_DEADLINE:-3000}   # seconds one shard may run; a hung shard is killed (its whole process group) and counts as failed (exit 124)
 # SHARDS. Run plain, this script runs the driver suite as SEG_SHARDS shards at once (PERSONA_UAT_SHARD=I/N each, below), prints their outputs one after the other and
 # fails unless every shard passed and the shards together ran every section of this file exactly once (the gate). PERSONA_UAT_SHARD=I/N runs one shard;
@@ -2455,6 +2455,59 @@ CASE="reason: a well-formed marker line in the transcript followed by a failure 
 check publiclog rsnforge
 check test "$(reason_of rsnforge gradle-platform-engineer)" = "the agent failed (exit 7)"
 check none_match 'ForgedClassName' "$work/rsnforge/stdout" "$work/rsnforge/stderr" "$work/rsnforge/summary.md"
+# the provider's detail line (WorkloadIdentityError only), directly after the agent's failure line, is appended to the reason
+F1='persona-uat-agent: the provider failed (exit 1): persona-uat-provider-reason: WorkloadIdentityError HTTP 401'
+run rsnwie '{"gradle-platform-engineer":{"crash":true,"crash_lines":["'"$F1"'","persona-uat-provider-detail: invalid_grant jti_reused req_abc"]}}' rc
+CASE="reason: a WorkloadIdentityError failure line followed directly by a detail line shows 'WorkloadIdentityError HTTP 401 invalid_grant jti_reused req_abc'"
+check publiclog rsnwie
+check test "$(reason_of rsnwie gradle-platform-engineer)" = "the agent failed (exit 7): WorkloadIdentityError HTTP 401 invalid_grant jti_reused req_abc"
+# other classes, a detail line in the transcript before the failure line, and one behind a failure line of another kind add nothing
+run rsndet '{"gradle-platform-engineer":{"crash":true,"crash_lines":["persona-uat-agent: the provider failed (exit 1): persona-uat-provider-reason: RateLimitError HTTP 429","persona-uat-provider-detail: LEAKED-OTHER-CLASS x y"]},"maven-jenkins-ci":{"crash":true,"crash_lines":["persona-uat-provider-detail: LEAKED-TRANSCRIPT x y","'"$F1"'"]},"on-call-engineer":{"crash":true,"crash_lines":["persona-uat-provider-detail: LEAKED-FORGED x y","persona-uat-agent: the provider'"'"'s answer is not JSON"]},"readme-evaluator":{"crash":true,"crash_lines":["'"$F1"'","persona-uat-agent: another line","persona-uat-provider-detail: LEAKED-NOT-NEXT x y"]}}' rc
+CASE="reason: a detail line after another class, before the failure line, behind a failure of another kind, or not directly after the failure line adds nothing"
+check publiclog rsndet
+check test "$(reason_of rsndet gradle-platform-engineer)" = "the agent failed (exit 7): RateLimitError HTTP 429"
+check test "$(reason_of rsndet maven-jenkins-ci)" = "the agent failed (exit 7): WorkloadIdentityError HTTP 401"
+check test "$(reason_of rsndet on-call-engineer)" = "the agent failed (exit 7)" -a "$(reason_of rsndet readme-evaluator)" = "the agent failed (exit 7)"
+check none_match 'LEAKED' "$work/rsndet/stdout" "$work/rsndet/stderr" "$work/rsndet/summary.md"
+# end to end with the real agent: the provider's detail line holds a token, the agent scrubs its stderr, and the driver's reading of that stderr carries [scrubbed], not the token
+mkdir -p "$work/e2e"; cat >"$work/e2e/prov.py" <<'PY'
+import sys
+sys.stdin.read()
+sys.stderr.write("persona-uat-provider-reason: WorkloadIdentityError HTTP 401\npersona-uat-provider-detail: invalid_grant key=ghp_abcdefghij0123456789ABCDEF req_abc\npersona-uat-provider: WorkloadIdentityError: refused\n")
+sys.exit(1)
+PY
+CASE="reason: the real agent's scrubbed stderr, read by provider_reason(), gives the detail with [scrubbed] and never the token"
+check python3 - "$driver" "$root/bin/persona-uat-agent.py" "$work/e2e/prov.py" "$work/e2e" "$work/tools.json" <<'PY'
+import importlib.util, json, subprocess, sys
+drv, agent, prov, d, tools = sys.argv[1:6]
+spec = importlib.util.spec_from_file_location("persona_uat_e2e", drv)
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+req = {"persona": "readme-evaluator", "instructions": "x", "docs_dir": d, "endpoint": "http://127.0.0.1:18080", "image": "x@sha256:" + "a" * 64, "model": "M", "token_budget": 1000, "tools": {}}
+r = subprocess.run([sys.executable, agent, "--docker", "/bin/false", "--tools", tools, "--label", "persona-uat=11111111-2222-3333-4444-555555555555", "--network", "container:persona-uat-0a1b2c3d-holder", "--provider-cmd", sys.executable + " " + prov],
+                   input=json.dumps(req), capture_output=True, text=True, cwd=d)
+assert r.returncode != 0 and r.stdout == "", (r.returncode, r.stdout, r.stderr)
+assert "ghp_abcdefghij" not in r.stderr, r.stderr
+t = m.provider_reason(r.stderr)
+assert t == ": WorkloadIdentityError HTTP 401 invalid_grant key=[scrubbed] req_abc", (t, r.stderr)
+PY
+CASE="reason: provider_reason() adds the detail remainder cut to 200 characters, and nothing for another class, a detail not next, or a line without the prefix"
+check python3 - "$driver" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("persona_uat_under_test", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+F = "persona-uat-agent: the provider failed (exit 1): persona-uat-provider-reason: WorkloadIdentityError HTTP 401"
+P = "persona-uat-provider-detail: "
+assert m.provider_reason("%s\n%sinvalid_grant jti_reused req_abc\n" % (F, P)) == ": WorkloadIdentityError HTTP 401 invalid_grant jti_reused req_abc"
+long = "d" * 500
+r = m.provider_reason("%s\n%s%s\n" % (F, P, long))
+assert r == ": WorkloadIdentityError HTTP 401 " + "d" * 200, r
+r = m.provider_reason("%s\n%s%s" % (F, P, long))
+assert r == ": WorkloadIdentityError HTTP 401 " + "d" * 200, r
+assert m.provider_reason("%s\nother line\n%sx y z\n" % (F, P)) == ": WorkloadIdentityError HTTP 401"
+assert m.provider_reason("%s\nx y z\n" % F) == ": WorkloadIdentityError HTTP 401"
+assert m.provider_reason("persona-uat-agent: the provider failed (exit 1): persona-uat-provider-reason: RateLimitError HTTP 429\n%sx y z\n" % P) == ": RateLimitError HTTP 429"
+assert m.provider_reason("%sx y z\n%s\n" % (P, F)) == ": WorkloadIdentityError HTTP 401"
+PY
 # a blocking finding: its text, the first or any other, stays in the encrypted report; the log has the fixed driver text
 run rsnfind '{"gradle-platform-engineer":{"findings":[{"kind":"friction","text":"FRICTION-FIRST"},{"kind":"blocking","text":"BLOCK-FIRST-LINE\nBLOCK-SECOND-LINE"},{"kind":"blocking","text":"BLOCK-OTHER"}]},"maven-jenkins-ci":{"findings":[{"kind":"blocking","text":"'"$(printf 'L%.0s' $(seq 300))"'"}]}}' rc
 CASE="reason: a persona that ran and ended blocking shows the fixed driver text, never any finding's text"
