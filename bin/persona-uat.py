@@ -780,14 +780,14 @@ def kill_group(p):
 def provider_reason(err):
     """": <ClassName> HTTP <3 digits or none>" from the provider's failure, or "". The agent's stderr starts with the transcript, so only its LAST line that begins "persona-uat-agent: "
     is read (the agent's own failure line, written after the transcript; bin/persona-uat-provider.py begins the provider's output with the marker); a line of another shape adds nothing."""
-    lines = [l for l in err.split("\n") if l.startswith("persona-uat-agent: ")]
+    all_lines = err.split("\n")
+    lines = [l for l in all_lines if l.startswith("persona-uat-agent: ")]
     if not lines or not lines[-1].startswith("persona-uat-agent: the provider failed (exit "):
         return ""
     line = lines[-1]
     parts = line.partition("): persona-uat-provider-reason: ")[2].split(" ")
     if len(parts) == 3 and parts[0].isascii() and parts[0].isidentifier() and parts[1] == "HTTP" and (parts[2] == "none" or (parts[2].isascii() and parts[2].isdigit() and len(parts[2]) == 3)):
-        rest = err.split("\n")
-        rest = rest[rest.index(line) + 1:][:1]      # the failure line's own next line: the provider's detail, never a transcript line
+        rest = all_lines[len(all_lines) - all_lines[::-1].index(line):][:1]      # the last failure line's own next line: the provider's detail, never a transcript line
         if parts[0] == "WorkloadIdentityError" and rest and rest[0].startswith("persona-uat-provider-detail: "):
             return ": " + " ".join(parts) + " " + rest[0].partition(": ")[2][:200]
         return ": " + " ".join(parts)

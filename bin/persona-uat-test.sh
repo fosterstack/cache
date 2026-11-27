@@ -121,7 +121,7 @@ set -euo pipefail
 SEG_SHARDS=3
 # The cases each shard must pass: counted from the unsharded suite (722 in all) and checked by the gate, so a case that is skipped, run twice, moved out of its section or
 # made by another shard fails the step. A case added or removed changes a shard's number: the gate names it, and this line is updated with the case.
-SEG_CASES="221 190 323"
+SEG_CASES="221 190 324"
 SEG_DEADLINE=${PERSONA_UAT_SHARD_DEADLINE:-3000}   # seconds one shard may run; a hung shard is killed (its whole process group) and counts as failed (exit 124)
 # SHARDS. Run plain, this script runs the driver suite as SEG_SHARDS shards at once (PERSONA_UAT_SHARD=I/N each, below), prints their outputs one after the other and
 # fails unless every shard passed and the shards together ran every section of this file exactly once (the gate). PERSONA_UAT_SHARD=I/N runs one shard;
@@ -2507,6 +2507,16 @@ assert m.provider_reason("%s\nother line\n%sx y z\n" % (F, P)) == ": WorkloadIde
 assert m.provider_reason("%s\nx y z\n" % F) == ": WorkloadIdentityError HTTP 401"
 assert m.provider_reason("persona-uat-agent: the provider failed (exit 1): persona-uat-provider-reason: RateLimitError HTTP 429\n%sx y z\n" % P) == ": RateLimitError HTTP 429"
 assert m.provider_reason("%sx y z\n%s\n" % (P, F)) == ": WorkloadIdentityError HTTP 401"
+PY
+CASE="reason: provider_reason() reads the detail after the last failure line, never after an identical earlier copy of it in the transcript"
+check python3 - "$driver" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("persona_uat_under_test", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+F = "persona-uat-agent: the provider failed (exit 1): persona-uat-provider-reason: WorkloadIdentityError HTTP 401"
+P = "persona-uat-provider-detail: "
+r = m.provider_reason("%s\n%sTRANSCRIPT-TEXT\n%s\n%sREAL-DETAIL\n" % (F, P, F, P))
+assert r == ": WorkloadIdentityError HTTP 401 REAL-DETAIL", r
 PY
 # a blocking finding: its text, the first or any other, stays in the encrypted report; the log has the fixed driver text
 run rsnfind '{"gradle-platform-engineer":{"findings":[{"kind":"friction","text":"FRICTION-FIRST"},{"kind":"blocking","text":"BLOCK-FIRST-LINE\nBLOCK-SECOND-LINE"},{"kind":"blocking","text":"BLOCK-OTHER"}]},"maven-jenkins-ci":{"findings":[{"kind":"blocking","text":"'"$(printf 'L%.0s' $(seq 300))"'"}]}}' rc
