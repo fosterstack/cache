@@ -615,7 +615,7 @@ PLACE_PERMS = {(_R, "release"): {"contents": "write", "packages": "write"}}
 RELEASE_CONCURRENCY = {"group": "${{ inputs.mode != 'snapshot' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) && 'patch-release' || github.run_id }}", "cancel-in-progress": "false"}
 CHAIN_STAGE_FILES = {_R}
 # the jobs of release.yml the stage grammar does not judge (they test or report the release, call another workflow, or run no chain script): only the direct signer-call scan reads them
-NON_CHAIN_JOBS = {"live-test-release", "hostile-verify", "hostile-verdict", "persona-uat-rc", "patch-failed", "decide", "cut", "patch-notes"}
+NON_CHAIN_JOBS = {"live-test-release", "hostile-verify", "hostile-verdict", "persona-uat-rc", "persona-uat-compliance", "patch-failed", "decide", "cut", "patch-notes"}
 CLOSED = "not in the closed secret list"
 
 # STATED LIMITS of the PR 1b mechanisms (round 1 (8)); none of them is closed by a judge of this kind:

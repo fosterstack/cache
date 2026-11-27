@@ -1224,6 +1224,7 @@ PERSONA_RC_IF = "${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 't
 # scoped to the test repository only) and the read-only Scout token with its user; the same four in the live-test job, nothing else
 LIVE_TEST_SECRETS = {"DOCKERHUB_USERNAME", "DOCKERHUB_TEST_USERNAME", "DOCKERHUB_TEST_PUSH_TOKEN", "DOCKERHUB_SCOUT_TOKEN"}
 PERSONA_SECRETS = {"PERSONA_UAT_MODEL", "PERSONA_UAT_COMPLIANCE_MODEL", "ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_SERVICE_ACCOUNT_ID", "ANTHROPIC_WORKSPACE_ID"}
+PERSONA_COMPLIANCE_IF = "${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}"
 DECIDE_IF = "${{ inputs.mode != 'snapshot' && github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}"
 # The secrets context in any spelling (secrets.X, secrets['X'], toJSON(secrets), secrets ['X']): the word itself, not the dotted form only.
 # Contexts are case-insensitive and an expression may span lines or hold tabs, so every DECODED string of the job (keys too) is searched, never its JSON text.
@@ -1264,6 +1265,8 @@ NON_CHAIN = {
     # The persona UAT of a release candidate (REQ-UAT-001-AC1): the ONE job-level call of persona-uat.yml (which holds the persona jobs and their environment), in release mode only, after
     # Build only; contents read and the federated token (id-token write) for the persona federation, no registry credential, no write, never the KMS role.
     "persona-uat-rc": {"perm": {"contents": "read", "id-token": "write"}, "agent": False, "needs": ["build-assemble"], "if": PERSONA_RC_IF, "uses": "./.github/workflows/persona-uat.yml"},
+    # The promotion leg (REQ-UAT-001-AC2): the second and last call of persona-uat.yml, a release tag push only, after Release has published; same permissions, same six secrets passed by name.
+    "persona-uat-compliance": {"perm": {"contents": "read", "id-token": "write"}, "agent": False, "needs": ["build-assemble", "release"], "if": PERSONA_COMPLIANCE_IF, "uses": "./.github/workflows/persona-uat.yml"},
 }
 HOSTILE = {"perm": {"contents": "read"}, "agent": False}
 
@@ -1339,7 +1342,7 @@ def graph(path):
         granted = job.get("permissions", d.get("permissions"))
         spec = HOSTILE if name.startswith("hostile-") else NON_CHAIN.get(name)
         if "uses" in job and not (spec and spec.get("uses") == job["uses"]):
-            bad.append("job %s has a job-level uses (%s): only persona-uat-rc calls a workflow, persona-uat.yml" % (name, job["uses"]))
+            bad.append("job %s has a job-level uses (%s): only persona-uat-rc and persona-uat-compliance call a workflow, persona-uat.yml" % (name, job["uses"]))
         if name == "patch-failed" and job.get("if") != PATCH_FAILED_IF:
             bad.append("patch-failed must carry exactly the if %s (a cancelled, replaced release opens an issue too), got %r" % (PATCH_FAILED_IF, job.get("if")))
         if spec is None:
@@ -1354,6 +1357,10 @@ def graph(path):
             if job.get("environment") != spec["env"]: bad.append("job %s must name exactly environment: %s, got %r" % (name, spec["env"], job.get("environment")))
             if names_other_secrets(job, spec.get("secrets", set())):
                 bad.append("job %s may not use secrets. (only patch-notes holds the App's%s)" % (name, "; %s holds only %s" % (name, sorted(spec["secrets"])) if spec.get("secrets") else ""))
+        elif spec.get("uses"):     # a call of persona-uat.yml passes the six repository secrets by name, and nothing else of the secrets context is named
+            if "environment" in job: bad.append("job %s may not name an environment (the called jobs enter it), got %r" % (name, job["environment"]))
+            if job.get("secrets") != {n: "${{ secrets.%s }}" % n for n in PERSONA_SECRETS} or names_secrets({k: v for k, v in job.items() if k != "secrets"}):
+                bad.append("job %s may not use secrets. (it passes exactly the six persona secrets by name: %s)" % (name, sorted(PERSONA_SECRETS)))
         else:
             if "environment" in job: bad.append("job %s may not name an environment (the App secrets live in agent), got %r" % (name, job["environment"]))
             if names_secrets(job): bad.append("job %s may not use secrets. (only patch-notes holds the App's)" % name)
