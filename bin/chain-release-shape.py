@@ -472,7 +472,7 @@ def others(root):
             p = j.get("permissions") or {}
             p = p if isinstance(p, dict) else {}
             blob = yaml.dump(j)
-            if "secrets" in j:
+            if "secrets" in j and n not in ("persona-uat-rc", "persona-uat-compliance"):     # the two calls of persona-uat.yml pass their six secrets by name; chain-test-shape.py judges them
                 bad.append("job %s passes secrets to a call" % n)
             if p.get("packages") == "write" and n != "release":
                 bad.append("job %s grants packages write: only the release job may" % n)
