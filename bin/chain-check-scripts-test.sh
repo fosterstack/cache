@@ -119,7 +119,7 @@ mkdig() { python3 "$work/mkdig.py" "$1"; }
 fx="$work/fx"; mkdir -p "$fx/bin" "$fx/images" "$fx/dist" "$fx/.github/policy" "$fx/out"
 cp "$root"/bin/check-*.sh "$root"/bin/check-*.py "$root"/bin/chain_items.py "$root"/bin/chain_common.py \
   "$root"/bin/rescan-statement.py "$root"/bin/inspector-gate.py "$root"/bin/loopback-get.sh \
-  "$root"/bin/layout-archive.sh "$root"/bin/guide_plan_judge.py "$fx/bin/" 2> /dev/null || true
+  "$root"/bin/release-version.sh "$root"/bin/layout-archive.sh "$root"/bin/guide_plan_judge.py "$fx/bin/" 2> /dev/null || true
 mkdir -p "$fx/.vex"; cp "$root/test-evidence/vex-scope/busybox.openvex.json" "$fx/.vex/fosterstack-cache.openvex.json"
 # images/<variant>/ is an OCI layout directory
 D1=$(python3 "$work/mkoci.py" "$fx/images/production" production)
@@ -1131,7 +1131,7 @@ gwant_fail() { local l=$1 w=$2; grun "${GUIDE[@]}"; if [ "$rc" = 1 ] && grep -Fq
 grefuse() { local l=$1 w=$2; grun "${GUIDE[@]}"; if [ "$rc" = 1 ] && grep -Fq -- "$w" <<< "$out" && grep -Fqi 'refused' <<< "$out"; then ok "$l (caught: ${out:0:70})"; else bad "$l -> rc=$rc, wanted exit 1 refusing a command with '$w': ${out:0:160}"; fi; }
 # gplan_row LABEL: the planner (run alone) plans the current guide with exit 0 and every row it holds says run by postverify
 gplan_row() { local p; p=$(mktemp -d "$work/plan.XXXXXX"); rc=0
-  (cd "$fx" && GITHUB_REF_NAME=v0.3.0 python3 -I "$root/bin/check-guide-plan.py" guide.md guide.cannot-run.json \
+  (cd "$fx" && TAG=v0.3.0 python3 -I "$root/bin/check-guide-plan.py" guide.md guide.cannot-run.json \
     "sha256:$(printf 'a%.0s' $(seq 64))" "$p/plan" "sha256:$(printf 'b%.0s' $(seq 64))") > "$p/out" 2>&1 || rc=$?
   if [ "$rc" = 0 ] && jq -e -s 'length > 0 and all(.[]; .run == null and (.reason | contains("run by postverify before publishing")))' \
     "$p/plan" > /dev/null 2>&1; then ok "$1"; else bad "$1 -> rc=$rc: $(head -c 160 "$p/out")"; fi; }
@@ -1470,14 +1470,13 @@ for c in "jq -n '.a' checksums.txt.bundle" "jq -e --rawfile k checksums.txt '.' 
   g "$(blk "$c")"; grefuse "AC7 judge: jq outside the closed grammar is refused, unlisted: ${c:0:60}" "jq -"
   g "$(blk "$c")"; lst "$c"; grefuse "AC7 judge: jq outside the closed grammar is refused, listed too: ${c:0:60}" "jq -"
 done
-# <TAG> must fullmatch vX.Y.Z or vX.Y.Z-rcN (read from GITHUB_REF_NAME)
+# <TAG> must fullmatch vX.Y.Z or vX.Y.Z-rcN (read from bin/release-version.sh, whose output loses a trailing newline: that refusal is guide-judge-test's)
 tagrun() { local t=$1; : > "$work/log"; rc=0
   out=$( (cd "$fx" && PATH="$fake:$PATH" FAKE_LOG="$work/log" CANDIDATE_REPOSITORY="$REPO" GITHUB_REF_NAME="$t" \
           GITHUB_REPOSITORY=fosterstack/cache GITHUB_REF="refs/tags/$t" bash "bin/${GUIDE[0]}" "${GUIDE[@]:1}") 2>&1) || rc=$?; }
 g "$(blk "$L1")"
 for t in v0.3.0 v10.20.30 v0.3.0-rc1 v0.3.0-rc12; do tagrun "$t"; if [ "$rc" = 0 ]; then ok "AC7 judge: <TAG> $t is accepted"; else bad "AC7 judge: <TAG> $t -> rc=$rc: ${out:0:160}"; fi; done
-for t in v0.3.0-rc.1 0.3.0 v0.3 v0.3.0-rc v0.3.0-beta1 v0.3.0-rc1-fips 'v0.3.0
-' 'v0.3.0 x' 'v0.3.0;id' '$(id)'; do
+for t in v0.3.0-rc.1 0.3.0 v0.3 v0.3.0-rc v0.3.0-beta1 v0.3.0-rc1-fips 'v0.3.0 x' 'v0.3.0;id' '$(id)'; do
   tagrun "$t"; if [ "$rc" != 0 ]; then ok "AC7 judge: <TAG> ${t//$'\n'/<nl>} is refused (rc=$rc)"; else bad "AC7 judge: <TAG> ${t//$'\n'/<nl>} was accepted"; fi
 done
 # ---- REQ-CHAIN-006-AC5: the interface, and a failing or empty suite (suite scripts are stubs in the
@@ -1895,7 +1894,7 @@ gvrun GV_OUT=clean -- "${GVARGS[@]}"
 if [ "$rc" = 0 ] && [ "$(grep -c '^govulncheck -json ' "$work/gvlog")" = 6 ]; then ok "G a changed template line in a recipe does not stop the scan (six runs): only the build line is read"; else bad "G a changed template line was refused: rc=$rc $out"; fi
 gv_recipes
 # a package-pin bump (the refresh rewrites the `- pkg=ver` lines) still scans
-gv_recipes; sed -i.bak 's#^      - busybox=1.38.0-r3#      - busybox=1.39.0-r1#' "$gvt/build/melange.yaml" "$gvt/build/melange-fips.yaml"; rm -f "$gvt"/build/*.bak
+gv_recipes; sed -i.bak 's#^      - busybox=[^ ]*#      - busybox=1.39.0-r1#' "$gvt/build/melange.yaml" "$gvt/build/melange-fips.yaml"; rm -f "$gvt"/build/*.bak
 gvrun GV_OUT=clean -- "${GVARGS[@]}"
 if [ "$rc" = 0 ] && grep -q 'busybox=1.39.0-r1' "$gvt/build/melange.yaml" && [ "$(grep -c '^govulncheck -json ' "$work/gvlog")" = 6 ]; then ok "G a package-pin bump in the recipes still scans (six runs)"; else bad "G a package-pin bump was refused or the scan did not run: rc=$rc $out"; fi
 gv_recipes

@@ -8,7 +8,7 @@ holding only README.md and the top-level docs, runs one agent per persona with a
 agent answers (anything that is not exactly the contract is blocking, "did not run"), proves each persona reached the
 endpoint (the image's request counter), and writes ONE encrypted artifact per persona.
 
-  persona-uat.py --mode rc|weekly --image REF@sha256:... --repo DIR --out DIR --tools FILE [--docker CMD] [--recipient CERT]
+  persona-uat.py --mode rc|release --image REF@sha256:... --repo DIR --out DIR --tools FILE [--docker CMD] [--recipient CERT]
                  --agent CMD [--port N] [--ready-timeout S] [--agent-timeout S]
   env PERSONA_UAT_MODEL, PERSONA_UAT_COMPLIANCE_MODEL (required; no built-in default), PERSONA_UAT_TOKEN_BUDGET (default 400000)
 
@@ -18,7 +18,7 @@ report and transcript are encrypted (openssl cms, AES-256, to the committed reci
 if any encryption fails, no file is left in --out. The driver opens no issue and calls no gh. Containers are FIXED-ARGUMENT: every
 docker command is built here from the allowlisted images and fixed options, the docker client gets an allowlisted environment,
 and no credential is passed to a container.
-Exit status: 0 clean (friction is information, never a failure), 1 a blocking persona (in rc and weekly mode alike) or a failed
+Exit status: 0 clean (friction is information, never a failure), 1 a blocking persona (in rc and release mode alike) or a failed
 encryption, 2 a refused configuration (nothing was started), 3 the public docs are missing.
 """
 import argparse
@@ -44,9 +44,9 @@ import uuid
 import shlex as _shlex
 
 warnings.simplefilter("ignore")        # nothing but the fixed lines is ever printed: no interpreter warning either
-RC_PERSONAS = ("gradle-platform-engineer", "maven-jenkins-ci", "readme-evaluator", "on-call-engineer")   # the release candidate runs these four; compliance-reviewer (it needs a signed, published image) runs weekly only
+RC_PERSONAS = ("gradle-platform-engineer", "maven-jenkins-ci", "readme-evaluator", "on-call-engineer")   # the release candidate runs these four; compliance-reviewer needs a signed, published image
+RELEASE_PERSONAS = ("compliance-reviewer",)   # the run a release tag starts runs this one, after the image is published
 RC_TAG = "rc"             # the tag the rc job pushed Build's image under on the runner's registry (persona-uat.yml); the on-call engineer's cluster holds it under that name
-PERSONAS = ("gradle-platform-engineer", "maven-jenkins-ci", "compliance-reviewer", "readme-evaluator", "on-call-engineer")
 TOOLS_FOR = {"maven-jenkins-ci": ("jenkins", "gitlab-runner"), "on-call-engineer": ("kind",)}
 DIGEST_REF = re.compile(r"^[a-z0-9][^\s@]*@sha256:[0-9a-f]{64}$")
 TOOL_KEYS = ("capture", "cosign", "gitlab-runner", "gradle", "jenkins", "kind", "kubectl", "maven", "shell")
@@ -1533,7 +1533,7 @@ def report_text(persona, verdict, findings, tokens, capped, did_not_run=None, ho
 
 def parse_args():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=("rc", "weekly"), required=True)
+    ap.add_argument("--mode", choices=("rc", "release"), required=True)
     ap.add_argument("--image", required=True)
     ap.add_argument("--repo", required=True)
     ap.add_argument("--out", required=True)
@@ -1691,7 +1691,7 @@ def main():
             return 1
 
 
-ACTIVE = list(PERSONAS)   # the personas this run covers: all five, or RC_PERSONAS in rc mode
+ACTIVE = []   # the personas this run covers: RC_PERSONAS in rc mode, RELEASE_PERSONAS in release mode
 
 
 def last_resort():
@@ -1711,7 +1711,7 @@ def last_resort():
 
 def _main():
     a = parse_args()
-    ACTIVE[:] = RC_PERSONAS if a.mode == "rc" else PERSONAS
+    ACTIVE[:] = RC_PERSONAS if a.mode == "rc" else RELEASE_PERSONAS
     rc_ref = a.image.split("@")[0] + ":" + RC_TAG
     try:
         models, budget, tools = configure(a)

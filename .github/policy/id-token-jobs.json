@@ -63,8 +63,13 @@
   },
   {
    "workflow": "persona-uat.yml",
-   "job": "persona-uat-weekly",
-   "reason": "Persona UAT, weekly run (REQ-UAT-001): the same federation in the persona-uat environment; it signs no provenance and publishes nothing; contents read, no registry credential"
+   "job": "persona-uat-compliance",
+   "reason": "Persona UAT, compliance run on the published image after the release job (REQ-UAT-001-AC2): the same federation in the persona-uat environment; it signs no provenance and publishes nothing; contents read, no registry credential"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "persona-uat-compliance",
+   "reason": "the job-level call of persona-uat.yml after the release job on a release tag push: the called file's job mints a federated identity token for the model provider in the persona-uat environment (REQ-UAT-001-AC2); it signs no provenance and publishes nothing"
   },
   {
    "workflow": "release.yml",

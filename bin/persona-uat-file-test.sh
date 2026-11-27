@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # proves: REQ-UAT-001-AC6
 # persona-uat.yml is the only file with a persona job (REQ-UAT-001-AC6; orchestrator ruling 3 of Nov 13 2026, owner rule workflow-grouped-by-purpose: one purpose per file).
-#   - its triggers are exactly the weekly cron of the Monday run (moved from go-freshness.yml) and workflow_call (release.yml runs the release-candidate leg through it);
+#   - its only trigger is workflow_call (owner decision: persona tests run only at code promotion, never on a timer; no schedule). release.yml calls it twice: the release-candidate leg (persona-uat-rc)
+#     and, as the last step of the run a release tag push starts, the compliance reviewer against the published image (persona-uat-compliance); its jobs are exactly those two;
 #   - every job is in the environment persona-uat, behind the gate PERSONA_UAT_ENABLED, and holds only contents read and the identity token for the persona federation: never the release
 #     signing key's role, never another environment, never a write grant; the secrets it names are the persona federation's and the two model ids, nothing else;
 #   - go-freshness.yml keeps only its freshness jobs and its daily cron (judged here too, from the other side), and no other file holds a persona job: release.yml's one call of this file
@@ -17,7 +18,10 @@ cat > "$work/judge.py" <<'PY'
 import glob, json, os, re, sys, yaml
 tree = sys.argv[1]                                    # a repository root (the real one, or a scratch copy with one workflow edited)
 WF = os.path.join(tree, ".github/workflows")
-CRON = "43 6 * * 1"
+CRON = "43 6 * * 1"                                  # the old Monday persona cron: no file has it any more
+GATE = "vars.PERSONA_UAT_ENABLED=='true'"
+SECRETS = {"PERSONA_UAT_MODEL", "PERSONA_UAT_COMPLIANCE_MODEL", "ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_SERVICE_ACCOUNT_ID", "ANTHROPIC_WORKSPACE_ID"}
+def squash(e): return re.sub(r"\s+", "", str(e)).replace("${{", "").replace("}}", "")
 ALLOWED_SECRETS = {"ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_SERVICE_ACCOUNT_ID", "ANTHROPIC_WORKSPACE_ID", "PERSONA_UAT_MODEL", "PERSONA_UAT_COMPLIANCE_MODEL"}
 def load(p): return yaml.load(open(p), Loader=yaml.BaseLoader)
 bad = []
@@ -26,13 +30,19 @@ if not os.path.exists(path):
     print("persona-uat.yml does not exist (REQ-UAT-001-AC6: the persona jobs live in their own file)"); sys.exit(1)
 d = load(path)
 on = d.get("on") or {}
-if sorted(on) != ["schedule", "workflow_call"]:
-    bad.append("the triggers are not exactly schedule and workflow_call: %s" % sorted(on))
-if on.get("schedule") != [{"cron": CRON}]:
-    bad.append("the schedule is not exactly the weekly Monday cron %s: %s" % (CRON, on.get("schedule")))
+if sorted(on) != ["workflow_call"]:
+    bad.append("the triggers are not exactly workflow_call (no schedule, no dispatch, no push): %s" % sorted(on))
 wc = on.get("workflow_call")
-if isinstance(wc, dict) and (wc.get("secrets") or wc.get("outputs")):
-    bad.append("workflow_call declares secrets or outputs: results stay private and the caller passes no secret")
+if not isinstance(wc, dict):
+    bad.append("workflow_call is not a mapping with inputs and secrets")
+else:
+    ins = wc.get("inputs") or {}
+    if sorted(ins) != ["digests", "image"] or any(not isinstance(v, dict) or v.get("type") != "string" or v.get("default") != "" for v in ins.values()):
+        bad.append("workflow_call inputs are not exactly digests and image, each a string defaulting to the empty string: %s" % ins)
+    if sorted(wc.get("secrets") or {}) != sorted(SECRETS):
+        bad.append("workflow_call secrets are not exactly the six persona secrets: %s" % sorted(wc.get("secrets") or {}))
+    if wc.get("outputs"):
+        bad.append("workflow_call declares outputs: results stay private")
 if d.get("permissions") not in (None, {}, {"contents": "read"}):
     bad.append("the workflow-level permissions are wider than contents read: %s" % d.get("permissions"))
 for k in ("env", "defaults"):
@@ -41,8 +51,15 @@ for k in ("env", "defaults"):
 jobs = d.get("jobs") or {}
 if not jobs:
     bad.append("persona-uat.yml has no job")
-if not any(re.sub(r"\s+", "", "github.event.schedule == '%s'" % CRON) in re.sub(r"\s+", "", str(j.get("if", ""))) for j in jobs.values()):
-    bad.append("no persona job runs only on its Monday cron (github.event.schedule == '%s')" % CRON)
+if sorted(jobs) != ["persona-uat-compliance", "persona-uat-rc"]:
+    bad.append("the jobs are not exactly persona-uat-rc and persona-uat-compliance (no weekly job): %s" % sorted(jobs))
+comp = jobs.get("persona-uat-compliance") or {}
+if squash(comp.get("if", "")) != GATE + "&&inputs.image!=''":
+    bad.append("persona-uat-compliance does not run only behind the gate and a published image (if: %s)" % comp.get("if"))
+if "needs" in comp:
+    bad.append("persona-uat-compliance has needs: it runs from the caller's own ordering, never from a dependency in this file")
+if "schedule" in json.dumps(jobs):
+    bad.append("a job names a schedule event: nothing in persona-uat.yml runs on a timer")
 for jn, j in jobs.items():
     t = json.dumps(j, sort_keys=True)
     if j.get("environment") != "persona-uat":
@@ -59,6 +76,10 @@ for jn, j in jobs.items():
         bad.append("job %s names secrets beyond the persona federation and the model ids: %s" % (jn, sorted(extra)))
     if "uses" in j:
         bad.append("job %s calls another workflow: persona-uat.yml holds the persona jobs themselves" % jn)
+rel = load(os.path.join(WF, "release.yml")) or {}
+calls = sorted(n for n, j in (rel.get("jobs") or {}).items() if "persona-uat.yml" in str(j.get("uses", "")))
+if calls != ["persona-uat-compliance", "persona-uat-rc"]:
+    bad.append("release.yml's calls of persona-uat.yml are not exactly persona-uat-rc and persona-uat-compliance: %s" % calls)
 # the other files: no persona job, no persona environment (release.yml's call is a job with uses, judged by the release suite)
 for f in sorted(glob.glob(os.path.join(WF, "*.y*ml"))):
     b = os.path.basename(f)
@@ -76,6 +97,12 @@ gf = load(os.path.join(WF, "go-freshness.yml")) or {}
 crons = [c.get("cron") for c in ((gf.get("on") or {}).get("schedule") or [])]
 if crons != ["23 6 * * *"]:
     bad.append("go-freshness.yml keeps only its daily freshness cron: %s" % crons)
+for f in sorted(glob.glob(os.path.join(WF, "*.y*ml"))):
+    w_ = load(f) or {}
+    on_ = w_.get("on") if isinstance(w_.get("on"), dict) else {}
+    for c in on_.get("schedule") or []:
+        if isinstance(c, dict) and c.get("cron") == CRON:
+            bad.append("%s has the Monday persona cron: no file has a persona cron any more" % os.path.basename(f))
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -104,13 +131,28 @@ case_ real ok "" "" ""
 case_ trigger-push-added  bad "triggers are not exactly" "$P" "d['on']['push'] = {'branches': ['main']}"
 case_ trigger-dispatch    bad "triggers are not exactly" "$P" "d['on']['workflow_dispatch'] = ''"
 case_ no-workflow-call    bad "triggers are not exactly" "$P" "d['on'].pop('workflow_call')"
-case_ no-schedule         bad "triggers are not exactly" "$P" "d['on'].pop('schedule')"
-case_ cron-other-day      bad "weekly Monday cron" "$P" "d['on']['schedule'] = [{'cron': '43 6 * * 2'}]"
-case_ cron-daily          bad "weekly Monday cron" "$P" "d['on']['schedule'] = [{'cron': '23 6 * * *'}]"
-case_ two-crons           bad "weekly Monday cron" "$P" "d['on']['schedule'].append({'cron': '23 6 * * *'})"
-case_ call-with-secrets   bad "declares secrets or outputs" "$P" "d['on']['workflow_call'] = {'secrets': {'K': {'required': 'true'}}}"
-case_ call-with-outputs   bad "declares secrets or outputs" "$P" "d['on']['workflow_call'] = {'outputs': {'r': {'value': 'x'}}}"
-case_ no-monday-job       bad "no persona job runs only on its Monday cron" "$P" "for j in d['jobs'].values(): j['if'] = \"\${{ vars.PERSONA_UAT_ENABLED == 'true' }}\""
+case_ schedule-added      bad "triggers are not exactly" "$P" "d['on']['schedule'] = [{'cron': '43 6 * * 1'}]"
+case_ schedule-other-cron bad "triggers are not exactly" "$P" "d['on']['schedule'] = [{'cron': '23 6 * * *'}]"
+case_ schedule-empty      bad "triggers are not exactly" "$P" "d['on']['schedule'] = []"
+case_ monday-cron-in-persona bad "has the Monday persona cron" "$P" "d['on']['schedule'] = [{'cron': '43 6 * * 1'}]"
+case_ image-input-gone    bad "inputs are not exactly digests and image" "$P" "d['on']['workflow_call']['inputs'].pop('image')"
+case_ digests-input-gone  bad "inputs are not exactly digests and image" "$P" "d['on']['workflow_call']['inputs'].pop('digests')"
+case_ third-input         bad "inputs are not exactly digests and image" "$P" "d['on']['workflow_call']['inputs']['tag'] = {'type': 'string', 'default': ''}"
+case_ image-default-set   bad "inputs are not exactly digests and image" "$P" "d['on']['workflow_call']['inputs']['image']['default'] = 'ghcr.io/x/cache@sha256:abc'"
+case_ image-not-string    bad "inputs are not exactly digests and image" "$P" "d['on']['workflow_call']['inputs']['image']['type'] = 'boolean'"
+case_ call-secret-dropped bad "secrets are not exactly the six" "$P" "d['on']['workflow_call']['secrets'].pop('PERSONA_UAT_MODEL')"
+case_ call-seventh-secret bad "secrets are not exactly the six" "$P" "d['on']['workflow_call']['secrets']['GITHUB_TOKEN'] = {'required': 'false'}"
+case_ call-with-outputs   bad "declares outputs" "$P" "d['on']['workflow_call']['outputs'] = {'r': {'value': 'x'}}"
+case_ weekly-job-back     bad "the jobs are not exactly" "$P" "d['jobs']['persona-uat-weekly'] = d['jobs']['persona-uat-compliance']"
+case_ compliance-renamed  bad "the jobs are not exactly" "$P" "d['jobs']['persona-uat-weekly'] = d['jobs'].pop('persona-uat-compliance')"
+case_ compliance-gone     bad "the jobs are not exactly" "$P" "d['jobs'].pop('persona-uat-compliance')"
+case_ third-job           bad "the jobs are not exactly" "$P" "d['jobs']['persona-uat-extra'] = d['jobs']['persona-uat-rc']"
+case_ compliance-no-image-condition bad "does not run only behind the gate and a published image" "$P" "d['jobs']['persona-uat-compliance']['if'] = \"\${{ vars.PERSONA_UAT_ENABLED == 'true' }}\""
+case_ compliance-no-gate  bad "does not run only behind the gate and a published image" "$P" "d['jobs']['persona-uat-compliance']['if'] = \"\${{ inputs.image != '' }}\""
+case_ compliance-or-image bad "does not run only behind the gate and a published image" "$P" "d['jobs']['persona-uat-compliance']['if'] = \"\${{ vars.PERSONA_UAT_ENABLED == 'true' || inputs.image != '' }}\""
+case_ compliance-on-cron  bad "does not run only behind the gate and a published image" "$P" "d['jobs']['persona-uat-compliance']['if'] = \"\${{ vars.PERSONA_UAT_ENABLED == 'true' && github.event.schedule == '43 6 * * 1' }}\""
+case_ compliance-needs    bad "persona-uat-compliance has needs" "$P" "d['jobs']['persona-uat-compliance']['needs'] = ['persona-uat-rc']"
+case_ compliance-needs-str bad "persona-uat-compliance has needs" "$P" "d['jobs']['persona-uat-compliance']['needs'] = 'persona-uat-rc'"
 case_ workflow-write      bad "workflow-level permissions are wider" "$P" "d['permissions'] = {'contents': 'write'}"
 case_ workflow-env        bad "workflow-level env" "$P" "d['env'] = {'X': 'y'}"
 case_ no-jobs             bad "has no job" "$P" "d['jobs'] = {}"
@@ -118,8 +160,8 @@ case_ no-jobs             bad "has no job" "$P" "d['jobs'] = {}"
 case_ environment-gone    bad "is not in the environment persona-uat" "$P" "d['jobs'][$FIRST].pop('environment')"
 case_ environment-release bad "is not in the environment persona-uat" "$P" "d['jobs'][$FIRST]['environment'] = 'release'"
 case_ environment-sign    bad "is not in the environment persona-uat" "$P" "d['jobs'][$FIRST]['environment'] = 'sign'"
-case_ gate-gone           bad "lacks the gate" "$P" "for j in d['jobs'].values(): j['if'] = \"\${{ github.event.schedule == '43 6 * * 1' }}\""
-case_ gate-wrong-value    bad "lacks the gate" "$P" "for j in d['jobs'].values(): j['if'] = \"\${{ vars.PERSONA_UAT_ENABLED && github.event.schedule == '43 6 * * 1' }}\""
+case_ gate-gone           bad "lacks the gate" "$P" "for j in d['jobs'].values(): j['if'] = \"\${{ inputs.image != '' }}\""
+case_ gate-wrong-value    bad "lacks the gate" "$P" "for j in d['jobs'].values(): j['if'] = \"\${{ vars.PERSONA_UAT_ENABLED && inputs.image != '' }}\""
 case_ contents-write      bad "does not hold exactly contents read" "$P" "d['jobs'][$FIRST]['permissions']['contents'] = 'write'"
 case_ packages-write      bad "does not hold exactly contents read" "$P" "d['jobs'][$FIRST]['permissions']['packages'] = 'write'"
 case_ id-token-gone       bad "does not hold exactly contents read" "$P" "d['jobs'][$FIRST]['permissions'].pop('id-token')"
@@ -133,6 +175,10 @@ case_ job-calls-workflow  bad "calls another workflow" "$P" "d['jobs'][$FIRST]['
 # the other files
 case_ go-freshness-persona-job bad "persona-uat.yml is the only file with a persona job" go-freshness.yml "d['jobs']['persona-uat'] = {'runs-on': 'ubuntu-24.04', 'environment': 'persona-uat', 'steps': []}"
 case_ go-freshness-weekly-cron bad "go-freshness.yml keeps only its daily freshness cron" go-freshness.yml "d['on']['schedule'].append({'cron': '43 6 * * 1'})"
+case_ go-freshness-weekly-cron-named bad "has the Monday persona cron" go-freshness.yml "d['on']['schedule'].append({'cron': '43 6 * * 1'})"
+case_ release-monday-cron bad "has the Monday persona cron" release.yml "d['on']['schedule'].append({'cron': '43 6 * * 1'})"
+case_ release-drops-compliance-call bad "release.yml's calls of persona-uat.yml are not exactly" release.yml "d['jobs'].pop('persona-uat-compliance')"
+case_ release-third-call  bad "release.yml's calls of persona-uat.yml are not exactly" release.yml "d['jobs']['persona-uat-more'] = dict(d['jobs']['persona-uat-rc'])"
 case_ release-persona-job bad "persona-uat.yml is the only file with a persona job" release.yml "d['jobs']['persona-uat'] = {'runs-on': 'ubuntu-24.04', 'environment': 'persona-uat', 'steps': []}"
 case_ release-persona-env bad "is in the environment persona-uat" release.yml "d['jobs']['uat'] = {'runs-on': 'ubuntu-24.04', 'environment': 'persona-uat', 'steps': []}"
 case_ ci-runs-the-driver  bad "runs the persona driver" ci.yml "d['jobs']['uat'] = {'runs-on': 'ubuntu-24.04', 'steps': [{'run': 'python3 bin/persona-uat.py --publish'}]}"

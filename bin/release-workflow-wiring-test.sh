@@ -314,8 +314,9 @@ for jn, j in jobs.items():
             bad.append("job %s calls %s: release.yml calls no workflow file but persona-uat.yml" % (jn, j["uses"]))
         else:
             c = j.get("if", "")
-            if "PERSONA_UAT_ENABLED" not in c or "refs/heads/release/" not in c or NOT_SNAPSHOT not in norm(c):
-                bad.append("the persona-uat.yml call %s lacks the gate PERSONA_UAT_ENABLED, the release-branch push condition or the snapshot guard: %s" % (jn, c))
+            branch_call, tag_call = "refs/heads/release/" in c, "refs/tags/v" in c    # the release-branch build, or the published release: one or the other, never an open call
+            if "PERSONA_UAT_ENABLED" not in c or not (branch_call or tag_call) or NOT_SNAPSHOT not in norm(c):
+                bad.append("the persona-uat.yml call %s lacks the gate PERSONA_UAT_ENABLED, the release-branch or v* tag push condition or the snapshot guard: %s" % (jn, c))
             if "secrets" in j and j["secrets"] == "inherit":
                 bad.append("the persona-uat.yml call %s passes secrets: inherit" % jn)
 
