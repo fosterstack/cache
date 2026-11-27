@@ -121,7 +121,7 @@ set -euo pipefail
 SEG_SHARDS=3
 # The cases each shard must pass: counted from the unsharded suite (722 in all) and checked by the gate, so a case that is skipped, run twice, moved out of its section or
 # made by another shard fails the step. A case added or removed changes a shard's number: the gate names it, and this line is updated with the case.
-SEG_CASES="221 190 324"
+SEG_CASES="221 193 324"
 SEG_DEADLINE=${PERSONA_UAT_SHARD_DEADLINE:-3000}   # seconds one shard may run; a hung shard is killed (its whole process group) and counts as failed (exit 124)
 # SHARDS. Run plain, this script runs the driver suite as SEG_SHARDS shards at once (PERSONA_UAT_SHARD=I/N each, below), prints their outputs one after the other and
 # fails unless every shard passed and the shards together ran every section of this file exactly once (the gate). PERSONA_UAT_SHARD=I/N runs one shard;
@@ -346,6 +346,10 @@ for d, ds, fs in os.walk(req["docs_dir"]):
 with open(os.path.join(case, "log"), "a") as fh:
     fh.write(json.dumps({"persona": req["persona"], "docs": seen, "keys": sorted(req), "request": req,
                          "env": sorted(os.environ), "cwd": os.getcwd(), "raw_len": len(raw), "argv": sys.argv[2:], "content": content, "links": links, "modes": modes}) + "\n")
+tf_ = os.environ.get("ANTHROPIC_IDENTITY_TOKEN_FILE")      # the identity token file's content at the START of this agent (the driver mints before it starts each persona's agent)
+if tf_ and os.path.isfile(tf_):
+    with open(os.path.join(case, "idseen"), "a") as fh:
+        fh.write(json.dumps({"persona": req["persona"], "token": open(tf_).read()}) + "\n")
 import time, urllib.request, urllib.error, re
 def local_url(u):
     """the persona reaches its endpoint BY NAME on a docker network; this fixture has no such network, so a name the fake docker was given with a published port is mapped to that loopback port"""
@@ -1395,7 +1399,7 @@ run() {
       ANTHROPIC_FEDERATION_RULE_ID=f1 ANTHROPIC_ORGANIZATION_ID=o1 ANTHROPIC_SERVICE_ACCOUNT_ID=s1 ANTHROPIC_WORKSPACE_ID=w1 \
       GITHUB_SERVER_URL=https://github.com RUNNER_TEMP=/r ACTIONS_CACHE_URL=http://c.invalid GH_ENTERPRISE_TOKEN=SECRET-GHE \
       PERSONA_UAT_MODEL=MODEL-DEFAULT-X PERSONA_UAT_COMPLIANCE_MODEL=MODEL-COMPLIANCE-X PATH="$work/$name/hostbin:$PATH" "$@" \
-      ${tw[@]+"${tw[@]}"} bash -c 'cd "$1" && shift && exec "$@"' _ "$work/plain" python3 "$driver" --mode "$mode" --image "${IMAGE:-$IMG}" --repo "$repo" --out "$work/$name/out" \
+      ${tw[@]+"${tw[@]}"} bash -c '[ -z "$RUN_UNSET" ] || unset "$RUN_UNSET"; cd "$1" && shift && exec "$@"' _ "$work/plain" python3 "$driver" --mode "$mode" --image "${IMAGE:-$IMG}" --repo "$repo" --out "$work/$name/out" \
         --tools "${TOOLS:-$work/tools.json}" --docker "$work/$name/docker" --recipient "${RECIPIENT:-$work/test.pem}" --port "${PORT:-18080}" --ready-timeout "${READY_TIMEOUT:-5}" \
         --agent "python3 $work/stub.py $work/$name" --proc-net "$pnet" ${ALLOW_LISTEN:+--allow-listen $ALLOW_LISTEN} ${AGENT_TIMEOUT:+--agent-timeout $AGENT_TIMEOUT} ${sflags[@]+"${sflags[@]}"} ${JOB_BUDGET:+--job-budget $JOB_BUDGET} ${MIN_PERSONA:+--min-persona-seconds $MIN_PERSONA} >"$work/$name/stdout" 2>"$work/$name/stderr" || rc=$?
   RUNSECS=$((SECONDS - t_start))
@@ -3365,14 +3369,15 @@ for t in ts:
     seen[persona] = got[0]
 assert len(set(seen.values())) == 4, seen
 PY
-CASE="integrated: every provider call (three per persona, four personas) authenticated with the federated identity (four variables and the token file, no key, no leaked credential) and used the owner-set model"
+CASE="integrated: every provider (one client per persona, four personas, three calls each) authenticated with the federated identity (four variables and the token file, no key, no leaked credential) and used the owner-set model"
 check python3 - "$work/sdk/sdk.log" <<'PY'
 import json, re, sys
 rows = [json.loads(l) for l in open(sys.argv[1])]
 inits = [r["init"] for r in rows if "init" in r]
-assert len(inits) == 12, len(inits)
+assert len(inits) == 4, len(inits)      # one provider process and one client per persona
 assert all(not i["has_key"] and i["fed"] == ["f1", "o1", "s1", "w1"] and i["token_file"].endswith("integ/token") and i["leaked"] == [] for i in inits), inits
 calls = [r for r in rows if "model" in r]
+assert len(calls) == 12, len(calls)      # three model calls per persona, all served by that persona's one client
 for r in calls:
     ctx = (r["system"] + " " + r["first"]).lower()
     assert "http://endpoint:8080" in ctx and not re.search(r"127\.0\.0\.1", ctx), "the persona is told its own endpoint BY NAME on its network (never a loopback address)"
@@ -6279,6 +6284,50 @@ out, err = m.communicate(timeout=20)
 assert m.returncode == 3 and out == "" and not os.path.exists(f) and not [x for x in os.listdir(d) if x != "t.lock"], (m.returncode, os.listdir(d))
 srv.shutdown()
 PY
+
+# --- the driver mints a fresh identity token before EACH persona's agent starts (REQ-UAT-001-AC5): an identity token is exchanged once, and the job's refresher only re-mints every 60 s, so two
+# personas run back to back in one refresh window must not present the same token. It is the same function as `--mint-identity` (mint_identity), and only when ANTHROPIC_IDENTITY_TOKEN_FILE is set.
+cat >"$work/oidc.py" <<'PY'
+import http.server, json, sys, threading
+port_file, hits_file = sys.argv[1:3]
+n = [0]
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        n[0] += 1
+        open(hits_file, "w").write("%d\n" % n[0])
+        ok = self.headers.get("Authorization") == "bearer REQ-TOKEN" and "audience=https://api.anthropic.com" in self.path
+        body = json.dumps({"value": "MINTED-TOKEN-%d" % n[0]}).encode() if ok else b"{}"
+        self.send_response(200 if ok else 403); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+open(port_file, "w").write("%d\n" % srv.server_address[1])
+srv.serve_forever()
+PY
+rm -f "$work/oidc.port" "$work/oidc.hits"
+python3 "$work/oidc.py" "$work/oidc.port" "$work/oidc.hits" &
+oidc_pid=$!
+for _ in $(seq 100); do [ -s "$work/oidc.port" ] && break; sleep 0.1; done
+oidc_url="http://127.0.0.1:$(cat "$work/oidc.port")/token?api-version=2.0"
+echo SEED-TOKEN >"$work/idmint.file"
+run idmint '{}' rc ANTHROPIC_IDENTITY_TOKEN_FILE="$work/idmint.file" ACTIONS_ID_TOKEN_REQUEST_URL="$oidc_url" ACTIONS_ID_TOKEN_REQUEST_TOKEN=REQ-TOKEN
+hits_mint=$(cat "$work/oidc.hits" 2>/dev/null || echo 0)
+CASE="identity: four personas run back to back in one refresh window each find a FRESH token in the file when their agent starts: four agents, four different contents, none the seed, all from the OIDC endpoint"
+check python3 - "$work/idmint/idseen" "$work/idmint/log" <<'PY'
+import json, sys
+seen = [json.loads(l) for l in open(sys.argv[1])]
+ran = [json.loads(l)["persona"] for l in open(sys.argv[2])]
+assert len(seen) == 4 and sorted(x["persona"] for x in seen) == sorted(ran), (seen, ran)
+toks = [x["token"].strip() for x in seen]
+assert len(set(toks)) == 4, toks
+assert all(t.startswith("MINTED-TOKEN-") for t in toks), toks
+PY
+CASE="identity: the driver asked the endpoint once per persona (4 in all, before each agent, none extra), and the run still exits 0 and removes the file at its end"
+check test "$hits_mint" -eq 4 -a "$rc" -eq 0 -a ! -e "$work/idmint.file"
+rm -f "$work/oidc.hits"
+RUN_UNSET=ANTHROPIC_IDENTITY_TOKEN_FILE run idnomint '{}' rc ACTIONS_ID_TOKEN_REQUEST_URL="$oidc_url" ACTIONS_ID_TOKEN_REQUEST_TOKEN=REQ-TOKEN
+CASE="identity: with ANTHROPIC_IDENTITY_TOKEN_FILE unset in the driver's environment nothing is minted (the endpoint is never asked), the run exits 0, and no agent sees an identity file"
+check test "$rc" -eq 0 -a ! -e "$work/oidc.hits" -a ! -e "$work/idnomint/idseen"
+kill "$oidc_pid" 2>/dev/null || true
 
 seg_begin 37
 seg_on

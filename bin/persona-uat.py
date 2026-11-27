@@ -2027,6 +2027,9 @@ def _main():
                 before = settled(ep, a.settle_quiet, a.settle_max)          # the opening reading is settled too: the driver's own readiness probes are counted after their response
                 if before is UNSETTLED:
                     before = None
+                if os.environ.get("ANTHROPIC_IDENTITY_TOKEN_FILE"):
+                    # a token the provider refuses a second exchange of: this persona's provider exchanges one no other persona's did, however soon after the last persona it starts
+                    mint_identity([os.environ["ANTHROPIC_IDENTITY_TOKEN_FILE"]])
                 answer, transcript, why = run_agent(agent_cmd, args, request, sandbox, persona_timeout, tfile, jfile)
                 key_ok = key_matches(sandbox, a.repo)       # read before cleanup empties the sandbox
                 # the window is closed BEHIND everything of this persona: its action containers are swept by label FIRST (whatever they were still sending is sent), THEN the sidecar is

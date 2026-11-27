@@ -11,7 +11,8 @@
 # Contracts the tests pin:
 #   persona-uat-agent.py --docker CMD --tools FILE --label persona-uat=<uuid> [--provider-cmd CMD] [--shell-timeout S] [--max-steps N]
 #     stdin: the driver's request JSON; stdout: {"findings":[...],"tokens":N,"transcript":str,"commands":[str]}
-#   provider (stdin {"model","system","messages":[{"role","content"}]}) -> stdout {"usage":{"tokens":N},
+#   provider: ONE persistent process per persona, started lazily at the first model call, speaking newline-delimited JSON: one request line on stdin
+#     {"model","system","messages":[{"role","content"}]} -> one answer line on stdout {"usage":{"tokens":N},
 #     "action":{"type":"shell","command":str} | {"type":"shell","tool":NAME,"command":str} (tool shell only) |
 #              {"type":"shell","tool":NAME,"args":[str,...]} (any other tool) | {"type":"finish","findings":[...]}}
 #   DELTAS (advisor 0207/0208; step 6, tests first):
@@ -76,26 +77,40 @@ cat >"$work/tools.json" <<EOF
 {"capture": "docker.io/nicolaka/netshoot@sha256:$(printf 'b%.0s' $(seq 64))", "cosign": "$CSG", "gitlab-runner": "$GLR", "gradle": "$GRD", "jenkins": "$JEN", "kind": "$KND", "kubectl": "$KCT", "maven": "$MVN", "shell": "$SHL"}
 EOF
 
-# fake provider: pops the next scripted answer; records each call's stdin and the credential it can see
+# fake provider, in SERVE mode like the real one: reads one request line at a time from stdin and answers each with one line on stdout until stdin closes. It pops the next
+# scripted answer (by the number of requests logged so far, across restarts), and records each call's stdin, its own pid and the credential it can see. fp.starts gets one line per
+# process START, fp.eof one line when stdin closed on it, fp.child the pid of a grandchild a step asked for. Step keys: stderr, sleep, spawn, exit, close (close stdout, exit 0, no answer), raw.
 cat >"$work/fp.py" <<'PY'
-import json, os, sys
-req = json.load(sys.stdin)
+import json, os, subprocess, sys, time
 case = sys.argv[1]
 plan = json.load(open(os.path.join(case, "plan.json")))
 log = os.path.join(case, "fp.log")
-n = sum(1 for _ in open(log)) if os.path.exists(log) else 0
-with open(log, "a") as fh:
-    fh.write(json.dumps({"req": req, "key": os.environ.get("ANTHROPIC_API_KEY"), "env": sorted(os.environ)}) + "\n")
-step = plan[min(n, len(plan) - 1)]
-if step.get("stderr"):
-    sys.stderr.write(step["stderr"] + "\n")
-if step.get("sleep"):
-    import time; time.sleep(step["sleep"])
-if step.get("exit"):
-    sys.exit(step["exit"])
-if "raw" in step:
-    sys.stdout.write(step["raw"]); sys.exit(0)
-print(json.dumps(step))
+with open(os.path.join(case, "fp.starts"), "a") as fh:
+    fh.write("%d\n" % os.getpid())
+for line in sys.stdin:
+    if not line.strip():
+        continue
+    req = json.loads(line)
+    n = sum(1 for _ in open(log)) if os.path.exists(log) else 0
+    with open(log, "a") as fh:
+        fh.write(json.dumps({"req": req, "key": os.environ.get("ANTHROPIC_API_KEY"), "env": sorted(os.environ), "pid": os.getpid()}) + "\n")
+    step = plan[min(n, len(plan) - 1)]
+    if step.get("stderr"):
+        sys.stderr.write(step["stderr"] + "\n")
+        sys.stderr.flush()
+    if step.get("spawn"):
+        open(os.path.join(case, "fp.child"), "w").write("%d\n" % subprocess.Popen(["sleep", "120"]).pid)
+    if step.get("sleep"):
+        time.sleep(step["sleep"])
+    if step.get("exit"):
+        sys.exit(step["exit"])
+    if step.get("close"):
+        sys.stdout.close(); sys.exit(0)
+    if "raw" in step:
+        sys.stdout.write(step["raw"] + "\n"); sys.stdout.flush(); continue
+    print(json.dumps(step), flush=True)
+with open(os.path.join(case, "fp.eof"), "a") as fh:
+    fh.write("eof\n")
 PY
 # fake docker: logs argv and the environment NAMES it was started with; what follows the image digest decides: `sh -c CMD` runs CMD in the -v
 # host directory, anything else is a tool's own arguments (an exec: distroless images have no sh) and is echoed back as TOOLARGS:<json>
@@ -163,7 +178,7 @@ chmod +x "$work/docker.tmpl"
 agent() {
   local name=$1 plan=$2; shift 2
   local d="$work/$name"; mkdir -p "$d/sandbox"; echo "README" >"$d/sandbox/README.md"; echo "$plan" >"$d/plan.json"
-  : >"$d/fp.log"; : >"$d/fd.log"; sed "s#__LOG__#$d/fd.log#" "$work/docker.tmpl" >"$d/docker"; chmod +x "$d/docker"
+  : >"$d/fp.log"; : >"$d/fp.starts"; rm -f "$d/fp.eof" "$d/fp.child"; : >"$d/fd.log"; sed "s#__LOG__#$d/fd.log#" "$work/docker.tmpl" >"$d/docker"; chmod +x "$d/docker"
   printf '{"persona":"readme-evaluator","instructions":"You are an evaluator with only the README and ten minutes.","docs_dir":"%s","endpoint":"%s","image":"x@sha256:%s","model":"%s","token_budget":%s,"tools":{}}' \
     "$d/sandbox" "${ENDPOINT:-http://127.0.0.1:18080}" "$(printf 'a%.0s' $(seq 64))" "${MODEL:-MODEL-AGENT-X}" "${BUDGET:-400000}" >"$d/req.json"
   rc=0
@@ -173,6 +188,9 @@ agent() {
     <"$d/req.json" >"$d/out.json" 2>"$d/err.txt" || rc=$?
 }
 calls() { wc -l <"$work/$1/fp.log" | tr -d ' '; }
+starts() { wc -l <"$work/$1/fp.starts" | tr -d ' '; }
+# every provider process the case started is gone (killed or exited), and so is a grandchild it spawned: nothing leaks past the agent
+nothing_left() { local f p; for f in "$work/$1/fp.starts" "$work/$1/fp.child"; do [ -e "$f" ] || continue; while read -r p; do ! kill -0 "$p" 2>/dev/null || return 1; done <"$f"; done; }
 
 # --- AC5: the budget is a hard, cumulative stop; 15% of it is RESERVED for one forced final `finish` call --------------------
 # (step 8 round 1, Sonnet B3): the loop works while used < 85% of the budget, then asks ONCE for a finish ("report your findings so far"). A
@@ -199,6 +217,35 @@ assert "token budget" in last and "finish" in last and "findings so far" in last
 for c in calls[:-1]:
     assert "findings so far" not in json.dumps(c["messages"][-1]).lower()
 PY
+# --- one provider process per persona (the identity token is exchanged once per provider process, so the agent must not start one per call) ----------------------------------------
+CASE="a persona with 4 model calls (3 work calls and the forced finish call) started exactly ONE provider process: one start, one pid in every request's log row"
+check test "$(starts cap)" -eq 1 -a "$(python3 -c 'import json,sys; print(len({json.loads(l)["pid"] for l in open(sys.argv[1])}))' "$work/cap/fp.log")" -eq 1
+CASE="at the end of the loop the provider's stdin was closed (the provider saw end of input) and no provider process is left"
+check test -s "$work/cap/fp.eof"
+check nothing_left cap
+agent oneproc '[{"usage":{"tokens":1},"action":{"type":"shell","command":"echo a"}},{"usage":{"tokens":1},"action":{"type":"shell","tool":"nosuchtool","args":["x"]}},{"usage":{"tokens":1},"action":{"type":"shell","command":"echo b"}},{"usage":{"tokens":1},"action":{"type":"finish","findings":[]}}]'
+CASE="a persona that finishes by itself (4 calls, one of them a refused tool) also used one provider process, saw it closed at the end, and left none"
+check test "$rc" -eq 0 -a "$(calls oneproc)" -eq 4 -a "$(starts oneproc)" -eq 1 -a -s "$work/oneproc/fp.eof"
+check nothing_left oneproc
+CASE="the provider is started lazily: a persona that fails before its first model call (a bad tools file) never starts one"
+TOOLSFILE="$work/no-such-tools-lazy.json" agent lazy '[{"usage":{"tokens":1},"action":{"type":"finish","findings":[]}}]'
+check test "$rc" -ne 0 -a "$(starts lazy)" -eq 0
+agent provclose '[{"usage":{"tokens":1},"action":{"type":"shell","command":"echo a"}},{"close":1}]'
+CASE="a provider that closes its stdout without an answer fails the agent closed (non-zero, nothing on stdout, the provider failure in stderr), makes no further call, and leaves no process"
+check test "$rc" -ne 0 -a ! -s "$work/provclose/out.json" -a "$(calls provclose)" -eq 2
+check grep -q 'persona-uat-agent: the provider' "$work/provclose/err.txt"
+check nothing_left provclose
+agent provsleep '[{"usage":{"tokens":1},"action":{"type":"shell","command":"echo a"}},{"sleep":60,"spawn":1,"usage":{"tokens":1},"action":{"type":"finish","findings":[]}}]' --provider-timeout 2
+CASE="a provider that does not answer within --provider-timeout is killed with its whole process group (its own child too): the agent raises 'the provider failed', prints no answer, makes no further call"
+check test "$rc" -ne 0 -a ! -s "$work/provsleep/out.json" -a "$(calls provsleep)" -eq 2 -a "$(starts provsleep)" -eq 1
+check grep -q 'persona-uat-agent: the provider failed' "$work/provsleep/err.txt"
+check test -s "$work/provsleep/fp.child"
+check nothing_left provsleep
+agent provdie '[{"usage":{"tokens":1},"action":{"type":"shell","command":"echo a"}},{"spawn":1,"exit":3,"stderr":"provider died"}]'
+CASE="a provider that exits non-zero mid-persona (exit 3): 'the provider failed (exit 3)' with its stderr kept, no answer, no call after it, no process left (a child it spawned too)"
+check test "$rc" -ne 0 -a ! -s "$work/provdie/out.json" -a "$(calls provdie)" -eq 2
+check grep -q 'persona-uat-agent: the provider failed (exit 3): provider died' "$work/provdie/err.txt"
+check nothing_left provdie
 BUDGET=1200 agent capexact "$STEPS"
 CASE="1200 tokens spent against a 1200 budget: no more work calls, exactly one forced finish call (4 in all), never a 5th"
 check test "$(calls capexact)" -eq 4
@@ -232,6 +279,9 @@ a = json.load(open(sys.argv[1]))
 assert any(f["kind"] == "blocking" and "did not finish within its budget" in f["text"] for f in a["findings"]), a
 assert a["tokens"] == 1200 and a["transcript"].count("$ echo step") == 3, a
 PY
+CASE="the forced finish call that fails is the 4th call of the SAME provider process, which is then gone"
+check test "$(calls capfail)" -eq 4 -a "$(starts capfail)" -eq 1
+check nothing_left capfail
 CASE="no forced call when the model finishes by itself under the reserve: a finish at call 2 ends the run with 2 calls"
 BUDGET=1000 agent capearly '[{"usage":{"tokens":100},"action":{"type":"shell","command":"echo step"}},{"usage":{"tokens":100},"action":{"type":"finish","findings":[]}}]'
 check test "$(calls capearly)" -eq 2
@@ -816,7 +866,7 @@ for tf in "$work/tools-badjson.json" "$work/tools-noshell.json" "$work/tools-tag
   nm="badtools-$(basename "$tf" .json)"
   TOOLSFILE="$tf" agent "$nm" '[{"usage":{"tokens":10},"action":{"type":"shell","command":"echo hi"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
   CASE="a bad tools file ($(basename "$tf")) fails the agent before anything runs: non-zero, no answer, the model is never called, docker never called"
-  check test "$rc" -ne 0 -a ! -s "$work/$nm/out.json" -a ! -s "$work/$nm/fp.log" -a ! -s "$work/$nm/fd.log"
+  check test "$rc" -ne 0 -a ! -s "$work/$nm/out.json" -a ! -s "$work/$nm/fp.log" -a ! -s "$work/$nm/fd.log" -a "$(starts "$nm")" -eq 0
 done
 CASE="the first model call names every action tool (shell, cosign, kubectl, gradle, maven) and tells how to use the tool, command and args fields"
 check python3 - "$work/finish/fp.log" <<'PY'
@@ -862,6 +912,9 @@ for w in ("42-marker-one", "48-marker-two", "echo $((6*7))-marker-one", "exit st
     assert w in e, (w, e)
 PY
 check test "$rc" -ne 0
+CASE="... and the failing provider call was the 3rd of one process: no 4th call, no process left"
+check test "$(calls partial)" -eq 3 -a "$(starts partial)" -eq 1
+check nothing_left partial
 
 # --- ROUND 2 (review d6r2): container lifecycle and scrubbing -----------------------------------------------------------------------------------
 # every container the agent starts carries --label persona-uat=<uuid> (handed in by the driver, one per persona); an agent without a valid label refuses to run
@@ -946,6 +999,9 @@ for c in 'crash|[{"exit":9}]' 'not-json|[{"raw":"nope"}]' 'unknown-action|[{"usa
   agent "fc-$name" "$plan"
   CASE="fail closed ($name): the agent exits non-zero and prints no answer the driver could mistake for a pass"
   check test "$rc" -ne 0 -a ! -s "$work/fc-$name/out.json"
+  CASE="fail closed ($name): the failing provider is the only call made (no further call after it) and its process is gone"
+  check test "$(calls "fc-$name")" -eq 1 -a "$(starts "fc-$name")" -eq 1
+  check nothing_left "fc-$name"
 done
 
 # --- AC5: the owner's model reaches the provider; no model name is written anywhere -----------------------------
@@ -967,6 +1023,10 @@ check none_match '[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[
 mkdir -p "$work/sdk/anthropic"
 cat >"$work/sdk/anthropic/__init__.py" <<'PY'
 import json, os
+if os.environ.get("SDK_LOG"):       # the import itself is logged: a provider with no request must never get here
+    open(os.environ["SDK_LOG"], "a").write(json.dumps({"import": True}) + "\n")
+def _calls():       # how many create() calls this process has made (the log is per process)
+    return sum(1 for l in open(os.environ["SDK_LOG"]) if '"create"' in l)
 class _Msg:
     def __init__(self, text, i, o):
         self.content = [type("B", (), {"type": "text", "text": text})()]
@@ -981,7 +1041,7 @@ class Anthropic:
                 raise RuntimeError("federation refused: the identity assertion is expired")
         self.messages = self
     def create(self, **kw):
-        if os.environ.get("SDK_RAISE"):       # CLASS:STATUS (STATUS may be the word none): the SDK raises that class, status_code set unless none; its MESSAGE holds secret-looking text
+        if os.environ.get("SDK_RAISE") and os.environ.get("SDK_RAISE_AT", str(_calls())) == str(_calls()):       # SDK_RAISE_AT=N: only the N-th create() (from 0) raises; #  CLASS:STATUS (STATUS may be the word none): the SDK raises that class, status_code set unless none; its MESSAGE holds secret-looking text
             n, st = os.environ["SDK_RAISE"].split(":")
             e = type(n, (Exception,), {})("rejected sk-abcdefghijklmnop with Bearer abc.def")
             if st != "none": e.status_code = int(st)
@@ -990,25 +1050,53 @@ class Anthropic:
                 if v is not None: setattr(e, k, v)
             raise e
         open(os.environ["SDK_LOG"], "a").write(json.dumps({"create": {k: v for k, v in kw.items()}}) + "\n")
-        return _Msg(os.environ["SDK_TEXT"], int(os.environ.get("SDK_IN", "100")), int(os.environ.get("SDK_OUT", "50")))
+        texts = json.loads(os.environ["SDK_TEXTS"]) if os.environ.get("SDK_TEXTS") else None     # SDK_TEXTS: a JSON list, the reply of the N-th create() (the last one repeats)
+        text = texts[min(_calls() - 1, len(texts) - 1)] if texts else os.environ["SDK_TEXT"]
+        return _Msg(text, int(os.environ.get("SDK_IN", "100")), int(os.environ.get("SDK_OUT", "50")))
 PY
 prov() { # <case> <model text> <request json>; sets rc; stdout in $work/<case>/out
   local name=$1; mkdir -p "$work/$name"; : >"$work/$name/sdk.log"; rc=0
   SDK_TEXT="$2" SDK_LOG="$work/$name/sdk.log" PYTHONPATH="$work/sdk" ANTHROPIC_API_KEY=SECRET-MODEL-KEY \
     python3 "$provider" <<<"$3" >"$work/$name/out" 2>"$work/$name/err" || rc=$?
 }
-# the identity token is refreshed in the background by the job (a new file content every few minutes) and every model call is a NEW process: the provider reads
-# the token file as it is at THAT call (never a copy made earlier), so a rotated file is used and a stale one is a failure that leaves nothing on stdout
+# the identity token is refreshed in the background by the job (a new file content every few minutes), and the provider is ONE process per persona that builds its SDK client once, at its first
+# request: the SDK exchanges the token file's content then, and never again in that process (an identity token is exchanged once; a second exchange is refused as jti_reused). So the file is read
+# when the client is built: a file rotated between two PROCESSES is used by the second, a file that is stale at the first request fails closed (non-zero, nothing on stdout, the refusal on stderr),
+# and a file that goes stale or is rotated later in a process is no concern of that process (no second exchange: still one client, the requests are still served).
 echo TOKEN-ONE >"$work/idfile"; echo TOKEN-ONE >"$work/idtruth"; mkdir -p "$work/p-fresh1" "$work/p-fresh2" "$work/p-stale"
 for c in p-fresh1 p-fresh2 p-stale; do : >"$work/$c/sdk.log"; done
-SDK_TEXT='{"action":"shell","command":"ls"}' SDK_LOG="$work/p-fresh1/sdk.log" SDK_TOKEN_TRUTH="$work/idtruth" ANTHROPIC_IDENTITY_TOKEN_FILE="$work/idfile" PYTHONPATH="$work/sdk" python3 "$provider" <<<'{"model":"M","system":"s","messages":[{"role":"user","content":"a"}]}' >"$work/p-fresh1/out" 2>/dev/null || true
+ONEREQ='{"model":"M","system":"s","messages":[{"role":"user","content":"a"}]}'
+SDK_TEXT='{"action":"shell","command":"ls"}' SDK_LOG="$work/p-fresh1/sdk.log" SDK_TOKEN_TRUTH="$work/idtruth" ANTHROPIC_IDENTITY_TOKEN_FILE="$work/idfile" PYTHONPATH="$work/sdk" python3 "$provider" <<<"$ONEREQ" >"$work/p-fresh1/out" 2>/dev/null || true
 echo TOKEN-TWO >"$work/idfile"; echo TOKEN-TWO >"$work/idtruth"            # the refresher re-minted: file and provider agree on the new assertion
-SDK_TEXT='{"action":"shell","command":"ls"}' SDK_LOG="$work/p-fresh2/sdk.log" SDK_TOKEN_TRUTH="$work/idtruth" ANTHROPIC_IDENTITY_TOKEN_FILE="$work/idfile" PYTHONPATH="$work/sdk" python3 "$provider" <<<'{"model":"M","system":"s","messages":[{"role":"user","content":"a"}]}' >"$work/p-fresh2/out" 2>/dev/null || true
+SDK_TEXT='{"action":"shell","command":"ls"}' SDK_LOG="$work/p-fresh2/sdk.log" SDK_TOKEN_TRUTH="$work/idtruth" ANTHROPIC_IDENTITY_TOKEN_FILE="$work/idfile" PYTHONPATH="$work/sdk" python3 "$provider" <<<"$ONEREQ" >"$work/p-fresh2/out" 2>/dev/null || true
 echo TOKEN-THREE >"$work/idtruth"                                         # the provider moved on, the file did NOT (no refresher): the assertion the file holds is stale
-rc=0; SDK_TEXT='{"action":"shell","command":"ls"}' SDK_LOG="$work/p-stale/sdk.log" SDK_TOKEN_TRUTH="$work/idtruth" ANTHROPIC_IDENTITY_TOKEN_FILE="$work/idfile" PYTHONPATH="$work/sdk" python3 "$provider" <<<'{"model":"M","system":"s","messages":[{"role":"user","content":"a"}]}' >"$work/p-stale/out" 2>"$work/p-stale/err" || rc=$?
-CASE="identity expiry across calls (fake provider that refuses a stale token file): two calls with a file that was ROTATED between them both succeed (the file is read at each call), a call whose file went stale fails closed (non-zero, nothing on stdout, the refusal on stderr)"
+rc=0; SDK_TEXT='{"action":"shell","command":"ls"}' SDK_LOG="$work/p-stale/sdk.log" SDK_TOKEN_TRUTH="$work/idtruth" ANTHROPIC_IDENTITY_TOKEN_FILE="$work/idfile" PYTHONPATH="$work/sdk" python3 "$provider" <<<"$ONEREQ" >"$work/p-stale/out" 2>"$work/p-stale/err" || rc=$?
+CASE="identity expiry (fake SDK that refuses a stale token file): a provider process started after the file was ROTATED succeeds (the file is read when the client is built), one whose file is stale at its FIRST request fails closed (non-zero, nothing on stdout, the refusal on stderr)"
 check test -s "$work/p-fresh1/out" -a -s "$work/p-fresh2/out" -a "$rc" -ne 0 -a ! -s "$work/p-stale/out"
 check grep -q 'expired' "$work/p-stale/err"
+# one process, driven through pipes: the answer to a request arrives while stdin is still open (nothing waits for the end of input), and the token the SDK exchanged is the one in the file at the FIRST request
+mkdir -p "$work/p-live"; : >"$work/p-live/sdk.log"; echo TOKEN-LIVE-1 >"$work/idfile"; echo TOKEN-LIVE-1 >"$work/idtruth"
+CASE="persistent provider, one process, requests one at a time: each answer arrives before the next request is sent and before stdin closes; the client is built once (one init), and a token file that goes stale or is rotated AFTER the first request changes nothing (no second exchange: later requests are still served); closing stdin ends it with exit 0"
+check python3 - "$provider" "$work" "$ONEREQ" <<'PY'
+import json, os, select, subprocess, sys
+prov, w, req = sys.argv[1:]
+env = dict(os.environ, SDK_TEXT='{"action":"shell","command":"ls"}', SDK_LOG=w + "/p-live/sdk.log", SDK_TOKEN_TRUTH=w + "/idtruth", ANTHROPIC_IDENTITY_TOKEN_FILE=w + "/idfile", PYTHONPATH=w + "/sdk")
+p = subprocess.Popen([sys.executable, prov], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+def ask():
+    p.stdin.write(req + "\n"); p.stdin.flush()
+    assert select.select([p.stdout], [], [], 20)[0], "no answer while stdin is open"
+    return json.loads(p.stdout.readline())
+want = {"usage": {"tokens": 150}, "action": {"type": "shell", "command": "ls"}}
+assert ask() == want
+open(w + "/idtruth", "w").write("TOKEN-LIVE-2\n")                      # the provider's side moved on; the file did not: a second exchange would be refused
+assert ask() == want
+open(w + "/idfile", "w").write("TOKEN-LIVE-3\n")                       # a rotation after the client exists: still no second exchange
+assert ask() == want
+p.stdin.close()
+assert p.wait(timeout=20) == 0 and p.stdout.read() == "", "stdin closed: exit 0 with nothing more on stdout"
+kinds = [list(json.loads(l))[0] for l in open(w + "/p-live/sdk.log")]
+assert kinds == ["import", "init", "create", "create", "create"], kinds
+PY
 REQ='{"model":"SDK-MODEL-Z","system":"be a persona","messages":[{"role":"user","content":"start"}]}'
 prov p-shell '{"action":"shell","command":"ls"}' "$REQ"
 CASE="provider: asks the SDK for the request's model, passes the system prompt and messages, and bounds max_tokens"
@@ -1066,6 +1154,71 @@ CASE="provider: a request missing its model is refused before the SDK is touched
 prov p-nomodel '{"action":"finish","findings":[]}' '{"system":"s","messages":[]}'
 check test "$rc" -ne 0 -a ! -s "$work/p-nomodel/sdk.log"
 
+# --- the provider is persistent (REQ-UAT-001-AC5): newline-delimited JSON, one answer line per request line, until stdin closes ----------------------------------------------------
+# provm <case> <input text, requests one per line>  (env SDK_TEXT / SDK_TEXTS / SDK_RAISE / SDK_RAISE_AT as for the fake SDK); sets rc; stdout $work/<case>/out, stderr .../err
+provm() {
+  local name=$1; mkdir -p "$work/$name"; : >"$work/$name/sdk.log"; rc=0
+  SDK_LOG="$work/$name/sdk.log" PYTHONPATH="$work/sdk" ANTHROPIC_API_KEY=SECRET-MODEL-KEY python3 "$provider" <<<"$2" >"$work/$name/out" 2>"$work/$name/err" || rc=$?
+}
+kinds() { python3 -c 'import json,sys; print(" ".join(list(json.loads(l))[0] for l in open(sys.argv[1])))' "$work/$1/sdk.log"; }
+R1='{"model":"MODEL-ONE","system":"sys one","messages":[{"role":"user","content":"first"}]}'
+R2='{"model":"MODEL-TWO","system":"sys two","messages":[{"role":"user","content":"first"},{"role":"assistant","content":"x"},{"role":"user","content":"second"}]}'
+R3='{"model":"MODEL-THREE","system":"sys three","messages":[{"role":"user","content":"third"}]}'
+SDK_TEXTS='["{\"action\":\"shell\",\"command\":\"ls\"}","chatter {\"action\":\"finish\",\"findings\":[{\"kind\":\"friction\",\"text\":\"slow\"}]} chatter","{\"action\":\"shell\",\"tool\":\"cosign\",\"args\":[\"version\"]}"]' SDK_IN=7 SDK_OUT=3 \
+  provm pm-three "$R1"$'\n'"$R2"$'\n'"$R3"
+CASE="persistent provider: three request lines get exactly three answer lines, in order, each parsed and counted as today (7 + 3 tokens), and end of input exits 0"
+check python3 - "$work/pm-three/out" "$work/pm-three/err" "$rc" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]).read().split("\n") if l]
+assert open(sys.argv[1]).read().endswith("\n") and len(rows) == 3, rows
+assert rows[0] == {"usage": {"tokens": 10}, "action": {"type": "shell", "command": "ls"}}, rows
+assert rows[1] == {"usage": {"tokens": 10}, "action": {"type": "finish", "findings": [{"kind": "friction", "text": "slow"}]}}, rows
+assert rows[2] == {"usage": {"tokens": 10}, "action": {"type": "shell", "tool": "cosign", "args": ["version"]}}, rows
+assert sys.argv[3] == "0" and open(sys.argv[2]).read() == ""
+PY
+CASE="persistent provider: the SDK client is built ONCE for the three requests (one import, one init, then three calls, none before the client), and each call carries its own request's model, system prompt and messages"
+check test "$(kinds pm-three)" = "import init create create create"
+check python3 - "$work/pm-three/sdk.log" <<'PY'
+import json, sys
+c = [json.loads(l)["create"] for l in open(sys.argv[1]) if '"create"' in l]
+assert [x["model"] for x in c] == ["MODEL-ONE", "MODEL-TWO", "MODEL-THREE"], c
+assert [x["system"] for x in c] == ["sys one", "sys two", "sys three"], c
+assert [len(x["messages"]) for x in c] == [1, 3, 1] and all(0 < x["max_tokens"] <= 8192 for x in c), c
+PY
+provm pm-empty ""
+CASE="persistent provider: stdin closed with no request at all exits 0 with nothing on stdout or stderr, and never imports the SDK"
+check test "$rc" -eq 0 -a ! -s "$work/pm-empty/out" -a ! -s "$work/pm-empty/err" -a ! -s "$work/pm-empty/sdk.log"
+provm pm-badfirst 'not json'$'\n'"$R1"
+CASE="persistent provider: a first request that is not JSON fails closed (exit 1, nothing on stdout, 'persona-uat-provider: the request is not JSON'), builds no client, serves nothing after it"
+check test "$rc" -eq 1 -a ! -s "$work/pm-badfirst/out" -a ! -s "$work/pm-badfirst/sdk.log"
+check grep -q '^persona-uat-provider: the request is not JSON' "$work/pm-badfirst/err"
+# a request that goes wrong AFTER a good one: the first answer is out, nothing is written for the bad one, the stderr lines are today's, the exit is 1 and the third request is never served
+for c in 'notjson|not json at all|persona-uat-provider: the request is not JSON' \
+         'nomodel|{"system":"s","messages":[{"role":"user","content":"a"}]}|persona-uat-provider: the request needs a model, a system prompt and messages' \
+         'emptymsgs|{"model":"M","system":"s","messages":[]}|persona-uat-provider: the request needs a model, a system prompt and messages'; do
+  IFS='|' read -r nm bad want <<<"$c"
+  SDK_TEXT='{"action":"shell","command":"ls"}' provm "pm-bad-$nm" "$R1"$'\n'"$bad"$'\n'"$R3"
+  CASE="persistent provider: a bad request ($nm) after a good one writes nothing for itself on stdout (only the first answer line), writes '$want' on stderr, exits 1, and the third request is not served"
+  check test "$rc" -eq 1 -a "$(wc -l <"$work/pm-bad-$nm/out" | tr -d ' ')" -eq 1 -a "$(grep -c '"create"' "$work/pm-bad-$nm/sdk.log")" -eq 1
+  check grep -qx "$want" "$work/pm-bad-$nm/err"
+  check test "$(grep -c . "$work/pm-bad-$nm/err")" -eq 1
+done
+SDK_TEXTS='["{\"action\":\"shell\",\"command\":\"ls\"}","no json at all","{\"action\":\"shell\",\"command\":\"ls\"}"]' provm pm-badreply "$R1"$'\n'"$R2"$'\n'"$R3"
+CASE="persistent provider: a reply outside the protocol on request 2 writes nothing on stdout for it (one answer line in all), exits 1 with 'persona-uat-provider: the reply holds no JSON action', and request 3 is never sent to the SDK"
+check test "$rc" -eq 1 -a "$(wc -l <"$work/pm-badreply/out" | tr -d ' ')" -eq 1 -a "$(grep -c '"create"' "$work/pm-badreply/sdk.log")" -eq 2
+check grep -qx 'persona-uat-provider: the reply holds no JSON action' "$work/pm-badreply/err"
+SDK_RAISE_AT=1 SDK_RAISE=RateLimitError:429 SDK_TEXT='{"action":"shell","command":"ls"}' provm pm-sdkerr "$R1"$'\n'"$R2"$'\n'"$R3"
+CASE="persistent provider: an SDK error on request 2 writes the fixed reason line first, then the provider's own line (today's two lines, the exception's message nowhere in the marker), nothing on stdout for it, exit 1, no third request served, one client in all"
+check test "$rc" -eq 1 -a "$(wc -l <"$work/pm-sdkerr/out" | tr -d ' ')" -eq 1 -a "$(grep -c '"create"' "$work/pm-sdkerr/sdk.log")" -eq 1 -a "$(grep -c '"init"' "$work/pm-sdkerr/sdk.log")" -eq 1
+check test "$(sed -n 1p "$work/pm-sdkerr/err")" = "persona-uat-provider-reason: RateLimitError HTTP 429"
+check test "$(sed -n 2p "$work/pm-sdkerr/err" | cut -c1-21)" = "persona-uat-provider:"
+check test "$(grep -c . "$work/pm-sdkerr/err")" -eq 2
+SDK_RAISE_AT=1 SDK_RAISE=WorkloadIdentityError:401 SDK_ERR=invalid_grant SDK_ERR_DESC=jti_reused SDK_REQ_ID=req_abc SDK_TEXT='{"action":"shell","command":"ls"}' provm pm-wie "$R1"$'\n'"$R2"
+CASE="persistent provider: a WorkloadIdentityError raised on request 2 keeps its three stderr lines (reason, detail 'invalid_grant jti_reused req_abc', own line), exit 1, one answer line on stdout"
+check test "$rc" -eq 1 -a "$(wc -l <"$work/pm-wie/out" | tr -d ' ')" -eq 1
+check test "$(sed -n 1p "$work/pm-wie/err")" = "persona-uat-provider-reason: WorkloadIdentityError HTTP 401"
+check test "$(sed -n 2p "$work/pm-wie/err")" = "persona-uat-provider-detail: invalid_grant jti_reused req_abc"
+check test "$(sed -n 3p "$work/pm-wie/err" | cut -c1-21)" = "persona-uat-provider:"
 # an SDK call that raises: the FIRST stderr line is the fixed marker `persona-uat-provider-reason: <ClassName> HTTP <status|none>` (status = the exception's status_code), then the provider's
 # own `persona-uat-provider: ...` line; exit 1, nothing on stdout; the exception's message (a token-looking string) is never in the marker line
 for rz in RateLimitError:429 APIConnectionError:none InternalServerError:503; do

@@ -7,7 +7,7 @@ stdout: {"findings": [{"kind": "blocking|friction", "text": str}], "tokens": N, 
 exit  : non-zero with NOTHING on stdout when the persona could not run (a provider that fails or leaves the protocol, a
         docker that cannot start): the driver then counts that persona as blocking, never as a pass.
 
-The loop asks the provider (one process per call) for an action: run a shell command, or finish with findings. Every
+The loop asks the provider (one process for the whole persona, one request line per call) for an action: run a shell command, or finish with findings. Every
 shell command runs in the digest-pinned shell image through the driver's docker, with a FIXED argument vector: the model
 supplies only the text after `sh -c`, never a docker option, so nothing it types can add a mount, a privilege or a
 credential. The only mount is the persona's sandbox (the public docs). The token budget is a hard, cumulative stop:
@@ -22,10 +22,13 @@ import datetime
 import json
 import os
 import re
+import select
 import shlex
 import signal
 import subprocess
 import sys
+import tempfile
+import time
 from urllib.parse import urlparse
 
 # environment handed to a child: a shell's own settings plus the docker client's; a job credential is never inherited
@@ -90,13 +93,65 @@ def valid_findings(fs):
                                          and isinstance(f["text"], str) for f in fs))
 
 
-def call_provider(cmd, model, system, messages, timeout):
-    rc, out, err, timed_out = run_bounded(cmd, json.dumps({"model": model, "system": system, "messages": messages}), timeout, child_env(True))
-    if timed_out or rc != 0:
-        raise Fail("the provider failed (exit %s): %s" % ("timeout" if timed_out else rc, clip(scrub(err.strip(), model), ERR_LIMIT)))
+class Provider:
+    """the persona's ONE provider process, started at its first call and kept to the end: its SDK client exchanges the job's identity token once (a second exchange of
+    the same token is refused, jti_reused). One request line in, one answer line out; its stderr goes to a file, read only when it fails."""
+    def __init__(self, cmd):
+        self.cmd, self.p, self.err, self.buf = cmd, None, None, b""
+
+    def stop(self):
+        """close its stdin, give it a moment to end, then end whatever of its group is left"""
+        if self.p is None:
+            return
+        try:
+            self.p.stdin.close()
+        except OSError:
+            pass
+        try:
+            self.p.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        try:
+            os.killpg(self.p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        self.p.wait()
+
+    def ask(self, line, timeout):
+        """-> (the answer line, None), or (None, the exit status or "timeout") when the provider did not answer"""
+        if self.p is None:
+            self.err = tempfile.TemporaryFile()
+            self.p = subprocess.Popen(self.cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.err, env=child_env(True), start_new_session=True)
+        deadline = time.monotonic() + timeout
+        try:
+            self.p.stdin.write(line.encode() + b"\n")
+            self.p.stdin.flush()
+        except OSError:
+            pass            # it is gone: the read below says so
+        while b"\n" not in self.buf:
+            left = deadline - time.monotonic()
+            if left <= 0 or not select.select([self.p.stdout], [], [], left)[0]:
+                return None, "timeout"
+            more = os.read(self.p.stdout.fileno(), 65536)
+            if not more:
+                self.stop()
+                return None, self.p.returncode
+            self.buf += more
+        out, _, self.buf = self.buf.partition(b"\n")
+        return out.decode("utf-8", "replace"), None
+
+
+def call_provider(provider, model, system, messages, timeout):
+    out, why = provider.ask(json.dumps({"model": model, "system": system, "messages": messages}), timeout)
+    if out is None:
+        provider.stop()
+        provider.err.seek(0)
+        err = provider.err.read().decode("utf-8", "replace")
+        raise Fail("the provider failed (exit %s): %s" % (why, clip(scrub(err.strip(), model), ERR_LIMIT)))
     try:
         a = json.loads(out)
     except ValueError:
+        provider.stop()
         raise Fail("the provider's answer is not JSON")
     tokens = a.get("usage", {}).get("tokens") if isinstance(a, dict) and isinstance(a.get("usage"), dict) else None
     act = a.get("action") if isinstance(a, dict) else None
@@ -189,7 +244,7 @@ def first_message(req):
 
 
 def main():
-    holder = []
+    holder, providers = [], []
     ap = argparse.ArgumentParser()
     ap.add_argument("--docker", required=True)
     ap.add_argument("--tools", required=True)
@@ -224,7 +279,8 @@ def main():
             raise Fail("--label is not persona-uat=<uuid>")
         docker = shlex.split(a.docker)
         # the provider is started with `python3` from PATH (never sys.executable: the SDK lives with the PATH's interpreter)
-        provider = shlex.split(a.provider_cmd) if a.provider_cmd else ["python3", os.path.join(os.path.dirname(os.path.abspath(__file__)), "persona-uat-provider.py")]
+        provider = Provider(shlex.split(a.provider_cmd) if a.provider_cmd else ["python3", os.path.join(os.path.dirname(os.path.abspath(__file__)), "persona-uat-provider.py")])
+        providers.append(provider)
         system = system_prompt(req)
         messages = [{"role": "user", "content": first_message(req)}]
         transcript, findings, ended = [], None, "finish"
@@ -324,6 +380,9 @@ def main():
             sys.stderr.write(scrub("\n".join(holder[0]), holder[1]) + "\n")
         sys.stderr.write("persona-uat-agent: %s\n" % e)
         return 1
+    finally:
+        for pr in providers:
+            pr.stop()
     sys.stdout.write(json.dumps(out))
     return 0
 
