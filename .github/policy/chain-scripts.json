@@ -907,6 +907,7 @@
     {
       "path": "bin/check-fips.sh",
       "tools": [
+        "bash",
         "curl",
         "docker",
         "python3",
@@ -918,6 +919,7 @@
       ],
       "runs": [
         "bin/check-bind.py",
+        "bin/layout-archive.sh",
         "bin/loopback-get.sh"
       ],
       "signs": false,
@@ -943,7 +945,8 @@
         "bin/acceptance-maven-capped.sh",
         "bin/acceptance-egress.sh",
         "bin/acceptance-k8s.sh",
-        "bin/check-bind.py"
+        "bin/check-bind.py",
+        "bin/layout-archive.sh"
       ],
       "signs": false,
       "reason": "Check's acceptance wrapper: runs one shared suite script against the loaded production candidate (REQ-CHAIN-006-AC5)",
@@ -1843,6 +1846,7 @@
       "path": "bin/check-artifacts.sh",
       "tools": [
         "at",
+        "bash",
         "curl",
         "docker",
         "go",
@@ -1856,6 +1860,7 @@
       "runs": [
         "bin/check-bind.py",
         "bin/check-image-platforms.py",
+        "bin/layout-archive.sh",
         "bin/loopback-get.sh"
       ],
       "signs": false,
