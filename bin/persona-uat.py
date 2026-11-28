@@ -2029,8 +2029,14 @@ def _main():
                     before = None
                 if os.environ.get("ANTHROPIC_IDENTITY_TOKEN_FILE"):
                     # a token the provider refuses a second exchange of: this persona's provider exchanges one no other persona's did, however soon after the last persona it starts
-                    mint_identity([os.environ["ANTHROPIC_IDENTITY_TOKEN_FILE"]])
-                answer, transcript, why = run_agent(agent_cmd, args, request, sandbox, persona_timeout, tfile, jfile)
+                    # exit 1 is a failed mint: the persona would start on the token the last persona already exchanged and fail as jti_reused, so it does not start. Exit 3 (the file is gone) is as the refresher treats it
+                    minted = mint_identity([os.environ["ANTHROPIC_IDENTITY_TOKEN_FILE"]])
+                else:
+                    minted = 0
+                if minted == 1:
+                    answer, transcript, why = None, "", "the identity token could not be minted for this persona, so its agent was not started"
+                else:
+                    answer, transcript, why = run_agent(agent_cmd, args, request, sandbox, persona_timeout, tfile, jfile)
                 key_ok = key_matches(sandbox, a.repo)       # read before cleanup empties the sandbox
                 # the window is closed BEHIND everything of this persona: its action containers are swept by label FIRST (whatever they were still sending is sent), THEN the sidecar is
                 # stopped (so its log holds all of it), then its tool containers and cluster are removed, THEN the counter is read once it has been unchanged for the quiet interval
