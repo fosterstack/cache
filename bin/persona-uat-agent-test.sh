@@ -1004,6 +1004,18 @@ for c in 'crash|[{"exit":9}]' 'not-json|[{"raw":"nope"}]' 'unknown-action|[{"usa
   check nothing_left "fc-$name"
 done
 
+# --- R4: an uncaught exception in the agent's main: its last stderr line names the class only, the exit is 1 and stdout is empty --------------------------------
+# an unbalanced quote in --docker (the later flag wins over the helper's own) makes shlex.split raise ValueError, a class the agent does not catch itself
+agent crashcls '[{"usage":{"tokens":1},"action":{"type":"finish","findings":[]}}]' --docker "SECRET-QUOTE-sk-abcdefghijklmnop'"
+CASE="agent crash: an uncaught exception ends the agent with exit 1 and nothing on stdout"
+check test "$rc" -eq 1 -a ! -s "$work/crashcls/out.json"
+CASE="agent crash: the last stderr line is 'persona-uat-agent: the agent crashed (ValueError)', the class name only"
+check test "$(tail -n 1 "$work/crashcls/err.txt")" = "persona-uat-agent: the agent crashed (ValueError)"
+CASE="agent crash: neither the exception's message, nor the argument it came from, nor a traceback is written"
+check none_match 'closing quotation|SECRET-QUOTE|sk-abcdefghijklmnop|Traceback' "$work/crashcls/err.txt"
+CASE="agent crash: no provider call was made"
+check test "$(calls crashcls)" -eq 0
+
 # --- AC5: the owner's model reaches the provider; no model name is written anywhere -----------------------------
 MODEL=OWNER-MODEL-Q agent model '[{"usage":{"tokens":1},"action":{"type":"finish","findings":[]}}]'
 CASE="the model named in the request is exactly what the provider is asked to use"

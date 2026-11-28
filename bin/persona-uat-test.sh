@@ -119,9 +119,9 @@
 #       The gradle/maven entrypoint models are the FAKE's (program first; the exact exit status and text of a real digest's failure cannot be checked offline).
 set -euo pipefail
 SEG_SHARDS=3
-# The cases each shard must pass: counted from the unsharded suite (722 in all) and checked by the gate, so a case that is skipped, run twice, moved out of its section or
+# The cases each shard must pass: counted from the unsharded suite (734 in all) and checked by the gate, so a case that is skipped, run twice, moved out of its section or
 # made by another shard fails the step. A case added or removed changes a shard's number: the gate names it, and this line is updated with the case.
-SEG_CASES="221 195 324"
+SEG_CASES="221 195 336"
 SEG_DEADLINE=${PERSONA_UAT_SHARD_DEADLINE:-3000}   # seconds one shard may run; a hung shard is killed (its whole process group) and counts as failed (exit 124)
 # SHARDS. Run plain, this script runs the driver suite as SEG_SHARDS shards at once (PERSONA_UAT_SHARD=I/N each, below), prints their outputs one after the other and
 # fails unless every shard passed and the shards together ran every section of this file exactly once (the gate). PERSONA_UAT_SHARD=I/N runs one shard;
@@ -2464,15 +2464,15 @@ check publiclog rsnlong
 check test "$(reason_of rsnlong gradle-platform-engineer | wc -c | tr -d ' ')" -le 201 -a "$(reason_of rsnlong gradle-platform-engineer | wc -l | tr -d ' ')" -eq 1
 # the marker string in the transcript (which comes first in the agent's stderr) before the real failure, and a marker of the wrong shape in the failure line: neither reaches the log
 run rsntrans '{"gradle-platform-engineer":{"crash":true,"crash_lines":["persona-uat-provider-reason: FakeTranscriptError HTTP 418","persona-uat-agent: the provider failed (exit 1): persona-uat-provider-reason: LeakedText sk-abcdefghijklmnop HTTP 500","persona-uat-agent: the provider failed (exit 1): the provider timed out"]},"maven-jenkins-ci":{"crash":true,"crash_lines":["persona-uat-provider-reason: FakeTranscriptError HTTP 418","persona-uat-agent: the provider failed (exit 1): persona-uat-provider-reason: Bad Shape sk-abcdefghijklmnop"]}}' rc
-CASE="reason: a marker in the transcript, or one that is not '<ClassName> HTTP <3 digits or none>', adds no suffix: the reason is 'the agent failed (exit N)' and nothing else"
+CASE="reason: a marker in the transcript, or one that is not '<ClassName> HTTP <3 digits or none>', adds no marker suffix: the cause is the last agent line cut at its first ': ' ('the provider failed (exit 1)') and nothing after it"
 check publiclog rsntrans
-check test "$(reason_of rsntrans gradle-platform-engineer)" = "the agent failed (exit 7)" -a "$(reason_of rsntrans maven-jenkins-ci)" = "the agent failed (exit 7)"
+check test "$(reason_of rsntrans gradle-platform-engineer)" = "the agent failed (exit 7): the provider failed (exit 1)" -a "$(reason_of rsntrans maven-jenkins-ci)" = "the agent failed (exit 7): the provider failed (exit 1)"
 check none_match 'FakeTranscriptError|LeakedText|sk-abcdefghijklmnop|Bad Shape' "$work/rsntrans/stdout" "$work/rsntrans/stderr" "$work/rsntrans/summary.md"
 # a well-formed marker line in the transcript, then a failure of another kind: the agent's last "persona-uat-agent: " line is not a provider failure, so the reason has no suffix and the forged class name is nowhere in the logs
 run rsnforge '{"gradle-platform-engineer":{"crash":true,"crash_lines":["persona-uat-agent: the provider failed (exit 1): persona-uat-provider-reason: ForgedClassName HTTP 418","persona-uat-agent: the provider'"'"'s answer is not JSON"]}}' rc
-CASE="reason: a well-formed marker line in the transcript followed by a failure of another kind adds no suffix: the reason is 'the agent failed (exit N)' and the forged class name is in no log"
+CASE="reason: a well-formed marker line in the transcript followed by a failure of another kind: the cause is the LAST agent line's ('the provider's answer is not JSON') and the forged class name is in no log"
 check publiclog rsnforge
-check test "$(reason_of rsnforge gradle-platform-engineer)" = "the agent failed (exit 7)"
+check test "$(reason_of rsnforge gradle-platform-engineer)" = "the agent failed (exit 7): the provider's answer is not JSON"
 check none_match 'ForgedClassName' "$work/rsnforge/stdout" "$work/rsnforge/stderr" "$work/rsnforge/summary.md"
 # the provider's detail line (WorkloadIdentityError only), directly after the agent's failure line, is appended to the reason
 F1='persona-uat-agent: the provider failed (exit 1): persona-uat-provider-reason: WorkloadIdentityError HTTP 401'
@@ -2486,7 +2486,7 @@ CASE="reason: a detail line after another class, before the failure line, behind
 check publiclog rsndet
 check test "$(reason_of rsndet gradle-platform-engineer)" = "the agent failed (exit 7): RateLimitError HTTP 429"
 check test "$(reason_of rsndet maven-jenkins-ci)" = "the agent failed (exit 7): WorkloadIdentityError HTTP 401"
-check test "$(reason_of rsndet on-call-engineer)" = "the agent failed (exit 7)" -a "$(reason_of rsndet readme-evaluator)" = "the agent failed (exit 7)"
+check test "$(reason_of rsndet on-call-engineer)" = "the agent failed (exit 7): the provider's answer is not JSON" -a "$(reason_of rsndet readme-evaluator)" = "the agent failed (exit 7): another line"
 check none_match 'LEAKED' "$work/rsndet/stdout" "$work/rsndet/stderr" "$work/rsndet/summary.md"
 # end to end with the real agent: the provider's detail line holds a token, the agent scrubs its stderr, and the driver's reading of that stderr carries [scrubbed], not the token
 mkdir -p "$work/e2e"; cat >"$work/e2e/prov.py" <<'PY'
@@ -2537,6 +2537,29 @@ P = "persona-uat-provider-detail: "
 r = m.provider_reason("%s\n%sTRANSCRIPT-TEXT\n%s\n%sREAL-DETAIL\n" % (F, P, F, P))
 assert r == ": WorkloadIdentityError HTTP 401 REAL-DETAIL", r
 PY
+# R1-R3: the cause of a failed agent is the text of its LAST "persona-uat-agent: " line up to the first ": ", cut to 100 printable ASCII characters
+L150=$(printf 'X%.0s' $(seq 150))
+run rsncause '{"gradle-platform-engineer":{"crash":true,"crash_lines":["persona-uat-agent: the provider'"'"'s answer is not JSON"]},"maven-jenkins-ci":{"crash":true,"crash_lines":["persona-uat-agent: the provider failed (exit 1): persona-uat-provider: the reply holds no JSON action"]},"on-call-engineer":{"crash":true,"crash_lines":["persona-uat-agent: the agent crashed (ValueError)"]},"readme-evaluator":{"crash":true,"crash_lines":["persona-uat-agent: the provider failed (exit 3): docker said sk-abcdefghijklmnop at /home/runner/secret/path Bearer abc.def ghp_abcdefghij0123456789ABCDEF"]}}' rc
+CASE="reason: the cause of a failed agent follows 'the agent failed (exit N): ' and is its last 'persona-uat-agent: ' line up to the first ': ' (a fixed agent text, a crash class, a provider exit without its stderr)"
+check publiclog rsncause
+check test "$(reason_of rsncause gradle-platform-engineer)" = "the agent failed (exit 7): the provider's answer is not JSON" -a "$(reason_of rsncause on-call-engineer)" = "the agent failed (exit 7): the agent crashed (ValueError)" -a "$(reason_of rsncause readme-evaluator)" = "the agent failed (exit 7): the provider failed (exit 3)"
+CASE="reason: a provider exit with no marker and a fixed provider message shows 'the provider failed (exit N): <message>'"
+check test "$(reason_of rsncause maven-jenkins-ci)" = "the agent failed (exit 7): the provider failed (exit 1): the reply holds no JSON action"
+CASE="reason: nothing after the first ': ' of the agent's line (docker stderr, a path, a token) reaches any log"
+check none_match 'sk-abcdefghijklmnop|/home/runner|Bearer|ghp_abcdefghij|docker said' "$work/rsncause/stdout" "$work/rsncause/stderr" "$work/rsncause/summary.md"
+run rsncut '{"gradle-platform-engineer":{"crash":true,"crash_lines":["persona-uat-agent: '"$L150"'"]},"maven-jenkins-ci":{"crash":true,"crash_lines":["persona-uat-agent: the provider failed (exit 1): persona-uat-provider: '"$L150"'"]},"on-call-engineer":{"crash":true,"crash_lines":["persona-uat-agent: café failed"]},"readme-evaluator":{"crash":true,"crash_lines":["persona-uat-agent: the provider failed (exit 1): persona-uat-provider: bad é text"]}}' rc
+CASE="reason: the cause is cut to 100 characters (also the provider message of the fixed-message form), and a line with non-ASCII characters yields no cause"
+check publiclog rsncut
+check test "$(reason_of rsncut gradle-platform-engineer)" = "the agent failed (exit 7): $(printf 'X%.0s' $(seq 100))"
+check test "$(reason_of rsncut maven-jenkins-ci)" = "the agent failed (exit 7): the provider failed (exit 1): $(printf 'X%.0s' $(seq 100))"
+check test "$(reason_of rsncut on-call-engineer)" = "the agent failed (exit 7)" -a "$(reason_of rsncut readme-evaluator)" = "the agent failed (exit 7)"
+# R1, R5: only the LAST agent line counts; transcript text, forged agent lines and secrets in stderr never reach the reason
+run rsnlast '{"gradle-platform-engineer":{"crash":true,"leak":true,"crash_lines":["persona-uat-agent: FORGED-CAUSE-ONE","$ cat /etc/shadow sk-abcdefghijklmnop","persona-uat-agent: the agent crashed (OSError): [Errno 2] /srv/secret/ghp_abcdefghij0123456789ABCDEF Bearer abc.def","some later transcript line: persona-uat-agent: FORGED-MID-LINE"]},"maven-jenkins-ci":{"crash":true,"crash_lines":["persona-uat-agent: the provider failed (exit 1): persona-uat-provider: the reply holds no JSON action","persona-uat-provider: {\"command\": \"echo sk-abcdefghijklmnop\"}","no agent line here"]}}' rc
+CASE="reason: the cause comes from the last 'persona-uat-agent: ' line only (a forged earlier one, a mid-line one, shell output and a provider's stderr never reach the reason)"
+check publiclog rsnlast
+check test "$(reason_of rsnlast gradle-platform-engineer)" = "the agent failed (exit 7): the agent crashed (OSError)"
+check test "$(reason_of rsnlast maven-jenkins-ci)" = "the agent failed (exit 7): the provider failed (exit 1): the reply holds no JSON action"
+check none_match 'FORGED|sk-abcdefghijklmnop|ghp_abcdefghij|Bearer|Errno|/etc/shadow|/srv/secret|echo ' "$work/rsnlast/stdout" "$work/rsnlast/stderr" "$work/rsnlast/summary.md"
 # a blocking finding: its text, the first or any other, stays in the encrypted report; the log has the fixed driver text
 run rsnfind '{"gradle-platform-engineer":{"findings":[{"kind":"friction","text":"FRICTION-FIRST"},{"kind":"blocking","text":"BLOCK-FIRST-LINE\nBLOCK-SECOND-LINE"},{"kind":"blocking","text":"BLOCK-OTHER"}]},"maven-jenkins-ci":{"findings":[{"kind":"blocking","text":"'"$(printf 'L%.0s' $(seq 300))"'"}]}}' rc
 CASE="reason: a persona that ran and ended blocking shows the fixed driver text, never any finding's text"

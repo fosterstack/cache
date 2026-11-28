@@ -380,6 +380,9 @@ def main():
             sys.stderr.write(scrub("\n".join(holder[0]), holder[1]) + "\n")
         sys.stderr.write("persona-uat-agent: %s\n" % e)
         return 1
+    except Exception as e:      # the class alone: its message can quote a request or a path
+        sys.stderr.write("persona-uat-agent: the agent crashed (%s)\n" % type(e).__name__)
+        return 1
     finally:
         for pr in providers:
             pr.stop()
