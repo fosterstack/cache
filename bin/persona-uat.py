@@ -794,6 +794,21 @@ def provider_reason(err):
     return ""
 
 
+def agent_cause(err):
+    """": <cause>" from the agent's LAST "persona-uat-agent: " stderr line (written after the transcript, so transcript text cannot forge it), or "". The cause is that line's text up to its
+    first ": " (what follows can hold docker stderr, a path or an exception message), 100 printable ASCII characters at most. A provider's own fixed-message exit
+    ("the provider failed (exit N): persona-uat-provider: <msg>") also gives its msg, cut the same way."""
+    lines = [l for l in err.split("\n") if l.startswith("persona-uat-agent: ")]
+    if not lines:
+        return ""
+    text = lines[-1][len("persona-uat-agent: "):]
+    head, _, rest = text.partition(": ")
+    head = head[:100]
+    if head.startswith("the provider failed (exit ") and rest.startswith("persona-uat-provider: "):
+        head += ": " + rest[len("persona-uat-provider: "):][:100]
+    return ": " + head if head and head.isascii() and head.isprintable() else ""
+
+
 def run_agent(agent_cmd, agent_args, request, sandbox, timeout, tfile=None, jfile=None):
     """-> (answer or None, transcript (text or a TranscriptFile), failure reason or None). The agent's stderr is kept for the encrypted transcript only; the actions it completed
     before a timeout or a failure come from its streamed transcript file. Whatever the agent left running is killed on EVERY exit: its window must end with nothing of it alive."""
@@ -810,7 +825,7 @@ def run_agent(agent_cmd, agent_args, request, sandbox, timeout, tfile=None, jfil
         kill_group(p)          # on EVERY exit, whatever communicate() raised
     if p.returncode != 0:
         why = "the agent failed (exit %d)" % p.returncode
-        why += provider_reason(err)
+        why += provider_reason(err) or agent_cause(err)
         return None, TranscriptFile("agent failed (exit %d)\n%s\n" % (p.returncode, err[-200000:]), tfile, jfile), why
     try:
         return validate_answer(out), None, None
