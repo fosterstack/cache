@@ -74,6 +74,12 @@ jobs:
         run: |
           python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt
           python3 -m pip --version
+      # Dependabot bumps the versions of the hash-pinned adjudicator file and keeps the old hashes (#1071); the allowlist job
+      # that also checks it runs on push only, so main broke after the merge. Checking here fails the pull request instead.
+      - name: adjudicator requirements — the hashes match the pinned versions
+        run: |
+          python3 -m pip install --quiet --dry-run --ignore-installed --require-hashes --only-binary=:all: \
+            --target "$RUNNER_TEMP/resolve-check" -r .github/agent/adjudicator-requirements.txt
       - name: auditor Python coverage — zero uncovered (REQ-AUD-18 AC2)
         run: |
           set -euo pipefail

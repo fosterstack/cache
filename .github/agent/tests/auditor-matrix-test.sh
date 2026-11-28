@@ -3474,6 +3474,20 @@ RQ
 )"
 eq "$rq" "OK" && ok || no "requirements resolve step in the required job + pydantic group" "$rq"
 
+begin "req18-adjudicator-hashes-checked-on-pull-requests" "a pull request that changes the hash-pinned adjudicator requirements fails a check that runs on the pull request (Dependabot left old hashes and main broke at the push-only allowlist job): the test job has exactly one step that dry-run installs it with --require-hashes"
+ah="$(python3 - <<'AH'
+import sys; sys.path.insert(0,".github/agent/fixtures/testlib")
+import pyyaml as yaml
+j=yaml.safe_load(open(".github/workflows/ci.yml"))["jobs"]["test"]
+st=[x for x in j["steps"] if "adjudicator-requirements.txt" in x.get("run","")]
+r=st[0].get("run","") if len(st)==1 else ""
+ok=(len(st)==1 and "if" not in j and "if" not in st[0] and "continue-on-error" not in st[0]
+    and all(f in r for f in ("--dry-run","--require-hashes","--only-binary=:all:","--ignore-installed")))
+print("OK" if ok else "BAD steps=%d"%len(st))
+AH
+)"
+eq "$ah" "OK" && ok || no "one unconditional test-job step dry-running adjudicator-requirements.txt with --require-hashes" "$ah"
+
 begin "req18-ac3-no-record-requirement" "no change needs a review record in this repository: the record-judging \
 script is gone, the passed-audit judge occurs once in the workflow (the record writer's last step), and no job of the \
 workflow runs on a pull request event"
