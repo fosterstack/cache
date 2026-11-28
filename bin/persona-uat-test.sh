@@ -121,7 +121,7 @@ set -euo pipefail
 SEG_SHARDS=3
 # The cases each shard must pass: counted from the unsharded suite (722 in all) and checked by the gate, so a case that is skipped, run twice, moved out of its section or
 # made by another shard fails the step. A case added or removed changes a shard's number: the gate names it, and this line is updated with the case.
-SEG_CASES="221 190 314"
+SEG_CASES="221 195 324"
 SEG_DEADLINE=${PERSONA_UAT_SHARD_DEADLINE:-3000}   # seconds one shard may run; a hung shard is killed (its whole process group) and counts as failed (exit 124)
 # SHARDS. Run plain, this script runs the driver suite as SEG_SHARDS shards at once (PERSONA_UAT_SHARD=I/N each, below), prints their outputs one after the other and
 # fails unless every shard passed and the shards together ran every section of this file exactly once (the gate). PERSONA_UAT_SHARD=I/N runs one shard;
@@ -346,6 +346,10 @@ for d, ds, fs in os.walk(req["docs_dir"]):
 with open(os.path.join(case, "log"), "a") as fh:
     fh.write(json.dumps({"persona": req["persona"], "docs": seen, "keys": sorted(req), "request": req,
                          "env": sorted(os.environ), "cwd": os.getcwd(), "raw_len": len(raw), "argv": sys.argv[2:], "content": content, "links": links, "modes": modes}) + "\n")
+tf_ = os.environ.get("ANTHROPIC_IDENTITY_TOKEN_FILE")      # the identity token file's content at the START of this agent (the driver mints before it starts each persona's agent)
+if tf_ and os.path.isfile(tf_):
+    with open(os.path.join(case, "idseen"), "a") as fh:
+        fh.write(json.dumps({"persona": req["persona"], "token": open(tf_).read()}) + "\n")
 import time, urllib.request, urllib.error, re
 def local_url(u):
     """the persona reaches its endpoint BY NAME on a docker network; this fixture has no such network, so a name the fake docker was given with a published port is mapped to that loopback port"""
@@ -1298,6 +1302,20 @@ class H(BaseHTTPRequestHandler):
 ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
 PY
 python3 "$work/srvfix.py" 18080 "$work" >/dev/null 2>&1 & SRV1=$!
+# the default OIDC endpoint of run(): always answers a token, so the driver's mint before each agent succeeds unless a case sets its own endpoint
+cat >"$work/oidcdef.py" <<'PY'
+import http.server, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        body = b'{"value": "DEFAULT-MINTED-TOKEN"}'
+        self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+open(sys.argv[1], "w").write("%d\n" % srv.server_address[1])
+srv.serve_forever()
+PY
+python3 "$work/oidcdef.py" "$work/oidcdef.port" & SRVOIDC=$!
+for _ in $(seq 100); do [ -s "$work/oidcdef.port" ] && break; sleep 0.1; done
 cat >"$work/jenfix.py" <<'PY'
 # Jenkins (18081): a static server that, once armed (/__arm?s=N), answers 503 to every request for N seconds from the first one after arming (real Jenkins answers 503 while starting, 30-90s), then 200
 import json, os, sys, time, urllib.parse
@@ -1327,7 +1345,7 @@ class H(SimpleHTTPRequestHandler):
 ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
 PY
 python3 "$work/jenfix.py" 18081 "$work" >/dev/null 2>&1 & SRV2=$!
-trap 'kill $SRV1 $SRV2 $(cat "$work/runner.pid" 2>/dev/null) 2>/dev/null; rm -rf "$work"' EXIT
+trap 'kill $SRV1 $SRV2 $SRVOIDC $(cat "$work/runner.pid" 2>/dev/null) 2>/dev/null; rm -rf "$work"' EXIT
 srvctl() { python3 -c "import sys,urllib.request,urllib.parse;u='http://127.0.0.1:18080/'+sys.argv[1]+('?'+urllib.parse.urlencode({sys.argv[2]:sys.argv[3]}) if len(sys.argv)>2 else '');urllib.request.urlopen(u,timeout=5).read()" "$@"; }
 echo ours-18080 >"$work/ours-18080.txt"; echo ours-18081 >"$work/ours-18081.txt"; true
 for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -1383,6 +1401,7 @@ run() {
   rm -f "$work/$name/srv.log"; srvctl __case dir "$work/$name"
   sed -i.bak "2i\\
 . \"$work/$name/docker.env\"" "$work/$name/docker"; rm -f "$work/$name/docker.bak"
+  echo DEFAULT-SEED >"$work/$name/idfile"
   rc=0
   local tw=(); [ -n "${RUN_TIMEOUT:-}" ] && tw=(perl -e 'alarm shift; exec @ARGV' "$RUN_TIMEOUT")
   # the counter's settle window is 3.0s of quiet with a 20s ceiling by DEFAULT; the cases use shorter ones (SETTLE_QUIET, SETTLE_MAX) except where SETTLE_DEFAULT=1 (the stated bounds)
@@ -1390,12 +1409,12 @@ run() {
   local t_start=$SECONDS
   env -u PERSONA_UAT_TOKEN_BUDGET TMPDIR="$work/$name/tmp" GITHUB_STEP_SUMMARY="$work/$name/summary.md" GITHUB_RUN_ID=4242 GITHUB_REPOSITORY=own/cache \
       GITHUB_TOKEN=SECRET-GH-TOKEN GH_TOKEN=SECRET-GH2 AWS_SECRET_ACCESS_KEY=SECRET-AWS-KEY REPO_CHECKOUT="$repo" \
-      GITHUB_WORKSPACE="$repo" ACTIONS_ID_TOKEN_REQUEST_TOKEN=SECRET-OIDC ACTIONS_ID_TOKEN_REQUEST_URL=http://oidc.invalid \
-      ACTIONS_RUNTIME_TOKEN=SECRET-RT ANTHROPIC_API_KEY=ALLOWED-MODEL-CRED ANTHROPIC_IDENTITY_TOKEN_FILE=/x/token SOME_UNKNOWN_SECRET=SECRET-UNK AWS_SESSION_TOKEN=SECRET-AWS2 \
+      GITHUB_WORKSPACE="$repo" ACTIONS_ID_TOKEN_REQUEST_TOKEN=SECRET-OIDC ACTIONS_ID_TOKEN_REQUEST_URL="http://127.0.0.1:$(cat "$work/oidcdef.port")/token?api-version=2.0" \
+      ACTIONS_RUNTIME_TOKEN=SECRET-RT ANTHROPIC_API_KEY=ALLOWED-MODEL-CRED ANTHROPIC_IDENTITY_TOKEN_FILE="$work/$name/idfile" SOME_UNKNOWN_SECRET=SECRET-UNK AWS_SESSION_TOKEN=SECRET-AWS2 \
       ANTHROPIC_FEDERATION_RULE_ID=f1 ANTHROPIC_ORGANIZATION_ID=o1 ANTHROPIC_SERVICE_ACCOUNT_ID=s1 ANTHROPIC_WORKSPACE_ID=w1 \
       GITHUB_SERVER_URL=https://github.com RUNNER_TEMP=/r ACTIONS_CACHE_URL=http://c.invalid GH_ENTERPRISE_TOKEN=SECRET-GHE \
       PERSONA_UAT_MODEL=MODEL-DEFAULT-X PERSONA_UAT_COMPLIANCE_MODEL=MODEL-COMPLIANCE-X PATH="$work/$name/hostbin:$PATH" "$@" \
-      ${tw[@]+"${tw[@]}"} bash -c 'cd "$1" && shift && exec "$@"' _ "$work/plain" python3 "$driver" --mode "$mode" --image "${IMAGE:-$IMG}" --repo "$repo" --out "$work/$name/out" \
+      ${tw[@]+"${tw[@]}"} bash -c '[ -z "$RUN_UNSET" ] || unset "$RUN_UNSET"; cd "$1" && shift && exec "$@"' _ "$work/plain" python3 "$driver" --mode "$mode" --image "${IMAGE:-$IMG}" --repo "$repo" --out "$work/$name/out" \
         --tools "${TOOLS:-$work/tools.json}" --docker "$work/$name/docker" --recipient "${RECIPIENT:-$work/test.pem}" --port "${PORT:-18080}" --ready-timeout "${READY_TIMEOUT:-5}" \
         --agent "python3 $work/stub.py $work/$name" --proc-net "$pnet" ${ALLOW_LISTEN:+--allow-listen $ALLOW_LISTEN} ${AGENT_TIMEOUT:+--agent-timeout $AGENT_TIMEOUT} ${sflags[@]+"${sflags[@]}"} ${JOB_BUDGET:+--job-budget $JOB_BUDGET} ${MIN_PERSONA:+--min-persona-seconds $MIN_PERSONA} >"$work/$name/stdout" 2>"$work/$name/stderr" || rc=$?
   RUNSECS=$((SECONDS - t_start))
@@ -2455,6 +2474,69 @@ CASE="reason: a well-formed marker line in the transcript followed by a failure 
 check publiclog rsnforge
 check test "$(reason_of rsnforge gradle-platform-engineer)" = "the agent failed (exit 7)"
 check none_match 'ForgedClassName' "$work/rsnforge/stdout" "$work/rsnforge/stderr" "$work/rsnforge/summary.md"
+# the provider's detail line (WorkloadIdentityError only), directly after the agent's failure line, is appended to the reason
+F1='persona-uat-agent: the provider failed (exit 1): persona-uat-provider-reason: WorkloadIdentityError HTTP 401'
+run rsnwie '{"gradle-platform-engineer":{"crash":true,"crash_lines":["'"$F1"'","persona-uat-provider-detail: invalid_grant jti_reused req_abc"]}}' rc
+CASE="reason: a WorkloadIdentityError failure line followed directly by a detail line shows 'WorkloadIdentityError HTTP 401 invalid_grant jti_reused req_abc'"
+check publiclog rsnwie
+check test "$(reason_of rsnwie gradle-platform-engineer)" = "the agent failed (exit 7): WorkloadIdentityError HTTP 401 invalid_grant jti_reused req_abc"
+# other classes, a detail line in the transcript before the failure line, and one behind a failure line of another kind add nothing
+run rsndet '{"gradle-platform-engineer":{"crash":true,"crash_lines":["persona-uat-agent: the provider failed (exit 1): persona-uat-provider-reason: RateLimitError HTTP 429","persona-uat-provider-detail: LEAKED-OTHER-CLASS x y"]},"maven-jenkins-ci":{"crash":true,"crash_lines":["persona-uat-provider-detail: LEAKED-TRANSCRIPT x y","'"$F1"'"]},"on-call-engineer":{"crash":true,"crash_lines":["persona-uat-provider-detail: LEAKED-FORGED x y","persona-uat-agent: the provider'"'"'s answer is not JSON"]},"readme-evaluator":{"crash":true,"crash_lines":["'"$F1"'","persona-uat-agent: another line","persona-uat-provider-detail: LEAKED-NOT-NEXT x y"]}}' rc
+CASE="reason: a detail line after another class, before the failure line, behind a failure of another kind, or not directly after the failure line adds nothing"
+check publiclog rsndet
+check test "$(reason_of rsndet gradle-platform-engineer)" = "the agent failed (exit 7): RateLimitError HTTP 429"
+check test "$(reason_of rsndet maven-jenkins-ci)" = "the agent failed (exit 7): WorkloadIdentityError HTTP 401"
+check test "$(reason_of rsndet on-call-engineer)" = "the agent failed (exit 7)" -a "$(reason_of rsndet readme-evaluator)" = "the agent failed (exit 7)"
+check none_match 'LEAKED' "$work/rsndet/stdout" "$work/rsndet/stderr" "$work/rsndet/summary.md"
+# end to end with the real agent: the provider's detail line holds a token, the agent scrubs its stderr, and the driver's reading of that stderr carries [scrubbed], not the token
+mkdir -p "$work/e2e"; cat >"$work/e2e/prov.py" <<'PY'
+import sys
+sys.stdin.read()
+sys.stderr.write("persona-uat-provider-reason: WorkloadIdentityError HTTP 401\npersona-uat-provider-detail: invalid_grant key=ghp_abcdefghij0123456789ABCDEF req_abc\npersona-uat-provider: WorkloadIdentityError: refused\n")
+sys.exit(1)
+PY
+CASE="reason: the real agent's scrubbed stderr, read by provider_reason(), gives the detail with [scrubbed] and never the token"
+check python3 - "$driver" "$root/bin/persona-uat-agent.py" "$work/e2e/prov.py" "$work/e2e" "$work/tools.json" <<'PY'
+import importlib.util, json, subprocess, sys
+drv, agent, prov, d, tools = sys.argv[1:6]
+spec = importlib.util.spec_from_file_location("persona_uat_e2e", drv)
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+req = {"persona": "readme-evaluator", "instructions": "x", "docs_dir": d, "endpoint": "http://127.0.0.1:18080", "image": "x@sha256:" + "a" * 64, "model": "M", "token_budget": 1000, "tools": {}}
+r = subprocess.run([sys.executable, agent, "--docker", "/bin/false", "--tools", tools, "--label", "persona-uat=11111111-2222-3333-4444-555555555555", "--network", "container:persona-uat-0a1b2c3d-holder", "--provider-cmd", sys.executable + " " + prov],
+                   input=json.dumps(req), capture_output=True, text=True, cwd=d)
+assert r.returncode != 0 and r.stdout == "", (r.returncode, r.stdout, r.stderr)
+assert "ghp_abcdefghij" not in r.stderr, r.stderr
+t = m.provider_reason(r.stderr)
+assert t == ": WorkloadIdentityError HTTP 401 invalid_grant key=[scrubbed] req_abc", (t, r.stderr)
+PY
+CASE="reason: provider_reason() adds the detail remainder cut to 200 characters, and nothing for another class, a detail not next, or a line without the prefix"
+check python3 - "$driver" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("persona_uat_under_test", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+F = "persona-uat-agent: the provider failed (exit 1): persona-uat-provider-reason: WorkloadIdentityError HTTP 401"
+P = "persona-uat-provider-detail: "
+assert m.provider_reason("%s\n%sinvalid_grant jti_reused req_abc\n" % (F, P)) == ": WorkloadIdentityError HTTP 401 invalid_grant jti_reused req_abc"
+long = "d" * 500
+r = m.provider_reason("%s\n%s%s\n" % (F, P, long))
+assert r == ": WorkloadIdentityError HTTP 401 " + "d" * 200, r
+r = m.provider_reason("%s\n%s%s" % (F, P, long))
+assert r == ": WorkloadIdentityError HTTP 401 " + "d" * 200, r
+assert m.provider_reason("%s\nother line\n%sx y z\n" % (F, P)) == ": WorkloadIdentityError HTTP 401"
+assert m.provider_reason("%s\nx y z\n" % F) == ": WorkloadIdentityError HTTP 401"
+assert m.provider_reason("persona-uat-agent: the provider failed (exit 1): persona-uat-provider-reason: RateLimitError HTTP 429\n%sx y z\n" % P) == ": RateLimitError HTTP 429"
+assert m.provider_reason("%sx y z\n%s\n" % (P, F)) == ": WorkloadIdentityError HTTP 401"
+PY
+CASE="reason: provider_reason() reads the detail after the last failure line, never after an identical earlier copy of it in the transcript"
+check python3 - "$driver" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("persona_uat_under_test", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+F = "persona-uat-agent: the provider failed (exit 1): persona-uat-provider-reason: WorkloadIdentityError HTTP 401"
+P = "persona-uat-provider-detail: "
+r = m.provider_reason("%s\n%sTRANSCRIPT-TEXT\n%s\n%sREAL-DETAIL\n" % (F, P, F, P))
+assert r == ": WorkloadIdentityError HTTP 401 REAL-DETAIL", r
+PY
 # a blocking finding: its text, the first or any other, stays in the encrypted report; the log has the fixed driver text
 run rsnfind '{"gradle-platform-engineer":{"findings":[{"kind":"friction","text":"FRICTION-FIRST"},{"kind":"blocking","text":"BLOCK-FIRST-LINE\nBLOCK-SECOND-LINE"},{"kind":"blocking","text":"BLOCK-OTHER"}]},"maven-jenkins-ci":{"findings":[{"kind":"blocking","text":"'"$(printf 'L%.0s' $(seq 300))"'"}]}}' rc
 CASE="reason: a persona that ran and ended blocking shows the fixed driver text, never any finding's text"
@@ -3232,7 +3314,7 @@ ROLE_WORDS = (("gradle", ("you are a first-time user, a gradle platform engineer
 class Anthropic:
     def __init__(self, *a, **k):
         tf = os.environ.get("ANTHROPIC_IDENTITY_TOKEN_FILE")
-        if not tf or not os.path.isfile(tf) or open(tf).read().strip() != "FIXTURE-OIDC-TOKEN":
+        if not tf or not os.path.isfile(tf) or open(tf).read().strip() != "DEFAULT-MINTED-TOKEN":
             raise RuntimeError("identity token file missing or wrong: federated authentication is not usable")
         open(LOG, "a").write(json.dumps({"init": {"has_key": "ANTHROPIC_API_KEY" in os.environ,
             "token_file": os.environ.get("ANTHROPIC_IDENTITY_TOKEN_FILE"), "fed": [os.environ.get(x) for x in
@@ -3268,7 +3350,7 @@ mkdir -p "$work/integ"; echo FIXTURE-OIDC-TOKEN >"$work/integ/token"; : >"$work/
 sed "s#__LOG__#$work/integ/docker.log#" "$work/docker.tmpl" >"$work/integ/docker"; chmod +x "$work/integ/docker"; mkhost "$work/integ"
 ( cd "$root" && env -u PERSONA_UAT_TOKEN_BUDGET -u ANTHROPIC_API_KEY PATH="$work/pybin:$work/integ/hostbin:$PATH" GITHUB_RUN_ID=4242 \
     PERSONA_UAT_MODEL=INTEG-DEFAULT PERSONA_UAT_COMPLIANCE_MODEL=INTEG-COMPLIANCE \
-    ANTHROPIC_IDENTITY_TOKEN_FILE="$work/integ/token" ANTHROPIC_FEDERATION_RULE_ID=f1 ANTHROPIC_ORGANIZATION_ID=o1 \
+    ACTIONS_ID_TOKEN_REQUEST_URL="http://127.0.0.1:$(cat "$work/oidcdef.port")/token?api-version=2.0" ACTIONS_ID_TOKEN_REQUEST_TOKEN=REQ-TOKEN ANTHROPIC_IDENTITY_TOKEN_FILE="$work/integ/token" ANTHROPIC_FEDERATION_RULE_ID=f1 ANTHROPIC_ORGANIZATION_ID=o1 \
     ANTHROPIC_SERVICE_ACCOUNT_ID=s1 ANTHROPIC_WORKSPACE_ID=w1 GITHUB_TOKEN=SECRET-GH-TOKEN GH_TOKEN=SECRET-GH2 \
     AWS_SECRET_ACCESS_KEY=SECRET-AWS-KEY SOME_UNKNOWN_SECRET=SECRET-UNK \
     python3 "$driver" --mode rc --proc-net "$work/procnet" --image "$IMG" --repo "$repo" --out "$work/integ/out" --tools "$work/tools.json" \
@@ -3302,14 +3384,15 @@ for t in ts:
     seen[persona] = got[0]
 assert len(set(seen.values())) == 4, seen
 PY
-CASE="integrated: every provider call (three per persona, four personas) authenticated with the federated identity (four variables and the token file, no key, no leaked credential) and used the owner-set model"
+CASE="integrated: every provider (one client per persona, four personas, three calls each) authenticated with the federated identity (four variables and the token file, no key, no leaked credential) and used the owner-set model"
 check python3 - "$work/sdk/sdk.log" <<'PY'
 import json, re, sys
 rows = [json.loads(l) for l in open(sys.argv[1])]
 inits = [r["init"] for r in rows if "init" in r]
-assert len(inits) == 12, len(inits)
+assert len(inits) == 4, len(inits)      # one provider process and one client per persona
 assert all(not i["has_key"] and i["fed"] == ["f1", "o1", "s1", "w1"] and i["token_file"].endswith("integ/token") and i["leaked"] == [] for i in inits), inits
 calls = [r for r in rows if "model" in r]
+assert len(calls) == 12, len(calls)      # three model calls per persona, all served by that persona's one client
 for r in calls:
     ctx = (r["system"] + " " + r["first"]).lower()
     assert "http://endpoint:8080" in ctx and not re.search(r"127\.0\.0\.1", ctx), "the persona is told its own endpoint BY NAME on its network (never a loopback address)"
@@ -3328,7 +3411,7 @@ mkdir -p "$work/integt"; echo FIXTURE-OIDC-TOKEN >"$work/integt/token"; : >"$wor
 sed "s#__LOG__#$work/integt/docker.log#" "$work/docker.tmpl" >"$work/integt/docker"; chmod +x "$work/integt/docker"; mkhost "$work/integt"
 ( cd "$root" && env -u PERSONA_UAT_TOKEN_BUDGET -u ANTHROPIC_API_KEY PATH="$work/pybin:$work/integt/hostbin:$PATH" GITHUB_RUN_ID=4242 \
     PERSONA_UAT_MODEL=INTEG-DEFAULT PERSONA_UAT_COMPLIANCE_MODEL=INTEG-COMPLIANCE ANTHROPIC_FAKE_HANG_AFTER=1 \
-    ANTHROPIC_IDENTITY_TOKEN_FILE="$work/integt/token" ANTHROPIC_FEDERATION_RULE_ID=f1 ANTHROPIC_ORGANIZATION_ID=o1 \
+    ACTIONS_ID_TOKEN_REQUEST_URL="http://127.0.0.1:$(cat "$work/oidcdef.port")/token?api-version=2.0" ACTIONS_ID_TOKEN_REQUEST_TOKEN=REQ-TOKEN ANTHROPIC_IDENTITY_TOKEN_FILE="$work/integt/token" ANTHROPIC_FEDERATION_RULE_ID=f1 ANTHROPIC_ORGANIZATION_ID=o1 \
     ANTHROPIC_SERVICE_ACCOUNT_ID=s1 ANTHROPIC_WORKSPACE_ID=w1 \
     python3 "$driver" --mode rc --proc-net "$work/procnet" --image "$IMG" --repo "$repo" --out "$work/integt/out" --tools "$work/tools.json" \
       --docker "$work/integt/docker" --recipient "$work/test.pem" --port 18080 --ready-timeout 5 --agent-timeout 8 --agent "python3 bin/persona-uat-agent.py" ) \
@@ -3355,7 +3438,7 @@ for rz in "RateLimitError:429|the agent failed \\(exit [0-9]+\\): RateLimitError
   sed "s#__LOG__#$work/$zd/docker.log#" "$work/docker.tmpl" >"$work/$zd/docker"; chmod +x "$work/$zd/docker"; mkhost "$work/$zd"
   ( cd "$root" && env -u PERSONA_UAT_TOKEN_BUDGET -u ANTHROPIC_API_KEY PATH="$work/pybin:$work/$zd/hostbin:$PATH" GITHUB_RUN_ID=4242 \
       PERSONA_UAT_MODEL=INTEG-DEFAULT PERSONA_UAT_COMPLIANCE_MODEL=INTEG-COMPLIANCE ANTHROPIC_FAKE_RAISE="$fz" \
-      ANTHROPIC_IDENTITY_TOKEN_FILE="$work/$zd/token" ANTHROPIC_FEDERATION_RULE_ID=f1 ANTHROPIC_ORGANIZATION_ID=o1 \
+      ACTIONS_ID_TOKEN_REQUEST_URL="http://127.0.0.1:$(cat "$work/oidcdef.port")/token?api-version=2.0" ACTIONS_ID_TOKEN_REQUEST_TOKEN=REQ-TOKEN ANTHROPIC_IDENTITY_TOKEN_FILE="$work/$zd/token" ANTHROPIC_FEDERATION_RULE_ID=f1 ANTHROPIC_ORGANIZATION_ID=o1 \
       ANTHROPIC_SERVICE_ACCOUNT_ID=s1 ANTHROPIC_WORKSPACE_ID=w1 \
       python3 "$driver" --mode rc --proc-net "$work/procnet" --image "$IMG" --repo "$repo" --out "$work/$zd/out" --tools "$work/tools.json" \
         --docker "$work/$zd/docker" --recipient "$work/test.pem" --port 18080 --ready-timeout 5 --agent-timeout 60 --agent "python3 bin/persona-uat-agent.py" ) \
@@ -6216,6 +6299,79 @@ out, err = m.communicate(timeout=20)
 assert m.returncode == 3 and out == "" and not os.path.exists(f) and not [x for x in os.listdir(d) if x != "t.lock"], (m.returncode, os.listdir(d))
 srv.shutdown()
 PY
+
+# --- the driver mints a fresh identity token before EACH persona's agent starts (REQ-UAT-001-AC5): an identity token is exchanged once, and the job's refresher only re-mints every 60 s, so two
+# personas run back to back in one refresh window must not present the same token. It is the same function as `--mint-identity` (mint_identity), and only when ANTHROPIC_IDENTITY_TOKEN_FILE is set.
+cat >"$work/oidc.py" <<'PY'
+import http.server, json, sys, threading
+port_file, hits_file = sys.argv[1:3]
+n = [0]
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        n[0] += 1
+        open(hits_file, "w").write("%d\n" % n[0])
+        ok = self.headers.get("Authorization") == "bearer REQ-TOKEN" and "audience=https://api.anthropic.com" in self.path
+        body = json.dumps({"value": "MINTED-TOKEN-%d" % n[0]}).encode() if ok else b"{}"
+        self.send_response(200 if ok else 403); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+open(port_file, "w").write("%d\n" % srv.server_address[1])
+srv.serve_forever()
+PY
+rm -f "$work/oidc.port" "$work/oidc.hits"
+python3 "$work/oidc.py" "$work/oidc.port" "$work/oidc.hits" &
+oidc_pid=$!
+for _ in $(seq 100); do [ -s "$work/oidc.port" ] && break; sleep 0.1; done
+oidc_url="http://127.0.0.1:$(cat "$work/oidc.port")/token?api-version=2.0"
+echo SEED-TOKEN >"$work/idmint.file"
+run idmint '{}' rc ANTHROPIC_IDENTITY_TOKEN_FILE="$work/idmint.file" ACTIONS_ID_TOKEN_REQUEST_URL="$oidc_url" ACTIONS_ID_TOKEN_REQUEST_TOKEN=REQ-TOKEN
+hits_mint=$(cat "$work/oidc.hits" 2>/dev/null || echo 0)
+CASE="identity: four personas run back to back in one refresh window each find a FRESH token in the file when their agent starts: four agents, four different contents, none the seed, all from the OIDC endpoint"
+check python3 - "$work/idmint/idseen" "$work/idmint/log" <<'PY'
+import json, sys
+seen = [json.loads(l) for l in open(sys.argv[1])]
+ran = [json.loads(l)["persona"] for l in open(sys.argv[2])]
+assert len(seen) == 4 and sorted(x["persona"] for x in seen) == sorted(ran), (seen, ran)
+toks = [x["token"].strip() for x in seen]
+assert len(set(toks)) == 4, toks
+assert all(t.startswith("MINTED-TOKEN-") for t in toks), toks
+PY
+CASE="identity: the driver asked the endpoint once per persona (4 in all, before each agent, none extra), and the run still exits 0 and removes the file at its end"
+check test "$hits_mint" -eq 4 -a "$rc" -eq 0 -a ! -e "$work/idmint.file"
+rm -f "$work/oidc.hits"
+RUN_UNSET=ANTHROPIC_IDENTITY_TOKEN_FILE run idnomint '{}' rc ACTIONS_ID_TOKEN_REQUEST_URL="$oidc_url" ACTIONS_ID_TOKEN_REQUEST_TOKEN=REQ-TOKEN
+CASE="identity: with ANTHROPIC_IDENTITY_TOKEN_FILE unset in the driver's environment nothing is minted (the endpoint is never asked), the run exits 0, and no agent sees an identity file"
+check test "$rc" -eq 0 -a ! -e "$work/oidc.hits" -a ! -e "$work/idnomint/idseen"
+# a mint that FAILS (exit 1) must not start that persona's agent: it would present the stale token and read as jti_reused. The persona is blocking, with one fixed reason that holds no secret
+echo SEED-SECRET-TOKEN >"$work/idmintbad.file"
+run idmintbad '{}' rc ANTHROPIC_IDENTITY_TOKEN_FILE="$work/idmintbad.file" ACTIONS_ID_TOKEN_REQUEST_URL="$oidc_url" ACTIONS_ID_TOKEN_REQUEST_TOKEN=WRONG-BEARER
+CASE="identity: a failed mint (the endpoint refuses) starts no agent, every persona is blocking, the run exits non-zero, and the reason says the identity token could not be minted (no jti_reused, no token value)"
+check python3 - "$work/idmintbad" "$rc" "$(reason_of idmintbad gradle-platform-engineer)" <<'PY'
+import glob, sys
+d, rc, reason = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+assert not open(d + "/log").read().strip(), "an agent was started after a failed mint"
+reps = glob.glob(d + "/plain/*.report.md")
+assert len(reps) == 4, reps
+for r in reps:
+    assert open(r).read().splitlines()[0] == "VERDICT: blocking", r
+assert rc != 0, rc
+assert "identity token" in reason and "minted" in reason, reason
+blob = reason
+for f in glob.glob(d + "/plain/*") + [d + "/stdout", d + "/stderr"]:
+    try: blob += open(f).read()
+    except OSError: pass
+assert "jti_reused" not in blob, "jti_reused shown"
+assert "SEED-SECRET-TOKEN" not in blob and "WRONG-BEARER" not in blob, "a secret leaked"
+PY
+# exit 3 (the file is already gone): as before, the agents start
+rm -f "$work/oidc.hits" "$work/idmintgone.file"
+run idmintgone '{}' rc ANTHROPIC_IDENTITY_TOKEN_FILE="$work/idmintgone.file" ACTIONS_ID_TOKEN_REQUEST_URL="$oidc_url" ACTIONS_ID_TOKEN_REQUEST_TOKEN=REQ-TOKEN
+CASE="identity: a mint that finds the file already removed (exit 3) changes nothing: all four agents start and the run exits 0"
+check python3 - "$work/idmintgone/log" "$rc" <<'PY'
+import sys
+assert len([l for l in open(sys.argv[1]) if l.strip()]) == 4 and int(sys.argv[2]) == 0
+PY
+kill "$oidc_pid" 2>/dev/null || true
 
 seg_begin 37
 seg_on

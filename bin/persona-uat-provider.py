@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""The persona UAT's model provider: one model call per process (REQ-UAT-001-AC5).
+"""The persona UAT's model provider: one process per persona, one model call per request line (REQ-UAT-001-AC5).
 
-stdin : {"model": str, "system": str, "messages": [{"role", "content"}]}
-stdout: {"usage": {"tokens": N}, "action": {"type": "shell", "command": str} | {"type": "finish", "findings": [...]}}
+stdin : one request per line, until it closes: {"model": str, "system": str, "messages": [{"role", "content"}]}
+stdout: one answer per line: {"usage": {"tokens": N}, "action": {"type": "shell", "command": str} | {"type": "finish", "findings": [...]}}
+The client is built once, on the first request, so the job's identity token is exchanged once: a second exchange of the same
+token is refused (jti_reused). The SDK renews its access token itself, from the token file the job keeps fresh.
 
 The model is whatever the request names (the owner's variable, set by the driver); no model is chosen or remembered here.
 The provider is the only process that holds the model identity. It speaks one protocol and fails closed: a reply that is
@@ -67,31 +69,40 @@ def parse_action(text):
     fail("unknown action")
 
 
-def main():
-    try:
-        req = json.loads(sys.stdin.read())
-    except ValueError:
-        fail("the request is not JSON")
-    if (not isinstance(req, dict) or not isinstance(req.get("model"), str) or not req["model"].strip()
-            or not isinstance(req.get("system"), str) or not isinstance(req.get("messages"), list) or not req["messages"]):
-        fail("the request needs a model, a system prompt and messages")
-    import anthropic    # imported only here: the SDK is installed (hash-pinned) by the persona jobs and nowhere else
-    client = anthropic.Anthropic()
-    resp = client.messages.create(model=req["model"], max_tokens=MAX_TOKENS, system=req["system"], messages=req["messages"])
-    text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
-    u = resp.usage
-    tokens = getattr(u, "input_tokens", None), getattr(u, "output_tokens", None)
-    if any(isinstance(t, bool) or not isinstance(t, int) or t < 0 for t in tokens):
-        fail("the reply carries no usable token count")
-    action = parse_action(text)
-    print(json.dumps({"usage": {"tokens": tokens[0] + tokens[1]}, "action": action}))
+def serve():
+    client = None
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        try:
+            req = json.loads(line)
+        except ValueError:
+            fail("the request is not JSON")
+        if (not isinstance(req, dict) or not isinstance(req.get("model"), str) or not req["model"].strip()
+                or not isinstance(req.get("system"), str) or not isinstance(req.get("messages"), list) or not req["messages"]):
+            fail("the request needs a model, a system prompt and messages")
+        if client is None:
+            import anthropic    # imported only here: the SDK is installed (hash-pinned) by the persona jobs and nowhere else
+            client = anthropic.Anthropic()
+        resp = client.messages.create(model=req["model"], max_tokens=MAX_TOKENS, system=req["system"], messages=req["messages"])
+        text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+        u = resp.usage
+        tokens = getattr(u, "input_tokens", None), getattr(u, "output_tokens", None)
+        if any(isinstance(t, bool) or not isinstance(t, int) or t < 0 for t in tokens):
+            fail("the reply carries no usable token count")
+        action = parse_action(text)
+        print(json.dumps({"usage": {"tokens": tokens[0] + tokens[1]}, "action": action}), flush=True)
 
 
 try:
-    main()
+    serve()
 except SystemExit:
     raise
 except Exception as e:      # an SDK error, an auth error, a network error: the persona did not run
     # the one line the driver may print in the job log: the error class and HTTP status, never the message (it can quote a request)
     sys.stderr.write("persona-uat-provider-reason: %s HTTP %s\n" % (type(e).__name__, getattr(e, "status_code", None) or "none"))
+    if type(e).__name__ == "WorkloadIdentityError":
+        # the SDK holds only the provider's OAuth fields in this error (no token): the one line that says why the sign-in was refused
+        vals = [" ".join(v.split()) if isinstance(v, str) and v.strip() else "none" for v in (getattr(e, a, None) for a in ("error", "error_description", "request_id"))]
+        sys.stderr.write("persona-uat-provider-detail: %s\n" % " ".join(vals))
     fail("%s: %s" % (type(e).__name__, str(e)[:300]))

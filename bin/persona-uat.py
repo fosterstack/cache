@@ -780,12 +780,16 @@ def kill_group(p):
 def provider_reason(err):
     """": <ClassName> HTTP <3 digits or none>" from the provider's failure, or "". The agent's stderr starts with the transcript, so only its LAST line that begins "persona-uat-agent: "
     is read (the agent's own failure line, written after the transcript; bin/persona-uat-provider.py begins the provider's output with the marker); a line of another shape adds nothing."""
-    lines = [l for l in err.split("\n") if l.startswith("persona-uat-agent: ")]
+    all_lines = err.split("\n")
+    lines = [l for l in all_lines if l.startswith("persona-uat-agent: ")]
     if not lines or not lines[-1].startswith("persona-uat-agent: the provider failed (exit "):
         return ""
     line = lines[-1]
     parts = line.partition("): persona-uat-provider-reason: ")[2].split(" ")
     if len(parts) == 3 and parts[0].isascii() and parts[0].isidentifier() and parts[1] == "HTTP" and (parts[2] == "none" or (parts[2].isascii() and parts[2].isdigit() and len(parts[2]) == 3)):
+        rest = all_lines[len(all_lines) - all_lines[::-1].index(line):][:1]      # the last failure line's own next line: the provider's detail, never a transcript line
+        if parts[0] == "WorkloadIdentityError" and rest and rest[0].startswith("persona-uat-provider-detail: "):
+            return ": " + " ".join(parts) + " " + rest[0].partition(": ")[2][:200]
         return ": " + " ".join(parts)
     return ""
 
@@ -2023,7 +2027,16 @@ def _main():
                 before = settled(ep, a.settle_quiet, a.settle_max)          # the opening reading is settled too: the driver's own readiness probes are counted after their response
                 if before is UNSETTLED:
                     before = None
-                answer, transcript, why = run_agent(agent_cmd, args, request, sandbox, persona_timeout, tfile, jfile)
+                if os.environ.get("ANTHROPIC_IDENTITY_TOKEN_FILE"):
+                    # a token the provider refuses a second exchange of: this persona's provider exchanges one no other persona's did, however soon after the last persona it starts
+                    # exit 1 is a failed mint: the persona would start on the token the last persona already exchanged and fail as jti_reused, so it does not start. Exit 3 (the file is gone) is as the refresher treats it
+                    minted = mint_identity([os.environ["ANTHROPIC_IDENTITY_TOKEN_FILE"]])
+                else:
+                    minted = 0
+                if minted == 1:
+                    answer, transcript, why = None, "", "the identity token could not be minted for this persona, so its agent was not started"
+                else:
+                    answer, transcript, why = run_agent(agent_cmd, args, request, sandbox, persona_timeout, tfile, jfile)
                 key_ok = key_matches(sandbox, a.repo)       # read before cleanup empties the sandbox
                 # the window is closed BEHIND everything of this persona: its action containers are swept by label FIRST (whatever they were still sending is sent), THEN the sidecar is
                 # stopped (so its log holds all of it), then its tool containers and cluster are removed, THEN the counter is read once it has been unchanged for the quiet interval
